@@ -1,0 +1,129 @@
+<section
+  class="sec sec-split cv"
+  id="split-view"
+  data-name="Split view"
+  aria-labelledby="split-h"
+>
+  <div class="wrap split-grid">
+    <header class="head split-head" data-peek-summary>
+      <h2 id="split-h">Up to four pages side by side.</h2>
+      <p class="lede">
+        Tile them however you like. To split, drag a tab onto another tab and
+        hold.
+      </p>
+    </header>
+    <div class="island split-island">
+      <div
+        class="rig"
+        data-rig="split"
+        role="group"
+        aria-label="Split view window"
+        aria-keyshortcuts="ArrowLeft ArrowRight"
+        tabindex="-1"
+      >
+        <div class="win-shadow"></div>
+        <div
+          class="win"
+          data-space="0"
+          data-split="1"
+          data-sidebar="pinned"
+          data-float="hidden"
+          aria-hidden="true"
+          inert
+        >
+          <div class="win-bd" data-host>
+            <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+          </div>
+          <div class="sb">
+            <div class="sb-pin">
+              <!-- @include _win/sidebar-top -->
+              <!-- @include _win/favs -->
+              <div class="pager">
+                <div class="strip"><!-- @include _win/panel-personal --></div>
+              </div>
+              <!-- @include _win/bottombar -->
+            </div>
+          </div>
+          <!-- @include _win/panes -->
+          <i class="rim"></i>
+        </div>
+      </div>
+    </div>
+    <div class="split-ctl">
+      <div class="split-seg" role="radiogroup" aria-label="Panes">
+        <label
+          ><input type="radio" name="split-n" autocomplete="off" value="1" aria-label="One page" checked /><span
+            aria-hidden="true"
+            >1</span
+          ></label
+        >
+        <label
+          ><input type="radio" name="split-n" autocomplete="off" value="2" aria-label="Two panes" /><span
+            aria-hidden="true"
+            >2</span
+          ></label
+        >
+        <label
+          ><input type="radio" name="split-n" autocomplete="off" value="3" aria-label="Three panes" /><span
+            aria-hidden="true"
+            >3</span
+          ></label
+        >
+        <label
+          ><input type="radio" name="split-n" autocomplete="off" value="4" aria-label="Four panes" /><span
+            aria-hidden="true"
+            >4</span
+          ></label
+        >
+        <i class="split-thumb" aria-hidden="true"></i>
+      </div>
+      <p class="split-readout">
+        <b>One page.</b> Pick 2, 3 or 4 to split the window.
+      </p>
+    </div>
+  </div>
+  <div class="wrap split-links">
+    <h3>Hold a key as you click a link to choose where it opens.</h3>
+    <div class="split-keys">
+      <dl class="split-legend">
+        <div data-mods="shift">
+          <dt><kbd class="kc" data-k="shift">⇧</kbd></dt>
+          <dd><b>Peek.</b> A panel over the current page.</dd>
+        </div>
+        <div data-mods="meta">
+          <dt><kbd class="kc" data-k="meta">⌘</kbd></dt>
+          <dd><b>Background tab.</b> Waits in the sidebar until you want it.</dd>
+        </div>
+        <div data-mods="shift meta">
+          <dt>
+            <kbd class="kc" data-k="shift">⇧</kbd
+            ><kbd class="kc" data-k="meta">⌘</kbd>
+          </dt>
+          <dd><b>New tab.</b> Takes you straight there.</dd>
+        </div>
+        <div data-mods="alt">
+          <dt><kbd class="kc" data-k="alt">⌥</kbd></dt>
+          <dd><b>Split view.</b> Sits beside the page you’re on.</dd>
+        </div>
+        <div data-mods="alt meta">
+          <dt>
+            <kbd class="kc" data-k="alt">⌥</kbd
+            ><kbd class="kc" data-k="meta">⌘</kbd>
+          </dt>
+          <dd>
+            <b>Scout.</b> A small window of its own. Links from other apps open
+            there too. Press ⌥⌘N in any app to type a site or a search.
+          </dd>
+        </div>
+      </dl>
+      <p class="split-try">
+        <span class="fine-only"
+          >⇧-click any link on this page to read it in Peek. Try these:</span
+        ><span class="coarse-only">Tap these to read them in Peek:</span>
+        <a href="#peek-shortcuts" data-peek="shortcuts">Keyboard shortcuts</a>,
+        <a href="#peek-mac" data-peek="mac">What stays on your Mac</a> and
+        <a href="#peek-licence" data-peek="licence">the licence</a>.
+      </p>
+    </div>
+  </div>
+</section>

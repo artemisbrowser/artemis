@@ -1,0 +1,484 @@
+/* Move in from Arc: deletable with its partial and module. Lengths inside the island are points (--u). */
+.arc {
+  background: var(--band);
+}
+
+.arc-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  column-gap: 24px;
+  align-items: center;
+}
+.arc-text {
+  grid-column: 1 / 6;
+}
+.arc-stage {
+  display: grid;
+  grid-column: 6 / 13;
+  justify-items: end;
+  gap: 20px;
+}
+html:not(.js) .arc-replay {
+  visibility: hidden;
+}
+.arc-p,
+.arc-end {
+  max-width: var(--measure);
+  margin-top: 16px;
+  color: var(--ink-2);
+}
+.arc-p b,
+.arc-end {
+  font-weight: 600;
+  color: var(--ink);
+}
+.arc-end {
+  margin-top: 32px;
+  text-wrap: balance;
+}
+
+/* the date rail: 9 px rings joined by 2 px dots every 6 px */
+.arc-rail {
+  display: grid;
+  gap: 32px;
+  margin: 40px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.arc-rail li {
+  position: relative;
+  padding-left: 29px;
+}
+.arc-rail li::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--ink-2);
+  border-radius: 50%;
+}
+.arc-rail li:first-child::after {
+  content: "";
+  position: absolute;
+  top: 21px;
+  bottom: -36px;
+  left: 3.5px;
+  width: 2px;
+  background: radial-gradient(
+      circle at 1px 1px,
+      var(--ink-3) 1px,
+      transparent 1.25px
+    )
+    0 0 / 2px 6px repeat-y;
+}
+.arc-rail time {
+  display: block;
+  font-weight: 600;
+}
+.arc-rail span {
+  color: var(--ink-2);
+}
+
+/* the island: one window, always dark, at 1 px per point until it is under 600 pt wide, and at least 430 pt tall,
+   which keeps the sheet below the toolbar. --u is declared on the rig so its 100cqw is the island's width whether
+   or not --u is a registered property. */
+.arc-island {
+  --surface-1: #1f1f1f;
+  --hl-top: inset 0 1px 0 rgb(255 255 255 / 0.1);
+  width: 100%;
+  container-type: inline-size;
+}
+.arc-island .rig {
+  --u: min(1px, 100cqw / 600);
+  height: max(64cqw, calc(430 * var(--u)));
+}
+.arc-island .pager {
+  top: calc(98 * var(--u));
+}
+/* The markup is the finished frame. 07-arc.js rewinds it and plays it forward; every rewind is instant.
+   Spaces: 0 Personal (the reader's), then Arc's Garden, Studio and Kitchen. Tide and Ember are never neighbours:
+   their crossfade passes through purple. */
+.arc-island [data-space="1"] .strip {
+  --si: 1;
+}
+.arc-island [data-space="2"] .strip {
+  --si: 2;
+}
+.arc-island [data-space="3"] .strip {
+  --si: 3;
+}
+.arc-island .win[data-space="3"] .dot:nth-child(4)::before {
+  background: rgb(255 255 255 / 0.9);
+}
+.arc-island .dom > *,
+.arc-island .pg {
+  display: none;
+}
+.arc-island [data-space="0"] .dom > :nth-child(1),
+.arc-island [data-space="1"] :is(.dom > :nth-child(2), .pg:nth-child(1)),
+.arc-island [data-space="2"] :is(.dom > :nth-child(3), .pg:nth-child(2)),
+.arc-island [data-space="3"] :is(.dom > :nth-child(4), .pg:nth-child(3)) {
+  display: block;
+}
+.arc-island .pg {
+  animation: arc-in var(--dur-fade) var(--ease-in-out);
+}
+@keyframes arc-in {
+  from {
+    opacity: 0;
+  }
+}
+.arc-island [data-space="0"] .dom {
+  color: rgb(255 255 255 / 0.45);
+}
+.arc-island [data-space="0"] .reload .gl {
+  color: rgb(255 255 255 / 0.3);
+}
+.arc-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgb(0 0 0 / 0.25);
+}
+@media (min-width: 735px) {
+  .arc-island[data-shut] :is(.arc-scrim, .arc-sheet) {
+    visibility: hidden;
+    opacity: 0;
+    transition:
+      opacity 200ms var(--ease-in-out),
+      visibility 0s 200ms;
+  }
+}
+
+/* Arc's spaces land beside the reader's own, and fill once the sheet closes */
+.arc-island .dot {
+  transition:
+    opacity 200ms var(--ease-in-out) calc(var(--i, 0) * 120ms),
+    scale var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms),
+    width var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms);
+}
+.arc-island:not([data-done]) .dot + .dot {
+  width: 0;
+  opacity: 0;
+  transition: none;
+}
+.arc-island .panel > * {
+  transition:
+    opacity 240ms var(--ease-in-out) calc(var(--n, 0) * 70ms + 200ms),
+    translate var(--dur-pop) var(--spring-pop) calc(var(--n, 0) * 70ms + 200ms);
+}
+.arc-island .panel > :nth-child(3) {
+  --n: 1;
+}
+.arc-island .panel > :nth-child(4) {
+  --n: 2;
+}
+.arc-island .panel > :nth-child(5) {
+  --n: 3;
+}
+.arc-island .panel > :nth-child(6) {
+  --n: 4;
+}
+.arc-island .panel > :nth-child(7) {
+  --n: 5;
+}
+.arc-island:not([data-fill]) .panel + .panel > :not(.shead) {
+  opacity: 0;
+  transition: none;
+}
+
+/* the pointer's tip sits at its translate, which 07-arc.js sets; it waits off the window's right edge */
+.arc-ptr {
+  position: absolute;
+  top: calc(-1.5 * var(--u));
+  left: calc(-1.5 * var(--u));
+  z-index: 9;
+  width: calc(16.5 * var(--u));
+  height: calc(24 * var(--u));
+  translate: calc(100cqw + 12 * var(--u)) 70cqh;
+  transform-origin: calc(1.5 * var(--u)) calc(1.5 * var(--u));
+  opacity: 0;
+  filter: drop-shadow(
+    0 calc(1 * var(--u)) calc(1.5 * var(--u)) rgb(0 0 0 / 0.4)
+  );
+  fill: #000;
+  stroke: #fff;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+.arc-island[data-ptr] .arc-ptr {
+  opacity: 1;
+  transition:
+    translate 520ms cubic-bezier(0.3, 0.1, 0.2, 1),
+    opacity 200ms var(--ease-in-out);
+}
+
+.arc-sheet {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 6;
+  width: calc(380 * var(--u));
+  padding: calc(18 * var(--u));
+  border-radius: calc(14 * var(--u));
+  translate: -50% calc(-50% - 20 * var(--u));
+  box-shadow:
+    var(--hl-top),
+    0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.1),
+    0 calc(8 * var(--u)) calc(24 * var(--u)) rgb(0 0 0 / 0.35);
+  font-size: calc(13 * var(--u));
+}
+.arc-title {
+  margin-bottom: calc(10 * var(--u));
+  font-size: calc(15 * var(--u));
+  font-weight: 600;
+}
+.arc-rows {
+  display: grid;
+  gap: calc(2 * var(--u));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.arc-rows li {
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--u));
+  height: calc(30 * var(--u));
+  padding: 0 calc(8 * var(--u));
+  border-radius: calc(8 * var(--u));
+  background: rgb(255 255 255 / 0.06);
+  color: rgb(255 255 255 / 0.92);
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    color 200ms var(--ease-in-out),
+    background-color 200ms var(--ease-in-out);
+}
+.arc-tk {
+  display: grid;
+  flex: none;
+  width: calc(16 * var(--u));
+  height: calc(16 * var(--u));
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 calc(1.5 * var(--u)) rgb(255 255 255 / 0.28);
+}
+/* the real sheet uses Color.accentColor: the macOS system accent, default blue */
+.arc-tk .gl {
+  width: 100%;
+  height: 100%;
+  padding: calc(3 * var(--u));
+  border-radius: 50%;
+  background: #0a84ff;
+  color: #fff;
+  transition:
+    opacity 200ms var(--ease-in-out),
+    scale var(--dur-pop) var(--spring-pop);
+}
+.arc-rows li:not(.on) {
+  background-color: transparent;
+  color: rgb(255 255 255 / 0.55);
+  transition: none;
+}
+.arc-rows li:not(.on) .gl {
+  opacity: 0;
+  transition: none;
+}
+
+.arc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: calc(14 * var(--u));
+  color: rgb(255 255 255 / 0.6);
+}
+.arc-go {
+  align-items: center;
+  height: calc(28 * var(--u));
+  padding: 0 calc(16 * var(--u));
+  border-radius: calc(14 * var(--u));
+  background: #0a84ff;
+  font-weight: 600;
+  color: #fff;
+}
+.arc-go,
+.arc-title {
+  display: grid;
+}
+:is(.arc-foot, .arc-title) span {
+  transition: opacity 200ms var(--ease-in-out) 280ms;
+}
+:is(.arc-go, .arc-title) span {
+  grid-area: 1 / 1;
+}
+.arc-go span {
+  text-align: center;
+}
+/* the title, Not Now and Move Over give way to Moved in and Done; the old labels are gone before the new arrive */
+.arc-island[data-done]
+  :is(.arc-foot > :first-child, .arc-go :first-child, .arc-title :first-child) {
+  opacity: 0;
+  transition-duration: 120ms;
+  transition-delay: 160ms;
+}
+.arc-island:not([data-done]) :is(.arc-go, .arc-title) :last-child {
+  opacity: 0;
+}
+.arc-island:not([data-done]) :is(.arc-foot, .arc-title) span {
+  transition: none;
+}
+
+/* the keychain prompt is a window of its own, overhanging the sheet it holds up */
+.arc-ask {
+  position: absolute;
+  top: calc(172 * var(--u));
+  left: calc(200 * var(--u));
+  display: grid;
+  justify-items: center;
+  gap: calc(10 * var(--u));
+  width: calc(260 * var(--u));
+  padding: calc(16 * var(--u)) calc(14 * var(--u)) calc(14 * var(--u));
+  border-radius: calc(12 * var(--u));
+  background: #2b2b2b;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 0 0 calc(0.5 * var(--u)) rgb(0 0 0 / 0.6),
+    0 calc(10 * var(--u)) calc(30 * var(--u)) rgb(0 0 0 / 0.45);
+  line-height: 1.3;
+  text-align: center;
+  text-wrap: balance;
+  color: rgb(255 255 255 / 0.9);
+  opacity: 0;
+  transition: opacity 150ms var(--ease-in-flat);
+}
+.arc-island[data-ask="on"] .arc-ask {
+  opacity: 1;
+  scale: 1;
+  transition:
+    opacity 200ms var(--ease-in-out) var(--dur-press),
+    scale var(--dur-pop) var(--spring-pop) var(--dur-press);
+}
+.arc-lock {
+  width: calc(26 * var(--u));
+  height: calc(26 * var(--u));
+  /* opaque ink under group opacity: the filled, stroked body and the shackle composite once */
+  color: #fff;
+  opacity: 0.9;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.arc-lock rect {
+  fill: currentColor;
+}
+.arc-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(8 * var(--u));
+  width: 100%;
+  margin-top: calc(2 * var(--u));
+}
+.arc-btns span {
+  display: grid;
+  place-items: center;
+  height: calc(24 * var(--u));
+  border-radius: calc(12 * var(--u));
+  background: rgb(255 255 255 / 0.14);
+  font-weight: 500;
+}
+.arc-btns span:last-child {
+  background: #0a84ff;
+  color: #fff;
+}
+/* springs scale and rows drop in only with motion allowed; reduced motion keeps the fades and has no pointer */
+@media (prefers-reduced-motion: no-preference) {
+  .arc-island:not([data-done]) .dot + .dot {
+    scale: 0.4;
+  }
+  .arc-rows li:not(.on) .gl {
+    scale: 0.6;
+  }
+  .arc-ask {
+    scale: 0.97;
+  }
+  .arc-island:not([data-fill]) .panel + .panel > :not(.shead) {
+    translate: 0 calc(-6 * var(--u));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .arc-ptr {
+    display: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .arc-grid {
+    display: block;
+  }
+  .arc-stage {
+    margin-top: 56px;
+  }
+}
+
+/* phones: only the sheet and the switcher, on the window's own colours */
+@media (max-width: 734px) {
+  .arc-stage {
+    margin-top: 40px;
+  }
+  .arc-island .rig {
+    --u: min(1px, (100cqw - 24px) / 290);
+    height: auto;
+  }
+  .arc-island :is(.win, .win-shadow) {
+    border-radius: 22px;
+  }
+  .arc-island .win {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 12px 16px;
+    container-type: normal;
+  }
+  .arc-island :is(.sb, .sb-pin) {
+    display: contents;
+  }
+  .arc-island :is(.toprow, .url, .pager, .lib, .prof, .card-e, .arc-ptr) {
+    display: none;
+  }
+  .arc-sheet {
+    position: relative;
+    inset: auto;
+    width: min(calc(380 * var(--u)), 100%);
+    translate: 0 0;
+  }
+  .arc-island .bottombar {
+    position: relative;
+    inset: auto;
+    z-index: 6;
+    order: 1;
+    width: calc(148 * var(--u));
+  }
+  .arc-ask {
+    left: auto;
+    right: calc(12 * var(--u));
+  }
+}
+
+/* content height (padding excluded) at 1440, 834 and 390 wide, so a jump lands right before the section renders */
+.arc.cv {
+  contain-intrinsic-size: auto 587px;
+}
+@media (max-width: 1023px) {
+  .arc.cv {
+    contain-intrinsic-size: auto 1140px;
+  }
+}
+@media (max-width: 734px) {
+  .arc.cv {
+    contain-intrinsic-size: auto 1149px;
+  }
+}

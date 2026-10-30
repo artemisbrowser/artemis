@@ -1,0 +1,70 @@
+<div class="cmd" data-state="closed" inert>
+  <div class="cmd-row">
+    <div class="cmd-field g-text">
+      <svg class="ico gl"><use href="#i-search" /></svg>
+      <input
+        type="text"
+        role="combobox"
+        aria-label="Search or enter URL"
+        aria-expanded="false"
+        aria-autocomplete="list"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="go"
+        placeholder="Search or enter URL"
+      />
+    </div>
+    <div class="cmd-scopes">
+      <button
+        class="scope g"
+        type="button"
+        data-scope="tab"
+        data-prompt="Search open tabs"
+        aria-label="Search Tabs"
+        data-tip="Tabs"
+        data-tip-keys="meta 1"
+        aria-keyshortcuts="Meta+1"
+      >
+        <svg class="gl"><use href="#i-tabs" /></svg>
+      </button>
+      <button
+        class="scope g"
+        type="button"
+        data-scope="history"
+        data-prompt="Search history"
+        aria-label="Search History"
+        data-tip="History"
+        data-tip-keys="meta 2"
+        aria-keyshortcuts="Meta+2"
+      >
+        <svg class="gl"><use href="#i-clock" /></svg>
+      </button>
+      <button
+        class="scope g"
+        type="button"
+        data-scope="action"
+        data-prompt="Run a command"
+        aria-label="Search Actions"
+        data-tip="Actions"
+        data-tip-keys="meta 3"
+        aria-keyshortcuts="Meta+3"
+      >
+        <svg class="gl"><use href="#i-command" /></svg>
+      </button>
+      <button
+        class="scope g"
+        type="button"
+        data-scope="space"
+        data-prompt="Jump to a space"
+        aria-label="Search Spaces"
+        data-tip="Spaces"
+        data-tip-keys="meta 4"
+        aria-keyshortcuts="Meta+4"
+      >
+        <svg class="gl"><use href="#i-stack" /></svg>
+      </button>
+    </div>
+  </div>
+  <ul class="cmd-list" role="listbox" aria-label="Results"></ul>
+</div>

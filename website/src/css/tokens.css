@@ -1,0 +1,600 @@
+/* Units: px are CSS px. Replica metrics are points and always written as calc(N * var(--u)). */
+
+@property --accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2a75c5;
+}
+@property --sp {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+/* read by .strip only; not inherited, so a space change restyles no panel */
+@property --si {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+/* one replica point in px; registered, so an island's 100cqw computes where it is declared, never inside .win or .page */
+@property --u {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 1px;
+}
+@property --mx {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 30%;
+}
+@property --my {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
+:root {
+  color-scheme: light dark;
+
+  /* type */
+  --font:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --serif: "Iowan Old Style", Palatino, ui-serif, Georgia, serif;
+
+  --t-display: max(40px, calc(80 * var(--s)));
+  --lh-display: 1.04;
+  --tr-display: -0.015em;
+  --t-xl: clamp(40px, 4.45vw, 64px);
+  --lh-xl: 1.0625;
+  --tr-xl: -0.009em;
+  --t-section: clamp(32px, 3.34vw, 48px);
+  --lh-section: 1.083;
+  --tr-section: -0.003em;
+  --t-card: clamp(21px, 1.95vw, 28px);
+  --lh-card: 1.143;
+  --tr-card: 0.007em;
+  --t-intro: clamp(19px, 1.46vw, 21px);
+  --lh-intro: 1.381;
+  --tr-intro: 0.011em;
+  --t-body: 17px;
+  --lh-body: 1.47;
+  --tr-body: -0.022em;
+  --t-small: 14px;
+  --lh-small: 1.43;
+  --tr-small: -0.016em;
+  --t-caption: 13px;
+  --t-fine: 12px;
+  --lh-fine: 1.45;
+  --t-note: 20px;
+  --lh-note: 1.42;
+
+  /* layout: --s is one 1440x900 artboard unit in px */
+  --s: min(calc(100vw / 1440), calc(100svh / 900));
+  --gutter: max(16px, 4vw);
+  --content: min(1440px, 0.8 * (100% - 2 * var(--inset))); /* the hero column, capped at 1440 */
+  --text-max: 980px;
+  --measure: 40ch;
+  --nav-h: 52px;
+  --nav-bottom: 52px;
+  --section-pad: clamp(96px, 10vw, 128px); /* the page fits 12 viewports at 1440×900 */
+  --inset: 16px; /* scene panels and the pinned windows sit this far inside the viewport */
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+  --sp-9: 96px;
+  --sp-10: 128px;
+  --sp-11: 160px;
+
+  /* radii (page) */
+  --r-capsule: 999px;
+  --r-cta: 28px;
+  --r-btn: 8px;
+  --r-card: 18px;
+  --r-island: 28px;
+  --r-panel: 32px;
+  --r-peek: 16px;
+  --r-capsule-sm: 12px;
+
+  /* colour: light first, zero chroma; colour comes from the product and the one Rigel accent */
+  --void: #ffffff;
+  --band: #f4f4f4;
+  --surface-1: #ffffff;
+  --ink: #161616;
+  --ink-2: #555555;
+  --ink-3: #6e6e6e;
+  --hairline: rgb(0 0 0 / 0.08);
+  --hairline-2: rgb(0 0 0 / 0.14);
+  --chip: #f0f0f0;
+  --chip-hover: #e6e6e6;
+  --cta-bg: #161616;
+  --cta-ink: #ffffff;
+  --cta-hover: #2e2e2e;
+  --nav-bg: rgb(255 255 255 / 0.8);
+  --nav-line: rgb(0 0 0 / 0.1);
+  --pill-fill: rgb(0 0 0 / 0.05);
+  --scrim-peek: rgb(0 0 0 / 0.32);
+  --btn: #ffffff;
+  --btn-hover: #f6f6f6;
+  --btn-ring: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 1px rgb(0 0 0 / 0.06);
+  --seg-track: #e6e6e6;
+  --seg-thumb: #ffffff;
+  --seg-lift: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+
+  /* Rigel, the bundled icon's blue: --accent fills, --accent-text is text and rings */
+  --accent: #2a75c5;
+  --accent-ink: #ffffff;
+  --accent-text: #1f63ad;
+  --focus: var(--accent);
+  --select: rgb(42 117 197 / 0.22);
+  --find: #ffcc00;
+
+  /* scene ink: product scenes stay dark in both appearances */
+  --sc-ink: #ffffff;
+  --sc-ink-2: rgb(255 255 255 / 0.72);
+  --sc-void: #0e0e0f;
+
+  /* brand (the mark is Rigel) */
+  --rigel: #4a8fd8;
+  --rigel-light: #9ac0e9;
+  --mark-a-top: rgb(74 143 216 / 0.8);
+  --mark-a-bottom: #7caee3;
+  --mark-comet: #9ac0e9;
+
+  /* the replica's card behind a page; [data-accent] inside a window sets the look's own */
+  --card-base: #0d214c;
+
+  /* Mac keys: neutral caps on a 1 px lower edge; a pressed key sinks and takes Rigel */
+  --kc-face: #ffffff;
+  --kc-glyph: #1d1d1d;
+  --kc-ring: rgb(0 0 0 / 0.12);
+  --kc-edge: rgb(0 0 0 / 0.16);
+
+  /* shadows: neutral light from above, never tinted */
+  --sh-win:
+    0 0 0 0.5px rgb(0 0 0 / 0.2), 0 24px 64px -8px rgb(0 0 0 / 0.3),
+    0 8px 20px -6px rgb(0 0 0 / 0.16);
+  --sh-capsule: 0 12px 32px rgb(0 0 0 / 0.24);
+  --hl-top: inset 0 1px 0 rgb(255 255 255 / 0.1);
+
+  /* glass parameters (recipes live in components.css) */
+  --g-nav-blur: blur(20px) saturate(180%);
+  --g-chrome-tint: rgb(255 255 255 / 0.1);
+  --g-chrome-tint-flat: rgb(255 255 255 / 0.12);
+  --g-chrome-filter: blur(14px) saturate(140%) brightness(1.06);
+  --g-lit: rgb(255 255 255 / 0.16);
+  --g-text-bg: rgb(24 24 24 / 0.74);
+  --g-text-filter: blur(30px) saturate(160%);
+  --g-cap-bg: rgb(20 20 20 / 0.76);
+  --g-cap-filter: blur(40px) saturate(160%);
+  --g-rim:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
+    inset 0 -1px 1px rgb(0 0 0 / 0.12);
+  --g-drop: 0 4px 14px rgb(0 0 0 / 0.18);
+  --g-specular: linear-gradient(
+    135deg,
+    rgb(255 255 255 / 0.45),
+    rgb(255 255 255 / 0) 50%
+  );
+
+  /* motion: SwiftUI springs from Motion.swift, settle within 0.1% (digest §6.4). Pair each curve with its own duration. */
+  --spring-sidebar: linear(
+    0,
+    0.0056 1.2%,
+    0.0252 2.8%,
+    0.0559 4.2%,
+    0.095 5.8%,
+    0.1899 8.8%,
+    0.4202 15.2%,
+    0.5208 18.2%,
+    0.6191 21.5%,
+    0.6983 24.5%,
+    0.766 27.5%,
+    0.8267 30.8%,
+    0.8754 34%,
+    0.9161 37.5%,
+    0.9484 41.2%,
+    0.9737 45.5%,
+    0.9913 50.2%,
+    1.0019 55.5%,
+    1.0077 67%,
+    1
+  );
+  --dur-sidebar: 583ms;
+  --dur-sidebar-reveal: 278ms;
+  --spring-panel: linear(
+    0,
+    0.0055 1.2%,
+    0.0247 2.8%,
+    0.0549 4.2%,
+    0.1007 6%,
+    0.1964 9%,
+    0.4274 15.5%,
+    0.5283 18.5%,
+    0.6271 21.8%,
+    0.7067 24.8%,
+    0.7747 27.8%,
+    0.8356 31%,
+    0.8844 34.2%,
+    0.9249 37.8%,
+    0.9568 41.5%,
+    0.9802 45.5%,
+    0.9967 50%,
+    1.0068 55.2%,
+    1.0109 65.8%,
+    1
+  );
+  --dur-panel: 549ms;
+  --dur-pip: 576ms;
+  --dur-address: 344ms;
+  --spring-pip: var(--spring-panel);
+  --spring-address: var(--spring-panel);
+  --spring-carousel: linear(
+    0,
+    0.0051 1.2%,
+    0.0231 2.8%,
+    0.0573 4.5%,
+    0.1024 6.2%,
+    0.2047 9.5%,
+    0.434 16%,
+    0.543 19.2%,
+    0.6416 22.5%,
+    0.7274 25.8%,
+    0.7948 28.7%,
+    0.8552 32%,
+    0.9033 35.2%,
+    0.9407 38.5%,
+    0.9705 42%,
+    0.9938 46%,
+    1.0089 50.2%,
+    1.0176 55.2%,
+    1.0192 64%,
+    1
+  );
+  --dur-carousel: 594ms;
+  --spring-pop: linear(
+    0,
+    0.0079 1.2%,
+    0.03 2.5%,
+    0.0635 3.8%,
+    0.1157 5.2%,
+    0.1666 6.5%,
+    0.2341 8%,
+    0.5008 13.5%,
+    0.6154 16%,
+    0.7185 18.5%,
+    0.8077 21%,
+    0.882 23.5%,
+    0.9414 26%,
+    0.9907 28.7%,
+    1.0252 31.5%,
+    1.0422 33.5%,
+    1.0547 35.8%,
+    1.0617 38.2%,
+    1.0632 40.8%,
+    1.0555 45.8%,
+    1.015 60%,
+    1.0014 68.2%,
+    0.996 79.8%,
+    1
+  );
+  --dur-pop: 496ms;
+  --spring-morph: linear(
+    0,
+    0.0079 1.2%,
+    0.0298 2.5%,
+    0.0633 3.8%,
+    0.1156 5.2%,
+    0.1668 6.5%,
+    0.2347 8%,
+    0.5047 13.5%,
+    0.6213 16%,
+    0.7362 18.8%,
+    0.8257 21.2%,
+    0.8999 23.8%,
+    0.9588 26.2%,
+    1.0035 28.7%,
+    1.0379 31.5%,
+    1.0546 33.5%,
+    1.0654 35.5%,
+    1.0717 37.8%,
+    1.0729 40.2%,
+    1.0633 45.2%,
+    1.016 59.5%,
+    1.0007 67.5%,
+    0.9947 78.8%,
+    1
+  );
+  --dur-morph: 822ms;
+  --spring-hover: linear(
+    0,
+    0.0052 1.2%,
+    0.0231 2.8%,
+    0.0513 4.2%,
+    0.0937 6%,
+    0.1819 9%,
+    0.3939 15.5%,
+    0.4943 18.8%,
+    0.5853 22%,
+    0.6652 25.2%,
+    0.7336 28.5%,
+    0.7911 31.8%,
+    0.8417 35.2%,
+    0.8846 39%,
+    0.9213 43.2%,
+    0.9506 48%,
+    0.972 53.2%,
+    0.9864 59%,
+    0.9952 65.5%,
+    1 73.5%,
+    1
+  );
+  --dur-hover: 294ms;
+  --spring-library: linear(
+    0,
+    0.0077 1.2%,
+    0.0291 2.5%,
+    0.0698 4%,
+    0.1235 5.5%,
+    0.1757 6.8%,
+    0.2447 8.2%,
+    0.5321 14%,
+    0.6504 16.5%,
+    0.7571 19%,
+    0.8491 21.5%,
+    0.9184 23.8%,
+    0.9803 26.2%,
+    1.027 28.7%,
+    1.0625 31.5%,
+    1.0775 33.2%,
+    1.0885 35.2%,
+    1.0938 37.2%,
+    1.0944 39.5%,
+    1.0816 44.5%,
+    1.0189 58.8%,
+    0.998 67%,
+    0.991 78%,
+    1
+  );
+  --dur-library: 518ms;
+
+  --ease-in-out: cubic-bezier(0.42, 0, 0.58, 1);
+  --ease-out-flat: cubic-bezier(0, 0, 0.58, 1);
+  --ease-in-flat: cubic-bezier(0.42, 0, 1, 1);
+  --ease-reveal: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-rim: cubic-bezier(0.455, 0.03, 0.515, 0.955);
+  --dur-fade: 200ms;
+  --dur-space-color: 420ms;
+  --dur-space-click: 200ms;
+  --dur-look: 350ms;
+  --dur-page-swap: 80ms;
+  --dur-load-bar: 250ms;
+  --dur-link-capsule: 120ms;
+  --dur-press: 160ms;
+  --dur-hud: 900ms;
+  --dur-rim: 900ms;
+
+  /* stacking */
+  --z-sky: 0;
+  --z-rig: 1;
+  --z-copy: 3;
+  --z-caps: 4;
+  --z-nav: 50;
+  --z-sitebar: 60;
+  --z-capsule: 70;
+  --z-cmd: 80;
+  --z-peek: 90;
+  --z-tooltip: 95;
+  --z-skip: 100;
+}
+
+/* Breakpoints (media queries cannot read custom properties):
+   S ≤ 734 · M 735–1023 · L 1024–1279 · XL ≥ 1280. Pins need ≥ 735 wide and ≥ 600 tall. */
+
+/* dark: zero chroma on a true black ground */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --void: #000000;
+    --band: #121212;
+    --surface-1: #1c1c1c;
+    --ink: #ebebeb;
+    --ink-2: #a1a1a1;
+    --ink-3: #8e8e8e;
+    --hairline: rgb(255 255 255 / 0.09);
+    --hairline-2: rgb(255 255 255 / 0.16);
+    --chip: #1c1c1c;
+    --chip-hover: #262626;
+    --cta-bg: #ebebeb;
+    --cta-ink: #161616;
+    --cta-hover: #ffffff;
+    --nav-bg: rgb(0 0 0 / 0.72);
+    --nav-line: rgb(255 255 255 / 0.1);
+    --pill-fill: rgb(255 255 255 / 0.08);
+    --scrim-peek: rgb(0 0 0 / 0.5);
+    --btn: #262626;
+    --btn-hover: #2e2e2e;
+    --btn-ring: 0 0 0 0.5px rgb(0 0 0 / 0.5), inset 0 0.5px 0 rgb(255 255 255 / 0.1);
+    --seg-track: #242424;
+    --seg-thumb: #5a5a5a;
+    --seg-lift: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 0.5px 0 rgb(255 255 255 / 0.12);
+    --accent: #4a8fd8;
+    --accent-ink: #0b0b0c;
+    --accent-text: #9ac0e9;
+    --select: rgb(74 143 216 / 0.35);
+    --find: #ffd60a;
+    --kc-face: #262626;
+    --kc-glyph: #ebebeb;
+    --kc-ring: rgb(255 255 255 / 0.1);
+    --kc-edge: rgb(0 0 0 / 0.6);
+    --sh-win:
+      0 0 0 0.5px rgb(255 255 255 / 0.16), 0 30px 80px -20px rgb(0 0 0 / 0.7);
+  }
+}
+/* dark scenes in either appearance: the windows, their captions, the Spaces panel and the site sidebar */
+.win,
+.cap,
+.panel-sky,
+.sitebar {
+  --kc-face: #333333;
+  --kc-glyph: #f0f0f0;
+  --kc-ring: rgb(255 255 255 / 0.12);
+  --kc-edge: rgb(0 0 0 / 0.6);
+}
+@media (max-width: 1023px) {
+  :root {
+    --content: calc(100% - 2 * var(--gutter));
+  }
+}
+@media (max-width: 734px) {
+  :root {
+    --section-pad: 64px;
+    --inset: 8px;
+    --r-panel: 26px;
+  }
+}
+
+/* the look's derived accent, set on window parts only (window.js); html[data-accent] is a record only (main.js) */
+:not(html)[data-accent="nebula"] {
+  --accent: #5849eb;
+  --card-base: #1f1a52;
+}
+:not(html)[data-accent="ember"] {
+  --accent: #eb793b;
+  --card-base: #380f12;
+}
+:not(html)[data-accent="tide"] {
+  --accent: #3b73eb;
+  --card-base: #0d214c;
+}
+:not(html)[data-accent="aurora"] {
+  --accent: #3bebbf;
+  --card-base: #0d2e24;
+}
+:not(html)[data-accent="sunset"] {
+  --accent: #eb793b;
+  --card-base: #2e1f66;
+}
+:not(html)[data-accent="bloom"] {
+  --accent: #eb3fdb;
+  --card-base: #4c1447;
+}
+:not(html)[data-accent="ink"] {
+  --accent: #6775eb;
+  --card-base: #121429;
+}
+:not(html)[data-accent="charcoal"] {
+  --accent: #cbcbeb;
+  --card-base: #212126;
+}
+/* look layers: the mesh as the app draws it, the 880x592 render stretched to cover */
+[data-look="nebula"] {
+  --look-img: url("/assets/spaces/space-nebula-880x592.png");
+  --look-base: #1f1a52;
+  --look-mid: #6b33a3;
+  --look-hot: #803385;
+  --look-grain: 0;
+}
+[data-look="ember"] {
+  --look-img: url("/assets/spaces/space-ember-880x592.png");
+  --look-base: #380f12;
+  --look-mid: #8f291f;
+  --look-hot: #cc6126;
+  --look-grain: 0.1;
+}
+[data-look="tide"] {
+  --look-img: url("/assets/spaces/space-tide-880x592.png");
+  --look-base: #0d214c;
+  --look-mid: #1f6b80;
+  --look-hot: #1f6b80;
+  --look-grain: 0;
+}
+[data-look="aurora"] {
+  --look-img: url("/assets/spaces/space-aurora-880x592.png");
+  --look-base: #0d2e24;
+  --look-mid: #1a6b57;
+  --look-hot: #298070;
+  --look-grain: 0.07;
+}
+[data-look="sunset"] {
+  --look-img: url("/assets/spaces/space-sunset-880x592.png");
+  --look-base: #2e1f66;
+  --look-mid: #a82e75;
+  --look-hot: #d16b33;
+  --look-grain: 0.05;
+}
+[data-look="bloom"] {
+  --look-img: url("/assets/spaces/space-bloom-880x592.png");
+  --look-base: #4c1447;
+  --look-mid: #a83870;
+  --look-hot: #a83870;
+  --look-grain: 0.04;
+}
+[data-look="ink"] {
+  --look-img: none;
+  --look-base: #121429;
+  --look-mid: #121429;
+  --look-hot: #1b1f3d;
+  --look-grain: 0;
+}
+[data-look="charcoal"] {
+  --look-img: none;
+  --look-base: #212126;
+  --look-mid: #212126;
+  --look-hot: #2c2c33;
+  --look-grain: 0.14;
+}
+
+@supports not (transition-timing-function: linear(0, 1)) {
+  :root {
+    --spring-sidebar: cubic-bezier(0.33, 0.665, 0.084, 1.106);
+    --spring-panel: cubic-bezier(0.339, 0.687, 0.083, 1.112);
+    --spring-carousel: cubic-bezier(0.351, 0.699, 0.087, 1.134);
+    --spring-pop: cubic-bezier(0.413, 1.365, 0.034, 1.001);
+    --spring-morph: cubic-bezier(0.433, 1.477, 0.046, 0.969);
+    --spring-hover: cubic-bezier(0.3, 0.514, 0.106, 1.093);
+    --spring-library: cubic-bezier(0.45, 1.576, 0.047, 0.954);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --spring-sidebar: ease-out;
+    --spring-panel: ease-out;
+    --spring-carousel: ease-out;
+    --spring-pop: ease-out;
+    --spring-morph: ease-out;
+    --spring-hover: ease-out;
+    --spring-library: ease-out;
+    --dur-sidebar: 120ms;
+    --dur-sidebar-reveal: 120ms;
+    --dur-panel: 120ms;
+    --dur-pip: 120ms;
+    --dur-address: 120ms;
+    --dur-carousel: 120ms;
+    --dur-pop: 120ms;
+    --dur-morph: 120ms;
+    --dur-hover: 120ms;
+    --dur-library: 120ms;
+    --dur-space-color: 200ms;
+    --dur-look: 200ms;
+  }
+}
+
+@media (inverted-colors: inverted) or (prefers-contrast: more) or (prefers-reduced-transparency: reduce) {
+  :root {
+    --nav-bg: var(--void);
+    --g-chrome-tint: #2c2c2c;
+    --g-chrome-tint-flat: #2c2c2c;
+    --g-text-bg: #1c1c1c;
+    --g-cap-bg: #1c1c1c;
+    --ink-3: var(--ink-2);
+  }
+}

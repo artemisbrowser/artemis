@@ -1,0 +1,541 @@
+/* Pin 2, "step inside". Static is the base composition; html.pin pins the stage and scrubs the frame away. */
+
+.track-spaces {
+  position: relative;
+  overflow-x: clip;
+}
+/* the 110×74 renders are what the app stretches; the swatches load the same files */
+.track-spaces [data-look="nebula"] {
+  --look-img: url("/assets/spaces/space-nebula-110x74.png");
+}
+.track-spaces [data-look="ember"] {
+  --look-img: url("/assets/spaces/space-ember-110x74.png");
+}
+.track-spaces [data-look="tide"] {
+  --look-img: url("/assets/spaces/space-tide-110x74.png");
+}
+.track-spaces [data-look="aurora"] {
+  --look-img: url("/assets/spaces/space-aurora-110x74.png");
+}
+.track-spaces [data-look="sunset"] {
+  --look-img: url("/assets/spaces/space-sunset-110x74.png");
+}
+.track-spaces [data-look="bloom"] {
+  --look-img: url("/assets/spaces/space-bloom-110x74.png");
+}
+
+/* a product scene, framed: a dark panel inset on the page in both appearances; pinned, it holds the full mesh */
+.panel-sky {
+  --ink-2: #a1a1a1;
+  --sh-win:
+    0 0 0 0.5px rgb(255 255 255 / 0.12), 0 40px 100px -30px rgb(0 0 0 / 0.8);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: var(--inset);
+  padding: var(--section-pad) var(--gutter);
+  overflow: clip;
+  border-radius: var(--r-panel);
+  background: var(--sc-void);
+  color: var(--sc-ink);
+}
+.sp-sky {
+  display: none;
+}
+/* the panel edge; --hairline shows only in dark, where the panel meets black */
+.panel-sky::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  pointer-events: none;
+}
+.sp-head {
+  position: relative;
+  z-index: 3;
+}
+
+.sp-island {
+  position: relative;
+  z-index: 1;
+  width: min(1000px, 100%);
+  margin-top: 56px;
+  container-type: inline-size;
+}
+.sp-dolly {
+  position: relative;
+}
+@media (min-width: 735px) {
+  html:not(.pin) .sp-dolly {
+    --u: calc(100cqw / 1000);
+  }
+}
+.track-spaces .rig {
+  width: calc(1000 * var(--u));
+  aspect-ratio: 1000 / 640;
+}
+
+/* static swipe surface: one 250 pt snap slot per space, so the filmstrip follows the finger 1:1;
+   the spacer leaves the overlay 500 pt of travel at any width, release commits the nearest space */
+.sp-swipe {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.sp-swipe::-webkit-scrollbar {
+  display: none;
+}
+.sp-swipe i {
+  flex: none;
+  width: calc(250 * var(--u));
+  scroll-snap-align: start;
+}
+/* only the spaces beside the current one snap, so one swipe moves one space */
+.sp-swipe[data-space="0"] i:last-child,
+.sp-swipe[data-space="2"] i:first-child {
+  scroll-snap-align: none;
+}
+.sp-swipe::after {
+  content: "";
+  flex: none;
+  width: calc(100% - 250 * var(--u));
+}
+html.sda:not(.pin) .sp-dolly {
+  timeline-scope: --swipe;
+}
+html.sda:not(.pin) .sp-swipe {
+  scroll-timeline: --swipe inline;
+}
+html.sda:not(.pin) .track-spaces .strip {
+  animation: sp-swipe 1s linear both;
+  animation-timeline: --swipe;
+}
+@keyframes sp-swipe {
+  from {
+    translate: 0 0;
+  }
+  to {
+    translate: calc(-500 * var(--u)) 0;
+  }
+}
+html:not(.js) :is(.sp-swipe, .sp-hint, .sp-controls) {
+  display: none;
+}
+
+.sp-hint {
+  position: relative;
+  margin-top: 20px;
+  font-size: var(--t-small);
+  line-height: var(--lh-small);
+  letter-spacing: var(--tr-small);
+  color: var(--ink-2);
+}
+
+/* chips left, picker right, edge to edge with the window; stacked and centred when the row won't fit */
+.sp-controls {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: min(1000px, 100%);
+  margin-top: 24px;
+  container-type: inline-size;
+}
+@container (width < 790px) {
+  .sp-chips,
+  .sp-picker {
+    margin-inline: auto;
+  }
+}
+.sp-chips {
+  display: flex;
+  gap: 6px;
+}
+.sp-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 15px 0 10px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+  font: 600 15px/1 var(--font);
+  letter-spacing: -0.01em;
+  color: rgb(255 255 255 / 0.72);
+  transition:
+    background-color var(--dur-fade) var(--ease-in-out),
+    color var(--dur-fade) var(--ease-in-out);
+}
+.sp-chip span {
+  margin-left: 8px;
+}
+.sp-chip[aria-pressed="true"] {
+  background: rgb(255 255 255 / 0.18);
+  color: #fff;
+}
+@media (hover: hover) and (pointer: fine) {
+  .sp-chip[aria-pressed="false"]:hover {
+    background: rgb(255 255 255 / 0.12);
+    color: #fff;
+  }
+}
+
+.sp-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 9px 0 16px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+}
+.sp-pick-l {
+  margin-right: 4px;
+  font: 500 15px/1 var(--font);
+  letter-spacing: -0.01em;
+  color: rgb(255 255 255 / 0.72);
+  white-space: nowrap;
+}
+/* 26 pt swatch, 1 pt hairline, selected ring 2 pt wide 3 pt out; the hit area fills the 34 × 44 slot */
+.sp-sw {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--look-base) var(--look-img, none) 0 0 / 100% 100% no-repeat;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2);
+}
+.sp-sw::before {
+  content: "";
+  position: absolute;
+  inset: -9px -4px;
+}
+.sp-sw::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #fff;
+  opacity: 0;
+  scale: 0.8;
+  transition:
+    opacity var(--dur-fade) var(--ease-in-out),
+    scale var(--dur-pop) var(--spring-pop);
+}
+.sp-sw[aria-checked="true"]::after {
+  opacity: 1;
+  scale: 1;
+}
+.sp-sw:focus-visible {
+  outline-offset: 6px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .sp-sw {
+    transition: scale var(--dur-hover) var(--spring-hover);
+  }
+  .sp-sw:hover {
+    scale: 1.12;
+  }
+}
+
+/* the three captions share one cell; the outgoing one clears before the next arrives */
+.sp-cap {
+  position: relative;
+  display: grid;
+  margin-top: 20px;
+  font-size: 17px;
+  line-height: 1.47;
+  letter-spacing: var(--tr-body);
+  text-align: center;
+  text-wrap: balance;
+  color: rgb(255 255 255 / 0.72);
+}
+.sp-cap > span {
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 120ms var(--ease-in-flat),
+    visibility 0s 120ms;
+}
+.sp-cap > .on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--dur-fade) var(--ease-out-flat) 80ms;
+}
+.sp-cap b {
+  font-weight: 600;
+  color: #fff;
+}
+
+/* ---------- pinned: 220svh track, sticky stage, positions in artboard units ---------- */
+html.pin .track-spaces {
+  --sp-top: calc(var(--nav-bottom) + var(--inset));
+  --sp-h2-top: max(calc(112 * var(--s)), calc(var(--sp-top) + 40px));
+  --sp-h2: max(32px, calc(48 * var(--s)));
+  --sp-rig-top: max(
+    calc(172 * var(--s)),
+    calc(var(--sp-h2-top) + 1.083 * var(--sp-h2) + 20px)
+  );
+  /* under the rig: 20 s, the controls (two rows of 44 + 12), 12, the caption 25, 20 of air */
+  --sp-below: calc(20 * var(--s) + 157px);
+  --u: min(
+    calc(0.92 * var(--s)),
+    calc((100svh - var(--inset) - var(--sp-rig-top) - var(--sp-below)) / 640)
+  );
+  height: 220svh;
+  view-timeline: --spaces block;
+  view-timeline-inset: 0px;
+  timeline-scope: --spaces;
+  /* the stage clips itself; a one-axis clip around a sticky stage moves its WebKit layer to imprecise offsets */
+  overflow: visible;
+}
+/* portrait: the window takes the content width and the block centres in the spare height */
+@media (orientation: portrait) {
+  html.pin .track-spaces {
+    --u: min(
+      calc((100vw - 2 * var(--gutter)) / 1000),
+      calc((100svh - var(--inset) - var(--sp-rig-top) - var(--sp-below)) / 640)
+    );
+  }
+  html.pin .panel-sky {
+    justify-content: safe center;
+    padding-bottom: calc(var(--sp-h2-top) - var(--inset));
+  }
+}
+html.pin .track-spaces .stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  overflow: clip;
+}
+html.pin .panel-sky {
+  position: absolute;
+  inset: var(--sp-top) var(--inset) var(--inset);
+  margin: 0;
+  padding: calc(var(--sp-h2-top) - var(--sp-top)) 0 0;
+}
+html.pin .sp-sky {
+  display: block;
+  position: absolute;
+  inset: 0;
+}
+/* the mesh ends 10 s under the window on a solid floor that holds the controls and caption */
+html.pin .sp-controls::before {
+  content: "";
+  position: absolute;
+  inset: calc(-10 * var(--s)) -100vw -100vh;
+  z-index: -1;
+  background: var(--sc-void);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1);
+}
+html.pin .sp-head h2 {
+  margin-top: 0;
+  font-size: var(--sp-h2);
+  line-height: 1.083;
+}
+html.pin .sp-island {
+  width: calc(1000 * var(--u));
+  margin-top: calc(var(--sp-rig-top) - var(--sp-h2-top) - 1.083 * var(--sp-h2));
+}
+/* chips start at the sidebar's 12 pt inset, the picker ends on the card's right edge */
+html.pin .sp-controls {
+  width: calc(1000 * var(--u));
+  margin-top: calc(20 * var(--s));
+  padding-inline: calc(12 * var(--u)) calc(10 * var(--u));
+}
+/* frameless, sliding rows fade over 10 pt at the window's former left edge and into the card */
+html.pin .track-spaces .pager {
+  --fade: linear-gradient(
+    90deg,
+    transparent,
+    #000 calc(10 * var(--u)) calc(250 * var(--u)),
+    transparent
+  );
+  width: calc(260 * var(--u));
+  -webkit-mask-image: var(--fade);
+  mask-image: var(--fade);
+}
+html.pin .sp-cap {
+  z-index: 1;
+  margin-top: 12px;
+}
+/* one row of controls from 860 wide: at 812 px or more the content box stays above the 790 px row query */
+@media (min-width: 860px) {
+  html.pin .track-spaces {
+    --sp-below: calc(20 * var(--s) + 101px);
+  }
+  html.pin .sp-controls {
+    width: max(calc(1000 * var(--u)), 812px);
+    flex-wrap: nowrap;
+  }
+}
+
+html.pin .track-spaces :is(.sp-dolly, .sp-sky, .win-bd, .win-shadow, .rim) {
+  animation: 1s linear both;
+}
+html.pin .track-spaces .sp-dolly {
+  animation-name: sp-dolly;
+}
+html.pin .track-spaces .sp-sky {
+  animation-name: sp-sky-in;
+}
+html.pin .track-spaces :is(.win-bd, .win-shadow, .rim) {
+  animation-name: sp-frame-out;
+}
+html.pin.sda .track-spaces :is(.sp-dolly, .sp-sky, .win-bd, .win-shadow, .rim) {
+  animation-timeline: --spaces;
+  animation-range: contain 0% contain 100%;
+}
+html.pin.no-sda
+  .track-spaces
+  :is(.sp-dolly, .sp-sky, .win-bd, .win-shadow, .rim) {
+  animation-play-state: paused;
+  animation-delay: calc(var(--sp) * -1s);
+}
+/* layers that are fully faded paint nothing, so the stage keeps two full-viewport layers at rest */
+html.pin .track-spaces[data-beat="void"] .sp-sky,
+html.pin
+  .track-spaces:not([data-beat="void"], [data-beat="frame"])
+  :is(.win-bd, .win-shadow, .rim) {
+  visibility: hidden;
+}
+@keyframes sp-dolly {
+  0% {
+    scale: 0.96;
+  }
+  26%,
+  100% {
+    scale: 1;
+  }
+}
+@keyframes sp-frame-out {
+  0%,
+  6% {
+    opacity: 1;
+  }
+  26%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes sp-sky-in {
+  0%,
+  6% {
+    opacity: 0;
+  }
+  26%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* a pinned Peek of this section still shows its static lede */
+html.pin .peek-content .lede.static-only {
+  display: block !important;
+}
+
+/* ---------- S: the whole window inside the gutter, never under 0.62 px per point; the card takes what the sidebar leaves ---------- */
+@media (max-width: 734px) {
+  .panel-sky {
+    align-items: flex-start;
+  }
+  .sp-head.head.c {
+    align-items: flex-start;
+    text-align: left;
+  }
+  .sp-dolly {
+    --u: max(0.62px, calc(100cqw / 1000));
+  }
+  .track-spaces .rig {
+    width: 100%;
+    min-height: calc(600 * var(--u));
+  }
+  .sp-island {
+    margin-top: 40px;
+  }
+  .sp-controls {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+    width: 100%;
+    margin-top: 20px;
+  }
+  .sp-controls > * {
+    margin-inline: 0;
+  }
+  .sp-chip {
+    padding: 0 14px 0 10px;
+  }
+  .sp-cap {
+    margin-top: 16px;
+    text-align: left;
+  }
+}
+@media (max-width: 734px), (hover: none) and (pointer: coarse) {
+  .sp-chip {
+    height: 44px;
+  }
+}
+@media (max-width: 439px) {
+  .sp-chip {
+    padding: 0 16px;
+  }
+  .sp-chip .kc {
+    display: none;
+  }
+  .sp-chip span {
+    margin: 0;
+  }
+  .sp-picker {
+    margin-top: 28px;
+  }
+  .sp-pick-l {
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 0;
+  }
+}
+/* touch: 38 × 44 swatch targets with no dead gap, wherever the row still fits in the inset panel */
+@media (hover: none) and (pointer: coarse) and (min-width: 375px) and (max-width: 439px),
+  (hover: none) and (pointer: coarse) and (min-width: 470px) {
+  .sp-picker {
+    gap: 12px;
+  }
+  .sp-sw::before {
+    inset: -9px -6px;
+  }
+}
+@media (max-width: 359px) {
+  .sp-picker {
+    gap: 4px;
+    padding-inline: 12px 8px;
+  }
+}
+/* short static screens: the window is sized by the height so it is seen whole */
+@media (min-width: 735px) and (max-height: 760px) {
+  html:not(.pin) :is(.sp-island, .sp-controls) {
+    width: min(1000px, 100%, calc((100svh - 120px) * 1000 / 640));
+  }
+}
+@media (forced-colors: active) {
+  .sp-chip[aria-pressed="true"],
+  .sp-sw[aria-checked="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

@@ -1,0 +1,272 @@
+/* Split view, Peek and Scout. One column below 1024; 12 columns with 24 px gutters above. */
+
+.split-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 24px;
+}
+/* a macOS segmented control: the selected segment is a raised plain cap on a recessed track */
+.sec-split {
+  padding-top: 80px;
+}
+.split-seg {
+  --seg-h: 32px;
+  position: relative;
+  display: flex;
+  flex: none;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--seg-track);
+}
+@media (pointer: coarse) {
+  .split-seg {
+    --seg-h: 40px;
+  }
+}
+.split-seg label {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: var(--seg-h);
+  border-radius: 7px;
+  font: 500 15px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--dur-fade) var(--ease-in-out);
+}
+.split-seg input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.split-seg label:has(:checked) {
+  color: var(--ink);
+}
+.split-seg label:has(:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .split-seg label:hover {
+    color: var(--ink);
+  }
+}
+.split-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 56px;
+  height: var(--seg-h);
+  border-radius: 7px;
+  background: var(--seg-thumb);
+  box-shadow: var(--seg-lift);
+  transition: translate var(--dur-hover) var(--spring-hover);
+  pointer-events: none;
+}
+.split-seg:has(:nth-child(2) :checked) .split-thumb {
+  translate: 56px 0;
+}
+.split-seg:has(:nth-child(3) :checked) .split-thumb {
+  translate: 112px 0;
+}
+.split-seg:has(:nth-child(4) :checked) .split-thumb {
+  translate: 168px 0;
+}
+
+.split-island {
+  margin-top: 40px;
+  container-type: inline-size;
+}
+.split-island .rig {
+  --u: calc(100cqw / 1000);
+  aspect-ratio: 1000 / 640;
+}
+/* a Low Light figure gives way in short panes, so the title stays on screen */
+.split-island .ll-fig {
+  height: clamp(
+    calc(96 * var(--u)),
+    100cqh - calc(210 * var(--u)),
+    calc(200 * var(--u))
+  );
+}
+.split-readout,
+.split-try {
+  color: var(--ink-2);
+}
+.split-readout b,
+.split-legend b {
+  font-weight: 600;
+  color: var(--ink);
+}
+.split-island .rig:focus-visible {
+  outline-color: var(--focus);
+  outline-offset: 6px;
+  border-radius: calc(16 * var(--u));
+}
+/* a pane's last line fades into its paper, under the pane ring (window.css .pane::after) */
+.split-island .pane::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 4;
+  height: calc(36 * var(--u));
+  background: linear-gradient(transparent, var(--paper));
+  pointer-events: none;
+}
+.split-island .pane:has(> .ll) {
+  --paper: #101112;
+}
+.split-island .pane:has(> .pl) {
+  --paper: #f5f7f4;
+}
+.split-island .pane:has(> .sl) {
+  --paper: #fbf6ee;
+}
+
+.split-links {
+  margin-top: 80px;
+}
+.split-legend {
+  display: grid;
+  gap: 2px;
+  margin-top: 24px;
+}
+.split-legend > div {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  min-height: 56px;
+  margin-inline: -14px;
+  padding: 8px 14px;
+  border-radius: 14px;
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  transition:
+    background-color var(--dur-fade) var(--ease-in-out),
+    outline-color var(--dur-fade) var(--ease-in-out);
+}
+.split-legend dt {
+  display: flex;
+}
+.split-legend dd {
+  margin: 0;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+html.fine[data-mods="shift"] .split-legend [data-mods="shift"],
+html.fine[data-mods="meta"] .split-legend [data-mods="meta"],
+html.fine[data-mods="shift meta"] .split-legend [data-mods="shift meta"],
+html.fine[data-mods="alt"] .split-legend [data-mods="alt"],
+html.fine[data-mods="alt meta"] .split-legend [data-mods="alt meta"] {
+  background: var(--pill-fill);
+  outline-color: var(--hairline-2);
+}
+.split-try {
+  max-width: 28em;
+  margin-top: 24px;
+}
+.split-try a {
+  font-weight: 500;
+}
+
+/* phones: the sidebar steps aside so the panes get the whole window */
+@media (max-width: 734px) {
+  .split-island .sb {
+    visibility: hidden;
+  }
+  .split-island .panes {
+    left: calc(var(--edge) * var(--u));
+  }
+  .split-links {
+    margin-top: 64px;
+  }
+}
+
+/* row 1 holds the copy beside the window, row 2 the controls under it; the key list starts on the window's left edge */
+@media (min-width: 1024px) {
+  .split-grid,
+  .split-links {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    column-gap: 24px;
+  }
+  .split-grid {
+    row-gap: 20px;
+    align-items: center;
+  }
+  .split-head {
+    grid-column: 1 / 6;
+    grid-row: 1;
+  }
+  .split-island,
+  .split-ctl {
+    grid-column: 6 / 13;
+    margin-top: 0;
+  }
+  .split-ctl {
+    grid-row: 2;
+  }
+  .split-links {
+    align-items: start;
+    margin-top: 96px;
+  }
+  .split-links h3 {
+    grid-column: 1 / 6;
+  }
+  .split-keys {
+    grid-column: 6 / 13;
+  }
+  .split-legend {
+    margin-top: 0;
+  }
+}
+@media (min-width: 1280px) {
+  .split-head,
+  .split-links h3 {
+    grid-column: 1 / 5;
+  }
+  .split-island,
+  .split-ctl,
+  .split-keys {
+    grid-column: 5 / 13;
+  }
+  .split-legend {
+    max-width: 640px;
+  }
+}
+
+@media (forced-colors: active) {
+  .split-seg label:has(:checked),
+  .split-island .pane.f::after {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+/* content height (padding excluded) fitted per column layout, so a jump lands right before the section renders */
+.sec-split.cv {
+  contain-intrinsic-size: auto min(1133px, 508px + 34.15vw);
+}
+@media (max-width: 1279px) {
+  .sec-split.cv {
+    contain-intrinsic-size: auto 890px;
+  }
+}
+@media (max-width: 1023px) {
+  .sec-split.cv {
+    contain-intrinsic-size: auto calc(709px + 59.7vw);
+  }
+}
+@media (max-width: 734px) {
+  .sec-split.cv {
+    contain-intrinsic-size: auto 1119px;
+  }
+}

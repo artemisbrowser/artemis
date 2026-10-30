@@ -1,0 +1,466 @@
+/* Pin 1: the track's 200svh of travel is p. Scrubbed layers move by transform and opacity only;
+   text and controls appear on beats. A2 owns the hero layout; this file owns the camera. */
+/* Off screen, the pinned scene skips rendering and drops its layers. No one-axis clip may wrap the sticky stage:
+   WebKit then offsets the stage's layer by 2^24 pt, where float positions step by 2 pt and the stage shakes. */
+html.pin .track-oow {
+  overflow: visible;
+  height: 300svh;
+  view-timeline: --oow block;
+  view-timeline-inset: 0px;
+  content-visibility: auto;
+}
+
+html.pin
+  .track-oow
+  :is(.rig, .win-shadow, .sb, .card-e, .card, .page, .cap-slider i, .cap-v) {
+  animation-duration: 1s;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+html.pin .track-oow .rig {
+  animation-name: oow-rise, oow-grow;
+}
+/* the rim fades on the beat, so it holds no layer at rest */
+html.pin .track-oow .rim {
+  transition: opacity 400ms var(--ease-in-out);
+}
+html.pin #top:not([data-beat="rise"]) .rim {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 400ms var(--ease-in-out),
+    visibility 0s linear 400ms;
+}
+/* the shadow has faded out by c2, so it drops its layer too */
+html.pin #top:is([data-beat="c2"], [data-beat="hold"]) .win-shadow {
+  visibility: hidden;
+}
+html.pin .track-oow .sb {
+  animation-name: oow-sb;
+}
+/* from c2 on the edge is scaled away, so the sidebar comes back, docked or floating, with no rim after it */
+html.pin #top:is([data-beat="c2"], [data-beat="hold"]) :is(.sb, .fsb) {
+  --edge: 0;
+  --grip: 0;
+}
+/* The card chain keeps its static boxes (01-hero.css) and moves by transform only: the card widens from its right
+   edge to the window's, the page inside counter-scales, and the edge scale centres on the window.
+   Its keyframes read --c0 and --se, so the animations start once data-geo says they are set. */
+html.pin .track-oow .card-e {
+  transform-origin: calc(50cqw - (250 + var(--grip)) * var(--u)) 50%;
+}
+html.pin .track-oow .card {
+  transform-origin: 100% 50%;
+}
+html.pin .track-oow .page {
+  transform-origin: 0 50%;
+}
+html.pin .track-oow .win[data-geo] .card-e {
+  animation-name: oow-edge;
+}
+html.pin .track-oow .win[data-geo] .card {
+  animation-name: oow-card;
+}
+html.pin .track-oow .win[data-geo] .page {
+  animation-name: oow-page, oow-page-s;
+}
+
+html.pin.sda
+  .track-oow
+  :is(.rig, .win-shadow, .sb, .card-e, .card, .page, .cap-slider i, .cap-v) {
+  animation-timeline: --oow;
+  animation-range: contain 0% contain 100%;
+}
+html.pin.no-sda
+  .track-oow
+  :is(.rig, .win-shadow, .sb, .card-e, .card, .page, .cap-slider i, .cap-v) {
+  animation-play-state: paused;
+  animation-delay: calc(var(--sp) * -1s);
+}
+
+/* the shadow also carries the hero's moonrise, so it lists both animations */
+html.pin .track-oow .win-shadow {
+  animation-name: oow-shadow, hero-moonrise;
+  animation-duration: 1s, 1300ms;
+  animation-timing-function: linear, var(--ease-reveal);
+  animation-delay: 0s, 60ms;
+  animation-fill-mode: both, backwards;
+}
+html.pin.nosettle .track-oow .win-shadow {
+  animation-name: oow-shadow;
+}
+html.pin.sda .track-oow .win-shadow {
+  animation-timeline: --oow, auto;
+  animation-range:
+    contain 0% contain 100%,
+    normal;
+}
+html.pin.no-sda .track-oow .win-shadow {
+  animation-play-state: paused, running;
+  animation-delay: calc(var(--sp) * -1s), 60ms;
+}
+
+/* Rise, then fly in, as one move that comes to rest only at 46%: the rise starts fastest and slows, the growth
+   trails it. Scrubbed segments ease at most 1.33x their mean speed. */
+@keyframes oow-rise {
+  0% {
+    translate: 0 calc(var(--win-top) - var(--inset));
+    animation-timing-function: cubic-bezier(0, 0, 0.52, 1);
+  }
+  46%,
+  100% {
+    translate: 0 0;
+  }
+}
+@keyframes oow-grow {
+  0% {
+    scale: 0.8;
+    animation-timing-function: cubic-bezier(0.7, 0, 0.85, 1);
+  }
+  46%,
+  100% {
+    scale: 1;
+  }
+}
+@keyframes oow-shadow {
+  0%,
+  30% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
+}
+/* 46–62%: ⌘S. A scrub has no time, so it eases in and out rather than riding the sidebar spring. */
+@keyframes oow-sb {
+  0%,
+  46% {
+    translate: 0 0;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  62%,
+  100% {
+    translate: calc(-262 * var(--u)) 0;
+  }
+}
+@keyframes oow-card {
+  0%,
+  46% {
+    scale: 1 1;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  62%,
+  100% {
+    scale: calc(1 / var(--c0)) 1;
+  }
+}
+@keyframes oow-page {
+  0%,
+  46% {
+    translate: calc(-125 * var(--u)) 0;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  62%,
+  100% {
+    translate: 0 0;
+  }
+}
+/* the card's reciprocal, so the page keeps its width: within 0.3% for 1100–1800 pt windows */
+@keyframes oow-page-s {
+  0%,
+  46% {
+    scale: 1 1;
+    animation-timing-function: cubic-bezier(0.2, 0, 0.65, 0.95);
+  }
+  62%,
+  100% {
+    scale: var(--c0) 1;
+  }
+}
+/* 67–78%: the window edge goes to zero, once caption 2 is up; its slider and value follow */
+@keyframes oow-edge {
+  0%,
+  67% {
+    scale: 1;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  78%,
+  100% {
+    scale: var(--se);
+  }
+}
+/* the app's slider runs 0–16 pt over the knob's 44 px of travel; the value rounds to the knob's nearest step */
+@keyframes oow-knob {
+  0%,
+  67% {
+    translate: calc(44px * 10 / 16) 0;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  78%,
+  100% {
+    translate: 0 0;
+  }
+}
+@property --ev {
+  syntax: "<integer>";
+  inherits: false;
+  initial-value: 10;
+}
+@keyframes oow-ev {
+  0%,
+  67% {
+    --ev: 10;
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  78%,
+  100% {
+    --ev: 0;
+  }
+}
+/* the app's label: "\(Int(edgeInset)) pt", and "None" at 0 */
+@counter-style edge-pt {
+  system: fixed 0;
+  symbols: "None" "1 pt" "2 pt" "3 pt" "4 pt" "5 pt" "6 pt" "7 pt" "8 pt" "9 pt"
+    "10 pt";
+}
+html.pin .track-oow .cap-slider i {
+  animation-name: oow-knob;
+}
+html.pin .track-oow .cap-v {
+  animation-name: oow-ev;
+}
+
+/* captions: pinned only, in the page's 150 pt paper band (its lower edge is 914 pt down the window at most) */
+.track-oow .caps {
+  display: none;
+}
+html.pin .track-oow .caps {
+  display: block;
+  position: absolute;
+  inset: auto 0
+    max(
+      calc(max(28px, 44 * var(--s)) + var(--inset)),
+      calc(100svh - var(--inset) - 880 * var(--u))
+    )
+    0;
+  z-index: var(--z-caps);
+  pointer-events: none;
+}
+.track-oow .cap {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 56px;
+  padding: 0 24px;
+  border-radius: 28px;
+  font: 500 17px/1 var(--font);
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  opacity: 0;
+  translate: -50% 10px;
+  visibility: hidden;
+  transition:
+    opacity 120ms var(--ease-in-flat),
+    translate 500ms var(--ease-reveal),
+    visibility 0s linear 120ms;
+}
+.track-oow .cap.on {
+  opacity: 1;
+  translate: -50% 0;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--dur-fade) var(--ease-out-flat) 100ms,
+    translate 500ms var(--ease-reveal) 100ms,
+    visibility 0s;
+}
+/* in-scene captions: a raised graphite capsule over the night page */
+.track-oow .cap.g-cap {
+  background: rgb(46 46 48 / 0.92);
+  border-color: rgb(255 255 255 / 0.18);
+}
+@media (inverted-colors: inverted) or (prefers-contrast: more) or (prefers-reduced-transparency: reduce) {
+  .track-oow .cap.g-cap {
+    background: var(--g-cap-bg);
+    border-color: rgb(255 255 255 / 0.4);
+  }
+}
+/* under 1180 the open floating sidebar would sit beneath caption 3, so the caption moves clear and drops its hint */
+@media (max-width: 1179px) {
+  .track-oow:has(.win[data-float="open"]) .cap[data-cap="c3"] {
+    left: calc(50% + 142px);
+  }
+  .track-oow:has(.win[data-float="open"]) .cap[data-cap="c3"] .hover-only {
+    display: none;
+  }
+}
+.track-oow .cap > span {
+  margin-left: 4px;
+}
+.track-oow .cap[data-cap="c3"] {
+  gap: 14px;
+  padding-right: 6px;
+}
+/* a 56 × 4 track under a 12 px knob; the fill moves with the knob, clipped by the track, and ends at the knob's centre */
+.cap-slider {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 12px;
+}
+.cap-slider > b {
+  position: absolute;
+  inset: 4px 0;
+  overflow: clip;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.22);
+}
+.cap-slider b i {
+  position: absolute;
+  inset: 0 auto 0 -50px;
+  width: 56px;
+  background: rgb(255 255 255 / 0.72);
+}
+.cap-slider > i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+}
+.track-oow .cap-v {
+  min-width: 3.2em;
+  color: rgb(255 255 255 / 0.7);
+  font-variant-numeric: tabular-nums;
+  /* WebKit animates a registered <integer> through fractions, which counter-reset rejects */
+  counter-reset: ev round(var(--ev));
+}
+.track-oow .cap-v::before {
+  content: counter(ev, edge-pt);
+}
+/* a tab the hold tidies away: its age, then out to the Library */
+.fsb .row[data-ago]::after {
+  content: attr(data-ago);
+  padding: 0 calc(6 * var(--u));
+  border-radius: calc(5 * var(--u));
+  background: rgb(255 255 255 / 0.14);
+  font: 600 calc(11 * var(--u)) / calc(18 * var(--u)) var(--font);
+  color: rgb(255 255 255 / 0.8);
+  animation: fade-in 200ms var(--ease-out-flat);
+}
+.fsb .row.out {
+  opacity: 0;
+  translate: 0 calc(8 * var(--u));
+  transition:
+    opacity 240ms var(--ease-in-flat),
+    translate 240ms var(--ease-in-flat);
+}
+.track-oow .cap[data-cap="c3"] > span {
+  margin: 0;
+}
+.track-oow .cap-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 12px 0 16px;
+  border-radius: 22px;
+  background: rgb(255 255 255 / 0.14);
+  font: 600 15px/1 var(--font);
+  letter-spacing: -0.01em;
+  transition:
+    background-color var(--dur-fade) var(--ease-in-out),
+    scale var(--dur-press) var(--ease-in-out);
+}
+.track-oow .pin-label {
+  margin-right: 10px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .track-oow .cap-btn:hover {
+    background: rgb(255 255 255 / 0.22);
+  }
+}
+.track-oow .cap-btn:active {
+  scale: 0.97;
+}
+
+/* static: the controls drive the hero window; the rig's margin ends the flow at the window's visible bottom */
+.track-oow .oow-controls {
+  position: relative;
+  z-index: var(--z-copy);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  width: calc(0.8 * (100% - 2 * var(--inset)));
+  margin-inline: auto;
+  padding-top: 24px;
+}
+html:not(.js) .track-oow .oow-controls {
+  display: none;
+}
+/* the range gives way first, so the pill fits at 320 */
+.oow-controls .edge {
+  max-width: 100%;
+  cursor: default;
+}
+.oow-controls input {
+  flex: 0 1 120px;
+  min-width: 64px;
+}
+.oow-controls output {
+  min-width: 4.5ch;
+  font: 500 13px/1 var(--font);
+  letter-spacing: -0.01em;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.oow-controls .ctl-cap {
+  flex-basis: 100%;
+  margin-top: 2px;
+  font-size: var(--t-small);
+  line-height: var(--lh-small);
+  letter-spacing: var(--tr-small);
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.sec-oow {
+  padding-block: 96px 112px;
+}
+@media (min-width: 735px) {
+  .sec-oow .lede {
+    max-width: 30em;
+  }
+  .sec-oow .lede span {
+    display: block;
+  }
+}
+.sec-oow .payoff {
+  max-width: none;
+  margin-top: 20px;
+  color: var(--ink-2);
+}
+.sec-oow .payoff .link-btn {
+  margin-left: 4px;
+}
+
+@media (max-width: 734px) {
+  .track-oow .oow-controls {
+    justify-content: flex-start;
+    width: auto;
+    padding: 20px var(--gutter) 0;
+  }
+  .oow-controls .ctl-cap {
+    text-align: left;
+  }
+  .sec-oow {
+    padding-block: 48px 64px;
+  }
+}

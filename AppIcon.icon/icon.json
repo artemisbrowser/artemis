@@ -1,0 +1,208 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "comet.svg",
+          "name" : "Comet",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:0.47120,0.67278,0.88606,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.60283,0.75424,0.91442,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.8
+      },
+      "specular" : true,
+      "blur-material" : 0.45,
+      "lighting" : "individual",
+      "refractivity" : {
+        "enabled" : true,
+        "strength" : 0.4,
+        "depth" : 0.1
+      },
+      "shadow-specializations" : [
+        {
+          "value" : {
+            "kind" : "layer-color",
+            "opacity" : 0.5
+          }
+        },
+        {
+          "appearance" : "dark",
+          "value" : {
+            "kind" : "neutral",
+            "opacity" : 0.5
+          }
+        }
+      ]
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "a.svg",
+          "name" : "A",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.22438,0.52006,0.83288,0.82000",
+                  "srgb:0.16615,0.46011,0.77111,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 0.2
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.75
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.29020,0.56078,0.84706,0.80000",
+                  "srgb:0.48765,0.68297,0.88960,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 0.2
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.75
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "specular" : true,
+      "blur-material" : 0.45,
+      "lighting" : "individual",
+      "shadow-specializations" : [
+        {
+          "value" : {
+            "kind" : "layer-color",
+            "opacity" : 0.5
+          }
+        },
+        {
+          "appearance" : "dark",
+          "value" : {
+            "kind" : "neutral",
+            "opacity" : 0.5
+          }
+        }
+      ],
+      "translucency-specializations" : [
+        {
+          "value" : {
+            "enabled" : true,
+            "value" : 0.55
+          }
+        },
+        {
+          "appearance" : "dark",
+          "value" : {
+            "enabled" : true,
+            "value" : 0.7
+          }
+        }
+      ]
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "comet-behind.svg",
+          "name" : "Comet behind left leg",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:0.47120,0.67278,0.88606,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.60283,0.75424,0.91442,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.8
+      },
+      "specular" : true,
+      "blur-material" : 0.45,
+      "lighting" : "individual",
+      "shadow-specializations" : [
+        {
+          "value" : {
+            "kind" : "layer-color",
+            "opacity" : 0.5
+          }
+        },
+        {
+          "appearance" : "dark",
+          "value" : {
+            "kind" : "neutral",
+            "opacity" : 0.5
+          }
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

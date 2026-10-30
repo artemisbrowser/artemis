@@ -1,0 +1,208 @@
+<section
+  class="track track-spaces"
+  id="spaces"
+  data-name="Spaces"
+  aria-labelledby="spaces-h"
+>
+  <div class="stage">
+    <div class="panel-sky">
+      <div class="sp-sky" data-host aria-hidden="true">
+        <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+      </div>
+      <header class="sp-head head c" data-peek-summary>
+        <h2 id="spaces-h">Spaces keep your tabs apart.</h2>
+        <p class="lede static-only">
+          Every space has its own name, icon and colours, and can have its own
+          profile. Swipe with two fingers to move between them.
+        </p>
+      </header>
+      <div class="island sp-island">
+        <div class="sp-dolly">
+          <div
+            class="rig"
+            data-rig="spaces"
+            role="img"
+            aria-label="The Artemis window. Its sidebar floats on the colours of the current space."
+          >
+            <div class="win-shadow"></div>
+            <div
+              class="win"
+              data-space="0"
+              data-split="1"
+              data-sidebar="pinned"
+              data-float="hidden"
+              aria-hidden="true"
+              inert
+            >
+              <div class="win-bd" data-host>
+                <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+              </div>
+              <div class="sb">
+                <div class="sb-pin">
+                  <!-- @include _win/sidebar-top -->
+                  <!-- @include _win/favs -->
+                  <div class="pager">
+                    <div class="strip">
+                      <!-- @include _win/panel-personal -->
+                      <!-- @include _win/panel-work -->
+                      <!-- @include _win/panel-garden -->
+                    </div>
+                  </div>
+                  <!-- @include _win/bottombar -->
+                </div>
+              </div>
+              <!-- @include _win/card -->
+              <i class="rim"></i>
+            </div>
+          </div>
+          <div class="sp-swipe static-only" aria-hidden="true" tabindex="-1">
+            <i></i><i></i><i></i>
+          </div>
+        </div>
+      </div>
+      <p class="sp-hint static-only">
+        <span class="fine-only"
+          >Swipe the window with two fingers to try it.</span
+        ><span class="coarse-only">Swipe across the window to try it.</span>
+      </p>
+      <div class="sp-controls">
+        <div class="sp-chips" role="group" aria-label="Spaces">
+          <button
+            class="sp-chip"
+            type="button"
+            aria-pressed="true"
+            aria-keyshortcuts="Control+1"
+          >
+            <kbd class="kc sm" data-k="ctrl" aria-hidden="true">⌃</kbd
+            ><kbd class="kc sm" data-k="1" aria-hidden="true">1</kbd
+            ><span>Personal</span>
+          </button>
+          <button
+            class="sp-chip"
+            type="button"
+            aria-pressed="false"
+            aria-keyshortcuts="Control+2"
+          >
+            <kbd class="kc sm" data-k="ctrl" aria-hidden="true">⌃</kbd
+            ><kbd class="kc sm" data-k="2" aria-hidden="true">2</kbd
+            ><span>Work</span>
+          </button>
+          <button
+            class="sp-chip"
+            type="button"
+            aria-pressed="false"
+            aria-keyshortcuts="Control+3"
+          >
+            <kbd class="kc sm" data-k="ctrl" aria-hidden="true">⌃</kbd
+            ><kbd class="kc sm" data-k="3" aria-hidden="true">3</kbd
+            ><span>Garden</span>
+          </button>
+        </div>
+        <div
+          class="sp-picker"
+          role="radiogroup"
+          aria-label="Look for the current space"
+        >
+          <span class="sp-pick-l" aria-hidden="true">Pick a look</span>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="nebula"
+            aria-label="Nebula"
+            data-tip="Nebula"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="ember"
+            aria-label="Ember"
+            data-tip="Ember"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="true"
+            tabindex="0"
+            data-look="tide"
+            aria-label="Tide"
+            data-tip="Tide"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="aurora"
+            aria-label="Aurora"
+            data-tip="Aurora"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="sunset"
+            aria-label="Sunset"
+            data-tip="Sunset"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="bloom"
+            aria-label="Bloom"
+            data-tip="Bloom"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="ink"
+            aria-label="Ink"
+            data-tip="Ink"
+          ></button>
+          <button
+            class="sp-sw"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            tabindex="-1"
+            data-look="charcoal"
+            aria-label="Charcoal"
+            data-tip="Charcoal"
+          ></button>
+        </div>
+      </div>
+      <p class="sp-cap">
+        <span class="on"
+          ><b>Personal.</b> Each space keeps its own pinned tabs and today’s
+          tabs.</span
+        ><span
+          ><b>Work.</b> Give a space its own profile and it keeps its own
+          logins.</span
+        ><span
+          ><b>Garden.</b> Every space paints the whole window in its own
+          colours.</span
+        ><span
+          ><span class="fine-only">Press ⌃1, ⌃2 or ⌃3 to switch spaces.</span
+          ><span class="coarse-only"
+            >Swipe across the window to switch spaces.</span
+          ></span
+        >
+      </p>
+    </div>
+  </div>
+</section>

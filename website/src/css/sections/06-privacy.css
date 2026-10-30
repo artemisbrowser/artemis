@@ -1,0 +1,142 @@
+/* Privacy: the statement, the canvas readout and a settings card on one 12-column grid */
+.prv-top {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-rows: auto 1fr;
+  column-gap: 24px;
+  align-items: start;
+}
+.prv-top .head,
+.prv-fp {
+  grid-column: 1 / 7;
+}
+.prv h2 {
+  font-size: var(--t-xl);
+  line-height: var(--lh-xl);
+  letter-spacing: var(--tr-xl);
+}
+/* the card's top edge sits on the H2's cap line, 0.18 em into its line box */
+.prv-card {
+  grid-column: 7 / 13;
+  grid-row: 1 / 3;
+  margin-top: calc(0.18 * var(--t-xl));
+  padding: 6px 0;
+  border-radius: var(--r-card);
+  background: var(--band);
+  overflow: clip;
+  font-size: 15px;
+  line-height: 1.33;
+  letter-spacing: -0.01em;
+}
+.prv-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  min-height: 52px;
+  padding: 15px 18px;
+}
+.prv-card > div + div {
+  background: linear-gradient(var(--hairline), var(--hairline)) 18px 0 /
+    calc(100% - 36px) 1px no-repeat;
+}
+.prv-card dd {
+  margin-left: auto;
+  color: var(--ink-2);
+  text-align: right;
+}
+/* a row's footnote, as in System Settings */
+.prv-card dd.note {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  font-size: var(--t-caption);
+  line-height: 1.38;
+  text-align: left;
+}
+
+/* 06-privacy.js hashes a canvas drawn here into the numbers, so without it the readout stays hidden */
+html:not(.js) .prv-fp {
+  display: none;
+}
+.prv-fp {
+  margin-top: 24px;
+  font-size: 15px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  color: var(--ink-2);
+}
+.prv-fp b {
+  font: 500 15px / 1 var(--mono);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.prv-fp dl {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 12px;
+  margin-top: 12px;
+}
+.prv-fp div {
+  padding: 1px 28px 1px 12px;
+  border-left: 1px solid var(--hairline-2);
+}
+.prv-fp dt {
+  font-size: var(--t-caption);
+  color: var(--ink-3);
+}
+.prv-fp dd {
+  font: 500 17px / 1.4 var(--mono);
+  color: var(--ink);
+}
+
+.prv-line {
+  margin-top: 48px;
+  font: 400 var(--t-caption) / var(--lh-fine) var(--font);
+  letter-spacing: -0.01em;
+  color: var(--ink-2);
+  text-wrap: balance;
+}
+
+@media (max-width: 1023px) {
+  .prv-top {
+    display: block;
+  }
+  .prv-card {
+    max-width: 640px;
+    margin-top: 48px;
+  }
+}
+@media (max-width: 734px) {
+  .prv-card {
+    margin-top: 40px;
+  }
+  .prv-fp div {
+    padding-right: 14px;
+  }
+  .prv-fp dd {
+    font-size: 15px;
+  }
+  .prv-line {
+    margin-top: 40px;
+  }
+}
+
+/* content height (padding excluded) at 1440, 834 and 390 wide, so a jump lands right before the section renders */
+.prv.cv {
+  contain-intrinsic-size: auto 536px;
+}
+@media (max-width: 1023px) {
+  .prv.cv {
+    contain-intrinsic-size: auto 814px;
+  }
+}
+@media (max-width: 734px) {
+  .prv.cv {
+    contain-intrinsic-size: auto 939px;
+  }
+}
+@media (forced-colors: active) {
+  .prv-card {
+    border: 1px solid CanvasText;
+  }
+}

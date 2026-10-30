@@ -1,0 +1,271 @@
+/* command bar and split view share one band: one group about working with pages */
+.sec-cmd,
+.sec-split {
+  background: var(--band);
+}
+.sec-cmd {
+  padding-bottom: 0;
+}
+.sec-cmd .lede {
+  max-width: 30em;
+  text-wrap: balance;
+}
+.cmd-ctl {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-top: 40px;
+}
+.cmd-ctl .btn {
+  min-width: 96px;
+}
+.cmd-chs {
+  display: flex;
+  gap: 6px;
+}
+/* the 10 px top pad puts the label on the row's centre line with the button text and the hint;
+   below 834 px wide the chapters narrow so the hint keeps the row */
+.cmd-ch {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  width: clamp(60px, 18vw - 70px, 80px);
+  height: 36px;
+  padding-top: 10px;
+  border-radius: 4px;
+  font: 500 var(--t-caption) / 1 var(--font);
+  letter-spacing: -0.01em;
+  color: var(--ink-3);
+  text-align: left;
+  transition: color var(--dur-fade) var(--ease-in-out);
+}
+.cmd-ch::before {
+  content: "";
+}
+.cmd-ch::before,
+.cmd-ch i {
+  grid-area: 2 / 1;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--hairline-2);
+}
+.cmd-ch i {
+  background: var(--accent-text);
+  transform-origin: 0 50%;
+  scale: 0 1;
+}
+.cmd-ch[aria-current] {
+  color: var(--ink);
+}
+@media (hover: hover) and (pointer: fine) {
+  .cmd-ch:hover {
+    color: var(--ink);
+  }
+}
+@media (pointer: coarse) {
+  .cmd-ch {
+    height: 44px;
+  }
+}
+.cmd-hint {
+  font-size: var(--t-caption);
+  line-height: 1.38;
+  color: var(--ink-2);
+}
+
+.cmd-island {
+  position: relative;
+  isolation: isolate;
+  margin-top: 24px;
+  container-type: inline-size;
+}
+.cmd-island .rig {
+  --u: calc(100cqw / 1000);
+  aspect-ratio: 1000 / 640;
+}
+.cmd-deco {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.cmd-island .take {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: calc(16 * var(--u));
+  cursor: text;
+}
+.cmd-island .take:focus-visible {
+  outline-color: var(--focus);
+}
+.cmd-tab {
+  display: none;
+}
+/* clear of the take-over tooltip, which sits 8 px under the window */
+.sec-cmd .fine {
+  margin-top: 48px;
+}
+html:not(.js) :is(.cmd-ctl, .cmd-island .take) {
+  display: none;
+}
+html:not(.js) .cmd-island {
+  margin-top: 48px;
+}
+html:not(.js) .cmd-island .cmd {
+  opacity: 1;
+  scale: 1;
+  visibility: visible;
+  pointer-events: none;
+}
+
+/* the window is sized by the height too, so it is seen whole */
+@media (min-width: 735px) {
+  .cmd-island {
+    max-width: calc((100svh - 120px) * 1000 / 640);
+  }
+}
+@media (prefers-contrast: more) {
+  .cmd-ch::before {
+    background: color-mix(in srgb, var(--ink-3) 45%, transparent);
+  }
+}
+@media (forced-colors: active) {
+  .cmd-ch::before {
+    forced-color-adjust: none;
+    background: GrayText;
+  }
+  .cmd-ch i {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+  .cmd-ch[aria-current] span {
+    forced-color-adjust: none;
+    color: Highlight;
+  }
+}
+
+/* content height (padding excluded), so a jump lands right before the section renders: the head, then the
+   window at 0.64 of the column, capped by short screens; within 6 px from 735 to 1920 wide */
+.sec-cmd.cv {
+  contain-intrinsic-size: auto
+    calc(
+      clamp(272px, 241px + 3.71vw, 296px) +
+        min(921px, 51.2vw - 16px, 100svh - 120px)
+    );
+}
+@media (max-width: 1023px) {
+  .sec-cmd.cv {
+    contain-intrinsic-size: auto
+      calc(clamp(272px, 241px + 3.71vw, 296px) + min(58.88vw, 100svh - 120px));
+  }
+}
+@media (max-width: 734px) {
+  .sec-cmd.cv {
+    contain-intrinsic-size: auto 462px;
+  }
+}
+/* the fine print takes two lines */
+@media (max-width: 329px) {
+  .sec-cmd.cv {
+    contain-intrinsic-size: auto 479px;
+  }
+}
+
+/* S: no window. The bar sits on the current space's colours with the tab it last opened under it. */
+@media (max-width: 734px) {
+  .cmd-ctl {
+    margin-top: 32px;
+  }
+  .cmd-ctl :is(.btn, .cmd-chs),
+  .cmd-island :is(.win-shadow, .sb, .card-e, .panes, .hud, .rim) {
+    display: none;
+  }
+  .cmd-island .take {
+    border-radius: 22px;
+  }
+  .cmd-island {
+    margin-top: 20px;
+  }
+  .sec-cmd .fine {
+    margin-top: 24px;
+  }
+  .cmd-island .rig {
+    --u: 1px;
+    aspect-ratio: auto;
+  }
+  .cmd-island .win {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 22px;
+    container-type: normal;
+  }
+  .cmd-island .cmd {
+    position: relative;
+    top: 0;
+    left: 0;
+    width: 100%;
+    translate: 0 0;
+    opacity: 1;
+    scale: 1;
+    visibility: visible;
+  }
+  .cmd-island :is(.cmd-field, .cmd-list) {
+    width: 100%;
+  }
+  .cmd-island .cmd-row {
+    height: 52px;
+  }
+  .cmd-island .cmd-field {
+    padding: 0 16px;
+  }
+  .cmd-island .cmd-field input {
+    font-size: 17px;
+  }
+  .cmd-island .cmd-scopes {
+    display: none;
+  }
+  .cmd-tab {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 60px;
+    padding: 0 14px;
+    border-radius: 16px;
+    background: rgb(255 255 255 / 0.12);
+    box-shadow: var(--g-rim);
+  }
+  .cmd-tab .fi {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+  }
+  .cmd-tab p {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-size: 15px;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+  }
+  .cmd-tab :is(b, span) {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .cmd-tab b {
+    font-weight: 600;
+  }
+  .cmd-tab span {
+    font-size: 13px;
+    color: rgb(255 255 255 / 0.72);
+  }
+  .cmd-tab span:empty {
+    display: none;
+  }
+}

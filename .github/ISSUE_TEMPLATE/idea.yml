@@ -1,0 +1,11 @@
+name: Idea
+description: Something that would make Artemis better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: What you're trying to do, and what gets in the way today.
+    validations:
+      required: true

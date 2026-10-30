@@ -1,0 +1,183 @@
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav glass-nav" id="nav">
+  <div class="nav-cap">
+    <button
+      class="nav-sb fine-only"
+      type="button"
+      aria-label="Show sections"
+      aria-controls="sitebar"
+      aria-expanded="false"
+      data-tip="Sections"
+    >
+      <svg class="ico"><use href="#i-sidebar" /></svg>
+    </button>
+    <a class="brand" href="#top" aria-label="Artemis, back to top"
+      ><picture
+        ><source
+          srcset="/assets/img/icon-rigel-light-64.png"
+          media="(prefers-color-scheme: light)" />
+        <img
+          src="/assets/img/icon-rigel-dark-64.png"
+          width="28"
+          height="28"
+          alt="" /></picture
+      ><span>Artemis</span></a
+    >
+    <button
+      class="nav-pill fine-only"
+      type="button"
+      aria-keyshortcuts="/ Meta+K"
+      data-tip="Search this page"
+      data-tip-keys="/"
+    >
+      <svg class="ico"><use href="#i-search" /></svg
+      ><span class="sr-only">Search this page: </span
+      ><span class="nav-pill-t">Overview</span
+      ><kbd class="kc sm" data-k="/" aria-hidden="true">/</kbd>
+    </button>
+    <button
+      class="nav-search coarse-only"
+      type="button"
+      aria-label="Search this page"
+      aria-keyshortcuts="/ Meta+K"
+    >
+      <svg class="ico"><use href="#i-search" /></svg>
+    </button>
+    <a class="get sm" data-get href="/download" tabindex="-1" aria-hidden="true"
+      ><span class="get-label">Download for Mac</span></a
+    >
+  </div>
+</header>
+
+<aside
+  class="sitebar"
+  id="sitebar"
+  aria-label="Sections"
+  data-open="false"
+  inert
+>
+  <div class="sitebar-bd" data-host>
+    <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+  </div>
+  <div class="sitebar-in">
+    <div class="sitebar-top">
+      <button class="g circ" type="button" aria-label="Hide sections">
+        <svg class="ico"><use href="#i-sidebar" /></svg>
+      </button>
+    </div>
+    <div class="g url"><span class="dom nav-pill-t">Overview</span></div>
+    <div class="shead">
+      <img
+        class="sicon"
+        src="/assets/img/icon-rigel-dark-64.png"
+        width="16"
+        height="16"
+        alt=""
+      /><span>Artemis</span>
+    </div>
+    <a class="row" data-get href="/download"
+      ><svg class="ico"><use href="#i-download" /></svg
+      ><span class="t">Download for Mac</span></a
+    >
+    <a class="row" href="#peek-shortcuts" data-peek="shortcuts"
+      ><svg class="ico"><use href="#i-command" /></svg
+      ><span class="t">Keyboard shortcuts</span></a
+    >
+    <hr class="pin-line" />
+    <a class="row" href="#top"
+      ><svg class="ico"><use href="#i-house" /></svg
+      ><span class="t">Overview</span></a
+    >
+    <a class="row" href="#window"
+      ><svg class="ico"><use href="#i-sidebar" /></svg
+      ><span class="t">Sidebar</span></a
+    >
+    <a class="row" href="#spaces"
+      ><svg class="ico"><use href="#i-spaces" /></svg
+      ><span class="t">Spaces</span></a
+    >
+    <a class="row" href="#command-bar"
+      ><svg class="ico"><use href="#i-search" /></svg
+      ><span class="t">Command bar</span></a
+    >
+    <a class="row" href="#split-view"
+      ><svg class="ico"><use href="#i-split" /></svg
+      ><span class="t">Split view</span></a
+    >
+    <a class="row" href="#privacy"
+      ><svg class="ico"><use href="#i-shield" /></svg
+      ><span class="t">Privacy</span></a
+    >
+    <a class="row" href="#fin"
+      ><svg class="ico"><use href="#i-pen" /></svg
+      ><span class="t">Made by Fin</span></a
+    >
+  </div>
+</aside>
+
+<div
+  class="pagebar"
+  id="pagebar"
+  role="dialog"
+  aria-label="Search this page"
+  hidden
+>
+  <div class="cmd" data-state="closed">
+    <div class="cmd-row">
+      <div class="cmd-field g-text">
+        <svg class="ico"><use href="#i-search" /></svg>
+        <input
+          type="text"
+          role="combobox"
+          aria-label="Search this page"
+          aria-expanded="false"
+          aria-autocomplete="list"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          enterkeyhint="go"
+          placeholder="Search this page"
+        />
+      </div>
+    </div>
+    <ul class="cmd-list" role="listbox" aria-label="Results"></ul>
+  </div>
+</div>
+
+<div class="peek" id="peek" hidden>
+  <div class="peek-scrim"></div>
+  <div
+    class="peek-box"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="peek-title"
+  >
+    <div class="peek-panel surface" tabindex="-1">
+      <div class="peek-content"></div>
+    </div>
+    <div class="peek-ctl">
+      <button
+        class="g circ30"
+        type="button"
+        data-act="close"
+        aria-label="Close Peek"
+      >
+        <svg class="ico"><use href="#i-xmark" /></svg>
+      </button>
+      <button
+        class="g circ30"
+        type="button"
+        data-act="open"
+        aria-label="Open as a page"
+      >
+        <svg class="ico"><use href="#i-open" /></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<p class="lcap g-cap" aria-hidden="true"><span></span></p>
+<p class="fcap g-cap" aria-hidden="true"></p>
+<div class="tip g-cap" aria-hidden="true"></div>
+<p class="sr-only" id="live" aria-live="polite"></p>

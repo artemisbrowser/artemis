@@ -1,0 +1,23 @@
+name: Bug
+description: Something in Artemis doesn't work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Help > Send Feedback… in Artemis is quicker, and fills in your versions for you.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: artemis
+    attributes:
+      label: Artemis version
+      description: Artemis > About Artemis
+  - type: input
+    id: os
+    attributes:
+      label: macOS or iOS version

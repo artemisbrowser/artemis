@@ -1,0 +1,93 @@
+<section
+  class="sec sec-cmd cv"
+  id="command-bar"
+  data-name="Command bar"
+  aria-labelledby="cmd-h"
+>
+  <div class="wrap">
+    <header class="head" data-peek-summary>
+      <h2 id="cmd-h">Start anything from one field.</h2>
+      <p class="lede">
+        Press ⌘T to search the web. The first row is always what you typed.
+        ⌘1&nbsp;to&nbsp;⌘4 search only tabs, history, actions or spaces.
+      </p>
+    </header>
+    <div class="cmd-ctl" role="group" aria-label="Command bar demo">
+      <button class="btn" type="button" data-act="tour">Pause</button>
+      <div class="cmd-chs" role="group" aria-label="Chapters">
+        <button class="cmd-ch" type="button"><span>Search</span><i></i></button>
+        <button class="cmd-ch" type="button"><span>Tabs</span><i></i></button>
+        <button class="cmd-ch" type="button">
+          <span>History</span><i></i>
+        </button>
+        <button class="cmd-ch" type="button">
+          <span>Actions</span><i></i>
+        </button>
+        <button class="cmd-ch" type="button"><span>Spaces</span><i></i></button>
+      </div>
+      <p class="cmd-hint">
+        <span class="fine-only">Click the bar, or press / to try it.</span
+        ><span class="coarse-only">Tap the bar to try it.</span>
+      </p>
+    </div>
+    <div class="island cmd-island">
+      <p class="sr-only" id="cmd-demo-d" hidden>
+        A model of the Artemis window. The demo opens the command bar five
+        times. It searches the web for “betelgeuse”, finds the What to sow in
+        November tab in the Garden space, opens Seed potatoes from history, runs
+        Split View, then jumps to the Work space.
+      </p>
+      <div class="rig" data-rig="cmd">
+        <button
+          class="take"
+          type="button"
+          aria-label="Try the command bar"
+          aria-describedby="cmd-demo-d"
+          aria-keyshortcuts="/"
+          data-tip="Click to try it"
+        ></button>
+        <div class="win-shadow"></div>
+        <div
+          class="win"
+          data-space="0"
+          data-split="1"
+          data-sidebar="pinned"
+          data-float="hidden"
+          data-cmd="closed"
+        >
+          <div class="cmd-deco" aria-hidden="true" inert>
+            <div class="win-bd" data-host>
+              <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+            </div>
+            <div class="sb">
+              <div class="sb-pin">
+                <!-- @include _win/sidebar-top -->
+                <!-- @include _win/favs -->
+                <div class="pager">
+                  <div class="strip">
+                    <!-- @include _win/panel-personal -->
+                    <!-- @include _win/panel-work -->
+                    <!-- @include _win/panel-garden -->
+                  </div>
+                </div>
+                <!-- @include _win/bottombar -->
+              </div>
+            </div>
+            <!-- @include _win/card -->
+            <div class="panes">
+              <div class="pane"></div>
+              <div class="pane"></div>
+            </div>
+            <!-- @include _win/overlays -->
+          </div>
+          <!-- @include _win/cmd -->
+          <div class="cmd-tab" aria-hidden="true">
+            <i class="fi fi-lowlight"></i>
+            <p><b>Orion, star by star</b><span>lowlight.press</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="fine">Type a bang like “!yt cats” to search one site directly.</p>
+  </div>
+</section>

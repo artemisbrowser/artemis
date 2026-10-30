@@ -1,0 +1,391 @@
+<title>Folder Mark Tuner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F1EEE8; --panel:#FCFAF7; --edge:#DCD5C9; --ink:#1F1C18; --soft:#6E675B;
+  --accent:#B4643A; --stage:#1B1917; --stage-ink:#EDE7DF; --stage-soft:#8D857A;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#131211; --panel:#1D1B18; --edge:#332F2A; --ink:#EFEAE3; --soft:#9A9187;
+    --accent:#D98A5B; --stage:#0D0C0B; --stage-ink:#EFEAE3; --stage-soft:#8D857A;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131211; --panel:#1D1B18; --edge:#332F2A; --ink:#EFEAE3; --soft:#9A9187;
+  --accent:#D98A5B; --stage:#0D0C0B; --stage-ink:#EFEAE3; --stage-soft:#8D857A;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Instrument Sans",system-ui,-apple-system,sans-serif;line-height:1.5}
+.wrap{max-width:1180px;margin:0 auto;padding:34px 22px 60px;display:flex;flex-direction:column;gap:22px}
+h1{font-size:25px;font-weight:600;margin:0;letter-spacing:-.02em}
+.sub{color:var(--soft);font-size:14.5px;max-width:64ch;margin:0}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:16px}
+.stage{background:var(--stage);border-color:transparent;display:flex;flex-direction:column;
+  gap:16px;align-items:center;padding:24px 16px;position:sticky;top:16px}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--soft)}
+.stage .lbl{color:var(--stage-soft)}
+.rows{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;align-items:center}
+.mock{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:10px;
+  background:rgba(255,255,255,.07);color:var(--stage-ink);font-size:12px;white-space:nowrap}
+.mock .n{opacity:.5;font-variant-numeric:tabular-nums}
+.strip{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:flex-end}
+.frame{display:flex;flex-direction:column;align-items:center;gap:4px}
+.frame span{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;color:var(--stage-soft)}
+.rail{max-height:none}
+details{border-top:1px solid var(--edge);padding:10px 0 2px}
+details:first-of-type{border-top:none;padding-top:0}
+summary{cursor:pointer;font-size:12.5px;font-weight:600;letter-spacing:.02em;list-style:none;
+  display:flex;justify-content:space-between;align-items:center;padding:4px 0}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";color:var(--soft);font-family:"IBM Plex Mono",monospace}
+details[open] summary::after{content:"–"}
+.ctl{display:grid;grid-template-columns:1fr auto;gap:4px 8px;align-items:center;margin:8px 0 10px}
+.ctl b{font-weight:400;font-size:12.5px}
+.ctl input[type=number]{width:66px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  padding:3px 6px;border-radius:6px;border:1px solid var(--edge);background:transparent;color:var(--accent);
+  text-align:right}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent);margin:0}
+.ctl small{grid-column:1/-1;color:var(--soft);font-size:11px;line-height:1.35}
+.pick{display:flex;align-items:center;gap:8px;justify-content:space-between;margin:8px 0}
+.pick input[type=color]{width:44px;height:26px;padding:0;border:1px solid var(--edge);border-radius:6px;background:none}
+select{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:7px;border:1px solid var(--edge);
+  background:transparent;color:var(--ink)}
+.btns{display:flex;gap:7px;flex-wrap:wrap}
+button{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--edge);background:transparent;color:var(--ink)}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button.on{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+pre{margin:10px 0 0;padding:14px;background:var(--stage);color:var(--stage-ink);border-radius:10px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;line-height:1.6;overflow-x:auto}
+.foot{color:var(--soft);font-size:13px;max-width:72ch}
+label.chk{display:flex;align-items:center;gap:8px;font-size:12.5px;margin:8px 0}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Folder Mark Tuner</h1>
+    <p class="sub">Every number behind the sidebar folder glyph, live. Drag until it feels right,
+      then hand me the block at the bottom and I ship exactly that.</p>
+  </header>
+
+  <div class="grid">
+    <div class="card stage">
+      <canvas id="big" width="360" height="320" style="width:360px;height:320px;max-width:100%"></canvas>
+      <div class="btns">
+        <button id="loop" class="on">Loop</button>
+        <button id="toggle">Open / close</button>
+        <button id="scrubOn">Scrub</button>
+      </div>
+      <input type="range" id="scrub" min="0" max="1" step="0.01" value="1" style="width:70%;accent-color:var(--accent)">
+      <div class="rows" id="rows"></div>
+      <div class="lbl">actual size in a sidebar row</div>
+      <div class="strip" id="strip"></div>
+      <div class="lbl">open 0 → 1</div>
+    </div>
+
+    <div class="card rail" id="rail"></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="lbl">values</div>
+      <div class="btns">
+        <button id="copy">Copy</button>
+        <button id="reset">Reset to shipped</button>
+      </div>
+    </div>
+    <pre id="code"></pre>
+    <p class="foot" style="margin-top:12px"><b>Fit</b> is what stops the mark changing size:
+      <i>pin back</i> holds the back panel's bounds to its closed rectangle, so only the keystone of
+      the turn shows. <i>pin union</i> holds everything inside the closed footprint (this shrinks the
+      back as the front juts out). <i>none</i> lets it grow.</p>
+  </div>
+</div>
+
+<script>
+const SHIPPED = {
+  w:16, h:15, radius:0.19, bodyTop:0.27, tabW:0.58, tabTop:0.07, tabBot:0.47,
+  yaw:40, eye:2.6, pivot:0, spin:-10,
+  fold:35, spread:0.08, slide:0, lipDrop:0, backTilt:0,
+  fit:"back", fitY:true,
+  colour:"#D98A5B", backAlpha:0.5, frontAlpha:1, stroke:0,
+  duration:0.30, bounce:0.34, hold:1.5, zoom:10
+};
+let P = Object.assign({}, SHIPPED);
+try { const saved = localStorage.getItem("folderMark");
+      if (saved) P = Object.assign(P, JSON.parse(saved)); } catch (e) {}
+
+const GROUPS = [
+  ["Turn", [
+    ["yaw","Turn",0,80,1,"°","Rotation about the vertical axis — what uncovers the back panel's left side."],
+    ["eye","Perspective",1.2,8,0.1,"","Eye distance in mark widths. Lower is a stronger projection."],
+    ["pivot","Turn axis depth",-1,2,0.05,"","Where the axis stands in the depth the open front reaches. 0 is the panel's own plane."],
+    ["spin","Lean",-40,20,1,"°","In-plane rotation of the whole mark."]
+  ]],
+  ["Front panel", [
+    ["fold","Fold",0,80,1,"°","How far the front falls open about the bottom crease."],
+    ["spread","Spread",0,0.4,0.01,"","Extra width the free edge gains on each side — opens out left and right equally."],
+    ["slide","Slide",-0.3,0.3,0.01,"","Shifts the whole front sideways, in mark widths."],
+    ["lipDrop","Extra drop",0,0.5,0.01,"","Drops the free edge further than the fold alone would."]
+  ]],
+  ["Back panel", [
+    ["backTilt","Back tilt",0,40,1,"°","Leans the back away from the eye about the same crease."],
+    ["bodyTop","Body top",0.05,0.5,0.01,"","Where the back's body starts, in heights. The tab rises above it."],
+    ["tabW","Tab width",0.2,0.9,0.01,"",""],
+    ["tabTop","Tab top",0,0.3,0.01,"",""],
+    ["tabBot","Tab bottom",0.2,0.7,0.01,"",""]
+  ]],
+  ["Shape", [
+    ["w","Mark width",10,32,1,"pt",""],
+    ["h","Mark height",10,32,1,"pt",""],
+    ["radius","Corner radius",0,0.4,0.01,"","As a fraction of the mark's width."],
+    ["zoom","Preview zoom",4,20,1,"×",""]
+  ]],
+  ["Paint", [
+    ["backAlpha","Back opacity",0,1,0.05,"",""],
+    ["frontAlpha","Front opacity",0,1,0.05,"",""],
+    ["stroke","Seam",0,2,0.1,"pt","A line between the panels, in points."]
+  ]],
+  ["Motion", [
+    ["duration","Spring duration",0.1,0.9,0.01,"s",""],
+    ["bounce","Spring bounce",0,0.7,0.01,"",""],
+    ["hold","Loop hold",0.4,4,0.1,"s",""]
+  ]]
+];
+
+function panels(t){
+  const w = P.w, h = P.h;
+  const fold = P.fold*Math.PI/180*t, yaw = P.yaw*Math.PI/180*t, tilt = P.backTilt*Math.PI/180*t;
+  const cy = Math.cos(yaw), sy = Math.sin(yaw), eye = P.eye*w;
+  const panel = h*(1 - P.bodyTop);
+  const lip = h - panel*Math.cos(fold) + panel*P.lipDrop*t;
+  const reach = panel*Math.sin(fold);
+  const z0 = reach*P.pivot;
+  // the back leans away about the same crease: a point sits (h - y) up the panel
+  const lean = (x, y) => [x, h - (h - y)*Math.cos(tilt), -(h - y)*Math.sin(tilt)];
+  const pr = (x, y, z) => {
+    const dx = x - w/2, dz = z - z0;
+    const turned = w/2 + dx*cy + dz*sy, near = z0 - dx*sy + dz*cy;
+    const f = eye/(eye - near);
+    return [w/2 + (turned - w/2)*f, h/2 + (y - h/2)*f];
+  };
+  const back = (x, y) => pr(...lean(x, y));
+  const over = w*P.spread*t, dx = w*P.slide*t;
+  const tab  = [back(0,h*P.tabTop), back(w*P.tabW,h*P.tabTop), back(w*P.tabW,h*P.tabBot), back(0,h*P.tabBot)];
+  const body = [back(0,h*P.bodyTop), back(w,h*P.bodyTop), back(w,h), back(0,h)];
+  const front= [pr(-over+dx,lip,reach), pr(w+over+dx,lip,reach), pr(w+dx,h,0), pr(dx,h,0)];
+
+  if (P.fit === "none") return {tab, body, front};
+  const src = P.fit === "union" ? tab.concat(body, front) : body;
+  const xs = src.map(p=>p[0]), ys = src.map(p=>p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const targetH = P.fit === "union" ? h - h*P.tabTop : panel;
+  const sx = w/Math.max(x1-x0, 1e-3);
+  const sv = P.fitY ? targetH/Math.max(y1-y0, 1e-3) : sx;
+  const mid = (x0+x1)/2;
+  const fit = p => [w/2 + (p[0]-mid)*sx, h - (y1-p[1])*sv];
+  return {tab:tab.map(fit), body:body.map(fit), front:front.map(fit)};
+}
+
+function poly(ctx, pts, r){
+  const n = pts.length, d = (a,b) => Math.hypot(b[0]-a[0], b[1]-a[1]);
+  ctx.beginPath();
+  ctx.moveTo((pts[0][0]+pts[1][0])/2, (pts[0][1]+pts[1][1])/2);
+  for (let i=0;i<n;i++){
+    const a = pts[i], b = pts[(i+1)%n], c = pts[(i+2)%n];
+    ctx.arcTo(b[0],b[1],c[0],c[1], Math.min(r, 0.5*Math.min(d(a,b), d(b,c))));
+  }
+  ctx.closePath();
+}
+
+function hexA(hex, a){
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;
+}
+
+function draw(cv, t, scale){
+  const dpr = window.devicePixelRatio || 1;
+  const cw = parseFloat(cv.style.width), ch = parseFloat(cv.style.height);
+  if (cv.width !== Math.round(cw*dpr)){ cv.width = Math.round(cw*dpr); cv.height = Math.round(ch*dpr); }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cw,ch);
+  ctx.save();
+  ctx.translate(cw/2, ch/2);
+  ctx.scale(scale, scale);
+  ctx.rotate(P.spin*Math.PI/180*t);
+  ctx.translate(-P.w/2, -P.h/2);
+  const g = panels(t), r = P.w*P.radius;
+  ctx.fillStyle = hexA(P.colour, P.backAlpha);
+  poly(ctx, g.tab, r); ctx.fill();
+  poly(ctx, g.body, r); ctx.fill();
+  if (P.stroke > 0){
+    ctx.strokeStyle = hexA(P.colour, Math.min(1, P.backAlpha + 0.3));
+    ctx.lineWidth = P.stroke; poly(ctx, g.front, r); ctx.stroke();
+  }
+  ctx.fillStyle = hexA(P.colour, P.frontAlpha);
+  poly(ctx, g.front, r); ctx.fill();
+  ctx.restore();
+}
+
+const big = document.getElementById("big");
+const rowsEl = document.getElementById("rows");
+[1, 2].forEach(k => {
+  const m = document.createElement("div"); m.className = "mock";
+  if (k === 2) m.style.fontSize = "15px";
+  const c = document.createElement("canvas"); c.dataset.mul = k;
+  m.append(c);
+  const n = document.createElement("span"); n.textContent = "Reading";
+  const q = document.createElement("span"); q.className = "n"; q.textContent = "7";
+  m.append(n, q); rowsEl.append(m);
+});
+const strip = document.getElementById("strip");
+const FRAMES = [0, 0.25, 0.5, 0.75, 1];
+FRAMES.forEach(t => {
+  const f = document.createElement("div"); f.className = "frame";
+  const c = document.createElement("canvas");
+  c.style.width = "70px"; c.style.height = "64px";
+  const s = document.createElement("span"); s.textContent = t.toFixed(2);
+  f.append(c, s); strip.append(f);
+});
+
+let t = 1, v = 0, target = 1, looping = true, scrubbing = false, hold = 0, last = performance.now();
+function tick(now){
+  const dt = Math.min((now - last)/1000, 1/30); last = now;
+  if (scrubbing){
+    t = parseFloat(document.getElementById("scrub").value); v = 0;
+  } else {
+    const zeta = 1 - P.bounce, omega = 2*Math.PI/P.duration;
+    v += (omega*omega*(target - t) - 2*zeta*omega*v)*dt;
+    t += v*dt;
+    if (looping){ hold += dt; if (hold > P.hold){ hold = 0; target = target > 0.5 ? 0 : 1; } }
+  }
+  draw(big, t, P.zoom);
+  rowsEl.querySelectorAll("canvas").forEach(c => {
+    const mul = +c.dataset.mul;
+    c.style.width = (P.w*mul) + "px"; c.style.height = (P.h*mul) + "px";
+    draw(c, t, mul);
+  });
+  strip.querySelectorAll("canvas").forEach((c,i) => draw(c, FRAMES[i], 3.2));
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+const rail = document.getElementById("rail");
+const inputs = {};
+GROUPS.forEach(([name, defs], gi) => {
+  const d = document.createElement("details"); d.open = gi < 3;
+  d.innerHTML = `<summary>${name}</summary>`;
+  defs.forEach(([key,label,min,max,step,unit,note]) => {
+    const c = document.createElement("div"); c.className = "ctl";
+    c.innerHTML = `<b>${label}</b>
+      <input type="number" min="${min}" max="${max}" step="${step}">
+      <input type="range" min="${min}" max="${max}" step="${step}">
+      ${note ? `<small>${note}</small>` : ""}`;
+    const [num, rng] = c.querySelectorAll("input");
+    inputs[key] = [num, rng];
+    const set = e => { P[key] = parseFloat(e.target.value); sync(e.target); };
+    num.addEventListener("input", set); rng.addEventListener("input", set);
+    d.append(c);
+  });
+  rail.append(d);
+});
+
+const extra = document.createElement("details"); extra.open = true;
+extra.innerHTML = `<summary>Fit &amp; colour</summary>
+  <div class="pick"><span style="font-size:12.5px">Fit</span>
+    <select id="fit">
+      <option value="back">pin back panel</option>
+      <option value="union">pin whole mark</option>
+      <option value="none">none</option>
+    </select></div>
+  <label class="chk"><input type="checkbox" id="fitY"> Pin height as well as width</label>
+  <div class="pick"><span style="font-size:12.5px">Accent</span>
+    <input type="color" id="colour"></div>
+  <div class="btns" style="margin-top:10px" id="presets"></div>`;
+rail.append(extra);
+
+const fitSel = extra.querySelector("#fit"), fitY = extra.querySelector("#fitY"),
+      colour = extra.querySelector("#colour");
+fitSel.addEventListener("change", () => { P.fit = fitSel.value; sync(); });
+fitY.addEventListener("change", () => { P.fitY = fitY.checked; sync(); });
+colour.addEventListener("input", () => { P.colour = colour.value; sync(); });
+
+const PRESETS = {
+  "Shipped": SHIPPED,
+  "Flat lid": {yaw:0,eye:3,pivot:0,spin:-16,fold:30,spread:0.16,slide:0,lipDrop:0,backTilt:0,fit:"back"},
+  "Hard turn": {yaw:56,eye:2.2,pivot:0.5,spin:-6,fold:30,spread:0.10,slide:0,lipDrop:0,backTilt:0,fit:"back"},
+  "Old mark": {yaw:0,eye:3,pivot:0,spin:-8,fold:0,spread:0.09,slide:0,lipDrop:0.26,backTilt:0,fit:"none"}
+};
+const presets = extra.querySelector("#presets");
+Object.entries(PRESETS).forEach(([name, vals]) => {
+  const b = document.createElement("button"); b.textContent = name;
+  b.addEventListener("click", () => { Object.assign(P, vals); sync(); });
+  presets.append(b);
+});
+
+function sync(src){
+  Object.entries(inputs).forEach(([k, [num, rng]]) => {
+    if (src !== num) num.value = P[k];
+    if (src !== rng) rng.value = P[k];
+  });
+  fitSel.value = P.fit; fitY.checked = P.fitY; colour.value = P.colour;
+  const deg = n => `Angle.degrees(${+n.toFixed(1)})`;
+  document.getElementById("code").textContent =
+`// mark ${P.w}×${P.h}pt · fit: ${P.fit}${P.fitY ? " (w+h)" : " (w)"}
+private let folderRadius: CGFloat = ${P.radius.toFixed(2)}
+private let folderBodyTop: CGFloat = ${P.bodyTop.toFixed(2)}
+private let folderTabWidth: CGFloat = ${P.tabW.toFixed(2)}
+private let folderTabTop: CGFloat = ${P.tabTop.toFixed(2)}
+private let folderTabBottom: CGFloat = ${P.tabBot.toFixed(2)}
+private let folderTip = ${deg(P.fold)}
+private let folderYaw = ${deg(P.yaw)}
+private let folderEye: CGFloat = ${P.eye.toFixed(2)}
+private let folderPivot: CGFloat = ${P.pivot.toFixed(2)}
+private let folderSpin = ${deg(P.spin)}
+private let folderSpread: CGFloat = ${P.spread.toFixed(2)}
+private let folderSlide: CGFloat = ${P.slide.toFixed(2)}
+private let folderExtraDrop: CGFloat = ${P.lipDrop.toFixed(2)}
+private let folderBackTilt = ${deg(P.backTilt)}
+private let folderBackOpacity: Double = ${P.backAlpha.toFixed(2)}
+private let folderSeam: CGFloat = ${P.stroke.toFixed(1)}
+// spring: duration ${P.duration.toFixed(2)}s, bounce ${P.bounce.toFixed(2)}`;
+  try { localStorage.setItem("folderMark", JSON.stringify(P)); } catch (e) {}
+}
+sync();
+
+const loopBtn = document.getElementById("loop"), scrubBtn = document.getElementById("scrubOn"),
+      scrub = document.getElementById("scrub");
+loopBtn.addEventListener("click", () => {
+  looping = !looping; scrubbing = false;
+  loopBtn.classList.toggle("on", looping); scrubBtn.classList.remove("on");
+});
+scrubBtn.addEventListener("click", () => {
+  scrubbing = !scrubbing; looping = false;
+  scrubBtn.classList.toggle("on", scrubbing); loopBtn.classList.remove("on");
+});
+scrub.addEventListener("input", () => {
+  scrubbing = true; looping = false;
+  scrubBtn.classList.add("on"); loopBtn.classList.remove("on");
+});
+function flip(){ looping = false; scrubbing = false;
+  loopBtn.classList.remove("on"); scrubBtn.classList.remove("on");
+  target = target > 0.5 ? 0 : 1; }
+document.getElementById("toggle").addEventListener("click", flip);
+big.addEventListener("click", flip);
+document.getElementById("reset").addEventListener("click", () => { P = Object.assign({}, SHIPPED); sync(); });
+document.getElementById("copy").addEventListener("click", async e => {
+  try { await navigator.clipboard.writeText(document.getElementById("code").textContent);
+        e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1200); }
+  catch (err) { e.target.textContent = "Select it manually"; }
+});
+</script>

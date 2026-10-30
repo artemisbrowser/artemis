@@ -1,0 +1,52 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/icon-rigel-dark.png">
+    <img src="docs/icon-rigel-light.png" width="180" alt="Artemis">
+  </picture>
+</p>
+
+<h1 align="center">Artemis</h1>
+
+<p align="center">
+  A native browser for your Mac.<br>
+  No account, no tracking.
+</p>
+
+<p align="center">
+  <a href="https://artemisbrowser.app"><b>Download for macOS</b></a> ·
+  <a href="docs/shortcuts.md">Shortcuts</a>
+</p>
+
+## What is it?
+
+Artemis is a Mac browser built on Apple's WebKit engine. It's easy on your battery, and it feels like a Mac app because it is one.
+
+If you miss Arc, you'll feel right at home. Your tabs live down the side, grouped into spaces, and everything opens from the command bar. There's no tab bar along the top, and there never will be.
+
+## What's in it
+
+- **Spaces.** Separate sets of tabs, each with its own look and, if you want, its own logins. Switch with ⌃1-9 or a two-finger swipe.
+- **Command bar.** Hit ⌘T to open a site, search, jump to a tab or run an action.
+- **Auto-archive.** Tabs you stop using tidy themselves away.
+- **Split view.** Up to four pages side by side.
+- **Ad and tracker blocking**, built in.
+- **Extensions** from the Chrome Web Store and Firefox Add-ons.
+- **Import from Arc.** Your spaces, pins and folders come with you.
+
+Plus Picture in Picture, Peek (⇧-click a link to open it in a floating window), Handoff and on-device translation.
+
+## Privacy
+
+There's no account and no tracking. The AI features run on your Mac using Apple Intelligence. Error reports are off unless you turn them on, and feedback is only sent when you press Send.
+
+## Requirements
+
+macOS 26 or later.
+
+## Contributing
+
+Found a bug? In Artemis, choose Help › Send Feedback… Want to help out? Have a read of [CONTRIBUTING.md](CONTRIBUTING.md) first.
+
+## Licence
+
+Artemis is source-available under the [PolyForm Strict License 1.0.0](LICENSE). Use it for whatever you like, but you can't share copies or ship your own version. "Artemis" and its icon are trademarks.

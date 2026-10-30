@@ -1,0 +1,9 @@
+scheme: Artemis
+
+# platform
+platform: mac
+
+# build options
+buildwithxcode: true
+oslogenabled: true
+runwithlaunchservices: true

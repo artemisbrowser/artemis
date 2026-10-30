@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Folder Mark — 3D model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F1EEE8; --panel:#FCFAF7; --edge:#DCD5C9; --ink:#1F1C18; --soft:#6E675B;
+  --accent:#B4643A; --stage:#1B1917; --stage-ink:#EDE7DF; --stage-soft:#8D857A;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#131211; --panel:#1D1B18; --edge:#332F2A; --ink:#EFEAE3; --soft:#9A9187;
+    --accent:#D98A5B; --stage:#0D0C0B; --stage-ink:#EFEAE3; --stage-soft:#8D857A;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Instrument Sans",system-ui,-apple-system,sans-serif;line-height:1.5}
+.wrap{max-width:1220px;margin:0 auto;padding:30px 20px 56px;display:flex;flex-direction:column;gap:18px}
+h1{font-size:24px;font-weight:600;margin:0;letter-spacing:-.02em}
+.sub{color:var(--soft);font-size:14px;max-width:70ch;margin:0}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:16px}
+.stage{background:var(--stage);border-color:transparent;display:flex;flex-direction:column;
+  gap:14px;align-items:center;padding:20px 16px;position:sticky;top:14px}
+#scene{cursor:grab;touch-action:none;border-radius:10px}
+#scene.drag{cursor:grabbing}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--soft)}
+.stage .lbl{color:var(--stage-soft)}
+.rows{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;align-items:center}
+.mock{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:10px;
+  background:rgba(255,255,255,.07);color:var(--stage-ink);font-size:12px;white-space:nowrap}
+.mock .n{opacity:.5;font-variant-numeric:tabular-nums}
+.strip{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:flex-end}
+.frame{display:flex;flex-direction:column;align-items:center;gap:4px}
+.frame span{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;color:var(--stage-soft)}
+details{border-top:1px solid var(--edge);padding:9px 0 2px}
+details:first-of-type{border-top:none;padding-top:0}
+summary{cursor:pointer;font-size:12.5px;font-weight:600;list-style:none;display:flex;
+  justify-content:space-between;align-items:center;padding:3px 0}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";color:var(--soft);font-family:"IBM Plex Mono",monospace}
+details[open] summary::after{content:"–"}
+.ctl{display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center;margin:7px 0 9px}
+.ctl b{font-weight:400;font-size:12.5px}
+.ctl input[type=number]{width:64px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  padding:3px 6px;border-radius:6px;border:1px solid var(--edge);background:transparent;
+  color:var(--accent);text-align:right}
+.ctl input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent);margin:0}
+.ctl small{grid-column:1/-1;color:var(--soft);font-size:11px;line-height:1.35}
+.pick{display:flex;align-items:center;gap:8px;justify-content:space-between;margin:7px 0}
+.pick input[type=color]{width:44px;height:26px;padding:0;border:1px solid var(--edge);
+  border-radius:6px;background:none}
+select{font:inherit;font-size:12.5px;padding:4px 8px;border-radius:7px;border:1px solid var(--edge);
+  background:transparent;color:var(--ink)}
+label.chk{display:flex;align-items:center;gap:8px;font-size:12.5px;margin:7px 0}
+.btns{display:flex;gap:7px;flex-wrap:wrap}
+button{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--edge);background:transparent;color:var(--ink)}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button.on{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+pre{margin:10px 0 0;padding:14px;background:var(--stage);color:var(--stage-ink);border-radius:10px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;line-height:1.6;overflow-x:auto}
+.foot{color:var(--soft);font-size:13px;max-width:74ch}
+.hint{font-size:11.5px;color:var(--stage-soft);text-align:center}
+</style></head><body>
+
+<div class="wrap">
+  <header>
+    <h1>Folder Mark — 3D model</h1>
+    <p class="sub">Two real panels hinged on a shared crease, seen through a real camera. Drag the
+      scene to orbit, scroll to dolly. Corners are rounded <em>on the panel</em> and then projected,
+      so the near edge foreshortens into a sharper corner the way it should.</p>
+  </header>
+
+  <div class="grid">
+    <div class="card stage">
+      <canvas id="scene" width="420" height="360" style="width:420px;height:360px;max-width:100%"></canvas>
+      <div class="hint">drag to orbit · scroll to dolly · click a button below to play</div>
+      <div class="btns">
+        <button id="loop" class="on">Loop</button>
+        <button id="toggle">Open / close</button>
+        <button id="scrubOn">Scrub</button>
+      </div>
+      <input type="range" id="scrub" min="0" max="1" step="0.005" value="1"
+             style="width:72%;accent-color:var(--accent)">
+      <div class="rows" id="rows"></div>
+      <div class="lbl">actual size in a sidebar row</div>
+      <div class="strip" id="strip"></div>
+      <div class="lbl">closed 0 → open 1</div>
+    </div>
+    <div class="card" id="rail"></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div class="lbl">model</div>
+      <div class="btns">
+        <button id="copy">Copy</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+    <pre id="code"></pre>
+    <p class="foot" style="margin-top:12px">Closed is always the camera head-on with both panels
+      flat, so the glyph at rest is exactly the rectangle it is today. Opening interpolates the
+      camera to the pose you orbit to and swings the panels apart. That pair — <b>pose</b> and
+      <b>hinge</b> — is the whole conversion back to Swift.</p>
+  </div>
+</div>
+
+<script>
+const DEFAULTS = {
+  az:34, el:14, dist:64, fov:30,
+  fold:30, backTilt:20, spread:0.10, slide:-0.05, spin:-6,
+  w:16, h:15, radius:0.19, bodyTop:0.24, tabW:0.57, tabTop:0.10, tabBot:0.70,
+  thick:0, fit:"back", wire:false,
+  colour:"#D98A5B", backAlpha:0.5, frontAlpha:1,
+  duration:0.30, bounce:0.34, hold:1.5, zoom:11
+};
+let P = Object.assign({}, DEFAULTS);
+try { const s = localStorage.getItem("folder3d"); if (s) P = Object.assign(P, JSON.parse(s)); } catch(e){}
+
+/* ---------- outline built in the panel's own plane, then projected ---------- */
+function roundedOutline(x0, y0, x1, y1, r, seg){
+  r = Math.max(0, Math.min(r, (x1-x0)/2, (y1-y0)/2));
+  const pts = [], arc = (cx, cy, a0) => {
+    for (let i=0;i<=seg;i++){
+      const a = a0 + (Math.PI/2)*(i/seg);
+      pts.push([cx + r*Math.cos(a), cy + r*Math.sin(a)]);
+    }
+  };
+  arc(x1-r, y0+r, -Math.PI/2);   // bottom-right
+  arc(x1-r, y1-r, 0);            // top-right
+  arc(x0+r, y1-r, Math.PI/2);    // top-left
+  arc(x0+r, y0+r, Math.PI);      // bottom-left
+  return pts;
+}
+
+/* panel-local (x, y up from the crease) → world, hinged on the crease at y = -h/2 */
+function hinge(angle, taper){
+  const h = P.h, panel = h*(1 - P.bodyTop), base = -h/2;
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return ([x, y]) => {
+    const up = y - base;
+    const k = taper ? 1 + 2*taper*(up/panel) : 1;
+    return [x*k, base + up*c, up*s];
+  };
+}
+
+function camera(t){
+  const az = P.az*Math.PI/180*t, el = P.el*Math.PI/180*t;
+  const ca = Math.cos(az), sa = Math.sin(az), ce = Math.cos(el), se = Math.sin(el);
+  const f = 1/Math.tan(P.fov*Math.PI/360);
+  return ([x, y, z]) => {
+    const xr = x*ca - z*sa, zr = x*sa + z*ca;             // orbit about Y
+    const yr = y*ce - zr*se, zc = y*se + zr*ce - P.dist;  // then about X, then dolly
+    const d = Math.max(-zc, 0.01);
+    return [f*xr/d, -f*yr/d];
+  };
+}
+
+function shapes(t){
+  const w = P.w, h = P.h, seg = 7;
+  const r = w*P.radius;
+  const bodyTopY = h/2 - P.bodyTop*h;
+  const tabOutline = roundedOutline(-w/2, h/2 - P.tabBot*h, -w/2 + P.tabW*w, h/2 - P.tabTop*h, r, seg);
+  const bodyOutline = roundedOutline(-w/2, -h/2, w/2, bodyTopY, r, seg);
+  const frontOutline = roundedOutline(-w/2, -h/2, w/2, bodyTopY, r, seg);
+
+  const back = hinge(-P.backTilt*Math.PI/180*t, 0);
+  const front = hinge(P.fold*Math.PI/180*t, P.spread*t);
+  const dx = w*P.slide*t, lift = P.thick*t;
+  const cam = camera(t);
+  const proj = p => cam(p);
+  return {
+    tab:   tabOutline.map(p => proj(back(p))),
+    body:  bodyOutline.map(p => proj(back(p))),
+    front: frontOutline.map(p => { const q = front(p); return proj([q[0]+dx, q[1], q[2]+lift]); })
+  };
+}
+
+function bbox(pts){
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+/* closed pose sets the scale: at rest the glyph measures exactly w × h points */
+function frameAt(t){
+  const now = shapes(t), rest = shapes(0);
+  const R = bbox(rest.body.concat(rest.tab));
+  const sx = P.w/Math.max(R[2]-R[0], 1e-6), sy = P.h/Math.max(R[3]-R[1], 1e-6);
+  const into = pts => pts.map(p => [(p[0]-R[0])*sx, (p[1]-R[1])*sy]);
+  let g = { tab: into(now.tab), body: into(now.body), front: into(now.front) };
+  if (P.fit === "none") return g;
+  const rg = { tab: into(rest.tab), body: into(rest.body), front: into(rest.front) };
+  const pick = o => P.fit === "union" ? o.body.concat(o.tab, o.front) : o.body;
+  const C = bbox(pick(g)), Q = bbox(pick(rg));
+  const kx = (Q[2]-Q[0])/Math.max(C[2]-C[0], 1e-6), ky = (Q[3]-Q[1])/Math.max(C[3]-C[1], 1e-6);
+  const hold = pts => pts.map(p => [Q[0] + (p[0]-C[0])*kx, Q[1] + (p[1]-C[1])*ky]);
+  return { tab: hold(g.tab), body: hold(g.body), front: hold(g.front) };
+}
+
+function trace(ctx, ...rings){
+  ctx.beginPath();
+  // one path, many subpaths: overlapping rings fill as a union, no darker seam
+  rings.forEach(pts => {
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  });
+}
+const hexA = (hex, a) => { const n = parseInt(hex.slice(1),16);
+  return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; };
+
+function draw(cv, t, scale){
+  const dpr = window.devicePixelRatio || 1;
+  const cw = parseFloat(cv.style.width), ch = parseFloat(cv.style.height);
+  if (cv.width !== Math.round(cw*dpr)){ cv.width = Math.round(cw*dpr); cv.height = Math.round(ch*dpr); }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cw,ch);
+  const g = frameAt(t);
+  ctx.save();
+  ctx.translate(cw/2, ch/2);
+  ctx.scale(scale, scale);
+  ctx.rotate(P.spin*Math.PI/180*t);
+  ctx.translate(-P.w/2, -P.h/2);
+  ctx.fillStyle = hexA(P.colour, P.backAlpha);
+  trace(ctx, g.tab, g.body); ctx.fill();
+  ctx.fillStyle = hexA(P.colour, P.frontAlpha);
+  trace(ctx, g.front); ctx.fill();
+  if (P.wire){
+    ctx.lineWidth = 0.5/scale; ctx.strokeStyle = "rgba(255,255,255,.55)";
+    trace(ctx, g.body); ctx.stroke(); trace(ctx, g.front); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,120,80,.9)"; ctx.lineWidth = 1/scale;
+    ctx.beginPath(); ctx.moveTo(g.front[0][0], g.front[0][1]);
+    const n = g.front.length;
+    ctx.lineTo(g.front[n-1][0], g.front[n-1][1]); ctx.stroke();   // the crease
+  }
+  ctx.restore();
+}
+
+/* ---------- previews ---------- */
+const scene = document.getElementById("scene");
+const rowsEl = document.getElementById("rows");
+[1,2].forEach(k => {
+  const m = document.createElement("div"); m.className = "mock";
+  if (k===2) m.style.fontSize = "15px";
+  const c = document.createElement("canvas"); c.dataset.mul = k;
+  const n = document.createElement("span"); n.textContent = "Reading";
+  const q = document.createElement("span"); q.className = "n"; q.textContent = "7";
+  m.append(c, n, q); rowsEl.append(m);
+});
+const strip = document.getElementById("strip");
+const FRAMES = [0, 0.25, 0.5, 0.75, 1];
+FRAMES.forEach(v => {
+  const f = document.createElement("div"); f.className = "frame";
+  const c = document.createElement("canvas"); c.style.width = "104px"; c.style.height = "78px";
+  const s = document.createElement("span"); s.textContent = v.toFixed(2);
+  f.append(c, s); strip.append(f);
+});
+
+let t = 1, vel = 0, target = 1, looping = true, scrubbing = false, hold = 0, last = performance.now();
+function tick(now){
+  const dt = Math.min((now-last)/1000, 1/30); last = now;
+  if (scrubbing){ t = parseFloat(document.getElementById("scrub").value); vel = 0; }
+  else {
+    const zeta = 1 - P.bounce, om = 2*Math.PI/P.duration;
+    vel += (om*om*(target - t) - 2*zeta*om*vel)*dt; t += vel*dt;
+    if (looping){ hold += dt; if (hold > P.hold){ hold = 0; target = target > 0.5 ? 0 : 1; } }
+  }
+  draw(scene, t, P.zoom);
+  rowsEl.querySelectorAll("canvas").forEach(c => {
+    const mul = +c.dataset.mul, pad = 12;   // bleed: an open front reaches past the slot
+    c.style.width = ((P.w+2*pad)*mul)+"px"; c.style.height = ((P.h+2*pad)*mul)+"px";
+    c.style.margin = (-pad*mul)+"px";
+    draw(c, t, mul);
+  });
+  strip.querySelectorAll("canvas").forEach((c,i) => draw(c, FRAMES[i], 3.2));
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+/* ---------- orbit ---------- */
+let dragging = false, px = 0, py = 0;
+scene.addEventListener("pointerdown", e => {
+  dragging = true; px = e.clientX; py = e.clientY;
+  scene.classList.add("drag"); scene.setPointerCapture(e.pointerId);
+  looping = false; scrubbing = false; target = 1; t = 1; vel = 0;
+  document.getElementById("loop").classList.remove("on");
+  document.getElementById("scrubOn").classList.remove("on");
+});
+scene.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  P.az = Math.max(-89, Math.min(89, P.az + (e.clientX - px)*0.3));
+  P.el = Math.max(-80, Math.min(80, P.el - (e.clientY - py)*0.3));
+  px = e.clientX; py = e.clientY; sync();
+});
+["pointerup","pointercancel"].forEach(ev => scene.addEventListener(ev, e => {
+  dragging = false; scene.classList.remove("drag");
+}));
+scene.addEventListener("wheel", e => {
+  e.preventDefault();
+  P.dist = Math.max(18, Math.min(400, P.dist * (1 + e.deltaY*0.0015)));
+  sync();
+}, {passive:false});
+
+/* ---------- controls ---------- */
+const GROUPS = [
+  ["Camera", [
+    ["az","Orbit — sideways",-89,89,1,"Degrees the camera swings round. Positive brings the folder's left toward you."],
+    ["el","Orbit — height",-80,80,1,"Degrees above or below the folder."],
+    ["dist","Distance",18,300,1,"Camera distance in points. Near is a stronger perspective."],
+    ["fov","Field of view",8,80,1,"Lens angle. Wide is more dramatic foreshortening."]
+  ]],
+  ["Hinge", [
+    ["fold","Front fold",0,90,1,"How far the front panel swings toward you about the crease."],
+    ["backTilt","Back tilt",0,60,1,"How far the back panel leans away about the same crease."],
+    ["spread","Spread",0,0.4,0.01,"The front's free edge widens by this, tapering from the crease."],
+    ["slide","Slide",-0.3,0.3,0.01,"Shifts the front sideways, in mark widths."],
+    ["thick","Lift",0,3,0.05,"Floats the front off the back, in points."]
+  ]],
+  ["Glyph", [
+    ["w","Width",10,32,1,""], ["h","Height",10,32,1,""],
+    ["radius","Corner radius",0,0.4,0.01,"Fraction of the width, measured on the panel."],
+    ["bodyTop","Body top",0.05,0.5,0.01,""],
+    ["tabW","Tab width",0.2,0.9,0.01,""],
+    ["tabTop","Tab top",0,0.3,0.01,""],
+    ["tabBot","Tab bottom",0.2,0.8,0.01,""],
+    ["spin","Lean",-40,20,1,"In-plane rotation of the finished glyph."]
+  ]],
+  ["Paint & motion", [
+    ["backAlpha","Back opacity",0,1,0.05,""],
+    ["frontAlpha","Front opacity",0,1,0.05,""],
+    ["duration","Spring duration",0.1,0.9,0.01,""],
+    ["bounce","Spring bounce",0,0.7,0.01,""],
+    ["hold","Loop hold",0.4,4,0.1,""],
+    ["zoom","Preview zoom",4,24,1,""]
+  ]]
+];
+const rail = document.getElementById("rail"), inputs = {};
+GROUPS.forEach(([name, defs], gi) => {
+  const d = document.createElement("details"); d.open = gi < 2;
+  d.innerHTML = `<summary>${name}</summary>`;
+  defs.forEach(([key,label,min,max,step,note]) => {
+    const c = document.createElement("div"); c.className = "ctl";
+    c.innerHTML = `<b>${label}</b><input type="number" min="${min}" max="${max}" step="${step}">
+      <input type="range" min="${min}" max="${max}" step="${step}">${note?`<small>${note}</small>`:""}`;
+    const [num, rng] = c.querySelectorAll("input");
+    inputs[key] = [num, rng];
+    const set = e => { P[key] = parseFloat(e.target.value); sync(e.target); };
+    num.addEventListener("input", set); rng.addEventListener("input", set);
+    d.append(c);
+  });
+  rail.append(d);
+});
+const extra = document.createElement("details"); extra.open = true;
+extra.innerHTML = `<summary>Fit &amp; colour</summary>
+  <div class="pick"><span style="font-size:12.5px">Hold size by</span>
+    <select id="fit"><option value="back">back panel</option>
+      <option value="union">whole glyph</option><option value="none">nothing</option></select></div>
+  <label class="chk"><input type="checkbox" id="wire"> Show crease and panel edges</label>
+  <div class="pick"><span style="font-size:12.5px">Accent</span><input type="color" id="colour"></div>`;
+rail.append(extra);
+const fitSel = extra.querySelector("#fit"), wire = extra.querySelector("#wire"),
+      colour = extra.querySelector("#colour");
+fitSel.addEventListener("change", () => { P.fit = fitSel.value; sync(); });
+wire.addEventListener("change", () => { P.wire = wire.checked; sync(); });
+colour.addEventListener("input", () => { P.colour = colour.value; sync(); });
+
+function sync(src){
+  Object.entries(inputs).forEach(([k,[num,rng]]) => {
+    if (src !== num) num.value = P[k];
+    if (src !== rng) rng.value = P[k];
+  });
+  fitSel.value = P.fit; wire.checked = P.wire; colour.value = P.colour;
+  const f = (n, d=2) => (+n).toFixed(d);
+  document.getElementById("code").textContent =
+`// camera pose at fully open — closed is head-on
+az ${f(P.az,1)}°   el ${f(P.el,1)}°   dist ${f(P.dist,1)}pt   fov ${f(P.fov,1)}°
+// hinge
+fold ${f(P.fold,1)}°   backTilt ${f(P.backTilt,1)}°   spread ${f(P.spread)}   slide ${f(P.slide)}   lift ${f(P.thick)}pt
+// glyph
+mark ${P.w}×${P.h}pt   radius ${f(P.radius)}   bodyTop ${f(P.bodyTop)}
+tab ${f(P.tabW)} wide, ${f(P.tabTop)}–${f(P.tabBot)}   lean ${f(P.spin,1)}°
+// paint & motion
+backOpacity ${f(P.backAlpha)}   frontOpacity ${f(P.frontAlpha)}
+hold size by: ${P.fit}   spring ${f(P.duration)}s bounce ${f(P.bounce)}
+// json
+${JSON.stringify(P)}`;
+  try { localStorage.setItem("folder3d", JSON.stringify(P)); } catch(e){}
+}
+sync();
+
+const loopBtn = document.getElementById("loop"), scrubBtn = document.getElementById("scrubOn"),
+      scrub = document.getElementById("scrub");
+loopBtn.addEventListener("click", () => { looping = !looping; scrubbing = false;
+  loopBtn.classList.toggle("on", looping); scrubBtn.classList.remove("on"); });
+scrubBtn.addEventListener("click", () => { scrubbing = !scrubbing; looping = false;
+  scrubBtn.classList.toggle("on", scrubbing); loopBtn.classList.remove("on"); });
+scrub.addEventListener("input", () => { scrubbing = true; looping = false;
+  scrubBtn.classList.add("on"); loopBtn.classList.remove("on"); });
+document.getElementById("toggle").addEventListener("click", () => {
+  looping = false; scrubbing = false; loopBtn.classList.remove("on");
+  scrubBtn.classList.remove("on"); target = target > 0.5 ? 0 : 1; });
+document.getElementById("reset").addEventListener("click", () => { P = Object.assign({}, DEFAULTS); sync(); });
+document.getElementById("copy").addEventListener("click", async e => {
+  try { await navigator.clipboard.writeText(document.getElementById("code").textContent);
+    e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1200);
+  } catch(err){ e.target.textContent = "Select it manually"; }
+});
+</script>
+</body></html>

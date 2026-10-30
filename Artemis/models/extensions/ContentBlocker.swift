@@ -1,0 +1,491 @@
+import CryptoKit
+import WebKit
+
+/// One subscribable filter list.
+struct Blocklist: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let detail: String
+    let url: URL
+    /// off by default — the two core lists carry the weight; the rest are opt-in
+    let onByDefault: Bool
+    /// how long a downloaded copy stays current, from the lists' `Expires:` header
+    var maxAge: TimeInterval = 4 * 86_400
+
+    var enabledKey: String { "blocklist.\(id).enabled" }
+
+    var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? onByDefault
+    }
+}
+
+/// Native content blocking via `WKContentRuleListStore`.
+///
+/// Rules are compiled to WebKit bytecode and evaluated in the networking process,
+/// so blocking happens before a request leaves the machine and page script can't
+/// see or defeat it. Artemis subscribes to real EasyList-format filter lists and
+/// converts them with `AdblockConverter` — the same source material uBlock Origin
+/// uses — rather than shipping a hand-written domain list.
+///
+/// Compilation is the expensive part (tens of thousands of rules), so it happens
+/// once per list *version*: the identifier embeds a hash of the source text, and
+/// an unchanged list is looked up from WebKit's on-disk store instead of rebuilt.
+@Observable
+@MainActor
+final class ContentBlocker {
+    static let shared = ContentBlocker()
+
+    /// the catalog. EasyList + EasyPrivacy are the pair almost every blocker
+    /// starts from; the rest are the common add-ons people actually want
+    static let catalog: [Blocklist] = [
+        Blocklist(
+            id: "easylist", name: "EasyList",
+            detail: "The primary ad-blocking list.",
+            url: URL(string: "https://easylist.to/easylist/easylist.txt")!,
+            onByDefault: true),
+        Blocklist(
+            id: "easyprivacy", name: "EasyPrivacy",
+            detail: "Trackers, analytics and beacons.",
+            url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!,
+            onByDefault: true),
+        Blocklist(
+            id: "annoyances", name: "Cookie Notices",
+            detail: "Cookie banners and consent walls.",
+            url: URL(string: "https://easylist.to/easylist/fanboy-annoyance.txt")!,
+            onByDefault: false),
+        Blocklist(
+            id: "social", name: "Social Widgets",
+            detail: "Embedded share buttons and social trackers.",
+            url: URL(string: "https://easylist.to/easylist/fanboy-social.txt")!,
+            onByDefault: false),
+    ]
+
+    private static let enabledKey = "contentBlockingEnabledV1"
+    private static let lastUpdateKey = "contentBlockingLastUpdate"
+    /// identifiers of the compiled chunks currently in WebKit's store, plus the
+    /// rule counts they represent. lets launch install the existing bytecode
+    /// without re-reading and re-converting 3.5MB of filter text every time
+    private static let compiledIdentifiersKey = "contentBlockingCompiledIDs"
+    private static let compiledStatsKey = "contentBlockingCompiledStats"
+    /// fingerprint of `siteFixes` the compiled chunks were built with: a new fix
+    /// must force a rebuild, or launch keeps reinstalling the old bytecode
+    private static let compiledFixesKey = "contentBlockingCompiledFixes"
+    private static var fixesFingerprint: String {
+        digest(String(data: (try? JSONEncoder().encode(siteFixes)) ?? Data(), encoding: .utf8) ?? "")
+    }
+    /// how often a running app looks for lists past their `maxAge`
+    private static let refreshCheck: Duration = .seconds(3600)
+
+    var isEnabled: Bool {
+        didSet {
+            guard oldValue != isEnabled else { return }
+            UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
+            Task { await apply() }
+        }
+    }
+
+    /// live status for Settings: rule count, when the lists were fetched, and
+    /// how many filters the converter couldn't express
+    private(set) var ruleCount = 0
+    private(set) var droppedCount = 0
+    private(set) var lastUpdated: Date?
+    private(set) var isUpdating = false
+    private(set) var lastError: String?
+
+    @ObservationIgnored private var installed: [WKContentRuleList] = []
+    /// serializes every install. `apply()` (from the enable toggle) and
+    /// `updateLists` (from launch refresh or the Settings button) can otherwise
+    /// overlap, and whichever finished *second* would leave its chunk identifiers
+    /// on disk while the other's prune deleted them — a cache that never hits
+    @ObservationIgnored private var work: Task<Void, Never>?
+    @ObservationIgnored private var refresher: Task<Void, Never>?
+    @ObservationIgnored private let cacheDirectory = AppStorageLocation.directory
+        .appendingPathComponent("blocklists", isDirectory: true)
+
+    private init() {
+        isEnabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
+        lastUpdated = UserDefaults.standard.object(forKey: Self.lastUpdateKey) as? Date
+        try? FileManager.default.createDirectory(
+            at: cacheDirectory, withIntermediateDirectories: true)
+        // a profile's controller made after the lists went in gets the live ones
+        SharedWebContent.everywhere { [weak self] ucc in
+            guard let self, self.isEnabled else { return }
+            for list in self.installed { ucc.add(list) }
+        }
+    }
+
+    /// one-line summary under the Settings toggle
+    var statusLine: String {
+        if let lastError { return "Couldn't update: \(lastError)" }
+        guard isEnabled else { return "Blocking is off — pages load with their ads and trackers." }
+        guard ruleCount > 0 else { return "Preparing blocklists…" }
+        let updated = lastUpdated.map {
+            $0.formatted(date: .abbreviated, time: .omitted)
+        } ?? "never"
+        let dropped = droppedCount > 0 ? ", \(droppedCount.formatted()) unsupported filters skipped" : ""
+        return "\(ruleCount.formatted()) rules active — updated \(updated)\(dropped)."
+    }
+
+    var enabledLists: [Blocklist] { Self.catalog.filter(\.isEnabled) }
+
+    func setList(_ list: Blocklist, enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: list.enabledKey)
+        // the compiled set no longer matches the subscription, so the launch
+        // fast path must not reuse it
+        UserDefaults.standard.removeObject(forKey: Self.compiledIdentifiersKey)
+        Task { await updateLists(force: true) }
+    }
+
+    // MARK: - Applying
+
+    /// block until nothing is compiling or installing.
+    ///
+    /// `isUpdating` only covers the download path; the launch rebuild compiles
+    /// through the same queue without setting it, so anything that needs a quiet
+    /// machine (the self-test's performance budgets) has to await the queue itself
+    func waitForIdle() async {
+        await work?.value
+    }
+
+    /// run `body` after any install already in flight has finished
+    private func serialized(_ body: @escaping @MainActor () async -> Void) async {
+        let previous = work
+        let task = Task { @MainActor in
+            await previous?.value
+            await body()
+        }
+        work = task
+        await task.value
+    }
+
+    /// hosts the privacy list blocks, so a blocked request can be reported as a
+    /// tracker; anything else blocked counts as an ad
+    @ObservationIgnored private(set) var trackerHosts: Set<String> = []
+    private var trackerHostsCache: URL {
+        cacheDirectory.appendingPathComponent("trackerhosts.txt")
+    }
+
+    /// does the privacy list recognise this request's host, or a parent of it?
+    /// `requestDomains` semantics: a rule for example.com also covers a.example.com
+    func isTracker(_ url: URL) -> Bool {
+        guard !trackerHosts.isEmpty, var host = url.host()?.lowercased() else { return false }
+        while host.contains(".") {
+            if trackerHosts.contains(host) { return true }
+            guard let dot = host.firstIndex(of: ".") else { return false }
+            host = String(host[host.index(after: dot)...])
+        }
+        return false
+    }
+
+    private func rememberTrackerHosts(from source: String) async {
+        trackerHosts = await Self.parseTrackerHosts(source, savingTo: trackerHostsCache)
+    }
+
+    @concurrent nonisolated private static func parseTrackerHosts(
+        _ source: String, savingTo file: URL
+    ) async -> Set<String> {
+        let hosts = AdblockConverter.blockedHosts(in: source)
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? hosts.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        return hosts
+    }
+
+    private func loadTrackerHosts() async {
+        guard trackerHosts.isEmpty else { return }
+        trackerHosts = await Self.readTrackerHosts(trackerHostsCache)
+    }
+
+    @concurrent nonisolated private static func readTrackerHosts(_ file: URL) async -> Set<String> {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        return Set(text.split(separator: "\n").map(String.init))
+    }
+
+    /// a rule list reaches a document only when the document loads after it is
+    /// installed, so a page that is already open has to run again
+    @MainActor
+    private static func reloadLoadedTabs() {
+        guard let manager = ExtensionManager.shared.tabManager else { return }
+        for tab in manager.allTabs where !tab.isHibernated && tab.url != nil {
+            tab.webView.reload()
+        }
+    }
+
+    /// install (or remove) the compiled lists on the shared user-content
+    /// controller every tab already uses
+    func apply() async {
+        await serialized { await self.applyLocked() }
+    }
+
+    private func applyLocked() async {
+        guard isEnabled else {
+            for ucc in SharedWebContent.all { for list in installed { ucc.remove(list) } }
+            installed = []
+            Self.reloadLoadedTabs()
+            return
+        }
+        let hadCache = enabledLists.contains {
+            (try? cacheURL($0).checkResourceIsReachable()) == true
+        }
+        if installed.isEmpty {
+            await rebuild()
+        } else {
+            for ucc in SharedWebContent.all { for list in installed { ucc.add(list) } }
+        }
+        // with cached rules already in, a newer download reaches pages as they
+        // next load; with only the starter list in, open pages run again
+        await refreshIfStaleLocked(reloadTabs: !hadCache)
+        refresher = refresher ?? Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.refreshCheck)
+                guard isEnabled else { continue }
+                await serialized { await self.refreshIfStaleLocked(reloadTabs: false) }
+            }
+        }
+    }
+
+    /// fetch fresh copies of lists past their `maxAge`, inside the serialized section
+    private func refreshIfStaleLocked(reloadTabs: Bool) async {
+        guard enabledLists.contains(where: { !isFresh($0) }) else { return }
+        await updateListsLocked(force: false, reloadTabs: reloadTabs)
+    }
+
+    private func cacheURL(_ list: Blocklist) -> URL {
+        cacheDirectory.appendingPathComponent("\(list.id).txt")
+    }
+
+    private func isFresh(_ list: Blocklist) -> Bool {
+        let modified = try? cacheURL(list).resourceValues(forKeys: [.contentModificationDateKey])
+            .contentModificationDate
+        return modified.map { Date().timeIntervalSince($0) < list.maxAge } ?? false
+    }
+
+    /// download every enabled list, convert, compile and install.
+    /// `force` re-downloads even when the cache is fresh (the Settings button)
+    func updateLists(force: Bool) async {
+        await serialized { await self.updateListsLocked(force: force, reloadTabs: true) }
+    }
+
+    private func updateListsLocked(force: Bool, reloadTabs: Bool) async {
+        guard !isUpdating else { return }
+        isUpdating = true
+        lastError = nil
+        defer { isUpdating = false }
+
+        var sources: [String] = []
+        var changed = false
+        for list in enabledLists {
+            if let (text, isNew) = await fetch(list, force: force) {
+                sources.append(text)
+                changed = changed || isNew
+                if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
+            }
+        }
+        guard !sources.isEmpty else {
+            // nothing downloadable (offline, first launch without network) —
+            // fall back to the built-in starter list so blocking is never simply off
+            lastError = lastError ?? "no lists available offline"
+            await install(sources: [Self.starterList], stamp: false, reloadTabs: reloadTabs)
+            return
+        }
+        // an unchanged download (or a failed one) isn't worth seconds of conversion
+        guard force || changed || installed.isEmpty else { return }
+        await install(sources: sources, stamp: true, reloadTabs: reloadTabs)
+    }
+
+    /// download one list, falling back to (and refreshing) the on-disk cache.
+    /// `isNew` when the text differs from what was cached
+    private func fetch(_ list: Blocklist, force: Bool) async -> (text: String, isNew: Bool)? {
+        let cached = cacheURL(list)
+        let previous = try? String(contentsOf: cached, encoding: .utf8)
+        if !force, isFresh(list), let previous, !previous.isEmpty {
+            return (previous, false)
+        }
+        do {
+            var request = URLRequest(url: list.url)
+            request.timeoutInterval = 20
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                let text = String(data: data, encoding: .utf8), !text.isEmpty
+            else { throw URLError(.badServerResponse) }
+            try? text.write(to: cached, atomically: true, encoding: .utf8)
+            return (text, text != previous)
+        } catch {
+            debugLog("blocklist \(list.id) fetch failed: \(error.localizedDescription)")
+            lastError = error.localizedDescription
+            // a stale cached copy beats no blocking at all
+            return previous.map { ($0, false) }
+        }
+    }
+
+    /// convert + compile + install. conversion runs off the main actor — it walks
+    /// a hundred thousand lines and would otherwise stall the UI for seconds
+    private func install(sources: [String], stamp: Bool, reloadTabs: Bool) async {
+        let fixes = Self.siteFixes
+        let converted = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
+            AdblockConverter.convert(sources, extraExceptions: fixes)
+        }.value
+
+        var compiled: [WKContentRuleList] = []
+        let store = WKContentRuleListStore.default()
+        for (index, json) in converted.chunks.enumerated() {
+            let identifier = "artemis-block-\(Self.digest(json))-\(index)"
+            if let existing = try? await store?.contentRuleList(forIdentifier: identifier) {
+                compiled.append(existing)
+                continue
+            }
+            do {
+                if let list = try await store?.compileContentRuleList(
+                    forIdentifier: identifier, encodedContentRuleList: json) {
+                    compiled.append(list)
+                }
+            } catch {
+                debugLog("blocklist chunk \(index) failed to compile: \(error.localizedDescription)")
+                // WebKit puts the parser's own message in the help anchor; the
+                // localized description is only "compile failed"
+                let detail = (error as NSError).userInfo[NSHelpAnchorErrorKey] as? String
+                let failure = "rule chunk \(index + 1) of \(converted.chunks.count) "
+                    + "failed to compile: \(detail ?? error.localizedDescription)"
+                lastError = failure
+                Diagnostics.record(area: "blocker", message: failure)
+            }
+        }
+        guard !compiled.isEmpty else { return }
+
+        for ucc in SharedWebContent.all {
+            for list in installed { ucc.remove(list) }
+            if isEnabled { for list in compiled { ucc.add(list) } }
+        }
+        installed = compiled
+        if reloadTabs { Self.reloadLoadedTabs() }
+        ruleCount = converted.ruleCount
+        droppedCount = converted.droppedCount
+        UserDefaults.standard.set(compiled.map(\.identifier), forKey: Self.compiledIdentifiersKey)
+        UserDefaults.standard.set(Self.fixesFingerprint, forKey: Self.compiledFixesKey)
+        UserDefaults.standard.set(
+            [converted.ruleCount, converted.droppedCount], forKey: Self.compiledStatsKey)
+        if stamp {
+            lastUpdated = Date()
+            UserDefaults.standard.set(lastUpdated, forKey: Self.lastUpdateKey)
+        }
+        await pruneStaleCompiledLists(keeping: Set(compiled.map(\.identifier)))
+        debugLog("blocklists installed: \(compiled.count) chunks, \(converted.ruleCount) rules")
+    }
+
+    /// build from whatever is cached, without hitting the network (launch path).
+    ///
+    /// the fast path installs the bytecode WebKit already has: converting the
+    /// lists again costs ~3s of CPU and hundreds of megabytes of transient
+    /// allocation to arrive at rules that are byte-identical to last launch's.
+    /// only a cache miss (first run, or lists changed underneath us) converts.
+    private func rebuild() async {
+        if await installPreviouslyCompiled() { return }
+
+        var sources: [String] = []
+        for list in enabledLists {
+            if let text = try? String(contentsOf: cacheURL(list), encoding: .utf8), !text.isEmpty {
+                sources.append(text)
+                if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
+            }
+        }
+        await install(
+            sources: sources.isEmpty ? [Self.starterList] : sources, stamp: false, reloadTabs: true)
+    }
+
+    /// look the last build's chunks up by identifier and install them as-is.
+    /// false if any is missing, in which case the caller rebuilds from source
+    @discardableResult
+    func installPreviouslyCompiled() async -> Bool {
+        let defaults = UserDefaults.standard
+        guard let identifiers = defaults.array(forKey: Self.compiledIdentifiersKey) as? [String],
+            !identifiers.isEmpty, let store = WKContentRuleListStore.default(),
+            defaults.string(forKey: Self.compiledFixesKey) == Self.fixesFingerprint
+        else { return false }
+
+        var lists: [WKContentRuleList] = []
+        for identifier in identifiers {
+            guard let list = try? await store.contentRuleList(forIdentifier: identifier)
+            else { return false }
+            lists.append(list)
+        }
+
+        for ucc in SharedWebContent.all {
+            for list in installed { ucc.remove(list) }
+            if isEnabled { for list in lists { ucc.add(list) } }
+        }
+        installed = lists
+        if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 2 {
+            ruleCount = stats[0]
+            droppedCount = stats[1]
+        }
+        await loadTrackerHosts()
+        debugLog("blocklists: reused \(lists.count) already-compiled chunks")
+        return true
+    }
+
+    /// every compile writes a new bytecode blob keyed by content hash; without
+    /// this sweep, a year of weekly updates leaves 50 dead copies on disk
+    private func pruneStaleCompiledLists(keeping identifiers: Set<String>) async {
+        guard let store = WKContentRuleListStore.default() else { return }
+        let existing = (try? await store.availableIdentifiers()) ?? []
+        for identifier in existing
+        where identifier.hasPrefix("artemis-block") && !identifiers.contains(identifier) {
+            try? await store.removeContentRuleList(forIdentifier: identifier)
+        }
+    }
+
+    private static func digest(_ text: String) -> String {
+        let hash = SHA256.hash(data: Data(text.utf8))
+        return hash.compactMap { String(format: "%02x", $0) }.joined().prefix(16).description
+    }
+
+    // MARK: - Artemis' own site fixes
+
+    /// Exceptions Artemis carries itself, appended after every converted list.
+    ///
+    /// Prime Video's ad-supported tier stitches its ads in from
+    /// `amazon-adsystem.com`; blocking that *on an Amazon page* makes the player
+    /// abort outright ("Video Unavailable"). So it stays blocked as a tracker
+    /// everywhere except Amazon/Prime, where it is load-bearing for playback.
+    /// YouTube's player tears its stream down and retries while its playback
+    /// report (`/api/stats/qoe`) is blocked, so that one stays open on YouTube.
+    static let siteFixes: [ContentRule] = {
+        let amazonHosts = [
+            "*amazon.co.uk", "*amazon.com", "*amazon.de", "*amazon.fr", "*amazon.es",
+            "*amazon.it", "*amazon.ca", "*amazon.co.jp", "*primevideo.com",
+        ]
+        return [
+            ContentRule(
+                trigger: .init(
+                    urlFilter: "^https?://([^/]+\\.)?amazon-adsystem\\.com",
+                    ifDomain: amazonHosts),
+                action: .init(type: "ignore-previous-rules")),
+            ContentRule(
+                trigger: .init(
+                    urlFilter: "^https?://([^/]+\\.)?youtube\\.com/api/stats/qoe",
+                    ifDomain: ["*youtube.com"]),
+                action: .init(type: "ignore-previous-rules")),
+        ]
+    }()
+
+    /// The offline fallback: a small curated set of the most prolific ad and
+    /// tracker domains, used before the first successful download (or when the
+    /// machine has never been online). Superseded by EasyList the moment it lands.
+    private static let starterList: String = {
+        let domains = [
+            "doubleclick.net", "googlesyndication.com", "google-analytics.com",
+            "googleadservices.com", "googletagservices.com", "googletagmanager.com",
+            "2mdn.net", "adnxs.com", "advertising.com", "adsystem.com",
+            "amazon-adsystem.com", "scorecardresearch.com", "moatads.com",
+            "rubiconproject.com", "pubmatic.com", "criteo.com", "criteo.net",
+            "taboola.com", "outbrain.com", "quantserve.com", "openx.net",
+            "casalemedia.com", "adform.net", "bidswitch.net", "hotjar.com",
+            "mixpanel.com", "segment.com", "branch.io", "appsflyer.com",
+            "doubleverify.com", "yieldmo.com", "sharethrough.com", "smartadserver.com",
+            "teads.tv", "zedo.com", "adroll.com", "bluekai.com", "demdex.net", "krxd.net",
+        ]
+        // expressed as filter syntax so it goes through the same converter as
+        // everything else — one code path, no second rule format to maintain
+        return domains.map { "||\($0)^$third-party" }.joined(separator: "\n")
+    }()
+}

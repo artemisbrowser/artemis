@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Send Feedback from Artemis
+    url: https://github.com/artemisbrowser/artemis/blob/main/CONTRIBUTING.md#reporting-bugs
+    about: The quickest way. In Artemis, choose Help > Send Feedback… and your versions come along with it.
+  - name: Security problem
+    url: https://github.com/artemisbrowser/artemis/security/advisories/new
+    about: Report it privately, not as an issue.

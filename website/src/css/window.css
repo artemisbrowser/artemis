@@ -1,0 +1,784 @@
+/* Replica: lengths are macOS points written as calc(N * var(--u)); --u is one point in CSS px. */
+:root {
+  --u: 1px;
+}
+
+.rig {
+  position: relative;
+}
+.win,
+.win-shadow {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(16 * var(--u));
+}
+.win-shadow {
+  box-shadow: var(--sh-win);
+}
+/* chrome glass takes the window's accent: a 25% tint, a dark hairline, lit rims top and bottom (ChromeGlass) */
+.win {
+  --g-tint: color-mix(in srgb, var(--accent) 60%, white);
+  --g-chrome-tint: color-mix(in srgb, var(--g-tint) 25%, transparent);
+  --g-chrome-tint-flat: var(--g-chrome-tint);
+  --g-chrome-filter: blur(14px);
+  --g-lit: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--accent) 45%, white) 40%,
+    transparent
+  );
+  --g-edge: color-mix(
+    in oklch,
+    color-mix(in oklch, var(--accent) 55%, white) 60%,
+    transparent
+  );
+  --g-rim:
+    inset 0 0 0 0.5px rgb(0 0 0 / 0.3),
+    inset 0 2px 3px -1px color-mix(in oklch, var(--accent) 45%, transparent),
+    inset 0 -2px 3px -1px color-mix(in oklch, var(--accent) 45%, transparent);
+  --g-specular: linear-gradient(
+    180deg,
+    var(--g-edge),
+    transparent 32% 68%,
+    var(--g-edge)
+  );
+  --g-text-bg: rgb(57 57 57 / 0.75);
+  --edge: 10;
+  /* the docked sidebar's grip: the rim, or nothing under the 6 pt grab width (MainView.rigGripWidth) */
+  --grip: calc(var(--edge) * clamp(0, var(--edge) - 5, 1));
+  overflow: clip;
+  container-type: size;
+  color: #fff;
+  font: 400 calc(14 * var(--u)) / 1.2 var(--font);
+  letter-spacing: 0;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+/* look layers: two per host, the top one opaque; an idle layer has no look and paints nothing */
+[data-host] {
+  isolation: isolate;
+}
+.win-bd,
+.fsb-bd {
+  position: absolute;
+  inset: 0;
+}
+.lk {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  background: var(--look-base, transparent) var(--look-img, none) 0 0 / 100%
+    100% no-repeat;
+}
+.lk[data-top] {
+  z-index: 2;
+  opacity: 1;
+}
+.lk[data-look]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("/assets/spaces/grain-tile-128.png") 0 0 / 128px;
+  mix-blend-mode: overlay;
+  opacity: var(--look-grain);
+}
+
+/* sidebar: x 0–250, column from x 12. Its right margin is 12 pt counting the rim after the frame
+   (the grip docked, one edge floating), and never below that rim (Sidebar.trailingInset) */
+.sb,
+.fsb-in {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(250 * var(--u));
+}
+.sb {
+  --col: min(238, 226 + var(--grip));
+}
+.sb-pin {
+  position: absolute;
+  inset: 0;
+  transition: translate var(--dur-sidebar) var(--spring-sidebar);
+}
+.win[data-sidebar="hidden"] .sb-pin {
+  translate: calc(-262 * var(--u)) 0;
+}
+.toprow {
+  position: absolute;
+  top: calc(8 * var(--u));
+  left: 0;
+  width: 100%;
+  height: calc(36 * var(--u));
+}
+.lights {
+  position: absolute;
+  top: calc(11 * var(--u));
+  left: calc(12 * var(--u));
+  display: flex;
+  gap: calc(9 * var(--u));
+}
+.tl {
+  width: calc(14 * var(--u));
+  height: calc(14 * var(--u));
+  border-radius: 50%;
+  forced-color-adjust: none;
+  box-shadow: inset 0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.3);
+}
+.tl.c {
+  background: linear-gradient(#e46254, #de7165);
+}
+.tl.m {
+  background: linear-gradient(#f0b500, #f7d052);
+}
+.tl.z {
+  background: linear-gradient(#5abc05, #70c14e);
+}
+.circ {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: calc(36 * var(--u));
+  height: calc(36 * var(--u));
+  border-radius: 50%;
+}
+.toprow .circ {
+  position: absolute;
+  top: 0;
+}
+.toprow .toggle {
+  left: calc(82 * var(--u));
+}
+.toprow .back {
+  left: calc((var(--col) - 66) * var(--u));
+}
+/* Back stays disabled until the window has navigated */
+.win:not([data-nav]) .back .gl {
+  color: rgb(255 255 255 / 0.3);
+}
+.toprow .reload {
+  left: calc((var(--col) - 24) * var(--u));
+}
+
+/* glyphs: 24-unit symbols drawn with round strokes, sized to the SF Symbol point sizes */
+.gl {
+  display: block;
+  flex: none;
+  width: calc(17 * var(--u));
+  height: calc(17 * var(--u));
+  color: rgb(255 255 255 / 0.8);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.gl.b {
+  stroke-width: 2.9;
+}
+.gl.s13 {
+  width: calc(18.5 * var(--u));
+  height: calc(18.5 * var(--u));
+  stroke-width: 2.5;
+}
+.gl.s15 {
+  width: calc(21 * var(--u));
+  height: calc(21 * var(--u));
+}
+.gl.s16 {
+  width: calc(16.5 * var(--u));
+  height: calc(16.5 * var(--u));
+}
+.toprow .toggle .gl {
+  width: calc(19 * var(--u));
+  height: calc(19 * var(--u));
+  stroke-width: 2.2;
+}
+.toprow .reload .gl {
+  width: calc(19.5 * var(--u));
+  height: calc(19.5 * var(--u));
+}
+.gl.tune {
+  width: calc(18 * var(--u));
+  height: calc(13.5 * var(--u));
+  stroke-width: 1.4;
+}
+
+.url {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--u));
+  height: calc(36 * var(--u));
+  padding: 0 calc(7 * var(--u)) 0 calc(14 * var(--u));
+  border-radius: calc(18 * var(--u));
+}
+:is(.sb-pin, .fsb-in) > .url {
+  position: absolute;
+  top: calc(54 * var(--u));
+  left: calc(12 * var(--u));
+  width: calc(var(--col) * var(--u));
+}
+.dom {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(13 * var(--u));
+  color: rgb(255 255 255 / 0.9);
+}
+.ub {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: calc(22 * var(--u));
+  height: calc(22 * var(--u));
+}
+
+/* five favourites wrap 3 + 2, each at least 70 pt wide */
+.favs {
+  position: absolute;
+  top: calc(98 * var(--u));
+  left: calc(12 * var(--u));
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(5 * var(--u));
+  width: calc(var(--col) * var(--u));
+  transition: opacity var(--dur-page-swap) var(--ease-in-out);
+}
+.win:not([data-profile="work"]) .favs[data-profile="work"],
+.win[data-profile="work"] .favs[data-profile="personal"] {
+  opacity: 0;
+}
+.fav {
+  display: grid;
+  place-items: center;
+  flex: 1 1 calc(70 * var(--u));
+  height: calc(48 * var(--u));
+  border-radius: calc(10 * var(--u));
+}
+/* a resting tile is glass at half strength under a full-strength favicon, as the app draws it */
+.win .favs .fav.half {
+  opacity: 1;
+  background: color-mix(in srgb, var(--g-tint) 12%, transparent);
+  box-shadow:
+    inset 0 0 0 0.5px rgb(0 0 0 / 0.2),
+    0 2px 7px rgb(0 0 0 / 0.09);
+}
+.win .favs .fav.half::before {
+  opacity: 0.5;
+}
+.fav .fi {
+  width: calc(20 * var(--u));
+  height: calc(20 * var(--u));
+  border-radius: calc(5 * var(--u));
+}
+
+/* pager: one 250 pt slot per space, the strip slides by slots */
+.pager {
+  position: absolute;
+  top: calc(207 * var(--u));
+  bottom: calc(56 * var(--u));
+  left: 0;
+  width: calc(250 * var(--u));
+  overflow: clip;
+}
+.strip {
+  display: flex;
+  gap: calc((250 - var(--col)) * var(--u));
+  padding-left: calc(12 * var(--u));
+  translate: calc(-250 * var(--u) * var(--si, 0)) 0;
+  transition: translate var(--dur-carousel) var(--spring-carousel);
+}
+.win[data-via="click"] .strip {
+  transition: translate var(--dur-space-click) var(--ease-in-out);
+}
+.win[data-instant] :is(.strip, .sb-pin, .card-e, .page, .panes, .pane, .fsb) {
+  transition: none;
+}
+.panel {
+  display: flex;
+  flex: 0 0 calc(var(--col) * var(--u));
+  min-width: 0;
+  flex-direction: column;
+  gap: calc(5 * var(--u));
+}
+.shead {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: calc(8 * var(--u));
+  height: calc(36 * var(--u));
+  margin-bottom: calc(-5 * var(--u));
+  padding-left: calc(11 * var(--u));
+  font-weight: 700;
+  color: rgb(255 255 255 / 0.7);
+}
+.sicon {
+  display: block;
+  flex: none;
+  width: calc(16 * var(--u));
+  height: calc(16 * var(--u));
+  color: var(--accent);
+}
+.row {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: calc(8 * var(--u));
+  height: calc(36 * var(--u));
+  padding: 0 calc(7 * var(--u)) 0 calc(11 * var(--u));
+  border-radius: calc(10 * var(--u));
+  font-size: calc(14 * var(--u));
+  color: #fff;
+  white-space: nowrap;
+}
+.row[hidden] {
+  display: none;
+}
+.row .t,
+.spill .t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row .fi,
+.spill .fi {
+  width: calc(16 * var(--u));
+  height: calc(16 * var(--u));
+  border-radius: calc(4 * var(--u));
+}
+.row.new {
+  color: rgb(255 255 255 / 0.7);
+}
+.row.new .gl {
+  width: calc(15 * var(--u));
+  height: calc(15 * var(--u));
+  margin: 0 calc(-1 * var(--u));
+  color: inherit;
+  stroke-width: 2.6;
+}
+.pin-line {
+  flex: none;
+  height: calc(1 * var(--u));
+  margin: calc(10 * var(--u)) calc(4 * var(--u));
+  border: 0;
+  background: rgb(255 255 255 / 0.12);
+}
+.srow {
+  display: flex;
+  flex: none;
+  gap: calc(3 * var(--u));
+}
+.spill {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: calc(6 * var(--u));
+  min-width: 0;
+  height: calc(36 * var(--u));
+  padding: 0 calc(8 * var(--u));
+  border-radius: calc(10 * var(--u));
+  font-size: calc(14 * var(--u));
+  white-space: nowrap;
+}
+
+.bottombar {
+  position: absolute;
+  bottom: calc(10 * var(--u));
+  left: calc(12 * var(--u));
+  display: flex;
+  gap: calc(8 * var(--u));
+  width: calc(var(--col) * var(--u));
+  height: calc(36 * var(--u));
+}
+/* the dots capsule hugs its dots, centred between the circles */
+.switcher {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin: 0 auto;
+  padding: 0 calc(7 * var(--u));
+  border-radius: calc(18 * var(--u));
+}
+.dot {
+  display: grid;
+  place-items: center;
+  width: calc(13 * var(--u));
+  height: calc(13 * var(--u));
+}
+.dot::before {
+  content: "";
+  width: calc(5 * var(--u));
+  height: calc(5 * var(--u));
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.3);
+  transition: background-color var(--dur-fade) var(--ease-in-out);
+}
+.win[data-space="0"] .dot:nth-child(1)::before,
+.win[data-space="1"] .dot:nth-child(2)::before,
+.win[data-space="2"] .dot:nth-child(3)::before {
+  background: rgb(255 255 255 / 0.9);
+}
+
+/* card: inset by the edge on three sides and by the grip after a docked sidebar, radius 16 × (1 − edge/24) */
+.card-e,
+.panes {
+  position: absolute;
+  top: calc(var(--edge) * var(--u));
+  right: calc(var(--edge) * var(--u));
+  bottom: calc(var(--edge) * var(--u));
+  left: calc((250 + var(--grip)) * var(--u));
+  transition: left var(--dur-sidebar) var(--spring-sidebar);
+}
+.win[data-sidebar="hidden"] :is(.card-e, .panes) {
+  left: calc(var(--edge) * var(--u));
+}
+.card-pin,
+.card,
+.page,
+.page-pin {
+  position: absolute;
+  inset: 0;
+}
+/* pin 1 hold: re-pins the docked sidebar over the scrubbed state with transforms only (B1 sets --cp) */
+.card-pin,
+.page-pin {
+  transform-origin: 100% 50%;
+  transition:
+    scale var(--dur-sidebar) var(--spring-sidebar),
+    transform var(--dur-sidebar) var(--spring-sidebar);
+}
+.win[data-repin] .sb-pin {
+  translate: calc(262 * var(--u)) 0;
+}
+.win[data-repin] .card-pin {
+  scale: var(--cp) 1;
+}
+.win[data-repin] .page-pin {
+  transform: scaleX(calc(1 / var(--cp))) translateX(calc(125 * var(--u)));
+}
+.card {
+  overflow: clip;
+  border-radius: calc(16 * var(--u) * (1 - var(--edge) / 24));
+  background: var(--card-base);
+  box-shadow: 0 calc(3 * var(--u)) calc(24 * var(--u)) rgb(0 0 0 / 0.35);
+}
+.page {
+  container-type: size;
+}
+.loadbar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 3;
+  height: calc(7 * var(--u));
+  background: rgb(255 255 255 / 0.32);
+  box-shadow: inset 0 calc(-0.5 * var(--u)) 0 rgb(0 0 0 / 0.08);
+  opacity: 0;
+  transition: opacity var(--dur-fade) var(--ease-in-out);
+}
+.loadbar i {
+  position: absolute;
+  top: calc(2 * var(--u));
+  right: calc(2 * var(--u));
+  left: calc(2 * var(--u));
+  height: calc(3 * var(--u));
+  border-radius: calc(3 * var(--u));
+  background: var(--accent);
+  transform-origin: 0 50%;
+  scale: 0 1;
+  transition: scale 0s var(--dur-fade);
+}
+.loadbar.on {
+  opacity: 1;
+  transition-duration: 0s;
+}
+.loadbar.on i {
+  scale: 1 1;
+  transition: scale var(--dur-load-bar) var(--ease-out-flat);
+}
+.lcap-in {
+  position: absolute;
+  bottom: calc(12 * var(--u));
+  left: calc(12 * var(--u));
+  z-index: 3;
+  padding: calc(5 * var(--u)) calc(10 * var(--u));
+  border-radius: calc(12 * var(--u));
+  font-size: calc(11 * var(--u));
+  color: rgb(255 255 255 / 0.85);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-link-capsule) var(--ease-out-flat);
+}
+.lcap-in.on {
+  opacity: 1;
+}
+.lcap-in:empty {
+  display: none;
+}
+
+/* split: panes tile the card rectangle, 10 pt gaps; collapsed panes wait at the right and bottom right */
+.panes {
+  --hf: calc(50% - 5 * var(--u));
+  --of: calc(50% + 5 * var(--u));
+}
+.pane {
+  --l: 0%;
+  --t: 0%;
+  --w: 100%;
+  --h: 100%;
+  position: absolute;
+  top: var(--t);
+  left: var(--l);
+  width: var(--w);
+  height: var(--h);
+  overflow: clip;
+  container-type: size;
+  border-radius: calc(10 * var(--u));
+  background: var(--card-base);
+  box-shadow: 0 calc(2 * var(--u)) calc(16 * var(--u)) rgb(0 0 0 / 0.28);
+  transition: opacity var(--dur-fade) var(--ease-in-out);
+}
+/* while its pane's frame animates, a page holds --pw and --ph where set (window.js setSplit); the pane clips it */
+.pane > .pg {
+  width: var(--pw, auto);
+  height: var(--ph, auto);
+  overflow: visible;
+  container-type: size;
+}
+.pane:nth-child(2) {
+  --l: 100%;
+  --w: 0%;
+  opacity: 0;
+}
+.pane:nth-child(n + 3) {
+  --l: 100%;
+  --t: 100%;
+  --w: 0%;
+  --h: 0%;
+  opacity: 0;
+}
+.win:is(:not([data-split]), [data-split="1"]) .pane:first-child {
+  border-radius: calc(16 * var(--u) * (1 - var(--edge) / 24));
+}
+.win:is([data-split="2"], [data-split="3"]) .pane:nth-child(1) {
+  --w: var(--hf);
+}
+.win[data-split="2"] .pane:nth-child(2) {
+  --l: var(--of);
+  --w: var(--hf);
+  opacity: 1;
+}
+.win:is([data-split="3"], [data-split="4"]) .pane:nth-child(2) {
+  --l: var(--of);
+  --w: var(--hf);
+  --h: var(--hf);
+  opacity: 1;
+}
+.win[data-split="3"] .pane:nth-child(3),
+.win[data-split="4"] .pane:nth-child(4) {
+  --l: var(--of);
+  --t: var(--of);
+  --w: var(--hf);
+  --h: var(--hf);
+  opacity: 1;
+}
+.win[data-split="4"] .pane:nth-child(1) {
+  --w: var(--hf);
+  --h: var(--hf);
+}
+.win[data-split="4"] .pane:nth-child(3) {
+  --l: 0%;
+  --t: var(--of);
+  --w: var(--hf);
+  --h: var(--hf);
+  opacity: 1;
+}
+/* the pane ring is drawn inside the pane, so the 10 pt gap holds only the divider grip;
+   an inset shadow keeps its scaled 1 and 2 pt widths, which a border would snap to whole pixels */
+.pane::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 calc(1 * var(--u)) rgb(255 255 255 / 0.08);
+  pointer-events: none;
+  transition: box-shadow var(--dur-fade) var(--ease-in-out);
+}
+.pane.f::after {
+  box-shadow: inset 0 0 0 max(1px, calc(2 * var(--u)))
+    color-mix(in oklch, var(--accent) 90%, transparent);
+}
+.win[data-split="2"] .panes::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: calc(50% - 1.5 * var(--u));
+  top: calc(50% - 14 * var(--u));
+  width: calc(3 * var(--u));
+  height: calc(28 * var(--u));
+  border-radius: calc(1.5 * var(--u));
+  background: rgb(255 255 255 / 0.22);
+}
+/* a window with a card shows panes only while split */
+.win[data-split]:not([data-split="1"]) .card-e {
+  visibility: hidden;
+}
+.win:is(:not([data-split]), [data-split="1"]) .card-e ~ .panes {
+  visibility: hidden;
+  transition:
+    left var(--dur-sidebar) var(--spring-sidebar),
+    visibility 0s var(--dur-panel);
+}
+
+/* floating sidebar: the mesh clipped to 250 pt plus one edge, square left and 14 pt trailing corners;
+   hidden, it is wholly off the window */
+.fsb {
+  --col: min(238, 226 + var(--edge));
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 4;
+  width: calc((250 + var(--edge)) * var(--u));
+  overflow: clip;
+  border-radius: 0 calc(14 * var(--u)) calc(14 * var(--u)) 0;
+  box-shadow: calc(6 * var(--u)) 0 calc(36 * var(--u)) rgb(0 0 0 / 0.45);
+  translate: calc(-272 * var(--u)) 0;
+  visibility: hidden;
+  transition:
+    translate var(--dur-sidebar-reveal) var(--spring-sidebar),
+    visibility 0s var(--dur-sidebar-reveal);
+}
+.win[data-float="open"] .fsb {
+  translate: 0 0;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.fsb-bd {
+  inset: 0 auto auto 0;
+  width: 100cqw;
+  height: 100cqh;
+}
+
+.hud {
+  position: absolute;
+  bottom: calc(24 * var(--u));
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--u));
+  height: calc(44 * var(--u));
+  padding: 0 calc(10 * var(--u));
+  border-radius: calc(22 * var(--u));
+  translate: -50% 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.hud:empty {
+  display: none;
+}
+.hud .kc {
+  min-width: calc(26 * var(--u));
+  height: calc(26 * var(--u));
+  padding: 0 calc(7 * var(--u));
+  border-radius: calc(6 * var(--u));
+  font-size: calc(15 * var(--u));
+}
+
+/* rim: a lit 1 px edge masked to a soft spot; ::before rests, ::after carries the sweep */
+.rim {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.rim::before,
+.rim::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgb(255 255 255 / 0.55);
+  border-radius: inherit;
+  -webkit-mask: radial-gradient(
+    42% 46% at var(--mx) var(--my),
+    #000,
+    #0009 30%,
+    #0003 50%,
+    #0000 72%
+  );
+  mask: radial-gradient(
+    42% 46% at var(--mx) var(--my),
+    #000,
+    #0009 30%,
+    #0003 50%,
+    #0000 72%
+  );
+}
+.rim::after {
+  border-width: 1.5px;
+  border-color: rgb(255 255 255 / 0.9);
+  box-shadow: inset 0 0 calc(10 * var(--u)) rgb(255 255 255 / 0.32);
+  opacity: 0;
+}
+.rim.sweep::after {
+  animation: rim-sweep var(--dur-rim) var(--ease-rim);
+}
+@keyframes rim-sweep {
+  from {
+    --mx: -15%;
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 1;
+  }
+  to {
+    --mx: 115%;
+    opacity: 0;
+  }
+}
+
+/* favicons: generic drawn glyphs on their own tiles */
+.fi {
+  display: block;
+  flex: none;
+  background: 0 0 / 100% 100% no-repeat;
+}
+.fi-lowlight {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23101112'/><path fill='%23ECECEC' d='M15.8 11.75A6 6 0 1 1 8.25 4.2a6.07 6.07 0 0 0 7.55 7.55Z'/></svg>");
+}
+.fi-slowloaf {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23F3E3C6'/><path fill='%23C98A4B' d='M3.8 13C3.8 8.9 6.6 6.2 10 6.2s6.2 2.7 6.2 6.8v.6c0 .8-.6 1.4-1.4 1.4H5.2c-.8 0-1.4-.6-1.4-1.4Z'/><path d='m7.4 9.4 1.3 1.7m1.7-2.5 1.3 1.7' stroke='%23F3E3C6' stroke-width='1.1' stroke-linecap='round'/></svg>");
+}
+.fi-plot {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%233F9D5A'/><path fill='%23D9F7C8' d='M15.6 4.4C9.4 4.4 5.6 7.2 5.6 11.2c0 1 .3 1.8.7 2.4l-1.6 1.6.8.8 1.6-1.6c.6.4 1.4.7 2.4.7 4.2 0 6.1-4.4 6.1-10.7Z'/></svg>");
+}
+.fi-studio {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%2334495E'/><g fill='white'><circle cx='10' cy='7.3' r='3.3'/><circle cx='7.1' cy='9.6' r='2.7'/><circle cx='12.9' cy='9.6' r='2.7'/><rect x='9.3' y='10' width='1.4' height='6.2' rx='.6'/></g></svg>");
+}
+.fi-mail {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%235B6B7F'/><rect x='4' y='5.8' width='12' height='8.6' rx='1.6' fill='white'/><path d='M4.7 6.7 10 10.8l5.3-4.1' fill='none' stroke='%235B6B7F' stroke-width='1.3' stroke-linejoin='round'/></svg>");
+}
+.fi-docs {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23C9932F'/><path fill='white' d='M6.6 4h4.8l3 3v8.2c0 .5-.4.8-.8.8H6.6a.8.8 0 0 1-.8-.8V4.8c0-.4.4-.8.8-.8Z'/><path d='M7.9 10h4.2M7.9 12.4h4.2' stroke='%23C9932F' stroke-width='1' stroke-linecap='round'/></svg>");
+}
+.fi-chat {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%233C8D6E'/><path fill='white' d='M10 4.8c3.3 0 5.8 2 5.8 4.6S13.3 14 10 14c-.6 0-1.2-.1-1.8-.2l-2.6 1.6.6-2.5c-1.2-.8-2-2-2-3.5 0-2.6 2.5-4.6 5.8-4.6Z'/></svg>");
+}
+.fi-globe {
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-opacity='.6' stroke-width='1.3'><path d='M16.4 10a6.4 6.4 0 1 1-12.8 0 6.4 6.4 0 1 1 12.8 0ZM3.6 10h12.8M10 3.6c-1.8 1.7-2.7 3.9-2.7 6.4s.9 4.7 2.7 6.4c1.8-1.7 2.7-3.9 2.7-6.4S11.8 5.3 10 3.6Z'/></svg>");
+}
+
+@media (inverted-colors: inverted) or (prefers-contrast: more) or (prefers-reduced-transparency: reduce) {
+  .win {
+    --g-chrome-tint: color-mix(in oklab, var(--card-base) 86%, white);
+    --g-chrome-tint-flat: var(--g-chrome-tint);
+    --g-lit: rgb(255 255 255 / 0.16);
+    --g-text-bg: #1c1c1f;
+  }
+}

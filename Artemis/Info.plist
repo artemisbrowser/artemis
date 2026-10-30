@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<!-- Shown by macOS the first time a site is granted one of these. The
+	     wording is deliberately about the site, not about Artemis: the browser
+	     never uses the camera, microphone or your location on its own account. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Artemis asks before letting a website use your camera, and remembers your answer per site.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Artemis asks before letting a website use your microphone, and remembers your answer per site.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Artemis asks before letting a website see your location, and remembers your answer per site.</string>
+	<!-- Handoff: the page you're reading, offered to your other devices (and
+	     picked up from them). The system browsing activity is the one every
+	     Apple platform already understands, so Safari on the iPhone hands its
+	     page to us and vice versa with no infrastructure on our side. -->
+	<!-- Draws the Dock tile while Artemis is quit, so a pinned tile shows the
+	     chosen app icon instead of the Dock's cached one. -->
+	<key>NSDockTilePlugIn</key>
+	<string>ArtemisDockTile.docktileplugin</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>NSUserActivityTypeBrowsingWeb</string>
+	</array>
+	<!-- Files Artemis can open (⌘O, Finder's Open With, a drop on the Dock icon).
+	     Rank Alternate throughout: declaring a browser the owner of every HTML file
+	     on the disk is how a browser makes an enemy of the person who installed it. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Web page</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.html</string>
+				<string>public.xhtml</string>
+				<string>org.w3c.webarchive</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.adobe.pdf</string>
+				<string>public.plain-text</string>
+				<string>public.svg-image</string>
+				<string>public.image</string>
+			</array>
+		</dict>
+	</array>
+	<!-- Register Artemis as a web browser: declaring the http/https schemes makes
+	     macOS list it under System Settings → Desktop & Dock → Default web browser.
+	     Once chosen, links from other apps are delivered to us (.onOpenURL → a
+	     Scout window). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Web site URL</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>http</string>
+				<string>https</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

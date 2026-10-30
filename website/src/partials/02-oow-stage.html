@@ -1,0 +1,44 @@
+<div class="caps">
+  <p class="cap g-cap" data-cap="c1" inert>
+    <kbd class="kc" data-k="meta">⌘</kbd><kbd class="kc" data-k="s">S</kbd
+    ><span>hides the sidebar.</span>
+  </p>
+  <p class="cap g-cap" data-cap="c2" inert>
+    Set the edge thickness to zero and the page fills the whole window.<span
+      class="cap-slider"
+      aria-hidden="true"
+      ><b><i></i></b><i></i></span
+    ><span class="cap-v" aria-hidden="true"></span>
+  </p>
+  <div class="cap g-cap" data-cap="c3" inert>
+    <span
+      >Your tabs are still there.<span class="hover-only">
+        Point at the left edge.</span
+      ></span
+    >
+    <button class="cap-btn" type="button">
+      <span class="pin-label">Show sidebar</span
+      ><kbd class="kc sm" data-k="meta">⌘</kbd
+      ><kbd class="kc sm" data-k="s">S</kbd>
+    </button>
+  </div>
+</div>
+<div class="oow-controls static-only">
+  <button class="ctl" type="button" data-act="sidebar">Hide sidebar</button>
+  <label class="ctl edge"
+    >Edge thickness
+    <input
+      type="range"
+      min="0"
+      max="16"
+      step="1"
+      value="10"
+      aria-valuetext="10 points"
+      aria-describedby="edge-cap"
+    /><output aria-hidden="true">10 pt</output></label
+  >
+  <p class="ctl-cap" id="edge-cap">
+    How much window shows around the page. At zero the page fills the whole
+    window.
+  </p>
+</div>

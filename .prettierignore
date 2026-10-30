@@ -1,0 +1,2 @@
+# the shim keeps its own layout, and ExtensionCompat substitutes into it by exact text
+Artemis/models/extensions/compat.js

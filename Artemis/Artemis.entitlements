@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<!-- Sideloading extensions: the user picks an unpacked folder or a packed
+	     .zip/.xpi/.crx via NSOpenPanel; this grants read access to that choice so
+	     ExtensionInstaller can copy it into Application Support. Not a restricted
+	     entitlement, so it stays safe for local "sign to run" builds. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+	<!-- One-click store installs download a signed .xpi (AMO) or .crx (Chrome
+	     Web Store) over HTTPS before handing it to the same disk-install path. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Picture in Picture: native PiP is driven through WKWebView's private
+	     `_togglePictureInPicture` SPI (the JS API no-ops off Safari). Under the App
+	     Sandbox the PiP window is hosted by the PIPAgent XPC service, which the
+	     sandbox blocks unless this mach-lookup is opened — exactly the entitlement
+	     WebKit's own sandboxed MiniBrowser ships. NOT a restricted entitlement (signs
+	     fine locally). It draws a Mac App Store rejection (Guideline 2.4.50), but
+	     Artemis ships notarized outside the MAS like every browser, so that's moot. -->
+	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+	<array>
+		<string>com.apple.PIPAgent</string>
+	</array>
+	<!-- Import from Arc: its sidebar, archive and Chromium history files live
+	     outside the container. Read-only, that one folder, and only touched when
+	     the import runs. Not a restricted entitlement, so local signing works. -->
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/Library/Application Support/Arc/</string>
+	</array>
+	<!-- The chosen app icon is written onto the installed bundle as a Finder
+	     custom icon (AppIconChoice.swift). Only the app's own folder. -->
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+	<array>
+		<string>/Applications/Artemis.app/</string>
+	</array>
+	<!-- Camera and microphone: a sandboxed app is refused capture devices without
+	     these, so `getUserMedia` fails no matter what the page or the delegate
+	     says. Which *sites* may use them is a separate, per-site decision the user
+	     makes at a prompt (SitePermissions.swift); this only says the browser is
+	     allowed to ask the system at all. Neither is a restricted entitlement. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Geolocation, same deal: WebKit runs the ceremony through CoreLocation and
+	     the sandbox needs to allow it before a site can be granted it. -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
+	<!-- Passkeys / WebAuthn: `com.apple.developer.web-browser.public-key-credential` belongs here
+	     only once Apple grants it and a development team signs the build; codesign rejects a
+	     restricted entitlement without one, which breaks "sign to run locally" builds. -->
+</dict>
+</plist>

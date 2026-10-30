@@ -1,0 +1,119 @@
+<!doctype html>
+<!-- Not shipped. One window per rig type at --u: 1px, for calibration renders. Serve the site folder over http and open /tools/replica.html. -->
+<html lang="en-GB" data-accent="tide" class="js fine">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Replica bench</title>
+    <link rel="canonical" href="https://ARTEMIS_DOMAIN/" />
+    <link rel="stylesheet" href="../src/css/tokens.css" />
+    <link rel="stylesheet" href="../src/css/base.css" />
+    <link rel="stylesheet" href="../src/css/components.css" />
+    <link rel="stylesheet" href="../src/css/window.css" />
+    <link rel="stylesheet" href="../src/css/pages.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 40px;
+        background: #07070c;
+      }
+      .bench {
+        display: grid;
+        grid-template-columns: repeat(2, 1000px);
+        gap: 72px 56px;
+      }
+      .bench h2 {
+        margin: 0 0 14px;
+        font: 600 15px/1 var(--mono);
+        color: #a1a1a6;
+      }
+      .nav {
+        display: none;
+      }
+      .bench .rig {
+        --u: 1px;
+        width: 1000px;
+        height: 640px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sprite"></div>
+    <div id="chrome"></div>
+    <div class="bench" id="bench"></div>
+    <script type="module">
+      const part = async (name, depth = 0) => {
+        const text = await (await fetch(`../src/partials/${name}.html`)).text();
+        const names = [...text.matchAll(/<!-- @include ([\w/-]+) -->/g)].map(
+          (m) => m[1],
+        );
+        const parts = await Promise.all(
+          names.map((n) => (depth < 6 ? part(n, depth + 1) : "")),
+        );
+        let i = 0;
+        return text.replace(/<!-- @include ([\w/-]+) -->/g, () => parts[i++]);
+      };
+      const shell = (rig, inner, winAttrs = "") => `
+        <div class="rig" data-rig="${rig}">
+          <div class="win-shadow"></div>
+          <div class="win" data-space="0" data-split="1" data-sidebar="pinned" data-float="hidden" ${winAttrs}>
+            <div class="win-bd" data-host><i class="lk" data-look="tide" data-top></i><i class="lk"></i></div>
+            ${inner}
+          </div>
+        </div>`;
+      const sidebar = (panels) => `
+        <div class="sb"><div class="sb-pin">
+          <!-- @include _win/sidebar-top --><!-- @include _win/favs -->
+          <div class="pager"><div class="strip">${panels.map((p) => `<!-- @include _win/panel-${p} -->`).join("")}</div></div>
+          <!-- @include _win/bottombar -->
+        </div></div>`;
+      const rigs = {
+        oow: shell(
+          "oow",
+          sidebar(["personal"]) +
+            "<!-- @include _win/card --><!-- @include _win/fsb --><i class='rim'></i>",
+        ),
+        spaces: shell(
+          "spaces",
+          sidebar(["personal", "work", "garden"]) +
+            "<!-- @include _win/card --><!-- @include _win/overlays -->",
+        ),
+        cmd: shell(
+          "cmd",
+          sidebar(["personal", "work", "garden"]) +
+            "<!-- @include _win/card --><!-- @include _win/panes --><!-- @include _win/cmd --><!-- @include _win/overlays -->",
+          'data-cmd="closed"',
+        ),
+        split: shell(
+          "split",
+          sidebar(["personal"]) +
+            "<!-- @include _win/panes --><!-- @include _win/overlays -->",
+        ),
+      };
+      const resolve = async (html) => {
+        const names = [...html.matchAll(/<!-- @include ([\w/-]+) -->/g)].map(
+          (m) => m[1],
+        );
+        const parts = await Promise.all(names.map((n) => part(n)));
+        let i = 0;
+        return html.replace(/<!-- @include ([\w/-]+) -->/g, () => parts[i++]);
+      };
+      document.getElementById("sprite").innerHTML = await part("00-sprite");
+      document.getElementById("chrome").innerHTML = await part("00-nav");
+      const bench = document.getElementById("bench");
+      for (const [name, html] of Object.entries(rigs))
+        bench.insertAdjacentHTML(
+          "beforeend",
+          `<div><h2>${name}</h2>${await resolve(html)}</div>`,
+        );
+      const { mountWindow } = await import("../src/js/window.js");
+      window.R = Object.fromEntries(
+        [...bench.querySelectorAll(".rig")].map((rig) => [
+          rig.dataset.rig,
+          mountWindow(rig, { cmd: rig.dataset.rig === "cmd" }),
+        ]),
+      );
+      document.documentElement.dataset.ready = "";
+    </script>
+  </body>
+</html>
