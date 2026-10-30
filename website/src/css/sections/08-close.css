@@ -206,6 +206,9 @@ html:not(.js) .sec-close .mark-wrap .btn {
 .cta-close h2 span {
   display: block;
 }
+.cta-close .more {
+  margin-top: 12px;
+}
 .cta-close .get-block {
   margin-top: 28px;
 }
