@@ -87,6 +87,9 @@ struct ArtemisApp: App {
 
             CommandGroup(replacing: .appInfo) {
                 Button("About Artemis") { showAboutPanel() }
+                if Updates.shared.isEnabled {
+                    Button("Check for Updates…") { Updates.shared.checkNow() }
+                }
             }
 
             // tab management. Replaces `.newItem` rather than extending it so the
@@ -750,7 +753,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ⌘⌥N, from whatever app you happen to be in
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
         AppIconChoice.apply()
-        if !SelfTest.isRequested, !AppStorageLocation.isExtensionLab { Task { await Reports.run() } }
+        if !SelfTest.isRequested, !AppStorageLocation.isExtensionLab {
+            Task { await Reports.run() }
+            Updates.shared.start()
+        }
         iconAppearance = NSApp.observe(\.effectiveAppearance) { _, _ in
             Task { @MainActor in AppIconChoice.apply() }
         }

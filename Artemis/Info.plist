@@ -2,6 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Sparkle: only release builds pass ARTEMIS_FEED_URL; with it empty the
+	     updater never starts (Updates.swift). The key signs every update. -->
+	<key>SUFeedURL</key>
+	<string>$(ARTEMIS_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>430eXxx9L+vLraR4rJdrrqDmdqRL0xclykfIqJGJHcA=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>14400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

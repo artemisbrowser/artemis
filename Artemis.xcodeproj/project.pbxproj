@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		D0C700010000000000000001 /* ArtemisDockTile.docktileplugin in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B401BDA32FA8B84B00429B08 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B401BDA22FA8B84B00429B08 /* AppIcon.icon */; };
+		D0C700210000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700220000000000000001 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D0C700210000000000000001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,6 +108,7 @@
 			);
 			name = Artemis;
 			packageProductDependencies = (
+				D0C700220000000000000001 /* Sparkle */,
 			);
 			productName = Artemis;
 			productReference = B4EF41E42FA66F50000526C4 /* Artemis.app */;
@@ -156,6 +159,9 @@
 			);
 			mainGroup = B4EF41DB2FA66F50000526C4;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B4EF41E52FA66F50000526C4 /* Products */;
 			projectDirPath = "";
@@ -209,6 +215,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARTEMIS_BUNDLE_ID = dev.findles.Artemis;
+				ARTEMIS_FEED_URL = "";
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -273,6 +280,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARTEMIS_BUNDLE_ID = dev.findles.Artemis;
+				ARTEMIS_FEED_URL = "";
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -465,6 +473,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D0C700220000000000000001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = B4EF41DC2FA66F50000526C4 /* Project object */;
 }

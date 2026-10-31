@@ -3,13 +3,12 @@
   "name": "artemis-feedback",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
-  "workers_dev": true,
+  "workers_dev": false,
   "routes": [
     { "pattern": "feedback.artemisbrowser.app", "custom_domain": true },
   ],
   "kv_namespaces": [
-    // Paste the id printed by `npx wrangler kv namespace create SIGS`.
-    { "binding": "SIGS", "id": "REPLACE_WITH_SIGS_NAMESPACE_ID" },
+    { "binding": "SIGS", "id": "9ec2c3c6b0514771ab342c96032f6daa" },
   ],
   "ratelimits": [
     {
@@ -23,6 +22,9 @@
       "simple": { "limit": 30, "period": 60 },
     },
   ],
-  "vars": { "GITHUB_REPO": "devfindles/artemis-feedback" },
+  "vars": {
+    "PUBLIC_REPO": "artemisbrowser/artemis",
+    "PRIVATE_REPO": "artemisbrowser/artemis-feedback",
+  },
   "observability": { "enabled": true },
 }

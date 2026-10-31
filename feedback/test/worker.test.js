@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "node:test";
 import worker from "../src/index.js";
 
-const REPO = "devfindles/artemis-feedback";
+const REPO = "artemisbrowser/artemis-feedback";
+const PUBLIC = "artemisbrowser/artemis";
 const PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13,
 ]).toString("base64");
@@ -16,6 +17,8 @@ let env, gh;
 function fakeGitHub() {
   const state = {
     issues: [],
+    // issues filed on the public repo
+    shared: [],
     comments: [],
     files: new Map(),
     calls: [],
@@ -24,9 +27,22 @@ function fakeGitHub() {
     refuse: () => false,
   };
   globalThis.fetch = async (url, init = {}) => {
-    const path = new URL(url).pathname.replace(`/repos/${REPO}`, "");
+    const full = new URL(url).pathname;
     const method = init.method ?? "GET";
     const body = init.body && JSON.parse(init.body);
+    if (full.startsWith(`/repos/${PUBLIC}/`)) {
+      const path = full.slice(`/repos/${PUBLIC}`.length);
+      state.calls.push({ method, path, body, headers: init.headers, public: true });
+      if (state.down || state.refuse(method, path, true))
+        return Response.json({ message: "down" }, { status: 503 });
+      if (method !== "POST" || path !== "/issues")
+        return Response.json({ message: "unexpected" }, { status: 418 });
+      const n = state.shared.length + 1;
+      const issue = { ...body, number: n, html_url: `https://github.com/${PUBLIC}/issues/${n}` };
+      state.shared.push(issue);
+      return Response.json(issue, { status: 201 });
+    }
+    const path = full.replace(`/repos/${REPO}`, "");
     state.calls.push({ method, path, body, headers: init.headers });
     if (state.down || state.refuse(method, path))
       return Response.json({ message: "down" }, { status: 503 });
@@ -85,8 +101,10 @@ const limiter = (limit) => {
 function makeEnv() {
   const kv = new Map();
   const env = {
-    GITHUB_REPO: REPO,
+    PUBLIC_REPO: PUBLIC,
+    PRIVATE_REPO: REPO,
     GITHUB_TOKEN: "test-token",
+    PUBLIC_TOKEN: "public-token",
     kv,
     writes: 0,
     // set to make every put throw, as KV does past its write limits
@@ -347,7 +365,7 @@ describe("feedback issues", () => {
     );
     const [issue] = gh.issues;
     assert.equal(issue.title, "[bug] The sidebar flickers.");
-    assert.deepEqual(issue.labels, ["feedback", "bug"]);
+    assert.deepEqual(issue.labels, ["feedback", "bug", "public"]);
     assert.match(issue.body, /\| App \| ` 1\.0 \(100\) ` \|/);
     assert.match(issue.body, /\| Install \| ` 3f2504e0 ` \|/);
     assert.match(issue.body, /\| Email \| ` tester@example\.com ` \|/);
@@ -355,8 +373,40 @@ describe("feedback issues", () => {
       issue.body,
       /\| Page \| ` https:\/\/example\.com\/a\\\|b ` \|/,
     );
-    assert.equal(gh.calls[0].headers.authorization, "Bearer test-token");
-    assert.equal(gh.calls[0].headers["user-agent"], "artemis-feedback");
+    const call = gh.calls.find((c) => !c.public);
+    assert.equal(call.headers.authorization, "Bearer test-token");
+    assert.equal(call.headers["user-agent"], "artemis-feedback");
+  });
+
+  test("the public issue carries the words only, and the reply links it", async () => {
+    const res = await post(
+      feedback({ email: "tester@example.com", page: "https://bank.example/acct" }),
+    );
+    const [shared] = gh.shared;
+    assert.equal(shared.title, "[bug] The sidebar flickers.");
+    assert.deepEqual(shared.labels, ["from-app", "bug"]);
+    assert.match(shared.body, /\| App \| ` 1\.0 \(100\) ` \|/);
+    for (const secret of ["tester@example.com", "bank.example", "3f2504e0", "Mac14,2"])
+      assert.ok(!shared.body.includes(secret), `public issue leaks ${secret}`);
+    assert.equal((await res.json()).issue, shared.html_url);
+    assert.equal(gh.calls.find((c) => c.public).headers.authorization, "Bearer public-token");
+    assert.match(gh.issues[0].body, /Public issue \| ` https:\/\/github\.com\/artemisbrowser\/artemis\/issues\/1 `/);
+  });
+
+  test("a private report files nothing public", async () => {
+    const res = await post(feedback({ private: true }));
+    assert.equal(gh.shared.length, 0);
+    assert.equal(gh.issues.length, 1);
+    assert.deepEqual(gh.issues[0].labels, ["feedback", "bug"]);
+    assert.equal((await res.json()).issue, undefined);
+  });
+
+  test("a retried report links the same public issue without filing again", async () => {
+    const report = feedback();
+    const first = await (await post(report)).json();
+    const again = await (await post(report)).json();
+    assert.equal(gh.shared.length, 1);
+    assert.equal(again.issue, first.issue);
   });
 
   test("long first lines are cut to 80 characters", async () => {
@@ -460,7 +510,7 @@ describe("feedback issues", () => {
     );
     assert.equal(gh.files.get(shot).content, JPEG);
     assert.deepEqual(
-      gh.calls.map((c) => c.method),
+      gh.calls.filter((c) => !c.public).map((c) => c.method),
       ["PUT", "PUT", "POST"],
       "files land before the issue that embeds them",
     );

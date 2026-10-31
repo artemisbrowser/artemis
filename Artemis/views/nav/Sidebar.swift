@@ -1787,6 +1787,14 @@ struct Sidebar: View {
     }
 
     private var bottomBar: some View {
+        VStack(spacing: 8) {
+            UpdatePill()
+            bottomRow
+        }
+        .animation(Motion.pop, value: Updates.shared.readyVersion ?? Updates.shared.availableVersion)
+    }
+
+    private var bottomRow: some View {
         HStack(spacing: 8) {
             if tabManager.kind == .incognito {
                 IncognitoBadge()

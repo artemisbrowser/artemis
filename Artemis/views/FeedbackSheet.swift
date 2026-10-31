@@ -18,13 +18,16 @@ final class FeedbackDraft {
         }
     }
 
-    enum Phase: Equatable { case writing, sending, refused, done(String) }
+    /// `issue`: the public issue the report became, which the sheet links
+    enum Phase: Equatable { case writing, sending, refused, done(String, issue: URL?) }
 
     var category = Category.bug
     var message = ""
     var includesScreenshot = true
     var includesPage = false
     var includesDiagnostics = true
+    /// the words go to the public issue tracker unless this is on
+    var keepsPrivate = false
     var phase = Phase.writing
     /// the window as it was when the sheet opened, a JPEG at most 1600 px wide
     var screenshot: Data? {
@@ -59,7 +62,8 @@ final class FeedbackDraft {
             units += $0.utf16.count
             return units <= 8000
         }
-        var feedback = ["category": category.rawValue, "message": String(text)]
+        var feedback: [String: any Sendable] = ["category": category.rawValue, "message": String(text)]
+        if keepsPrivate { feedback["private"] = true }
         if !email.isEmpty { feedback["email"] = email }
         if includesPage, let page { feedback["page"] = String(page.absoluteString.prefix(2048)) }
         let shot = includesScreenshot && !isPrivate ? screenshot : nil
@@ -80,8 +84,12 @@ final class FeedbackDraft {
         Task {
             let outcome: Reports.Outcome = if let report { await Reports.deliver(report, automatic: false) } else { .rejected }
             switch outcome {
-            case .sent: phase = .done("Thanks, sent")
-            case .queued: phase = .done("Will send when you’re online")
+            case .sent(let issue?):
+                // stays up so the link can be followed
+                phase = .done("Posted as #\(issue.lastPathComponent)", issue: issue)
+                return
+            case .sent(nil): phase = .done("Thanks, sent", issue: nil)
+            case .queued: phase = .done("Will send when you’re online", issue: nil)
             case .rejected:
                 phase = .refused
                 return
@@ -177,7 +185,7 @@ struct FeedbackSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if case .done(let note) = draft.phase {
+            if case .done(let note, let issue) = draft.phase {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
                     Text(note)
@@ -185,6 +193,33 @@ struct FeedbackSheet: View {
                 .font(.system(size: 13, weight: .medium))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
+                if let issue {
+                    Text("You can follow it, and anyone can add to it, on GitHub.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.primary.opacity(0.6))
+                        .frame(maxWidth: .infinity)
+                    HStack {
+                        Button("Close") { tabManager.feedback = nil }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.primary.opacity(0.6))
+                            .keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button {
+                            NSWorkspace.shared.open(issue)
+                            tabManager.feedback = nil
+                        } label: {
+                            Text("View on GitHub")
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.9)))
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
             } else {
                 form
             }
@@ -265,9 +300,17 @@ struct FeedbackSheet: View {
             }
             Toggle("Include diagnostics", isOn: $draft.includesDiagnostics)
             Toggle("Send error reports automatically", isOn: $sendsErrorReports)
+            Toggle("Keep this private", isOn: $draft.keepsPrivate)
         }
         .toggleStyle(.checkbox)
         .font(.system(size: 12))
+
+        Text(draft.keepsPrivate
+            ? "Only the Artemis team will see this."
+            : "Your message will be posted publicly on GitHub. Your email, screenshot and page address stay private.")
+            .font(.system(size: 11))
+            .foregroundStyle(.primary.opacity(0.55))
+            .fixedSize(horizontal: false, vertical: true)
 
         if draft.phase == .refused {
             Label("That couldn’t be sent. Try without the screenshot or diagnostics.", systemImage: "exclamationmark.triangle.fill")

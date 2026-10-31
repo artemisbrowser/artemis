@@ -61,15 +61,16 @@ export default {
     const id = hex(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
     );
+    let issue;
     try {
-      if (report.kind === "feedback") await fileFeedback(env, report, id);
+      if (report.kind === "feedback") issue = await fileFeedback(env, report, id);
       else await fileSignatures(env, report);
     } catch (e) {
       if (e instanceof GitHubError)
         return reply(502, { error: "github unavailable" });
       throw e;
     }
-    return reply(201, { id });
+    return reply(201, issue ? { id, issue } : { id });
   },
 };
 
@@ -187,7 +188,9 @@ function validate(r) {
   text(r.arch, "arch", 16);
   if (r.kind === "feedback") {
     const f = r.feedback;
-    only(f, "feedback", ["category", "message", "email", "page"]);
+    only(f, "feedback", ["category", "message", "email", "page", "private"]);
+    if (f.private !== undefined)
+      check(typeof f.private === "boolean", "feedback.private");
     check(["bug", "idea", "other"].includes(f.category), "feedback.category");
     text(f.message, "feedback.message", 8000);
     if (f.email !== undefined)
@@ -217,14 +220,16 @@ function validate(r) {
   }
 }
 
-async function github(env, method, path, body) {
+// PUBLIC_REPO gets a report's words only; everything else stays in PRIVATE_REPO
+async function github(env, method, path, body, repo = env.PRIVATE_REPO) {
   const res = await fetch(
-    `https://api.github.com/repos/${env.GITHUB_REPO}${path}`,
+    `https://api.github.com/repos/${repo}${path}`,
     {
       method,
       headers: {
         accept: "application/vnd.github+json",
-        authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        // the public repo's token can file issues and nothing else
+        authorization: `Bearer ${repo === env.PUBLIC_REPO ? env.PUBLIC_TOKEN : env.GITHUB_TOKEN}`,
         "content-type": "application/json",
         "user-agent": "artemis-feedback",
         "x-github-api-version": "2022-11-28",
@@ -233,16 +238,36 @@ async function github(env, method, path, body) {
     },
   );
   if (!res.ok) {
-    console.error("github", method, path, res.status);
+    const why = (await res.json().catch(() => ({}))).message ?? "";
+    console.error("github", method, repo, path, res.status, why.slice(0, 200));
     throw new GitHubError(res.status);
   }
   return res.json();
 }
 
+// the public issue's URL, which the sender is shown; none when kept private
 async function fileFeedback(env, r, id) {
   const done = `report:${id}`;
-  if (await env.SIGS.get(done)) return;
+  const filed = await env.SIGS.get(done);
+  if (filed) return JSON.parse(filed).public ?? undefined;
   const f = r.feedback;
+  const shared =
+    !f.private &&
+    (await github(
+      env,
+      "POST",
+      "/issues",
+      {
+        title: title(`[${f.category}]`, f.message),
+        body: [
+          quote(f.message),
+          facts({ ...r, publicOnly: true }, []),
+          "_Sent from Artemis with Help › Send Feedback._",
+        ].join("\n\n"),
+        labels: ["from-app", f.category],
+      },
+      env.PUBLIC_REPO,
+    ));
   const month = new Date().toISOString().slice(0, 7).replace("-", "/");
   const images = [];
   for (const a of r.attachments ?? []) {
@@ -258,6 +283,7 @@ async function fileFeedback(env, r, id) {
     images.push(`![${a.name}](${file.html_url}?raw=true)`);
   }
   const rows = [["Report", id]];
+  if (shared) rows.push(["Public issue", shared.html_url]);
   if (f.email) rows.push(["Email", f.email]);
   if (f.page) rows.push(["Page", f.page]);
   const issue = await github(env, "POST", "/issues", {
@@ -270,9 +296,14 @@ async function fileFeedback(env, r, id) {
     ]
       .filter(Boolean)
       .join("\n\n"),
-    labels: ["feedback", f.category],
+    labels: ["feedback", f.category, ...(shared ? ["public"] : [])],
   });
-  await remember(env, done, String(issue.number));
+  await remember(
+    env,
+    done,
+    JSON.stringify({ private: issue.number, public: shared?.html_url ?? null }),
+  );
+  return shared?.html_url;
 }
 
 async function fileSignatures(env, r) {
@@ -386,8 +417,12 @@ function facts(r, rows) {
   const all = [
     ["App", `${r.app.version} (${r.app.build})`],
     ["OS", r.os],
-    ["Mac", `${r.model} ${r.arch}`],
-    ["Install", r.install.slice(0, 8).toLowerCase()],
+    ...(r.publicOnly
+      ? []
+      : [
+          ["Mac", `${r.model} ${r.arch}`],
+          ["Install", r.install.slice(0, 8).toLowerCase()],
+        ]),
     ...rows,
   ];
   return [

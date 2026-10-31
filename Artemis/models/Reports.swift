@@ -30,12 +30,13 @@ nonisolated enum Reports {
         return request
     }()
 
-    enum Outcome { case sent, queued, rejected }
+    /// `issue`: the public GitHub issue a feedback report became, when it became one
+    enum Outcome: Equatable { case sent(issue: URL?), queued, rejected }
 
     // MARK: - The report
 
     static func body(
-        kind: String, feedback: [String: String]? = nil, diagnostics: [String: any Sendable]? = nil,
+        kind: String, feedback: [String: any Sendable]? = nil, diagnostics: [String: any Sendable]? = nil,
         events: [Diagnostics.Event] = [], crashes: [Data] = [], attachments: [[String: String]] = []
     ) -> Data? {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -140,11 +141,13 @@ nonisolated enum Reports {
     @concurrent private static func post(_ body: Data, heedingBackoff: Bool = true) async -> Outcome {
         let backoff = UserDefaults.standard.object(forKey: backoffKey) as? Date ?? .distantPast
         guard !heedingBackoff || Date.now >= backoff,
-            let response = (try? await session.upload(for: request, from: body))?.1 as? HTTPURLResponse
+            let (data, response) = try? await session.upload(for: request, from: body),
+            let response = response as? HTTPURLResponse
         else { return .queued }
         switch response.statusCode {
         case 200..<300:
-            return .sent
+            let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return .sent(issue: (reply?["issue"] as? String).flatMap(URL.init(string:)))
         case 429:
             let wait = response.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 3600
             UserDefaults.standard.set(Date.now + wait, forKey: backoffKey)

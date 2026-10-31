@@ -32,6 +32,8 @@ struct GeneralSettings: View {
         TabManager.defaultHibernateAfterMinutes
     @AppStorage(MiniPlayer.cornerRadiusKey) private var pipCornerRadius = MiniPlayer.defaultCornerRadius
     @AppStorage(MiniPlayer.skipSecondsKey) private var pipSkipSeconds = MiniPlayer.defaultSkipSeconds
+    @AppStorage(Updates.channelKey) private var updateChannel = "release"
+    private static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     /// bumped after the default-browser prompt, so the section reads the new answer
     @State private var defaultBrowserCheck = 0
 
@@ -58,6 +60,26 @@ struct GeneralSettings: View {
                                 defaultBrowserCheck += 1
                             }
                         }
+                    }
+                }
+            }
+
+            if Updates.shared.isEnabled {
+                Section("Updates") {
+                    Picker(selection: $updateChannel) {
+                        Text("Release").tag("release")
+                        Text("Beta").tag("beta")
+                    } label: {
+                        InfoLabel(
+                            "Channel",
+                            info: "Beta gets new features first and may have bugs. Leaving Beta takes effect at the next release.")
+                    }
+                    .onChange(of: updateChannel) { Updates.shared.channelChanged() }
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { Updates.shared.checksAutomatically },
+                        set: { Updates.shared.checksAutomatically = $0 }))
+                    LabeledContent("Artemis \(Self.version)") {
+                        Button("Check Now") { Updates.shared.checkNow() }
                     }
                 }
             }
