@@ -9,7 +9,7 @@
       <sparkle:version>90301</sparkle:version>
       <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/artemisbrowser/artemis/releases/tag/v0.9.3</sparkle:releaseNotesLink>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}</style><p>The fourth alpha of Artemis for macOS. It needs macOS 26 or later on Apple silicon.</p><p><b>New in 0.9.3</b></p><ul><li><b>Downloads you can see.</b> A new download flies from where you clicked into the Library button, a ring around it fills as it arrives, and a pill above the sidebar footer shows the file, its progress and a tick when it's done. Click it to open the file (⌘-click shows it in Finder). The Dock icon counts running downloads.</li><li><b>Check for Updates</b> is in the command bar (⌘T, type "update"), as well as the Artemis menu.</li><li>The address bar stays put properly when the sidebar opens or closes under it.</li></ul><p>If you're on 0.9.2, this arrives on its own: look for <b>Relaunch to Update</b> at the bottom of the sidebar.</p>]]></description>
       
       <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.3/Artemis-0.9.3.dmg" type="application/octet-stream" sparkle:edSignature="D5QjMBwpCjiSq+o9Mk/h8Zj/NP7XGe8Ny8ySY3d0l+OPweo/4aPeroaYcx8/uU4kL2fayXBj1BEDFGfVj2/dAw==" length="21225749" />
     </item>
@@ -19,7 +19,7 @@
       <sparkle:version>90201</sparkle:version>
       <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/artemisbrowser/artemis/releases/tag/v0.9.2</sparkle:releaseNotesLink>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}</style><p>The third alpha of Artemis for macOS. It needs macOS 26 or later on Apple silicon.</p><p><b>New in 0.9.2</b></p><ul><li><b>Automatic updates.</b> From this version on, Artemis updates itself: new versions download quietly, then a <b>Relaunch to Update</b> button appears in the sidebar. Choose Release or Beta in Settings › General › Updates.</li><li><b>Send Feedback</b> (Help menu) now posts your message as a public issue here, so you can follow it. Your email, screenshot and page address always stay private, and <b>Keep this private</b> posts nothing public.</li></ul><p>If you're on 0.9.1, download this one by hand once; after that, updates arrive on their own.</p><p><b>Opening it the first time:</b> this build isn't notarised by Apple yet, so macOS stops it the first time. Open System Settings › Privacy &amp; Security, click <b>Open Anyway</b> next to Artemis, then click <b>Open</b>. You only do this once.</p>]]></description>
       
       <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.2/Artemis-0.9.2.dmg" type="application/octet-stream" sparkle:edSignature="0qysOnz2kEVyv82R5PojLCFQW14BETXCR75p5GPXrhbMTz93Ad6AoRs1t6yTIbfVu1yD+Kq89ta6ub+9uYZwAw==" length="21166060" />
     </item>

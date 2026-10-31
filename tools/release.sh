@@ -76,7 +76,7 @@ ITEM="    <item>
       <sparkle:version>$BUILD</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/artemisbrowser/artemis/releases/tag/$TAG</sparkle:releaseNotesLink>
+      <description><![CDATA[$(python3 tools/release-notes.py "$NOTES")]]></description>
       $CHANNEL_TAG
       <enclosure url=\"$URL\" type=\"application/octet-stream\" $SIG />
     </item>"
