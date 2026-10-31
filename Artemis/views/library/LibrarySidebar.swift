@@ -17,10 +17,8 @@ nonisolated struct DownloadFile: Identifiable {
 
     /// everything in ~/Downloads, newest first, scanned off the main thread
     @concurrent static func loadAllOffMain() async -> [DownloadFile] {
-        // in the sandbox, `.downloadsDirectory` is a *symlink* into the real
-        // ~/Downloads; contentsOfDirectory won't enumerate through it (ENOTDIR),
-        // so resolve it to the real path first (writes follow the link fine, but
-        // listing does not)
+        // ~/Downloads may be a symlink, which contentsOfDirectory won't enumerate
+        // through (ENOTDIR): resolve it first
         let downloads = FileManager.default
             .urls(for: .downloadsDirectory, in: .userDomainMask)[0]
             .resolvingSymlinksInPath()

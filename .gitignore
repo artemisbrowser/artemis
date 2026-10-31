@@ -75,3 +75,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# this Mac's codesigning identity hash for deploy.sh and the lab scripts
+.signing-identity

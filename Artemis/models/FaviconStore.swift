@@ -35,7 +35,7 @@ final class FaviconStore {
 
     private init() {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Artemis/Favicons", isDirectory: true)
+            .appendingPathComponent("\(AppStorageLocation.folderName)/Favicons", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         dir = base
     }

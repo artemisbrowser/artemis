@@ -47,8 +47,14 @@ nonisolated struct SavedPasskey: Codable, Identifiable, Hashable {
 /// credential ID account and the service as label. Sites and usernames live in each service's
 /// `index` item. The data-protection keychain answers -34018 here (no application-identifier).
 nonisolated enum Keychain {
-    static let passwords = "Artemis Passwords"
-    static let passkeys = "Artemis Passkeys"
+    /// the login keychain is shared by every build on the Mac: any bundle ID but the
+    /// original keeps its own items, and the original keeps the names its items have
+    static let owner: String = {
+        let id = Bundle.main.bundleIdentifier ?? "dev.findles.Artemis"
+        return id == "dev.findles.Artemis" ? "Artemis" : id
+    }()
+    static let passwords = "\(owner) Passwords"
+    static let passkeys = "\(owner) Passkeys"
     static let index = "index"
     /// a profile's suggested-password recipes, roots included, in the passwords service
     static func recipes(_ profile: UUID) -> String { "recipes." + profile.uuidString }

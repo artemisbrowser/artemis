@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 
 /// Per-site "Pretend to be Chrome", opt-in only: an opted-in host gets Chrome's
-/// macOS user agent on its main-frame navigations, and the page-world script gives
+/// platform's user agent on its main-frame navigations, and the page-world script gives
 /// such a page a matching `navigator.userAgentData` and `vendor`.
 /// Google's sign-in hosts are never eligible: Google refuses sign-in there from
 /// browsers it can tell are disguised.

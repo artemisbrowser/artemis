@@ -3052,7 +3052,8 @@ enum SelfTest {
         record("tab: zoom survives a container rebuild", abs(tab.webView.pageZoom - 1.5) < 0.001)
         record("tab: mute survives a container rebuild", tab.isMuted)
         tab.setMuted(false)
-        tab.resetZoom()
+        // the rebuilt tab is ephemeral, so its reset isn't remembered: the site's 150% is forgotten here
+        ZoomStore.shared.setZoom(ZoomStore.defaultZoom, for: URL(string: "https://selftest.local/"))
     }
 
     private static func testMediaReporting(manager: TabManager) async {
@@ -8238,10 +8239,11 @@ enum SelfTest {
             (try? await tab.webView.evaluateJavaScript("__log.join('|')")) as? String ?? "?"
         }
         func clear() async { _ = try? await tab.webView.evaluateJavaScript("__log = []; 0") }
-        // whole points from the page's top-left, so the page reports them exactly
+        // whole points from the page's top-left; the page reports them in CSS pixels, truncated
         let across = ((tab.webView.superview?.bounds.width ?? page().width) / 2).rounded()
         let band = NSPoint(x: page().minX + across, y: page().maxY - 9)
-        let spot = "\(Int(across)) 9"
+        let scale = tab.webView.pageZoom * tab.webView.magnification
+        let spot = "\(Int(across / scale)) \(Int(9 / scale))"
         func hit(_ point: NSPoint) -> NSView? { content.superview?.hitTest(point) }
         record(
             "window drag: over a page the band leaves hit-testing to the page",
@@ -8339,20 +8341,27 @@ enum SelfTest {
         let above = hit(NSPoint(x: band.x, y: content.frame.height - 5)).map { String(describing: type(of: $0)) }
         record("window drag: at rim 10 the rim above the page is a drag strip", above == "DragView", above ?? "nothing")
 
-        // collapsed with the sidebar away, the window's top-left corner: the reveal edge, then the rim
+        // collapsed with the sidebar away, left of the page across the top band: the frame view
+        // claims AppKit's rounded resize corner, and every point it leaves must drag
         let collapsed = manager.isSidebarCollapsed
         func lightsX() -> CGFloat { window.standardWindowButton(.closeButton)?.convert(NSPoint.zero, to: nil).x ?? 0 }
-        func corner() -> String {
-            [4.0, 9].map { x in
-                hit(NSPoint(x: x, y: content.frame.height - 4)).map { String(describing: type(of: $0)) } ?? "nothing"
-            }.joined(separator: " ")
+        func dead() -> [String] {
+            let top = content.frame.height
+            return (0..<Int(page().minX)).flatMap { x in
+                (0..<Int(max(top - page().maxY, PageDragBand.height))).compactMap { y in
+                    let view = hit(NSPoint(x: Double(x) + 0.5, y: top - Double(y) - 0.5))
+                    let name = view.map { String(describing: type(of: $0)) } ?? "nothing"
+                    return view === content.superview || name == "DragView" ? nil : "(\(x), \(y)) \(name)"
+                }
+            }
         }
         manager.isSidebarCollapsed = true
-        await settle(.seconds(5)) { lightsX() < -20 }
+        await settle(.seconds(5)) { lightsX() < -20 && abs(page().minX - 10) < 0.5 }
         if lightsX() < -20 {
+            let dead = dead()
             record(
-                "window drag: collapsed, the window's top-left corner drags, out to the rim",
-                corner() == "DragView DragView", corner())
+                "window drag: collapsed, the window's top-left corner resizes or drags, out to the rim",
+                dead.isEmpty, dead.prefix(4).joined(separator: ", "))
         } else {
             note("window drag: skipped the collapsed corner — the pointer held the sidebar's peek open")
         }

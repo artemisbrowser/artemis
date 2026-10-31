@@ -13,6 +13,8 @@ enum Launch {
 }
 
 struct ArtemisApp: App {
+    /// first: stored properties initialise in order, and the session loads below
+    private let containerMigration: Void = ContainerMigration.run()
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     /// the first window's manager; also the fallback for menu commands raised

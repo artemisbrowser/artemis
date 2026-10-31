@@ -250,8 +250,12 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// taken for a new install); any other first instance is a real install
     @MainActor
     private func prepareStorage(for ext: InstalledExtension, in profile: UUID, context: WKWebExtensionContext) {
-        let root = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WebKit/WebExtensions", isDirectory: true)
+        // WebKit nests its data under the bundle ID unless it runs in a container
+        let webKit = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WebKit", isDirectory: true)
+        let root = (AppStorageLocation.isContainerised
+            ? webKit : webKit.appendingPathComponent(Bundle.main.bundleIdentifier ?? "", isDirectory: true))
+            .appendingPathComponent("WebExtensions", isDirectory: true)
         let folder = { (profile: UUID) in
             root.appendingPathComponent(
                 profile == Profile.defaultID ? "Default" : profile.uuidString.uppercased(), isDirectory: true)

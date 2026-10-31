@@ -1,13 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Whether Artemis is the browser macOS hands links to.
-///
-/// Read-only on purpose, and not for want of trying: the App Sandbox refuses to
-/// change application bindings (`LSSetDefaultHandlerForURLScheme` fails with
-/// error -54), and Full Disk Access doesn't lift it. A button that quietly did
-/// nothing would be worse than the truth, so this says where you stand and opens
-/// the pane where it can actually be changed.
+/// Whether Artemis is the browser macOS hands links to, and the one-click way to make it so.
 @MainActor
 enum DefaultBrowser {
     static var isArtemis: Bool {
@@ -25,11 +19,10 @@ enum DefaultBrowser {
             .replacingOccurrences(of: ".app", with: "")
     }
 
-    static func openSystemSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension")
-        else { return }
-        NSWorkspace.shared.open(url)
+    /// macOS asks the user to confirm before it changes the browser
+    static func makeArtemis() async {
+        try? await NSWorkspace.shared.setDefaultApplication(
+            at: Bundle.main.bundleURL, toOpenURLsWithScheme: "http")
     }
 }
 
@@ -39,6 +32,8 @@ struct GeneralSettings: View {
         TabManager.defaultHibernateAfterMinutes
     @AppStorage(MiniPlayer.cornerRadiusKey) private var pipCornerRadius = MiniPlayer.defaultCornerRadius
     @AppStorage(MiniPlayer.skipSecondsKey) private var pipSkipSeconds = MiniPlayer.defaultSkipSeconds
+    /// bumped after the default-browser prompt, so the section reads the new answer
+    @State private var defaultBrowserCheck = 0
 
     private var currentBrowserLine: String {
         guard let name = DefaultBrowser.currentName else {
@@ -47,22 +42,21 @@ struct GeneralSettings: View {
         return "Links from other apps open in \(name)."
     }
 
-    private static let sandboxNote =
-        "macOS only lets you change your default browser in System Settings."
-
-
     var body: some View {
         Form {
             Section("Default Browser") {
+                let _ = defaultBrowserCheck
                 if DefaultBrowser.isArtemis {
                     Label("Artemis opens links from other apps.", systemImage: "checkmark.circle")
                         .foregroundStyle(.green)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(currentBrowserLine)
-                        HStack(spacing: 6) {
-                            Button("Open Desktop & Dock…") { DefaultBrowser.openSystemSettings() }
-                            InfoButton(Self.sandboxNote)
+                        Button("Make Artemis Your Default Browser") {
+                            Task {
+                                await DefaultBrowser.makeArtemis()
+                                defaultBrowserCheck += 1
+                            }
                         }
                     }
                 }

@@ -1046,8 +1046,7 @@ final class BrowserTab: NSObject, Identifiable {
 
     enum PageExport { case pdf, webArchive, fullPageImage }
 
-    /// writes the page into ~/Downloads (the one folder the sandbox may write
-    /// without a panel) under a non-clashing name, then shows it in Finder
+    /// writes the page into ~/Downloads under a non-clashing name, then shows it in Finder
     @MainActor
     func export(_ kind: PageExport) async {
         guard url != nil, pendingURL == nil else { return }
@@ -1130,8 +1129,7 @@ final class BrowserTab: NSObject, Identifiable {
     //
     // native macOS PiP via WKWebView SPI (see `WKWebViewPiPSPI`). the JS API
     // (`webkitSetPresentationMode`) is a silent no-op off Safari; `_togglePictureInPicture`
-    // is the real trigger. needs the `com.apple.PIPAgent` mach-lookup entitlement to
-    // reach the PiP window service under the App Sandbox (see Artemis.entitlements).
+    // is the real trigger.
 
     /// the SPI view, or nil if this WebKit build doesn't expose PiP (graceful guard)
     private var pipSPI: WKWebViewPiPSPI? {

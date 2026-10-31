@@ -243,8 +243,10 @@ final class ExtensionProxyBridge {
         profile == Profile.defaultID ? "proxy-state.json" : "proxy-state-\(profile.uuidString).json"
     }
     private static func keychainService(_ profile: UUID) -> String {
-        profile == Profile.defaultID
-            ? "app.artemis.proxy-credentials" : "app.artemis.proxy-credentials.\(profile.uuidString)"
+        // another bundle ID keeps its own items in the shared login keychain
+        let id = Bundle.main.bundleIdentifier ?? "dev.findles.Artemis"
+        let base = id.hasPrefix("dev.findles.Artemis") ? "app.artemis.proxy-credentials" : "\(id).proxy-credentials"
+        return profile == Profile.defaultID ? base : "\(base).\(profile.uuidString)"
     }
 
     /// restore every profile's proxy across launches so protection resumes with the

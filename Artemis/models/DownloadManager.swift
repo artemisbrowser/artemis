@@ -32,6 +32,9 @@ final class DownloadItem: NSObject, Identifiable {
     @ObservationIgnored private var progressObservation: NSKeyValueObservation?
     /// the name the requester chose, over the one the response suggests
     @ObservationIgnored private let preferredFilename: String?
+    /// where WebKit writes until the download finishes: `name.download`, so Finder,
+    /// Spotlight and launchers never offer a half-written file under its real name
+    @ObservationIgnored private var partial: URL?
 
     init(
         download: WKDownload, sourceTitle: String = "", sourceHost: String = "",
@@ -56,6 +59,26 @@ final class DownloadItem: NSObject, Identifiable {
     func cancel() {
         download?.cancel()
         state = .cancelled
+        discardPartial()
+    }
+
+    /// marks a finished download as a web download, as Safari does, so Gatekeeper
+    /// checks an app inside it before it first runs
+    private func quarantine(_ file: URL, from source: URL?) {
+        var properties: [String: Any] = [
+            kLSQuarantineAgentNameKey as String: "Artemis",
+            kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
+        ]
+        if let source { properties[kLSQuarantineDataURLKey as String] = source }
+        var values = URLResourceValues()
+        values.quarantineProperties = properties
+        var file = file
+        do { try file.setResourceValues(values) } catch { debugLog("download quarantine failed: \(error)") }
+    }
+
+    private func discardPartial() {
+        if let partial { try? FileManager.default.removeItem(at: partial) }
+        partial = nil
     }
 
     func revealInFinder() {
@@ -147,11 +170,28 @@ extension DownloadItem: WKDownloadDelegate {
 
         filename = url.lastPathComponent
         destination = url
+        let partial = Self.uniqueURL(for: url.appendingPathExtension("download"))
+        self.partial = partial
         debugLog("download destination chosen: \(url.path)")
-        completionHandler(url)
+        completionHandler(partial)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        if let partial, let destination {
+            // another download may have taken the name meanwhile
+            let target = Self.uniqueURL(for: destination)
+            do {
+                try FileManager.default.moveItem(at: partial, to: target)
+                self.destination = target
+                filename = target.lastPathComponent
+                quarantine(target, from: download.originalRequest?.url)
+            } catch {
+                self.destination = partial
+                filename = partial.lastPathComponent
+                debugLog("download rename failed: \(error)")
+            }
+            self.partial = nil
+        }
         state = .finished
         debugLog("download finished: \(filename)")
         Task { @MainActor in proposeName() }
@@ -159,6 +199,7 @@ extension DownloadItem: WKDownloadDelegate {
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         debugLog("download FAILED: \(error as NSError) userInfo: \((error as NSError).userInfo)")
+        discardPartial()
 
         // -999 we didn't ask for = WebKit discarding a duplicate request
         // (sites often fire a navigation and a scripted fetch for one click);

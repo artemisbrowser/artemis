@@ -3,8 +3,8 @@ import Carbon.HIToolbox
 
 /// A key combination Artemis answers wherever you are, as long as it is running.
 ///
-/// Carbon's `RegisterEventHotKey` is the one that works from inside the App
-/// Sandbox. AppKit's global event monitor needs the accessibility permission —
+/// Carbon's `RegisterEventHotKey` needs no permission. AppKit's global event
+/// monitor needs the accessibility permission —
 /// the same grant that reads every keystroke in every app — which is not
 /// something a browser should be asking for to open its own launcher.
 @MainActor

@@ -12,7 +12,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Dev
 ID="${PERF_ID:-Perf}"
 APP=".build/$ID/Artemis $ID.app"
 ENTITLEMENTS=".build/Build/Intermediates.noindex/Artemis.build/Release/Artemis.build/Artemis.app.xcent"
-IDENTITY="${ARTEMIS_SIGN_IDENTITY:-Apple Development}"
+IDENTITY="${ARTEMIS_SIGN_IDENTITY:-$(cat "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/.signing-identity" 2>/dev/null || echo "Apple Development")}"
 OUT=/private/tmp/artemis-perf
 mkdir -p "$OUT"
 

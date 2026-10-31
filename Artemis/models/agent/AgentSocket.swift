@@ -7,10 +7,9 @@ struct AgentFailure: Error {
 }
 
 /// the Unix socket the running app serves agent tool calls on, as newline-delimited
-/// JSON. both ends are the same sandboxed binary, so the path lands in the one
-/// app container they share
+/// JSON. both ends are the same binary, so they derive the same path
 nonisolated enum AgentSocket {
-    static let path = URL.homeDirectory.appendingPathComponent(".agent/socket").path
+    static let path = AppStorageLocation.directory.appendingPathComponent("agent.sock").path
 
     private static func address() -> sockaddr_un? {
         var addr = sockaddr_un()

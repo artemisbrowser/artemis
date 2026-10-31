@@ -5,11 +5,20 @@ import Foundation
 /// through here so the container layout is defined once and the durable-write
 /// rules can't drift between them.
 nonisolated enum AppStorageLocation {
-    /// `~/Library/Application Support/Artemis` inside the app container, created
-    /// on first use
+    /// whether this process runs inside an App Sandbox container
+    static let isContainerised = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+
+    /// outside a container every build on the Mac shares ~/Library: the original
+    /// bundle keeps "Artemis", any other (a tester build, a lab) gets its bundle ID
+    static let folderName: String = {
+        let id = Bundle.main.bundleIdentifier ?? "dev.findles.Artemis"
+        return isContainerised || id == "dev.findles.Artemis" ? "Artemis" : id
+    }()
+
+    /// `~/Library/Application Support/<folderName>`, created on first use
     static let directory: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Artemis", isDirectory: true)
+            .appendingPathComponent(folderName, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

@@ -25,8 +25,7 @@ nonisolated enum ExtensionInstaller {
 
     /// root folder that holds every installed extension's resources
     static var storageRoot: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Artemis/Extensions", isDirectory: true)
+        AppStorageLocation.directory.appendingPathComponent("Extensions", isDirectory: true)
     }
 
     /// the on-disk resource URL for a stored extension id (dir or archive)
