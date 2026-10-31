@@ -1,2 +1,5 @@
 dist/
 dist.building/
+
+# wrangler's local cache holds the Cloudflare account name
+.wrangler/

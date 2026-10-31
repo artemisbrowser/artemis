@@ -1224,6 +1224,62 @@ button.ctl:active {
 .solo .btn {
   margin-top: 36px;
 }
+.dl {
+  justify-content: flex-start;
+  padding-top: 96px;
+}
+.dl .solo-body {
+  max-width: 560px;
+  text-wrap: balance;
+}
+.dl .solo-body a {
+  color: inherit;
+  text-decoration: underline;
+}
+.dl-steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 40px 32px;
+  width: min(1120px, 100%);
+  margin: 56px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  text-align: left;
+}
+.dl-steps li {
+  counter-increment: step;
+}
+.dl-steps video {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  border: 1px solid var(--hairline);
+  background: var(--band);
+}
+.dl-steps h2 {
+  margin-top: 16px;
+  font-size: var(--t-card);
+  line-height: var(--lh-card);
+  letter-spacing: var(--tr-card);
+}
+.dl-steps h2::before {
+  content: counter(step) ". ";
+  color: var(--ink-3);
+}
+.dl-steps p {
+  margin-top: 6px;
+  color: var(--ink-2);
+}
+@media (max-width: 734px) {
+  .dl {
+    padding-top: 64px;
+  }
+  .dl-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 
 /* ---------- fallbacks ---------- */
 @supports not (

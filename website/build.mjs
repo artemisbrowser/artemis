@@ -211,6 +211,8 @@ export async function build(out) {
       plan(`/assets/img/${path.basename(f)}`, f, ROOT_FILES[path.basename(f)]);
   for (const f of walk(path.join(SRC, "static")))
     plan(`/assets/static/${path.basename(f)}`, f, path.basename(f));
+  for (const f of walk(path.join(SRC, "video")))
+    plan(`/assets/video/${path.basename(f)}`, f);
   for (const f of walk(path.join(ASSETS, "spaces")))
     if (
       /-(880x592|110x74)\.png$|^grain-tile-128\.png$/.test(path.basename(f)) &&
@@ -525,20 +527,25 @@ export async function build(out) {
       PAGES["404.html"],
     ),
   );
-  if (cfg.DOWNLOAD_URL)
-    // _redirects matches paths exactly, so both forms of /download need a line
-    write(
-      "_redirects",
-      `/download ${cfg.DOWNLOAD_URL} 302\n/download/ ${cfg.DOWNLOAD_URL} 302\n`,
-    );
-  else
-    write(
-      "download/index.html",
-      shell(
-        include(read(path.join(SRC, "pages/download.html")), 1),
-        PAGES["download/index.html"],
-      ),
-    );
+  // with a release, /download starts it a second after the page shows how to open it
+  write(
+    "download/index.html",
+    cfg.DOWNLOAD_URL
+      ? shell(
+          include(read(path.join(SRC, "pages/download.html")), 1).replace(
+            /\{\{DOWNLOAD_URL\}\}/g,
+            escape(cfg.DOWNLOAD_URL),
+          ),
+          {
+            ...PAGES["download/index.html"],
+            robots: `${PAGES["download/index.html"].robots}\n<meta http-equiv="refresh" content="1;url=${escape(cfg.DOWNLOAD_URL)}" />`,
+          },
+        )
+      : shell(
+          include(read(path.join(SRC, "pages/download-none.html")), 1),
+          PAGES["download/index.html"],
+        ),
+  );
 
   // Crawl and sharing files
   let lastmod = new Date().toISOString().slice(0, 10);
