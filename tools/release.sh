@@ -27,16 +27,23 @@ KEY="$R/sparkle_ed25519"
 PUBLIC="${ARTEMIS_PUBLIC:-$HOME/artemis}"
 TEAM=Z49XSUZ64Q
 FEED=https://artemisbrowser.app/appcast.xml
-TAG="v$VERSION"
-[[ $N -gt 1 ]] && TAG="v$VERSION-$N"
-ASSET="Artemis-$VERSION$([[ $N -gt 1 ]] && echo "-$N").dmg"
+SUFFIX=""
+if ((N > 1)); then SUFFIX="-$N"; fi
+TAG="v$VERSION$SUFFIX"
+ASSET="Artemis-$VERSION$SUFFIX.dmg"
+BETA=""
+if [[ $CHANNEL == beta ]]; then BETA=" (beta)"; fi
 URL="https://github.com/artemisbrowser/artemis/releases/download/$TAG/$ASSET"
 OUT="$R/out/$TAG"
 APPCAST="$PUBLIC/website/src/static/appcast.xml"
 
 [[ -f $KEY ]] || { echo "missing $KEY" >&2; exit 1; }
-[[ -z $DRY ]] && { gh release view "$TAG" -R artemisbrowser/artemis >/dev/null 2>&1 && { echo "$TAG already released" >&2; exit 1; }; }
-[[ -f $APPCAST ]] && grep -q "<sparkle:version>$BUILD</sparkle:version>" "$APPCAST" && { echo "build $BUILD is already in the appcast" >&2; exit 1; }
+if [[ -z $DRY ]] && gh release view "$TAG" -R artemisbrowser/artemis >/dev/null 2>&1; then
+  echo "$TAG already released" >&2; exit 1
+fi
+if [[ -f $APPCAST ]] && grep -q "<sparkle:version>$BUILD</sparkle:version>" "$APPCAST"; then
+  echo "build $BUILD is already in the appcast" >&2; exit 1
+fi
 
 echo "→ Artemis $VERSION ($BUILD), $CHANNEL"
 rm -rf "$OUT" && mkdir -p "$OUT"
@@ -49,8 +56,9 @@ xcodebuild -scheme Artemis -configuration Release -derivedDataPath "$R/build" \
 APP="$R/build/Build/Products/Release/Artemis.app"
 codesign --verify --deep --strict "$APP"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Contents/Info.plist")" == "$BUILD" ]]
-! codesign -d --entitlements - --xml "$APP" 2>/dev/null | grep -q get-task-allow
-codesign -dvv "$APP" 2>&1 | grep -q "TeamIdentifier=$TEAM"
+# captured, not piped: grep -q stops reading early and pipefail counts the writer's SIGPIPE
+[[ "$(codesign -d --entitlements - --xml "$APP" 2>/dev/null)" != *get-task-allow* ]]
+[[ "$(codesign -dvv "$APP" 2>&1)" == *"TeamIdentifier=$TEAM"* ]]
 
 echo "→ DMG"
 swift tools/dmg/background.swift "$OUT" && tiffutil -cathidpicheck "$OUT/bg.png" "$OUT/bg@2x.png" -out "$OUT/bg.tiff" >/dev/null
@@ -60,7 +68,8 @@ hdiutil verify "$OUT/$ASSET" >/dev/null
 
 echo "→ Sparkle signature"
 SIG=$("$R/sparkle/bin/sign_update" --ed-key-file "$KEY" "$OUT/$ASSET")
-CHANNEL_TAG=""; [[ $CHANNEL == beta ]] && CHANNEL_TAG="<sparkle:channel>beta</sparkle:channel>"
+CHANNEL_TAG=""
+if [[ $CHANNEL == beta ]]; then CHANNEL_TAG="<sparkle:channel>beta</sparkle:channel>"; fi
 ITEM="    <item>
       <title>Artemis $VERSION</title>
       <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
@@ -76,7 +85,7 @@ echo "$ITEM" > "$OUT/item.xml"
 if [[ -n $DRY ]]; then echo "dry run: $OUT"; exit 0; fi
 
 echo "→ GitHub release $TAG"
-gh release create "$TAG" "$OUT/$ASSET" -R artemisbrowser/artemis --title "Artemis $VERSION$([[ $CHANNEL == beta ]] && echo ' (beta)') (alpha)" \
+gh release create "$TAG" "$OUT/$ASSET" -R artemisbrowser/artemis --title "Artemis $VERSION$BETA (alpha)" \
   --notes-file "$NOTES" --prerelease --target main >/dev/null
 curl -sfIL -o /dev/null "$URL"
 
