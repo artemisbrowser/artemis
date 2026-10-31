@@ -4,6 +4,16 @@
     <title>Artemis</title>
     <!-- items -->
     <item>
+      <title>Artemis 0.9.5</title>
+      <pubDate>Sat, 31 Oct 2026 19:28:22 +0000</pubDate>
+      <sparkle:version>90501</sparkle:version>
+      <sparkle:shortVersionString>0.9.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}</style><p>A fix release. It needs macOS 26 or later on Apple silicon.</p><p><b>Fixed in 0.9.5</b></p><ul><li>Artemis could crash on launch when there was no page to restore, for example on a fresh install. Fixed.</li></ul><p><b>New</b></p><ul><li><b>AppleScript and Shortcuts</b> can list and control Artemis's windows, spaces and tabs. Running JavaScript inside pages from a script stays off unless you turn it on in Settings › Privacy.</li></ul>]]></description>
+      
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.5/Artemis-0.9.5.dmg" type="application/octet-stream" sparkle:edSignature="SqYBrdJMe2AbtxtEC3Z/xI9GO3cvltZPOvw7pzgMpuXzf7nLdKMoISR3rXZGXwtbBcd+j37h6VuFnGf/SGhRBA==" length="21245950" />
+    </item>
+    <item>
       <title>Artemis 0.9.4</title>
       <pubDate>Sat, 31 Oct 2026 12:00:06 +0000</pubDate>
       <sparkle:version>90401</sparkle:version>
