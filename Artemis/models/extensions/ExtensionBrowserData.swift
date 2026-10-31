@@ -21,7 +21,8 @@ extension ExtensionAPIBridge {
 
         case "history.add":
             guard ExtensionData.declares("history", context), let profile,
-                let url = (message["url"] as? String).flatMap(URL.init(string:))
+                let url = (message["url"] as? String).flatMap(URL.init(string:)),
+                !ExtensionManager.shared.isVisitedPrivately(url)
             else { return ["ok": false] }
             profile.history.record(url: url, title: message["title"] as? String ?? "")
             return ["ok": true]

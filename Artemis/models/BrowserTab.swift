@@ -998,17 +998,14 @@ final class BrowserTab: NSObject, Identifiable {
             mediaPrefs._setMediaDevicesEnabled(true)
         }
         ExtensionLab.quiet(prefs)
-        // incognito pages get the private content controller and no extensions:
-        // WebKit injects extension content into every controller it is attached to
-        if dataStore?.isPersistent == false {
-            configuration.userContentController = SharedWebContent.privateUserContentController
-            return configuration
-        }
         // the profile's own extension controller and user-content controller: its
-        // extensions' content scripts, and Artemis's own scripts and rule lists
-        let profile = WebExtensionRuntime.profile(of: dataStore)
+        // extensions' content scripts, and Artemis's own scripts and rule lists.
+        // an incognito page takes its parent profile's, and WebKit lets in only the
+        // extensions with private access
+        let isPrivate = dataStore?.isPersistent == false
+        let profile = dataStore.map(ProfileStore.proxyProfile(of:)) ?? Profile.defaultID
         configuration.webExtensionController = WebExtensionRuntime.controller(for: profile)
-        configuration.userContentController = SharedWebContent.userContentController(for: profile)
+        configuration.userContentController = SharedWebContent.userContentController(for: profile, isPrivate: isPrivate)
         return configuration
     }
 
@@ -1866,7 +1863,8 @@ extension BrowserTab: WKUIDelegate {
 /// map cleanly onto existing tab plumbing and let WebKit fall back for the rest.
 extension BrowserTab: WKWebExtensionTab {
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        ExtensionManager.shared.browserWindow
+        guard isPrivate else { return ExtensionManager.shared.browserWindow }
+        return manager.flatMap(ExtensionManager.shared.privateWindow(of:))
     }
 
     func indexInWindow(for context: WKWebExtensionContext) -> Int {

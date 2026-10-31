@@ -35,6 +35,7 @@ final class BrowserWindows {
                 guard let window = note.object as? NSWindow else { return }
                 if let manager = self?.registry[ObjectIdentifier(window)]?.manager {
                     self?.current = manager
+                    ExtensionManager.shared.windowDidFocus(manager)
                 }
             }
         }

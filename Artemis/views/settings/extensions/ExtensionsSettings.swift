@@ -316,6 +316,17 @@ private struct ExtensionRow: View {
                     .lineLimit(2)
             }
 
+            HStack(spacing: 4) {
+                Toggle("Allow in incognito", isOn: Binding(
+                    get: { ext.allowsIncognito }, set: { extensions.setAllowsIncognito(ext, $0) }))
+                    .toggleStyle(.checkbox)
+                    .disabled(ext.refusesIncognito)
+                InfoButton(ext.refusesIncognito
+                    ? "This extension doesn't run in incognito windows."
+                    : "It can see and change pages in incognito windows.")
+            }
+            .font(.caption)
+
             if let errorText = ext.loadErrorText {
                 Label(errorText, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

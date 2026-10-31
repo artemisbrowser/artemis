@@ -120,7 +120,7 @@ final class ArtemisWebView: WKWebView {
             menu.addItem(translate)
         }
 
-        let extensionItems = ExtensionManager.shared.enabledExtensions
+        let extensionItems = (tab.manager.map(ExtensionManager.shared.enabledExtensions(in:)) ?? [])
             .filter { $0.context.isLoaded }
             .flatMap { $0.context.menuItems(for: tab) }
         guard !extensionItems.isEmpty else { return }

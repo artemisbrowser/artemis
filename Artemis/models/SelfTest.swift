@@ -1253,6 +1253,7 @@ enum SelfTest {
         await testExtensionMV2Probe()
         await testExtensionEscalation()
         await testExtensionAPIBridgeProbe()
+        await testIncognitoExtensions(manager: manager)
 
         forgetTestTraces(manager)
         emit("")
@@ -6291,12 +6292,15 @@ enum SelfTest {
             "incognito: a window opens one private space with a tab",
             incognito.kind == .incognito && space.tabs.count == 1
                 && !manager.spaces.contains { $0.id == space.id })
+        let parent = manager.currentProfile.id
         record(
-            "incognito: its pages browse in a non-persistent jar, without extensions",
+            "incognito: its pages browse in a non-persistent jar, on the parent's extensions and its own content controller",
             tab.isPrivate && tab.profileID == nil && !tab.dataStore.isPersistent
-                && tab.webView.configuration.webExtensionController == nil
+                && tab.webView.configuration.webExtensionController === WebExtensionRuntime.controller(for: parent)
                 && tab.webView.configuration.userContentController
-                    === SharedWebContent.privateUserContentController)
+                    === SharedWebContent.userContentController(for: parent, isPrivate: true)
+                && tab.webView.configuration.userContentController
+                    !== SharedWebContent.userContentController(for: parent))
         let second = makeIncognito(from: manager)
         record(
             "incognito: each window has a jar of its own",
@@ -6846,6 +6850,99 @@ enum SelfTest {
         record("bridge: unsupportedAPIs no longer claims devtools, which WebKit has",
             !ExtensionManager.unsupportedAPIs.contains("devtools")
                 && ExtensionCompat.shimmedPermissions.isSubset(of: ExtensionManager.unsupportedAPIs))
+    }
+
+    /// An extension runs in incognito only once allowed there, and nothing it sees
+    /// there reaches history; its private window leaves the runtime with the window
+    private static func testIncognitoExtensions(manager: TabManager) async {
+        let extensions = ExtensionManager.shared
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-incognito-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let manifest: [String: Any] = [
+            "manifest_version": 3, "name": "Artemis Incognito Probe", "version": "1.0",
+            "permissions": ["history"], "host_permissions": ["https://selftest.local/*"],
+            "content_scripts": [[
+                "matches": ["https://selftest.local/*"], "js": ["mark.js"], "run_at": "document_start",
+            ]],
+        ]
+        try? JSONSerialization.data(withJSONObject: manifest).write(to: root.appendingPathComponent("manifest.json"))
+        try? #"document.documentElement.dataset.artemisIncognito = "ran";"#
+            .write(to: root.appendingPathComponent("mark.js"), atomically: true, encoding: .utf8)
+        guard let ext = try? await extensions.installFromDisk(root) else {
+            record("incognito extensions: the probe installs", false)
+            return
+        }
+        defer { extensions.remove(ext) }
+        extensions.setEnabled(ext, true)
+        try? await Task.sleep(for: .milliseconds(600))
+
+        let mark = { (tab: BrowserTab) async -> String in
+            await load(tab, html: "<html><body>incognito probe</body></html>")
+            return (try? await tab.webView.evaluateJavaScript(
+                "document.documentElement.dataset.artemisIncognito ?? 'none'")) as? String ?? "?"
+        }
+        let previous = manager.selectedTabID
+        let regular = manager.newTab(url: nil, select: false)
+        let control = await mark(regular)
+        manager.close(regular)
+        manager.selectedTabID = previous
+        record("incognito extensions: the probe's content script runs on a regular page", control == "ran", control)
+
+        let defaults = UserDefaults.standard
+        let wasLocking = defaults.bool(forKey: SpaceLock.incognitoRequiresUnlockKey)
+        defaults.set(false, forKey: SpaceLock.incognitoRequiresUnlockKey)
+        defer { defaults.set(wasLocking, forKey: SpaceLock.incognitoRequiresUnlockKey) }
+        let incognito = makeIncognito(from: manager)
+        guard let tab = incognito.currentSpace.tabs.first else {
+            record("incognito extensions: a window opens with a tab", false)
+            return
+        }
+        let context = ext.context(in: manager.currentProfile.id)
+        // WebKit's own lists ignore access; what the extension may see follows hasAccessToPrivateData
+        let announced = {
+            context.openWindows.contains { ($0 as? ExtensionWindow)?.tabManager === incognito && $0.isPrivate?(for: context) == true }
+        }
+
+        let before = await mark(tab)
+        record(
+            "incognito extensions: off by default, its content script stays out",
+            !ext.allowsIncognito && !context.hasAccessToPrivateData && before == "none", "mark=\(before)")
+        record("incognito extensions: the incognito window is announced to the runtime", announced())
+
+        extensions.setAllowsIncognito(ext, true)
+        try? await Task.sleep(for: .milliseconds(300))
+        let after = await mark(tab)
+        record(
+            "incognito extensions: once allowed, its content script runs there",
+            context.hasAccessToPrivateData && after == "ran", "mark=\(after)")
+
+        let stored = (defaults.data(forKey: "extensionRecordsV1"))
+            .flatMap { try? JSONDecoder().decode([ExtensionRecord].self, from: $0) }?
+            .first { $0.id == ext.id }
+        record("incognito extensions: the choice is remembered", stored?.allowsIncognito == true)
+
+        let visited = tab.url ?? URL(string: "https://selftest.local/")!
+        let reply = await ExtensionAPIBridge.shared.handleBrowserData(
+            "history.add", ["url": visited.absoluteString], for: context)
+        record(
+            "incognito extensions: a page seen in incognito never reaches history through an extension",
+            extensions.isVisitedPrivately(visited) && reply?["ok"] as? Bool == false,
+            "\(visited.absoluteString) → \(reply.map { "\($0)" } ?? "nil")")
+
+        incognito.windowWillClose()
+        record("incognito extensions: a closed incognito window leaves the runtime", !announced())
+
+        var refusing = manifest
+        refusing["incognito"] = "not_allowed"
+        try? JSONSerialization.data(withJSONObject: refusing).write(to: root.appendingPathComponent("manifest.json"))
+        if let refused = try? await WKWebExtension(resourceBaseURL: root) {
+            let probe = InstalledExtension(
+                id: "selftest-refuses-incognito", source: .disk, webExtension: refused, profiles: [], isPinned: false)
+            extensions.setAllowsIncognito(probe, true)
+            record("incognito extensions: \"not_allowed\" can't be overridden", !probe.allowsIncognito)
+        }
     }
 
     /// Installs a tiny throwaway extension and asks it what the runtime really

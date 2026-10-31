@@ -131,7 +131,7 @@ struct ExtensionActionButton: View {
         let action = extensions.action(for: ext)
         if action?.presentsPopup == true {
             // a click is the gesture that grants activeTab; Chrome grants it before the popup opens
-            if let tab = extensions.currentTab { ext.context.userGesturePerformed(in: tab) }
+            if let tab = extensions.actionTab { ext.context.userGesturePerformed(in: tab) }
             popupAction = action
             showPopup = true
         } else {
@@ -240,9 +240,8 @@ struct PinnedExtensionsBar: View {
     @Environment(TabManager.self) private var tabManager
 
     var body: some View {
-        let pinned = extensions.pinnedExtensions
-        // extensions don't run in incognito, so they don't offer buttons there
-        if !pinned.isEmpty, tabManager.kind != .incognito {
+        let pinned = extensions.enabledExtensions(in: tabManager).filter(\.isPinned)
+        if !pinned.isEmpty {
             HStack(spacing: 2) {
                 ForEach(pinned) { ext in
                     ExtensionActionButton(ext: ext, boxSize: 22)
@@ -259,6 +258,7 @@ struct PinnedExtensionsBar: View {
 /// nothing but the add button when no extensions are installed.
 struct ExtensionsDropdownSection: View {
     @Environment(ExtensionManager.self) private var extensions
+    @Environment(TabManager.self) private var tabManager
     @State private var isAdding = false
     @State private var addError: String?
     @State private var showSourceChooser = false
@@ -273,7 +273,7 @@ struct ExtensionsDropdownSection: View {
                 .foregroundStyle(.primary.opacity(0.9))
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-                ForEach(extensions.enabledExtensions) { ext in
+                ForEach(extensions.enabledExtensions(in: tabManager)) { ext in
                     ExtensionActionButton(ext: ext, boxSize: 44, tile: true)
                 }
                 addButton

@@ -34,6 +34,10 @@ final class InstalledExtension: Identifiable {
     var profiles: Set<UUID>
     /// pinned extensions surface their action icon directly in the url bar
     var isPinned: Bool
+    /// runs in its profiles' incognito windows too
+    var allowsIncognito = false {
+        didSet { for context in contexts.values { context.hasAccessToPrivateData = allowsIncognito } }
+    }
     /// installed before profiles had their own extensions: another profile's first
     /// instance starts as a copy of the default profile's, so nothing logs out
     @ObservationIgnored var seedsFromDefault = false
@@ -64,6 +68,7 @@ final class InstalledExtension: Identifiable {
         context.uniqueIdentifier = id
         if let url = ExtensionCompat.baseURL(storedID: id) { context.baseURL = url }
         context.isInspectable = true
+        context.hasAccessToPrivateData = allowsIncognito
         contexts[profile] = context
         return context
     }
@@ -77,6 +82,9 @@ final class InstalledExtension: Identifiable {
     }
 
     var version: String? { webExtension.displayVersion ?? webExtension.version }
+
+    /// the manifest's `"incognito": "not_allowed"`
+    var refusesIncognito: Bool { webExtension.manifest["incognito"] as? String == "not_allowed" }
 
     var summary: String? { webExtension.displayDescription }
 
@@ -148,4 +156,5 @@ struct ExtensionRecord: Codable {
     var isEnabled: Bool
     var isPinned: Bool
     var profiles: [UUID]?
+    var allowsIncognito: Bool?
 }

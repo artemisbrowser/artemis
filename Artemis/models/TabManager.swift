@@ -562,6 +562,7 @@ final class TabManager {
             tab.stopLoading()
             core.windowLocal.remove(tab)
         }
+        ExtensionManager.shared.windowDidClose(self)
         space.tabs = []
         privateSpace = nil
         incognitoStore = nil

@@ -30,7 +30,7 @@ struct UrlField: View {
     /// in the toolbar the pill hugs its url and keeps only the pinned extensions;
     /// the page's buttons sit either side of it
     private func pill(_ tab: BrowserTab?) -> some View {
-        let pinned = !extensions.pinnedExtensions.isEmpty && tabManager.kind != .incognito
+        let pinned = extensions.enabledExtensions(in: tabManager).contains(where: \.isPinned)
         return HStack(spacing: 6) {
             Text(Self.displayText(for: tab, full: inToolbar && showsFullURL))
                 .font(.system(size: 13))
@@ -439,9 +439,10 @@ private struct SiteSettingsButton: View {
         .holdsSidebar(while: isShowingPanel)
         .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) {
             // popovers don't always inherit @Observable environment on macOS;
-            // re-inject so the Extensions section finds the manager
+            // re-inject so the Extensions section finds the managers
             SiteSettingsPanel(tab: tab)
                 .environment(ExtensionManager.shared)
+                .environment(tabManager)
         }
         .popover(isPresented: $showProgrammaticPopup, arrowEdge: .bottom) {
             if let programmaticPopup {
@@ -492,7 +493,7 @@ private struct SiteSettingsPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             // extensions live here, arc-style — added above the existing
             // connection-security row without disturbing it
-            if tab?.isPrivate != true { ExtensionsDropdownSection() }
+            ExtensionsDropdownSection()
 
             Divider().overlay(.primary.opacity(0.08))
 

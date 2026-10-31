@@ -64,9 +64,11 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// the controller of the profile the user is in
     var controller: WKWebExtensionController { WebExtensionRuntime.controller(for: currentProfile) }
 
-    /// the profile of the space the user is in
+    /// the profile of the space the user is in; an incognito window's parent while it has focus
     var currentProfile: UUID {
-        (BrowserWindows.shared.browserScope ?? tabManager)?.currentSpace.profileID ?? Profile.defaultID
+        let windows = BrowserWindows.shared
+        let scope = windows.current?.kind == .incognito ? windows.current : windows.browserScope
+        return (scope ?? tabManager)?.currentSpace.profileID ?? Profile.defaultID
     }
 
     private var allProfiles: Set<UUID> {
@@ -91,6 +93,10 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     @ObservationIgnored weak var tabManager: TabManager?
     @ObservationIgnored private var window: ExtensionWindow?
+    /// each incognito window, presented to its parent profile's controller as a private one
+    @ObservationIgnored private var privateWindows: [ObjectIdentifier: ExtensionWindow] = [:]
+    /// the window WebKit last heard had focus: every focus event reaches every extension
+    @ObservationIgnored private var focusedWindow: ExtensionWindow?
 
     private static let recordsKey = "extensionRecordsV1"
     private static let masterKey = "extensionsMasterEnabledV1"
@@ -109,6 +115,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         guard self.tabManager == nil else { return }
         self.tabManager = tabManager
         self.window = ExtensionWindow(tabManager: tabManager)
+        focusedWindow = window
         installCommandKeyMonitor()
         // strip the stores' "switch browser" nags so they're usable in Artemis
         SharedWebContent.everywhere { StorePageCleaner.install(into: $0) }
@@ -139,6 +146,17 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// pinned + enabled extensions, shown directly in the url bar
     var pinnedExtensions: [InstalledExtension] {
         enabledExtensions.filter(\.isPinned)
+    }
+
+    /// what a window offers: an incognito one, only the extensions allowed there
+    func enabledExtensions(in window: TabManager) -> [InstalledExtension] {
+        window.kind == .incognito ? enabledExtensions.filter(\.allowsIncognito) : enabledExtensions
+    }
+
+    @MainActor
+    func setAllowsIncognito(_ ext: InstalledExtension, _ allowed: Bool) {
+        ext.allowsIncognito = allowed && !ext.refusesIncognito
+        persist()
     }
 
     // MARK: - Install
@@ -409,12 +427,16 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     /// the page extensions act on; never an incognito one, which they can't see
     var currentTab: BrowserTab? {
-        (BrowserWindows.shared.current ?? tabManager)?.selectedTab.flatMap { $0.isPrivate ? nil : $0 }
+        actionTab.flatMap { $0.isPrivate ? nil : $0 }
     }
+
+    /// the page an extension's button acts on: incognito ones offer only extensions allowed there
+    @MainActor
+    var actionTab: BrowserTab? { (BrowserWindows.shared.current ?? tabManager)?.selectedTab }
 
     @MainActor
     func action(for ext: InstalledExtension) -> WKWebExtension.Action? {
-        ext.context.action(for: currentTab)
+        ext.context.action(for: actionTab)
     }
 
     /// click handler shared by the pinned bar and the dropdown grid: run the
@@ -424,7 +446,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let presentsPopup = action(for: ext)?.presentsPopup ?? false
         guard !ExtensionAPIBridge.shared.handleActionClick(for: ext.context, presentsPopup: presentsPopup)
         else { return }
-        ext.context.performAction(for: currentTab)
+        ext.context.performAction(for: actionTab)
     }
 
     /// open an extension's options page in a new tab. extension pages
@@ -484,15 +506,64 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// forward tab events to the runtime so `chrome.tabs` fires onCreated /
     /// onActivated / onRemoved. no-ops harmlessly before any extension loads.
-    // incognito pages have no extension controller, so the runtime never hears of them
-    /// the controller of the tab's own profile; none for incognito or a profile
-    /// whose controller doesn't exist yet
+    /// the controller of the tab's profile (an incognito tab's parent); none for a
+    /// profile whose controller doesn't exist yet
     private func controller(of tab: BrowserTab) -> WKWebExtensionController? {
-        guard !tab.isPrivate, let profile = tab.profileID else { return nil }
-        return WebExtensionRuntime.controllers[profile]
+        WebExtensionRuntime.controllers[ProfileStore.proxyProfile(of: tab.dataStore)]
+    }
+
+    /// an incognito window's face to the runtime, once its first page has announced it
+    @MainActor
+    func privateWindow(of manager: TabManager) -> ExtensionWindow? {
+        privateWindows[ObjectIdentifier(manager)]
+    }
+
+    @MainActor
+    private func openPrivateWindow(of manager: TabManager) {
+        // a manager that went without closing its window frees its identifier for another
+        for (key, stale) in privateWindows where stale.tabManager == nil {
+            privateWindows[key] = nil
+            stale.controller?.didCloseWindow(stale)
+        }
+        guard privateWindows[ObjectIdentifier(manager)] == nil else { return }
+        let window = ExtensionWindow(tabManager: manager, privateTo: manager.currentSpace.profileID)
+        privateWindows[ObjectIdentifier(manager)] = window
+        window.controller?.didOpenWindow(window)
+        focusedWindow = window
+    }
+
+    /// WebKit's idea of the focused window feeds `currentWindow` and `windows.getLastFocused`
+    @MainActor
+    func windowDidFocus(_ manager: TabManager) {
+        let focused = privateWindows[ObjectIdentifier(manager)] ?? (manager.kind == .incognito ? nil : window)
+        guard let focused, focused !== focusedWindow else { return }
+        focusedWindow = focused
+        if let controller = focused.controller {
+            controller.didFocusWindow(focused)
+        } else {
+            for controller in WebExtensionRuntime.controllers.values { controller.didFocusWindow(focused) }
+        }
+    }
+
+    @MainActor
+    func windowDidClose(_ manager: TabManager) {
+        guard let window = privateWindows.removeValue(forKey: ObjectIdentifier(manager)) else { return }
+        if focusedWindow === window { focusedWindow = nil }
+        window.controller?.didCloseWindow(window)
+    }
+
+    /// a page an open incognito window has been to; it never reaches history through an extension
+    @MainActor
+    func isVisitedPrivately(_ url: URL) -> Bool {
+        BrowserWindows.shared.allManagers.flatMap(\.allTabs).contains { tab in
+            let list = tab.webView.backForwardList
+            return tab.isPrivate && (tab.url == url
+                || ([list.currentItem].compactMap { $0 } + list.backList + list.forwardList).contains { $0.url == url })
+        }
     }
 
     func tabDidOpen(_ tab: BrowserTab) {
+        if tab.isPrivate, let manager = tab.manager { openPrivateWindow(of: manager) }
         controller(of: tab)?.didOpenTab(tab)
     }
 
@@ -503,7 +574,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// a previous tab of another profile is that profile's business, not this one's
     func tabDidActivate(_ tab: BrowserTab, previous: BrowserTab?) {
         guard let controller = controller(of: tab) else { return }
-        let previous = previous.flatMap { $0.isPrivate || $0.profileID != tab.profileID ? nil : $0 }
+        let previous = previous.flatMap { controller === self.controller(of: $0) ? $0 : nil }
         controller.didActivateTab(tab, previousActiveTab: previous)
     }
 
@@ -544,7 +615,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let records = installed.map {
             ExtensionRecord(
                 id: $0.id, source: $0.source, isEnabled: $0.isEnabled, isPinned: $0.isPinned,
-                profiles: Array($0.profiles))
+                profiles: Array($0.profiles), allowsIncognito: $0.allowsIncognito)
         }
         if let data = try? JSONEncoder().encode(records) {
             UserDefaults.standard.set(data, forKey: Self.recordsKey)
@@ -578,6 +649,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                     id: record.id, source: record.source, webExtension: ext,
                     profiles: profiles, isPinned: record.isPinned)
                 installedExt.seedsFromDefault = record.profiles == nil
+                installedExt.allowsIncognito = record.allowsIncognito ?? false
                 installed.append(installedExt)
             } catch {
                 debugLog("extension \(record.id): failed to load — \(error.localizedDescription)")
@@ -646,13 +718,14 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func webExtensionController(
         _ controller: WKWebExtensionController, openWindowsFor context: WKWebExtensionContext
     ) -> [any WKWebExtensionWindow] {
-        window.map { [$0] } ?? []
+        (window.map { [$0] } ?? []) + privateWindows.values.filter { $0.controller === controller }
     }
 
     func webExtensionController(
         _ controller: WKWebExtensionController, focusedWindowFor context: WKWebExtensionContext
     ) -> (any WKWebExtensionWindow)? {
-        window
+        BrowserWindows.shared.current.flatMap { privateWindows[ObjectIdentifier($0)] }
+            .flatMap { $0.controller === controller ? $0 : nil } ?? window
     }
 
     @MainActor

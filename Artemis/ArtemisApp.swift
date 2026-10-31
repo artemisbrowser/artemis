@@ -378,7 +378,7 @@ struct ArtemisApp: App {
                     cycleExtensions()
                 }
                 .keyboardShortcut("e")
-                .disabled(ExtensionManager.shared.pinnedExtensions.isEmpty || tabManager.kind == .incognito)
+                .disabled(!ExtensionManager.shared.enabledExtensions(in: tabManager).contains(where: \.isPinned))
             }
 
             // navigation
@@ -695,7 +695,7 @@ struct ArtemisApp: App {
     /// ⌘E: step through the pinned extensions, running each one's action —
     /// Arc's "hold ⌘, tap E" without needing the hold
     private func cycleExtensions() {
-        let pinned = ExtensionManager.shared.pinnedExtensions
+        let pinned = ExtensionManager.shared.enabledExtensions(in: tabManager).filter(\.isPinned)
         guard !pinned.isEmpty else { return }
         let next = extensionCycleIndex % pinned.count
         extensionCycleIndex = next + 1
