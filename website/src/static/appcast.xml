@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Artemis</title>
+    <!-- items -->
+    <item>
+      <title>Artemis 0.9.2</title>
+      <pubDate>Sat, 31 Oct 2026 06:39:15 +0000</pubDate>
+      <sparkle:version>90201</sparkle:version>
+      <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/artemisbrowser/artemis/releases/tag/v0.9.2</sparkle:releaseNotesLink>
+      
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.2/Artemis-0.9.2.dmg" type="application/octet-stream" sparkle:edSignature="0qysOnz2kEVyv82R5PojLCFQW14BETXCR75p5GPXrhbMTz93Ad6AoRs1t6yTIbfVu1yD+Kq89ta6ub+9uYZwAw==" length="21166060" />
+    </item>
+  </channel>
+</rss>

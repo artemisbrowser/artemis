@@ -7,7 +7,7 @@ export const STAGE = "Public alpha";
 // true for an unsigned build: adds the Gatekeeper line and the "How to open it" Peek.
 export const UNSIGNED = true;
 // the release URL; when set, /download redirects there (302) instead of serving the placeholder page.
-export const DOWNLOAD_URL = "https://github.com/artemisbrowser/artemis/releases/download/v0.9.1/Artemis-0.9.1.dmg";
+export const DOWNLOAD_URL = "https://github.com/artemisbrowser/artemis/releases/download/v0.9.2/Artemis-0.9.2.dmg";
 // the Arc block ships only while this is true and src/partials/07-arc.html exists.
 export const ARC_BLOCK = true;
 // invented demo sites; every registrable domain must be unregistered (rdap.org 404).
