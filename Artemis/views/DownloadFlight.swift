@@ -3,31 +3,46 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// A new download's file icon arcs from the click that started it to the
-/// window's Library button (or download pill), drawn in Core Animation on a
-/// throwaway layer so SwiftUI lays nothing out during the flight.
+/// window's Library button (or download pill), drawn in Core Animation in a
+/// view on the window's frame view, above the content view whose page and
+/// sidebar hosts would otherwise cover it.
 enum DownloadFlight {
     /// views marking where downloads land; the one in the download's window is the target
     fileprivate static let targets = NSHashTable<NSView>.weakObjects()
 
     static func launch(filename: String, from webView: NSView?) {
-        guard !Motion.reduceMotion, let webView, let window = webView.window,
-            let content = window.contentView,
-            let target = targets.allObjects.first(where: { $0.window === window && !$0.isHiddenOrHasHiddenAncestor })
-        else { return }
-        let end = target.convert(NSPoint(x: target.bounds.midX, y: target.bounds.midY), to: nil)
+        // a beat, so the pill the download just put on the shelf is on screen to land on
         let press = (webView as? ArtemisWebView)?.lastPress
-        let start = press.flatMap { Date.now.timeIntervalSince($0.at) < 2 ? $0.point : nil }
-            ?? webView.convert(NSPoint(x: webView.bounds.midX, y: webView.bounds.midY), to: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            fly(filename: filename, from: webView, press: press)
+        }
+    }
 
-        let overlay = PassthroughView(frame: content.bounds)
+    private static func fly(filename: String, from webView: NSView?, press: (point: NSPoint, at: Date)?) {
+        // a tab still on the start page has no page in the window: fly from the window's middle
+        guard !Motion.reduceMotion, let window = webView?.window ?? NSApp.keyWindow,
+            let content = window.contentView, let frameView = content.superview
+        else { return }
+        // a hidden sidebar's Library button still sits in the window, off its edge
+        let target = targets.allObjects.first { view in
+            view.window === window && !view.isHiddenOrHasHiddenAncestor
+                && content.bounds.insetBy(dx: 4, dy: 4).contains(view.convert(view.bounds, to: content).center)
+        }
+        // nothing to land on: the window's bottom-left, where the pill appears
+        let end = target.map { $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil) }
+            ?? content.convert(NSPoint(x: content.bounds.minX + 40, y: content.isFlipped ? content.bounds.maxY - 26 : 26), to: nil)
+        let page = webView.flatMap { $0.window === window ? $0 : nil } ?? content
+        let start = press.flatMap { Date.now.timeIntervalSince($0.at) < 2 ? $0.point : nil }
+            ?? page.convert(NSPoint(x: page.bounds.midX, y: page.bounds.midY), to: nil)
+
+        let overlay = PassthroughView(frame: frameView.bounds)
         overlay.wantsLayer = true
-        overlay.autoresizingMask = [.width, .height]
-        content.addSubview(overlay)
+        frameView.addSubview(overlay, positioned: .above, relativeTo: nil)
 
         let icon = CALayer()
         let ext = (filename as NSString).pathExtension
         icon.contents = NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
-        icon.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
+        icon.bounds = CGRect(x: 0, y: 0, width: 40, height: 40)
         icon.contentsScale = window.backingScaleFactor
         let a = overlay.convert(start, from: nil), b = overlay.convert(end, from: nil)
         icon.position = b
@@ -49,17 +64,21 @@ enum DownloadFlight {
         fade.keyTimes = [0, 0.8, 1]
         let flight = CAAnimationGroup()
         flight.animations = [path, scale, fade]
-        flight.duration = 0.55
+        flight.duration = 0.7
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { overlay.removeFromSuperview() }
         icon.add(flight, forKey: "flight")
         CATransaction.commit()
     }
+}
 
-    private final class PassthroughView: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    }
+private final class PassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private extension CGRect {
+    var center: CGPoint { CGPoint(x: midX, y: midY) }
 }
 
 /// marks where downloads land; place it as the background of the landing control

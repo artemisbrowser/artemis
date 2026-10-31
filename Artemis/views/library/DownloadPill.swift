@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 struct DownloadPill: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
+    /// where a new download's flight ends, when no Library button is on screen
+    var isLanding = false
     @State private var isHovering = false
     private var downloads: DownloadManager { .shared }
 
@@ -45,7 +47,7 @@ struct DownloadPill: View {
                 .contentShape(.capsule)
             }
             .buttonStyle(.plain)
-            .background(tabManager.kind == .incognito ? DownloadLanding() : nil)
+            .background(isLanding || tabManager.kind == .incognito ? DownloadLanding() : nil)
             .onHover { isHovering = $0 }
             .transition(.opacity.combined(with: .scale(scale: 0.95)))
         }

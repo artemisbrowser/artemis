@@ -117,6 +117,17 @@ struct MainView: View {
             }
         }
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
+        .overlay(alignment: .bottomLeading) {
+            // the sidebar's download pill is off-screen with it, so downloads show over the page's corner
+            if isSidebarCollapsed, !isSidebarOverlayVisible {
+                DownloadPill(isLanding: true)
+                    .frame(width: 240)
+                    .padding(.leading, max(edgeInset, 0) + 12)
+                    .padding(.bottom, max(edgeInset, 0) + 12)
+                    .environment(\.chromeInk, tabManager.blendedInk)
+            }
+        }
+        .animation(Motion.pop, value: isSidebarCollapsed && DownloadManager.shared.shelf.isEmpty)
         .overlay(alignment: .leading) {
             // collapsed with the rig away: hover the window edge to peek it back
             if isSidebarCollapsed, !isSidebarOverlayVisible {
