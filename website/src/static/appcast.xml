@@ -4,6 +4,16 @@
     <title>Artemis</title>
     <!-- items -->
     <item>
+      <title>Artemis 0.9.4</title>
+      <pubDate>Sat, 31 Oct 2026 12:00:06 +0000</pubDate>
+      <sparkle:version>90401</sparkle:version>
+      <sparkle:shortVersionString>0.9.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}</style><p>A quick follow-up to 0.9.3. It needs macOS 26 or later on Apple silicon.</p><p><b>Fixed in 0.9.4</b></p><ul><li>The download animation now actually shows: the file flies from where you clicked into the Library button.</li><li>With the sidebar hidden, downloads appear in a small pill at the window's bottom-left, and the file flies there instead.</li></ul>]]></description>
+      
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.4/Artemis-0.9.4.dmg" type="application/octet-stream" sparkle:edSignature="Wm/plgshIQDeq8Q+Zkug2CwhXdv6YlYPBB/QV8viXOAMMVYFZZXxHiVBvVKzzhyUbyESJnSQNc9GvrQETz5ADQ==" length="21202331" />
+    </item>
+    <item>
       <title>Artemis 0.9.3</title>
       <pubDate>Sat, 31 Oct 2026 11:30:49 +0000</pubDate>
       <sparkle:version>90301</sparkle:version>
