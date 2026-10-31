@@ -1234,6 +1234,7 @@ enum SelfTest {
         await testToolbarAddress(manager: manager)
         await testWindowDrag(manager: manager)
         await testCommandBarThroughSidebar(manager: manager)
+        await testDownloadShelf(manager: manager)
         testSettingsPanesRender(manager: manager)
         testSidebarShowsNames(manager: manager)
         testChromeTintTracksBackdrop(manager: manager)
@@ -2645,6 +2646,34 @@ enum SelfTest {
     /// the ⌘T and ⌘L bars keep the keyboard, text and caret through the sidebar
     /// hiding, pinning, peeking and timing out, and through a press on the bar
     /// where it covers the sidebar; a field in the sidebar gives it up
+    /// a real download through the shelf: it shows while running, settles finished
+    /// under its real name with no .download left, and the Dock badge clears
+    private static func testDownloadShelf(manager: TabManager) async {
+        guard let webView = manager.selectedTab?.webView else {
+            return record("downloads: a page to download from", false)
+        }
+        let name = "artemis-selftest-\(UUID().uuidString.prefix(8)).txt"
+        let download = await webView.startDownload(
+            using: URLRequest(url: URL(string: "data:text/plain;charset=utf-8,hello")!))
+        DownloadManager.shared.register(download, filename: name)
+        guard let item = DownloadManager.shared.shelf.first else {
+            return record("downloads: a new download goes on the shelf", false)
+        }
+        record("downloads: a new download goes on the shelf", item.filename == "Download" || item.filename == name, item.filename)
+        await settle(.seconds(15)) { item.state != .downloading }
+        let file = item.destination
+        record(
+            "downloads: it finishes under its real name, nothing left as .download",
+            item.state == .finished && file?.lastPathComponent == name
+                && !FileManager.default.fileExists(atPath: (file?.path ?? "") + ".download"),
+            "\(item.state) \(file?.lastPathComponent ?? "nil")")
+        record("downloads: the Dock badge clears once nothing is running", NSApp.dockTile.badgeLabel == nil,
+            NSApp.dockTile.badgeLabel ?? "")
+        record("downloads: a finished download stays on the shelf a moment", DownloadManager.shared.shelf.contains { $0.id == item.id })
+        DownloadManager.shared.dismiss(item)
+        if let file { try? FileManager.default.removeItem(at: file) }
+    }
+
     private static func testCommandBarThroughSidebar(manager: TabManager) async {
         func sidebarHost(in view: NSView) -> NSView? {
             view is PassthroughHostingView<AnyView>
@@ -2703,6 +2732,11 @@ enum SelfTest {
                         + "text \(field?.string ?? "-"), sidebar gone \(sidebarGone())")
             } else {
                 note("sidebar focus: skipped \(name) — the window wasn't key")
+            }
+            if name == "⌘L" {
+                record(
+                    "sidebar focus: the ⌘L bar recentres once the pill it grew from has moved",
+                    manager.addressBarOrigin?.isEmpty == true, String(describing: manager.addressBarOrigin))
             }
             manager.isCommandBarVisible = false
             await settle { manager.addressBarOrigin == nil }

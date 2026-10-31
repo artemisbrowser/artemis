@@ -81,6 +81,14 @@ final class ArtemisWebView: WKWebView {
         loginKeys?.mount()
     }
 
+    /// where and when the page was last pressed, in window points: a download flies from the click that started it
+    private(set) var lastPress: (point: NSPoint, at: Date)?
+
+    override func mouseDown(with event: NSEvent) {
+        lastPress = (event.locationInWindow, .now)
+        super.mouseDown(with: event)
+    }
+
     /// login keys stand aside while the page moves under them, before WebKit scrolls or zooms it
     override func scrollWheel(with event: NSEvent) {
         loginKeys?.settle()

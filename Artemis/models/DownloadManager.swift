@@ -24,6 +24,9 @@ final class DownloadItem: NSObject, Identifiable {
     /// what it was called before you accepted a suggestion, so it can go back
     private(set) var previousName: String?
 
+    /// from an incognito window: shown as "Private download", never by name
+    let isPrivate: Bool
+
     /// the page this came from, which is the only real clue to what the file is
     @ObservationIgnored let sourceTitle: String
     @ObservationIgnored let sourceHost: String
@@ -44,12 +47,17 @@ final class DownloadItem: NSObject, Identifiable {
         self.sourceTitle = sourceTitle
         self.sourceHost = sourceHost
         preferredFilename = filename
+        isPrivate = download.webView.map { !$0.configuration.websiteDataStore.isPersistent } ?? false
         super.init()
         download.delegate = self
+        // whole percents only: every view showing progress redraws per update
+        var sent = -1.0
         progressObservation = download.progress.observe(
             \.fractionCompleted, options: [.initial, .new]
         ) { [weak self] progress, _ in
             let fraction = progress.fractionCompleted
+            guard fraction - sent >= 0.01 || fraction >= 1 else { return }
+            sent = fraction
             DispatchQueue.main.async {
                 self?.fractionCompleted = fraction
             }
@@ -60,6 +68,12 @@ final class DownloadItem: NSObject, Identifiable {
         download?.cancel()
         state = .cancelled
         discardPartial()
+        DownloadManager.shared.changed(self)
+    }
+
+    func open() {
+        guard state == .finished, let destination else { return }
+        NSWorkspace.shared.open(destination)
     }
 
     /// marks a finished download as a web download, as Safari does, so Gatekeeper
@@ -167,6 +181,7 @@ extension DownloadItem: WKDownloadDelegate {
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let url = Self.uniqueURL(
             for: downloads.appendingPathComponent(preferredFilename ?? suggestedFilename))
+        DownloadFlight.launch(filename: url.lastPathComponent, from: download.webView)
 
         filename = url.lastPathComponent
         destination = url
@@ -193,6 +208,7 @@ extension DownloadItem: WKDownloadDelegate {
             self.partial = nil
         }
         state = .finished
+        DownloadManager.shared.changed(self)
         debugLog("download finished: \(filename)")
         Task { @MainActor in proposeName() }
     }
@@ -211,6 +227,7 @@ extension DownloadItem: WKDownloadDelegate {
 
         state = .failed
         errorText = error.localizedDescription
+        DownloadManager.shared.changed(self)
         // the description can name the file, so only the code is kept
         Diagnostics.record(
             area: "downloads",
@@ -231,16 +248,27 @@ final class DownloadManager {
         items.contains { $0.state == .downloading }
     }
 
+    /// what the sidebar's download pill shows: running and failed downloads, and
+    /// finished ones for a few seconds
+    private(set) var shelf: [DownloadItem] = []
+
+    /// the share of everything on the shelf still running that has arrived
+    var fraction: Double {
+        let running = shelf.filter { $0.state == .downloading }
+        guard !running.isEmpty else { return 1 }
+        return running.map(\.fractionCompleted).reduce(0, +) / Double(running.count)
+    }
+
     func register(
         _ download: WKDownload, sourceTitle: String = "", sourceHost: String = "",
         filename: String? = nil
     ) {
         debugLog("download registered: \(download.originalRequest?.url?.absoluteString ?? "nil")")
-        items.insert(
-            DownloadItem(
-                download: download, sourceTitle: sourceTitle, sourceHost: sourceHost,
-                filename: filename),
-            at: 0)
+        let item = DownloadItem(
+            download: download, sourceTitle: sourceTitle, sourceHost: sourceHost, filename: filename)
+        items.insert(item, at: 0)
+        shelf.insert(item, at: 0)
+        updateDock()
     }
 
     func clearFinished() {
@@ -249,5 +277,34 @@ final class DownloadManager {
 
     func remove(_ item: DownloadItem) {
         items.removeAll { $0.id == item.id }
+        dismiss(item)
+    }
+
+    func dismiss(_ item: DownloadItem) {
+        shelf.removeAll { $0.id == item.id }
+        updateDock()
+    }
+
+    /// a download finished, failed or was cancelled
+    func changed(_ item: DownloadItem) {
+        switch item.state {
+        case .cancelled:
+            dismiss(item)
+        case .finished:
+            updateDock()
+            if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                dismiss(item)
+            }
+        case .failed, .downloading:
+            updateDock()
+        }
+    }
+
+    /// the Dock icon counts what's still arriving
+    private func updateDock() {
+        let running = shelf.filter { $0.state == .downloading }.count
+        NSApp.dockTile.badgeLabel = running > 0 ? "\(running)" : nil
     }
 }

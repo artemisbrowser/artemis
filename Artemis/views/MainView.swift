@@ -129,6 +129,10 @@ struct MainView: View {
             }
         }
         .onChange(of: isSidebarCollapsed) { _, collapsed in
+            // the address bar grown from the sidebar's pill would keep a spot that has moved
+            if let origin = tabManager.addressBarOrigin, !origin.isEmpty {
+                withAnimation(Motion.address) { tabManager.addressBarOrigin = .zero }
+            }
             // collapsing hands over to the overlay in place — it stays
             // until the mouse wanders off it; pinning dismisses it instantly
             var transaction = Transaction()

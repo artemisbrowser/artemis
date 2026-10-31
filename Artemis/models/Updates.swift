@@ -27,6 +27,8 @@ final class Updates: NSObject {
     }
 
     func start() {
+        // `-previewUpdatePill YES` at launch: the pill with nothing behind it, to see how it looks
+        if UserDefaults.standard.bool(forKey: "previewUpdatePill") { readyVersion = "0.9.3" }
         guard isEnabled else { return }
         controller = SPUStandardUpdaterController(
             startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)

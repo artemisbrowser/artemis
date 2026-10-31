@@ -1788,10 +1788,12 @@ struct Sidebar: View {
 
     private var bottomBar: some View {
         VStack(spacing: 8) {
+            DownloadPill()
             UpdatePill()
             bottomRow
         }
         .animation(Motion.pop, value: Updates.shared.readyVersion ?? Updates.shared.availableVersion)
+        .animation(Motion.pop, value: DownloadManager.shared.shelf.map(\.id))
     }
 
     private var bottomRow: some View {

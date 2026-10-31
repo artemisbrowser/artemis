@@ -607,6 +607,14 @@ struct CommandBarEngine {
                 run: { UserDefaults.standard.set(!BrowserToolbar.isShown, forKey: BrowserToolbar.shownKey) }),
         ]
 
+        if Updates.shared.isEnabled {
+            out.append(
+                CommandAction(
+                    id: "check-updates", title: "Check for Updates…", symbol: "arrow.down.circle",
+                    keywords: ["update", "upgrade", "new version", "release", "beta"],
+                    run: { Updates.shared.checkNow() }))
+        }
+
         if spaces.count > 1 {
             out.append(
                 CommandAction(

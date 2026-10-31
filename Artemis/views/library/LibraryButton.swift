@@ -45,8 +45,10 @@ struct LibraryButton: View {
                     .offset(y: 4)
             }
             .modifier(ChromeButtonFace(isHovering: isHovering, standalone: true))
+            .overlay { DownloadRing() }
         }
         .buttonStyle(.plain)
+        .background(DownloadLanding())
         .onHover { hovering in
             withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) {
                 isHovering = hovering
