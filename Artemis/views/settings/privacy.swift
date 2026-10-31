@@ -10,6 +10,7 @@ struct PrivacySettings: View {
     private var permissions = SitePermissionStore.shared
     @AppStorage(FingerprintNoise.enabledKey) private var fingerprintDefence = true
     @AppStorage(Reports.enabledKey) private var sendsErrorReports = false
+    @AppStorage(Scripting.allowsJavaScriptKey) private var allowsScriptedJavaScript = false
 
     var body: some View {
         Form {
@@ -116,6 +117,14 @@ struct PrivacySettings: View {
                 InfoLabel(
                     "Site Permissions",
                     info: "A site only gets what you granted to its exact origin. Answers given in incognito are never saved to disk.")
+            }
+
+            Section("Automation") {
+                Toggle(isOn: $allowsScriptedJavaScript) {
+                    InfoLabel(
+                        "Allow JavaScript from Apple Events",
+                        info: "Lets AppleScript and Shortcuts run code inside your pages. Only turn this on for scripts you trust.")
+                }
             }
 
             Section("Reports") {

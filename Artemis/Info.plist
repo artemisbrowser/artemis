@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppleScriptEnabled</key>
+	<true/>
+	<key>OSAScriptingDefinition</key>
+	<string>Artemis.sdef</string>
 	<!-- Sparkle: only release builds pass ARTEMIS_FEED_URL; with it empty the
 	     updater never starts (Updates.swift). The key signs every update. -->
 	<key>SUFeedURL</key>

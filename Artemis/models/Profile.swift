@@ -148,6 +148,8 @@ enum ProfileStore {
     /// on launch, delete any on-disk jar no profile owns
     static func reconcile(keeping ids: Set<UUID>) {
         Task {
+            // the fetch answers on WebKit's main run loop, which only the default store starts
+            _ = WKWebsiteDataStore.default()
             for id in await WKWebsiteDataStore.allDataStoreIdentifiers where !ids.contains(id) {
                 try? await WKWebsiteDataStore.remove(forIdentifier: id)
                 debugLog("profile reconcile: swept orphan store \(id)")

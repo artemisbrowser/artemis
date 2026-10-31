@@ -1198,6 +1198,7 @@ enum SelfTest {
         testArcImport(manager: manager)
         testArcSecrets(manager: manager)
         await testContinuityAndTranslation(manager: manager)
+        await testScripting(manager: manager)
         await testFullTextIndex()
         await testFullTextCapture(manager: manager)
         // after the full-text tests: this one loads pages, and the indexer's
@@ -2211,6 +2212,85 @@ enum SelfTest {
 
     /// Handoff, and the on-device translation of a selection or a page. All are small
     /// surfaces where the interesting assertion is what is *not* offered.
+    /// AppleScript through a child `osascript`, so each line is a real Apple
+    /// Event round trip. An app scripting itself is never put to a TCC prompt.
+    private static func testScripting(manager: TabManager) async {
+        let defaults = UserDefaults.standard
+        let allowedBefore = defaults.bool(forKey: Scripting.allowsJavaScriptKey)
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            defaults.set(allowedBefore, forKey: Scripting.allowsJavaScriptKey)
+            manager.close(tab)
+            manager.selectedTabID = previous
+        }
+        await load(tab, html: "<html><head><title>Scripted</title></head><body>hi</body></html>")
+        let app = "application id \"\(Bundle.main.bundleIdentifier ?? "")\""
+        let ref = "tab id \"\(tab.id.uuidString)\""
+        let window = BrowserWindows.shared.window(of: manager)?.windowNumber ?? 0
+        func run(_ body: String) async -> String { await osascript("tell \(app) to \(body)") }
+
+        let title = await run("title of \(ref)")
+        record("scripting: a tab's title", title == tab.displayTitle, title)
+        let active = await run("id of active tab of window id \(window)")
+        record("scripting: the window's active tab", active == tab.id.uuidString, active)
+        let mode = await run("mode of window id \(window)")
+        record("scripting: a browser window's mode is normal", mode == "normal", mode)
+        let count = await run("count of tabs of window id \(window)")
+        record(
+            "scripting: a window lists its favorites and its space's tabs",
+            Int(count) == manager.essentials.count + manager.currentSpace.tabs.count, count)
+        let space = await run("name of space id \"\(manager.currentSpace.id.uuidString)\"")
+        record("scripting: a space by id", space == manager.currentSpace.name, space)
+
+        defaults.set(false, forKey: Scripting.allowsJavaScriptKey)
+        let refused = await run("execute \(ref) javascript \"1 + 1\"")
+        record("scripting: JavaScript is refused while the setting is off", refused.contains("turned off"), refused)
+        _ = await run("set URL of \(ref) to \"javascript:document.title='x'\"")
+        record(
+            "scripting: nor does a javascript: URL get past it", tab.lastAttemptedURL == nil,
+            tab.lastAttemptedURL?.absoluteString ?? "")
+
+        defaults.set(true, forKey: Scripting.allowsJavaScriptKey)
+        let sum = await run("execute \(ref) javascript \"document.title + (1 + 1)\"")
+        record("scripting: JavaScript runs and returns its value", sum == "Scripted2", sum)
+        let list = await run("execute \(ref) javascript \"[1, 'a', true]\"")
+        record("scripting: a JavaScript array comes back a list", list == "1, a, true", list)
+        let thrown = await run("execute \(ref) javascript \"null.x\"")
+        record("scripting: a JavaScript exception is a script error", thrown.contains("TypeError"), thrown)
+
+        _ = await run("set muted of \(ref) to true")
+        record("scripting: muting", tab.isMuted)
+        _ = await run("set URL of \(ref) to \"https://scripting.selftest.example/\"")
+        record(
+            "scripting: setting the URL loads it",
+            tab.lastAttemptedURL?.host() == "scripting.selftest.example",
+            tab.lastAttemptedURL?.absoluteString ?? "nothing")
+
+        let made = await run(
+            "id of (make new tab at window id \(window) with properties {URL:\"https://made.selftest.example/\"})")
+        let madeTab = manager.currentSpace.tabs.first { $0.id.uuidString == made }
+        record(
+            "scripting: make new tab opens the URL in the window's space",
+            madeTab?.lastAttemptedURL?.host() == "made.selftest.example", made)
+        _ = await run("close tab id \"\(made)\"")
+        record("scripting: close removes the tab", !manager.currentSpace.tabs.contains { $0.id.uuidString == made })
+    }
+
+    @concurrent
+    private nonisolated static func osascript(_ source: String) async -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", source]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        guard (try? process.run()) != nil else { return "osascript did not start" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func testContinuityAndTranslation(manager: TabManager) async {
         let continuity = Continuity()
         continuity.offer(URL(string: "https://handoff.selftest.example/page"), title: "A page", isPrivate: false)
