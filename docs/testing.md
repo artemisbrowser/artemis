@@ -10,18 +10,20 @@ Run it from the repo root:
 # build, run the suite, read the report
 xcodebuild -scheme Artemis -configuration Debug -derivedDataPath .build build
 
-pkill -x Artemis; sleep 2
+pkill -x Artemis; sleep 2   # quits every copy of Artemis, the one you browse with too
 ARTEMIS_SELFTEST=1 .build/Build/Products/Debug/Artemis.app/Contents/MacOS/Artemis &
 
 # a few minutes later, once the app has quit itself
 cat ~/Downloads/artemis-selftest.log
 ```
 
-The build needs Xcode 27. If `xcodebuild` picks up a different Xcode, point `DEVELOPER_DIR` at the right one first, for example `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. `deploy.sh` and the lab scripts honour the same variable, and sign with `ARTEMIS_SIGN_IDENTITY` (default `Apple Development`).
+The build needs Xcode 27. If `xcodebuild` picks up a different Xcode, point `DEVELOPER_DIR` at the right one first, for example `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. `deploy.sh` and the lab scripts honour the same variable, and sign with `ARTEMIS_SIGN_IDENTITY`, falling back to the identity in an untracked `.signing-identity` file at the repo root, then `Apple Development`.
 
 The suite has finished only if the log ends with a `done` line. A log without one stopped early, whatever its tally says.
 
-**Why the report lands in `~/Downloads`:** Artemis is sandboxed, so its container (and therefore `debugLog`'s output) is unreadable from a terminal outside it. The `com.apple.security.files.downloads.read-write` entitlement makes `~/Downloads` the one shared channel. The log is appended to as the suite runs, so a hang or crash still leaves the results up to that point.
+The log is appended to as the suite runs, so a hang or crash still leaves the results up to that point.
+
+**Where its data goes:** a build from source keeps its data in `~/Library/Application Support/Artemis`. The released app uses `~/Library/Application Support/app.artemisbrowser.Artemis`, so the suite never touches the browser you use day to day.
 
 **Signing:** the build is signed to run locally, which is all the suite needs. Picture in Picture is the one feature that won't work that way. To try it, re-sign the build with your own Apple Development certificate:
 
@@ -54,6 +56,10 @@ Suites that drive the real thing rather than a model in isolation:
 - **`bulk`** — the selection reading back in list order, each verb (pin, unpin, mute, unmute) taking the whole selection and then clearing it, a bulk close removing every selected tab and stamping them with one `undoGroup`, and a single ⇧⌘T bringing the whole group back and emptying it off the stack.
 - **`notifications`** — Artemis' own `window.Notification` shim: absent in an insecure page; in a secure one a frozen `EventTarget` class starting at `"default"`; `requestPermission()` without user activation prompts nobody; posting while unallowed fires `error`; an app-evaluated (activated) request reaches the prompt and a refusal reaches the page as `"denied"`; a remembered allow reads `"granted"`, and the same site reads `"denied"` in incognito. Nothing is allowed for real, so macOS is never asked for authorization.
 - **`scripting`** — the AppleScript dictionary through a child `osascript`, so every line is a real Apple Event round trip (an app scripting itself raises no Automation prompt): reading a tab, its window and its space by id; `execute` refused while Allow JavaScript from Apple Events is off and a `javascript:` URL refused regardless; JavaScript values coming back as text, lists and script errors; setting the URL and mute; `make new tab` and `close`.
+- **`downloads`** — a real download finishing under its own name with no `.download` partial left behind, and staying on the sidebar's shelf for a moment after it finishes.
+- **`feedback` / `reports`** — an incognito window's feedback carrying no page or screenshot while an ordinary one sends what was ticked, an error report carrying the server's fields, a crash grouping across builds by the frames outside Artemis, and the outbox keeping only the newest reports.
+- **`incognito extensions`** — an extension reaching an incognito window only when allowed, `"not_allowed"` staying binding, and a closed incognito window leaving nothing in the runtime.
+- **`window drag`** — a press on the page's top edge held while the button is down: let go in place and the page gets a click where it was pressed; move past the slop and it becomes a window drag the page never sees. A double click and a control-click go straight to the page.
 - **`escalation`** — a throwaway extension whose manifest declares one permission and offers another. Declared permissions grant silently; an undeclared one is refused with the declared half intact; allowing grants both; undeclared hosts and match patterns are refused; and a context the manager doesn't recognise is granted nothing. The alert is answered by `escalationAnswerForTesting` — a real modal in an unattended suite would hang the run rather than fail it.
 
 ## Notes on the tricky assertions

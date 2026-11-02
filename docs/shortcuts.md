@@ -62,12 +62,13 @@ The menu bar's shortcuts, menu by menu, as `Artemis/ArtemisApp.swift` binds them
 
 ## Spaces
 
-| Shortcut  | Action                                  |
-| --------- | --------------------------------------- |
-| ⌘⇧E       | New Space…                              |
-| ⌘⇧N       | New Incognito Window                    |
-| ⌥⌘← / ⌥⌘→ | Previous Space / Next Space             |
-| ⌃1–⌃9     | The first nine spaces, in sidebar order |
+| Shortcut  | Action                                       |
+| --------- | -------------------------------------------- |
+| ⌘⇧E       | New Space…                                   |
+| ⌘⇧N       | New Incognito Window                         |
+| ⌥⌘← / ⌥⌘→ | Previous Space / Next Space                  |
+| ⌃1–⌃9     | The first nine spaces, in sidebar order      |
+| Hold ⌃    | Number the space dots, to see which is which |
 
 ## Mouse and trackpad
 

@@ -4,11 +4,11 @@ Cheers for wanting to help out.
 
 ## Reporting bugs
 
-The quickest way is in Artemis itself: Help › Send Feedback… sends your note with the app and macOS versions attached. Or open an issue and tell us what you did, what you expected and what happened instead. A bug we can make happen again is a bug we can fix.
+The quickest way is in Artemis itself: Help › Send Feedback… turns your note into an issue here, with the app and macOS versions attached. Screenshots and diagnostics stay private, and Keep this private keeps the whole thing private. Or open an issue and tell us what you did, what you expected and what happened instead. A bug we can make happen again is a bug we can fix.
 
 ## Sending a PR
 
-You'll need a Mac on macOS 26 and Xcode 27.
+You'll need an Apple silicon Mac on macOS 26 and Xcode 27.
 
 1. Fork the repo on GitHub.
 2. Clone your fork and open it in Xcode:

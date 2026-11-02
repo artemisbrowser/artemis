@@ -25,23 +25,26 @@ If you miss Arc, you'll feel right at home. Your tabs live down the side, groupe
 
 ## What's in it
 
-- **Spaces.** Separate sets of tabs, each with its own look and, if you want, its own logins. Switch with ⌃1-9 or a two-finger swipe.
+- **Spaces.** Separate sets of tabs, each with its own look. Switch with ⌃1-9 or a two-finger swipe.
+- **Profiles.** Give spaces their own profile to keep logins, history and passwords apart.
 - **Command bar.** Hit ⌘T to open a site, search, jump to a tab or run an action.
 - **Auto-archive.** Tabs you stop using tidy themselves away.
 - **Split view.** Up to four pages side by side.
-- **Ad and tracker blocking**, built in.
-- **Extensions** from the Chrome Web Store and Firefox Add-ons.
+- **Ad and tracker blocking**, built in, plus fingerprint defence.
+- **Passwords and passkeys**, with one-time codes, built in.
+- **Extensions** from the Chrome Web Store and Firefox Add-ons, in incognito too if you allow them.
 - **Import from Arc.** Your spaces, pins and folders come with you.
+- **Updates itself.** Pick the Release or Beta channel in Settings › General.
 
-Plus Picture in Picture, Peek (⇧-click a link to open it in a floating window), Handoff and on-device translation.
+Plus Picture in Picture, Peek (⇧-click a link to open it in a floating window), Handoff, on-device translation, and AppleScript.
 
 ## Privacy
 
-There's no account and no tracking. The AI features run on your Mac using Apple Intelligence. Error reports are off unless you turn them on, and feedback is only sent when you press Send.
+There's no account and no tracking. The AI features run on your Mac using Apple Intelligence. Error reports are off unless you turn them on, and never include your pages or browsing. Feedback is only sent when you press Send, and its message becomes a public GitHub issue unless you choose Keep this private. Anything else you attach, like a screenshot or your email, stays private.
 
 ## Requirements
 
-macOS 26 or later.
+macOS 26 or later on Apple silicon.
 
 ## Contributing
 
