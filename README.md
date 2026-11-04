@@ -31,12 +31,12 @@ If you miss Arc, you'll feel right at home. Your tabs live down the side, groupe
 - **Auto-archive.** Tabs you stop using tidy themselves away.
 - **Split view.** Up to four pages side by side.
 - **Ad and tracker blocking**, built in, plus fingerprint defence.
-- **Passwords and passkeys**, with one-time codes, built in.
+- **Passwords, passkeys, addresses and cards**, with one-time codes, built in. You choose how often each asks you to unlock.
 - **Extensions** from the Chrome Web Store and Firefox Add-ons, in incognito too if you allow them.
-- **Import from Arc.** Your spaces, pins and folders come with you.
+- **Import from Arc.** Your spaces, pins and folders come with you. Bookmarks and history come over from your other browsers too.
 - **Updates itself.** Pick the Release or Beta channel in Settings › General.
 
-Plus Picture in Picture, Peek (⇧-click a link to open it in a floating window), Handoff, on-device translation, and AppleScript.
+Plus Picture in Picture, Peek (⇧-click a link to open it in a floating window), Handoff, on-device translation, Shortcuts and Siri, and AppleScript.
 
 ## Privacy
 
