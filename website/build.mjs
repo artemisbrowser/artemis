@@ -430,6 +430,36 @@ export async function build(out) {
   };
   const og = assets.get("/assets/img/og-home.png");
   const ogImage = `https://${cfg.DOMAIN}/og/home.png${og ? "?v=" + hash(fs.readFileSync(og.file)) : ""}`;
+  const ogAlt =
+    "A native browser for your Mac. The Artemis window, with tabs down the side and a star chart open.";
+  // Discord shows this card in place of the Open Graph preview; it drops the whole card past 3000 bytes
+  const discord = JSON.stringify({
+    component: {
+      type: 17,
+      accent_color: 0x2a75c5,
+      components: [
+        {
+          type: 10,
+          content: `## [Artemis for Mac](https://${cfg.DOMAIN}/)\n${home.og}`,
+        },
+        { type: 12, items: [{ media: { url: ogImage }, description: ogAlt }] },
+        {
+          type: 1,
+          components: [
+            ...(cfg.DOWNLOAD_URL
+              ? [["Download for Mac", `https://${cfg.DOMAIN}/download`]]
+              : []),
+            ["Website", `https://${cfg.DOMAIN}/`],
+            ["GitHub", "https://github.com/artemisbrowser/artemis"],
+          ].map(([label, url]) => ({ type: 2, style: 5, label, url })),
+        },
+      ],
+    },
+  }).replace(/</g, "\\u003c");
+  if (Buffer.byteLength(discord) > 3000)
+    errors.push(
+      `Discord card is ${Buffer.byteLength(discord)} bytes, over 3000`,
+    );
   const jsonld = {
     "@context": "https://schema.org",
     "@graph": [
@@ -485,6 +515,7 @@ export async function build(out) {
         .replace(/\{\{DESCRIPTION\}\}/g, escape(page.description ?? about))
         .replace(/\{\{OG_DESCRIPTION\}\}/g, escape(page.og ?? share))
         .replace(/\{\{OG_IMAGE\}\}/g, ogImage)
+        .replace(/\{\{OG_IMAGE_ALT\}\}/g, escape(ogAlt))
         .replace(/\{\{ROBOTS\}\}/g, page.robots)
         .replace(
           /<!-- @canonical -->/g,
@@ -496,6 +527,12 @@ export async function build(out) {
           /<!-- @jsonld -->/g,
           isIndex
             ? `<script type="application/ld+json">${JSON.stringify(jsonld).replace(/</g, "\\u003c")}</script>`
+            : "",
+        )
+        .replace(
+          /<!-- @discord -->/g,
+          isIndex
+            ? `<script id="discord:component-embed" type="application/json">${discord}</script>`
             : "",
         )
         // replica windows hold demo pages, whose text must never feed search snippets or AI answers

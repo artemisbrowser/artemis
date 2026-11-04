@@ -129,10 +129,10 @@ export async function check(out) {
     // Fin's note may name Arc in either build
     if (r === "index.html")
       text = text.replace(/<p class="note">[^<]*<\/p>/, "");
-    // while the block ships, the index head may name Arc in its title and descriptions
+    // while the block ships, the index head may name Arc in its title, descriptions and Discord card
     if (r === "index.html" && /<section\b[^>]*\bdata-arc\b/.test(index))
       text = text.replace(
-        /<title>[^<]*<\/title>|<meta\s+(?:name="description"|property="og:description")\s+content="[^"]*"\s*\/?>/g,
+        /<title>[^<]*<\/title>|<meta\s+(?:name="description"|property="og:description")\s+content="[^"]*"\s*\/?>|<script id="discord:component-embed"[^>]*>[^<]*<\/script>/g,
         "",
       );
     if (r === cssRel)
@@ -160,7 +160,7 @@ export async function check(out) {
       if (
         /^<script\b/i.test(t) &&
         !/\ssrc=/.test(t) &&
-        !/type="application\/ld\+json"/.test(t)
+        !/type="application\/(ld\+)?json"/.test(t)
       )
         fail("csp", `inline script in ${p}`);
     }
