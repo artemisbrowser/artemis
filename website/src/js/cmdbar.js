@@ -371,6 +371,15 @@ const ACTIONS = [
     "i-shield",
   ),
   peekRow("The licence", "Source-available", "licence", "i-doc"),
+  {
+    kind: "action",
+    title: "Source code",
+    sub: "On GitHub",
+    icon: glyph("i-code"),
+    verb: "Open",
+    run: () =>
+      document.querySelector('#sitebar a[href^="https://github"]').click(),
+  },
 ];
 const SECTIONS = SITE_SECTIONS.filter(([id]) =>
   document.getElementById(id),
