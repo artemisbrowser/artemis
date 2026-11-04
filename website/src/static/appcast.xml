@@ -4,6 +4,16 @@
     <title>Artemis</title>
     <!-- items -->
     <item>
+      <title>Artemis 0.9.7</title>
+      <pubDate>Wed, 04 Nov 2026 00:39:30 +0000</pubDate>
+      <sparkle:version>90701</sparkle:version>
+      <sparkle:shortVersionString>0.9.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}</style><p>It needs macOS 26 or later on Apple silicon.</p><p><b>New in 0.9.7</b></p><ul><li><b>Addresses and cards.</b> Artemis fills your saved addresses and cards from a list under the field, and offers to save new ones when you submit a form. Each profile keeps its own. Card numbers stay in your keychain and security codes are never saved.</li><li><b>You choose when to unlock.</b> Passwords, cards and addresses each have their own setting: every time, after a few minutes, until you quit, or never. Locking your Mac or letting it sleep locks them all again.</li><li><b>Import from your other browsers.</b> Bookmarks and history, into the profile you pick. It's in Settings › General.</li><li><b>Shortcuts and Siri.</b> Open pages, switch spaces, find tabs, or grab the current page as Markdown. Showing your spaces and tabs in Spotlight is off until you turn it on in Settings › Privacy.</li><li><b>Unread badges.</b> Sites can show a count on their pinned tab or favourite.</li><li><b>Translation</b> keeps up as a page changes, reaches into frames, and can translate a site every time. Long pages no longer freeze while they translate.</li><li><b>VoiceOver</b> names every control around the page and gives sidebar rows their actions.</li><li><b>Reduce Motion</b> turns slides and zooms into fades.</li></ul><p><b>Better</b></p><ul><li>Switching tabs, crossfades and dragging split dividers are smoother.</li><li>Picture in Picture always uses Artemis's own mini-player.</li><li>A page that keeps crashing now says so, with a Reload button, instead of reloading over and over.</li></ul><p><b>Fixed</b></p><ul><li>Routing rules, addresses and cards changed just before quitting could be lost.</li><li>A backup that couldn't be saved or read failed without saying so.</li></ul>]]></description>
+      
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v0.9.7/Artemis-0.9.7.dmg" type="application/octet-stream" sparkle:edSignature="BUmKIr64bbgzobSqzBb9hXP9fT77IUhH6ShaQwSDHNSb8VJzcK2VLwGzzcSa7ZugLpIWCUe8AzZqakFykdA5CQ==" length="22198230" />
+    </item>
+    <item>
       <title>Artemis 0.9.6</title>
       <pubDate>Sat, 31 Oct 2026 20:19:36 +0000</pubDate>
       <sparkle:version>90601</sparkle:version>
