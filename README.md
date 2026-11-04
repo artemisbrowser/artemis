@@ -54,4 +54,4 @@ Found a bug? In Artemis, choose Help › Send Feedback… Want to help out? Have
 
 Artemis is open source under the [GNU General Public License 3.0](LICENSE). Copyright © 2026 Fin.
 
-"Artemis" and its icon are trademarks. The GPL doesn't cover them, so a version you ship needs its own name and icon.
+Three extra terms, allowed by section 7 of the GPL, are in [LICENSE-ADDITIONAL-TERMS](LICENSE-ADDITIONAL-TERMS). A version you ship keeps a "Based on Artemis by Fin" credit, is marked as different from Artemis, and uses its own name and icon, because "Artemis" and its icon are trademarks.

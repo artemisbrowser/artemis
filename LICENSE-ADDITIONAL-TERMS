@@ -1,0 +1,21 @@
+Additional terms under GNU GPL version 3 section 7
+
+These terms supplement the GNU General Public License version 3 in LICENSE.
+They apply to every file in this repository and to any covered work based
+on it.
+
+1. Author attribution (section 7(b)). Any covered work you convey that is
+   based on Artemis must keep the notice "Based on Artemis by Fin
+   (https://artemisbrowser.app)" in the Appropriate Legal Notices it
+   displays, such as its About window. If it displays none, keep the notice
+   in its source code and documentation.
+
+2. Origin (sections 7(c) and 7(d)). A modified version you convey must be
+   marked in reasonable ways as different from Artemis. You may not present
+   it as Artemis, or as made or endorsed by Fin.
+
+3. Trademarks (section 7(e)). This licence grants no rights under trademark
+   law to use the Artemis name or icon. A modified version you convey must
+   use its own name and icon.
+
+Copyright (c) 2026 Fin.
