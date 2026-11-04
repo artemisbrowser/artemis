@@ -48,7 +48,7 @@ macOS 26 or later on Apple silicon.
 
 ## Contributing
 
-Found a bug? In Artemis, choose Help › Send Feedback… Want to help out? Have a read of [CONTRIBUTING.md](CONTRIBUTING.md) first.
+Found a bug? In Artemis, choose Help › Send Feedback… Want to help out? Have a read of [CONTRIBUTING.md](CONTRIBUTING.md) first. The website is in [website/](website/) and takes PRs too.
 
 ## Licence
 

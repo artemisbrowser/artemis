@@ -38,6 +38,10 @@ A few things that make a PR easier to merge:
 - Match the code around it.
 - If it changes how something looks, stick a screenshot in.
 
+## Working on the website
+
+The website lives in [website/](website/) and takes PRs the same way. It has its own [README](website/README.md) on running it locally.
+
 ## The CLA
 
 Artemis is source-available, not open source (see [LICENSE](LICENSE)). So before we can merge anything you've written, you'll need to sign our [Contributor Licence Agreement](CLA.md). A bot will comment on your first PR. To sign, reply with:
