@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Repeat one ARTEMIS_BENCH_LOOP interaction (a case in Bench.swift) for a minute,
 # then print it joined with the outside sampler.
 # Usage: tools/bench-loop.sh <loop> <label> [PERF_OFF] [live]

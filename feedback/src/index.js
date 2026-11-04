@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 const MAX_BODY = 4 * 1024 * 1024;
 const MAX_IMAGE = 2 * 1024 * 1024;
 // Each signature costs up to three GitHub calls; the free plan allows 50 per request.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // node build.mjs [--out dir] [--serve port | --port port] [--check]
 import fs from "node:fs";
 import path from "node:path";
@@ -10,7 +13,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(ROOT, "src");
 const ASSETS = path.join(ROOT, "assets");
-const read = (f) => fs.readFileSync(f, "utf8");
+// HTML sources open with the licence header, which stays out of the built pages
+const read = (f) =>
+  fs
+    .readFileSync(f, "utf8")
+    .replace(/^<!-- SPDX-License-Identifier:[\s\S]*?-->\n/, "");
 const hash = (buf) =>
   crypto.createHash("sha256").update(buf).digest("hex").slice(0, 10);
 const gz = (buf) => zlib.gzipSync(buf, { level: 9 }).length;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // canonical, og:url, og:image, JSON-LD, sitemap and the link capsule's host.
 export const DOMAIN = "artemisbrowser.app";
 // a price string such as "Free", or null; adds " {PRICE}." to every fine print line and offers to JSON-LD.

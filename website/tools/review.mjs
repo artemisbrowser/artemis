@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // node tools/review.mjs <baseUrl> <outDir> [--stops S01,S06|all] [--steps N] [--engine chromium|webkit]
 //   [--w 1440 --h 900] [--light] [--reduced] [--mobile] [--nojs] [--contrast] [--forced] [--q "sda=0"] [--tag name]
 // One browser per run in a machine-wide render slot; full Chromium paints backdrop-filter.

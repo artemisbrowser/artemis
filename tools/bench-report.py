@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 """Join the in-app bench log with the outside sampler into one table.
 
     tools/bench-report.py ~/Downloads/artemis-bench-before.log /tmp/sample-before.csv

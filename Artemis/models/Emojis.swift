@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only AND Unicode-3.0
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 import Foundation
 
 /// the full macOS / Unicode 16.0 emoji catalogue, in CLDR order and grouped

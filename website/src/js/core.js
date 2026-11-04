@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // Shared state with no imports. Every other module may import this one.
 export const root = document.documentElement;
 export const params = new URLSearchParams(location.search);

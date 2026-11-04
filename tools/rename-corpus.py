@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 """Build the URL list the tab-rename corpus is captured from.
 
 Writes `category<TAB>url` lines to ~/Downloads/artemis-corpus-urls.txt, where

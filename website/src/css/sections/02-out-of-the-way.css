@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
 /* Pin 1: the track's 200svh of travel is p. Scrubbed layers move by transform and opacity only;
    text and controls appear on beats. A2 owns the hero layout; this file owns the camera. */
 /* Off screen, the pinned scene skips rendering and drops its layers. No one-axis clip may wrap the sticky stage:

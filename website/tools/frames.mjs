@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // node tools/frames.mjs <url> <outDir> <tag> --track oow|spaces --at "0,0.28,0.52" [--engine chromium|webkit]
 //   [--w 1440 --h 900] [--dark] [--mobile] [--reduced] [--wait 2200] [--peek: one more frame, pointer on the left edge]
 // --at takes track progress p (scrollY = top + p × (height − innerHeight)) or a raw "y1200".

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Build "Artemis Lab": this tree under its own bundle id, so the extension sweep
 # gets a fresh container and never touches the installed app or its data.
 #   tools/extlab.sh            build + sign

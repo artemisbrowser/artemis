@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // node tools/perf.mjs <url> [--rate 4] [--to selector] [--warm]   J5: wheel-scrolls from the top to the end of
 // the selector (default both pins) under CPU throttling in full Chromium; prints long animation frames and rAF gaps.
 // --warm scrolls once before measuring, so the cold first-scroll frame is reported apart from the steady state.

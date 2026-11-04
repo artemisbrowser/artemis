@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Build Artemis (Release; --debug for Debug), sign it with ARTEMIS_SIGN_IDENTITY
 # (the extension runtime needs a real certificate) and
 # install it into /Applications. --run launches it afterwards.

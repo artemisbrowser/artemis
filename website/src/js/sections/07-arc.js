@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 import { params, mq, say, go } from "../core.js";
 import { addPageItems } from "../cmdbar.js";
 import { paint } from "../looks.js";

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Build "Artemis Perf": this tree's Release build under its own bundle id, so
 # benches get a throwaway container and never touch the installed app or its data.
 #   tools/perflab.sh                       build + sign

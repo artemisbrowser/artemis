@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # One-off: resizes the exported icons into src/img (macOS sips; ffmpeg flattens the platform icons). Outputs are committed.
 set -euo pipefail
 cd "$(dirname "$0")/.."

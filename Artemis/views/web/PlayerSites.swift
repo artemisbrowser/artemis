@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 /// what both apps' media controls know of particular players, as page-world script. `nativeCC(getVideo)`,
 /// `youTubeCaptions` and `netflixCaptions` each list (id, label, lang), select and turn off caption tracks;
 /// `skipAdSelectors` find an ad's skip control

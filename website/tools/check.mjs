@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 // node tools/check.mjs [outDir]   static checks on a built site (spec §8.3); exit 1 on any failure
 import fs from "node:fs";
 import path from "node:path";

@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Sample Artemis, its WebKit processes (launchd's children, not the app's) and
 # WindowServer once a second, one row per process: bench-report.py diffs each pid.
 #   tools/bench-sample.sh [out.csv] [seconds] &

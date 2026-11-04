@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
+
 # Symbolicate the crashes in an Artemis report: tools/symbolicate.sh report.json
 # Walks each attributed thread innermost-first; frames whose binary has a dSYM
 # that deploy.sh kept (filed by UUID) are resolved with atos.
