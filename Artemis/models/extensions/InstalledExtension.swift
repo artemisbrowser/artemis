@@ -11,6 +11,11 @@ enum ExtensionSource: String, Codable {
     case firefox  // addons.mozilla.org
     case catalog  // curated in-app list
 
+    /// a source this build doesn't know reads as a sideload, so one record can't fail them all
+    init(from decoder: any Decoder) throws {
+        self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .disk
+    }
+
     var label: String {
         switch self {
         case .disk: "Disk"
@@ -41,6 +46,8 @@ final class InstalledExtension: Identifiable {
     }
     /// another profile's first instance starts as a copy of the default profile's storage
     @ObservationIgnored var seedsFromDefault = false
+    /// bumped when WebKit reports a change to one of its actions, which aren't observable
+    var actionRevision = 0
 
     var isEnabled: Bool { !profiles.isEmpty }
 
@@ -94,9 +101,21 @@ final class InstalledExtension: Identifiable {
         return webExtension.actionIcon(for: dimension) ?? webExtension.icon(for: dimension)
     }
 
-    /// human-readable permissions the extension asks for, for the consent UI
+    /// the manifest keys WebKit drops that the compat bridge acts on
+    private static let bridgedPermissions: Set<String> = [
+        "browsingData", "clipboardRead", "downloads", "fontSettings", "history", "identity", "idle",
+        "notifications", "offscreen", "proxy", "search", "sessions", "sidePanel", "system.display",
+        "topSites", "userScripts",
+    ]
+
+    /// human-readable permissions the extension asks for, for the consent UI: WebKit's own, and
+    /// the required `bridgedPermissions`, less those the compat patch added
     var requestedPermissionLabels: [String] {
-        webExtension.requestedPermissions.map { $0.rawValue }.sorted()
+        let declared = ((webExtension.manifest["permissions"] as? [Any]) ?? []).compactMap { $0 as? String }
+            .filter(Self.bridgedPermissions.contains)
+        let added = ((webExtension.manifest[ExtensionCompat.addedPermissionsKey] as? [Any]) ?? [])
+            .compactMap { $0 as? String }.filter(ExtensionCompat.patchPermissions.contains)
+        return Set(webExtension.requestedPermissions.map(\.rawValue) + declared).subtracting(added).sorted()
     }
 
     /// host match patterns the extension wants to read/modify
@@ -123,9 +142,23 @@ final class InstalledExtension: Identifiable {
         case "tabs": "See your open tabs and their addresses"
         case "storage", "unlimitedStorage": "Store data on your device"
         case "cookies": "Read and change cookies"
-        case "history": "Read your browsing history"
+        case "history": "Read and delete your browsing history"
+        case "browsingData": "Delete your browsing data"
+        case "sessions": "See and reopen recently closed tabs"
+        case "topSites": "See your most visited sites"
         case "downloads": "Manage your downloads"
+        case "fontSettings": "See your installed fonts"
+        case "identity": "Open sign-in pages"
+        case "idle": "See when you're away"
+        case "notifications": "Show notifications"
+        case "offscreen": "Run hidden pages in the background"
+        case "search": "Search with your search engine"
+        case "sidePanel": "Show a side panel"
+        case "system.display": "See your displays"
+        case "clipboardRead": "Read what you copy"
         case "clipboardWrite": "Write to the clipboard"
+        case "proxy": "Route your traffic through a proxy"
+        case "userScripts": "Run user scripts on pages"
         case "contextMenus", "menus": "Add items to context menus"
         case "webNavigation": "See where you navigate"
         case "webRequest": "Observe your network requests"

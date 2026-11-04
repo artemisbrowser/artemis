@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import Foundation
+import Network
 
 /// query completions from the profile's search engine. off by default and
 /// never used in incognito, since each keystroke is sent to the engine
@@ -11,13 +12,16 @@ enum SearchSuggest {
     /// false when the engine has no endpoint; another engine's is never substituted
     static func supports(_ engine: SearchEngine) -> Bool { endpoint(engine) != nil }
 
+    /// sent through `profile`'s extension proxy, the way its pages are
     static func suggestions(
-        for query: String, engine: SearchEngine = .current, limit: Int = 3
+        for query: String, profile: Profile.ID, engine: SearchEngine = .current, limit: Int = 3
     ) async -> [String] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isEnabled, trimmed.count >= 2, let url = url(for: trimmed, engine: engine)
         else { return [] }
-        guard let (data, _) = try? await session.data(from: url),
+        // the timeout keeps a reply within one keystroke's life
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 2)
+        guard let (data, _) = try? await session(for: profile).data(for: request),
             let root = try? JSONSerialization.jsonObject(with: data) as? [Any],
             root.count >= 2
         else { return [] }
@@ -29,15 +33,22 @@ enum SearchSuggest {
             .map { $0 }
     }
 
-    /// cookieless and uncached; the timeout keeps a reply within one keystroke's life
-    private static let session: URLSession = {
+    /// cookie-blind and cacheless, one per profile, so its keystrokes leave through its
+    /// own proxy and share no connection with another profile's
+    private static var sessions: [Profile.ID: (proxy: UUID?, session: URLSession)] = [:]
+
+    private static func session(for profile: Profile.ID) -> URLSession {
+        let proxy = ExtensionProxyBridge.shared.activeProxy(in: profile)
+        if let cached = sessions[profile], cached.proxy == proxy?.id { return cached.session }
+        sessions[profile]?.session.finishTasksAndInvalidate()
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 2
-        config.httpCookieAcceptPolicy = .never
-        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
         config.urlCache = nil
-        return URLSession(configuration: config)
-    }()
+        if let proxy { config.proxyConfigurations = [proxy.config] }
+        let session = URLSession(configuration: config)
+        sessions[profile] = (proxy?.id, session)
+        return session
+    }
 
     private static func url(for query: String, engine: SearchEngine) -> URL? {
         guard let template = endpoint(engine),

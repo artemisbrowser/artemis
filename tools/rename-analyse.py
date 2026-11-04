@@ -5,7 +5,7 @@
 """Score a tab-name sweep.
 
 Reads ~/Downloads/artemis-sweep.jsonl (written by ARTEMIS_DIAG=sweep) and
-reports, for every prompt × context-depth combination:
+reports, for every context depth:
 
   named      how often a page ended up with a name at all
   words      how long those names are (the sidebar column fits about four)
@@ -130,11 +130,11 @@ def main() -> None:
 
     groups = defaultdict(list)
     for row in rows:
-        groups[(row["prompt"], row["tier"])].append(row)
+        groups[row["tier"]].append(row)
 
     print(f"{len(rows)} names over {len({r['url'] for r in rows})} pages\n")
     header = (
-        f"{'prompt':10} {'context':11} {'chars':>6} {'named':>6} {'words':>6} "
+        f"{'context':11} {'chars':>6} {'named':>6} {'words':>6} "
         f"{'>4w':>5} {'site':>5} {'dupe':>5} {'junk':>5} {'echo':>5} {'fill':>5} "
         f"{'new':>5} {'ms':>6}"
     )
@@ -143,7 +143,7 @@ def main() -> None:
     summaries = {key: summarise(groups[key]) for key in sorted(groups)}
     for key, s in summaries.items():
         print(
-            f"{key[0]:10} {key[1]:11} {s['context']:6.0f} {s['named_pct']:5.0f}% "
+            f"{key:11} {s['context']:6.0f} {s['named_pct']:5.0f}% "
             f"{s['mean_words']:6.1f} {s['over_four']:4.0f}% {s['site_only']:5} "
             f"{s['dupes']:5} {s['junk']:5} {s['echo']:5} {s['filler']:5} "
             f"{s['new_word']:4.0f}% {s['ms']:6.0f}"
@@ -153,7 +153,7 @@ def main() -> None:
     for key, s in summaries.items():
         if s["rejections"]:
             detail = ", ".join(f"{k}: {v}" for k, v in sorted(s["rejections"].items()))
-            print(f"  {key[0]:10} {key[1]:11} {detail}")
+            print(f"  {key:11} {detail}")
 
     if args.sample:
         print("\n" + "=" * 100)
@@ -162,10 +162,10 @@ def main() -> None:
             page = [r for r in rows if r["url"] == url]
             print(f"\n{page[0]['category']}  {url}")
             print(f"  title: {page[0]['title'][:110]}")
-            for r in sorted(page, key=lambda r: (r["prompt"], r["tier"])):
+            for r in sorted(page, key=lambda r: r["tier"]):
                 mark = " " if r["name"] else "×"
                 print(
-                    f"  {mark} {r['prompt']:9} {r['tier']:11} "
+                    f"  {mark} {r['tier']:11} "
                     f"{r['name'] or '(' + r['rejection'] + ')'}"
                 )
 
@@ -204,7 +204,7 @@ def main() -> None:
             if reason:
                 suspects.append((reason, r))
         for reason, r in suspects[: args.worst]:
-            print(f"  [{reason}] {r['prompt']}/{r['tier']} {r['host']}")
+            print(f"  [{reason}] {r['tier']} {r['host']}")
             print(f"      title: {r['title'][:90]}")
             print(f"      name:  {r['name']}")
 

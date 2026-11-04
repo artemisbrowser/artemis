@@ -4,13 +4,10 @@
 import WebKit
 
 /// a frame's controllable media: an unmuted element playing, or paused mid-track,
-/// with whatever `navigator.mediaSession.metadata` the page declared
+/// with the title the page declared in `navigator.mediaSession.metadata`
 struct PageMedia: Equatable {
     var isPlaying: Bool
     var title: String
-    var artist: String
-    var album: String
-    var artwork: URL?
     /// the page registered previous/next-track handlers
     var hasTracks: Bool
     /// stamped by the owning tab each time playback (re)starts
@@ -58,9 +55,6 @@ final class MediaStateReporter: NSObject, WKScriptMessageHandler {
             PageMedia(
                 isPlaying: s["playing"] as? Bool ?? false,
                 title: s["title"] as? String ?? "",
-                artist: s["artist"] as? String ?? "",
-                album: s["album"] as? String ?? "",
-                artwork: (s["artwork"] as? String).flatMap(URL.init(string:)),
                 hasTracks: s["tracks"] as? Bool ?? false)
         }
         onChange(webView, message.frameInfo, frame, playing, media)
@@ -96,15 +90,8 @@ final class MediaStateReporter: NSObject, WKScriptMessageHandler {
       function snapshot(){
         var m = session(), s = null;
         if (m) {
-          var md = ms && ms.metadata, list = (md && md.artwork) || [];
-          // smallest artwork at least 64px wide, else the first listed
-          var art = list.length ? list[0].src : '', w = Infinity;
-          for (var i = 0; i < list.length; i++) {
-            var n = parseInt(list[i].sizes, 10) || 0;
-            if (n >= 64 && n < w) { art = list[i].src; w = n; }
-          }
-          s = {playing: !m.paused, title: (md && md.title) || '', artist: (md && md.artist) || '',
-               album: (md && md.album) || '', artwork: art,
+          var md = ms && ms.metadata;
+          s = {playing: !m.paused, title: (md && md.title) || '',
                tracks: !!(handlers.previoustrack || handlers.nexttrack)};
         }
         return {playing: anyPlaying(), session: s};

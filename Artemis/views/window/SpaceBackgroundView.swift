@@ -191,9 +191,7 @@ struct WindowTransparency: NSViewRepresentable {
         CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
     }
 
-    /// handed back once the view is in a window, so SwiftUI can ask the window
-    /// things AppKit only knows — e.g. its real corner radius, which the card's
-    /// concentric rounding is derived from
+    /// handed the window on entering it and on every update after, so it must be idempotent
     var onWindow: ((NSWindow) -> Void)? = nil
 
     func makeNSView(context: Context) -> Host {

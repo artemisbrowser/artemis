@@ -247,6 +247,7 @@ private struct CardEditor: View {
         }
         .frame(width: 400)
         .presentationSizing(.fitted)
+        .background(CaptureShield())
         // opened only through a cards check
         .onAppear { if !isNew { number = CardBrand.grouped(AutofillStore.shared.number(for: card) ?? "") } }
     }

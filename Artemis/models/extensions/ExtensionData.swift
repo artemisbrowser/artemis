@@ -6,12 +6,10 @@ import WebKit
 /// the browser-data namespaces' platform-free half: matching, shapes, website data and
 /// user-script files. each platform's bridge answers from its own profiles with these
 nonisolated enum ExtensionData {
-    /// WebKit drops the permission keys it doesn't implement, so the manifest is the record
+    /// WebKit drops the permission keys it doesn't implement, so the manifest is the record. only
+    /// required ones count: nothing grants an optional one WebKit doesn't know
     static func declares(_ permission: String, _ context: WKWebExtensionContext) -> Bool {
-        let manifest = context.webExtension.manifest
-        return ["permissions", "optional_permissions"].contains {
-            ((manifest[$0] as? [Any]) ?? []).contains { $0 as? String == permission }
-        }
+        ((context.webExtension.manifest["permissions"] as? [Any]) ?? []).contains { $0 as? String == permission }
     }
 
     // MARK: - History
@@ -26,7 +24,7 @@ nonisolated enum ExtensionData {
         let words = (query["text"] as? String ?? "").lowercased().split(separator: " ")
         let start = date("startTime") ?? date("start") ?? Date().addingTimeInterval(-86_400)
         let end = date("endTime") ?? date("end") ?? .distantFuture
-        let limit = query["maxResults"] as? Int ?? 100
+        let limit = max(0, query["maxResults"] as? Int ?? 100)
         return entries
             .filter { entry in
                 guard entry.lastVisited >= start, entry.lastVisited <= end else { return false }
@@ -64,19 +62,23 @@ nonisolated enum ExtensionData {
         "webSQL": [WKWebsiteDataTypeWebSQLDatabases],
     ]
 
-    /// the website-data half of browsingData.remove, in one profile's store
-    static func removeWebsiteData(_ requested: [String], _ message: [String: Any], from store: WKWebsiteDataStore) async {
+    /// the website-data half of browsingData.remove, in one profile's store; false, removing
+    /// nothing, for a `since` with an origin filter, as a site's records carry no date
+    static func removeWebsiteData(
+        _ requested: [String], _ message: [String: Any], from store: WKWebsiteDataStore
+    ) async -> Bool {
         let since = Date(timeIntervalSince1970: (message["since"] as? Double ?? 0) / 1000)
         let types = Set(requested.flatMap { dataTypes[$0] ?? [] })
-        guard !types.isEmpty else { return }
+        guard !types.isEmpty else { return true }
         let hosts = { (key: String) in
             Set(((message[key] as? [String]) ?? []).compactMap { URL(string: $0)?.host() })
         }
         let only = hosts("origins"), except = hosts("excludeOrigins")
         guard !only.isEmpty || !except.isEmpty else {
             await store.removeData(ofTypes: types, modifiedSince: since)
-            return
+            return true
         }
+        guard since.timeIntervalSince1970 <= 0 else { return false }
         // records are kept per registrable domain, so a host matches its domain's record
         let covers = { (hosts: Set<String>, domain: String) in
             hosts.contains { $0 == domain || $0.hasSuffix("." + domain) }
@@ -85,18 +87,21 @@ nonisolated enum ExtensionData {
             only.isEmpty ? !covers(except, record.displayName) : covers(only, record.displayName)
         }
         await store.removeData(ofTypes: types, for: records)
+        return true
     }
 
     // MARK: - User scripts
 
     /// user-script code lives as files in the extension's own package, where
-    /// scripting.registerContentScripts can name it; nothing outside that folder
+    /// scripting.registerContentScripts can name it; nothing outside that folder. each profile has
+    /// its own files and registry, the default profile's at the folder's top
     static func userScriptFiles(
-        _ type: String, _ message: [String: Any], for context: WKWebExtensionContext
+        _ type: String, _ message: [String: Any], for context: WKWebExtensionContext, in profile: UUID
     ) -> [String: Any] {
         guard let root = ExtensionInstaller.resourceURL(forStoredID: context.uniqueIdentifier)
         else { return ["ok": false] }
-        let folder = root.appendingPathComponent("__artemis/user", isDirectory: true)
+        let relative = "__artemis/user" + (profile == Profile.defaultID ? "" : "/" + profile.uuidString)
+        let folder = root.appendingPathComponent(relative, isDirectory: true)
         let fm = FileManager.default
         try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let safe = { (name: String) in
@@ -111,7 +116,7 @@ nonisolated enum ExtensionData {
             guard (try? (Data([0xEF, 0xBB, 0xBF]) + Data(code.utf8))
                 .write(to: folder.appendingPathComponent(file))) != nil
             else { return ["ok": false] }
-            return ["ok": true, "path": "__artemis/user/" + file]
+            return ["ok": true, "path": relative + "/" + file]
         case "userScripts.delete":
             for name in (message["names"] as? [String]) ?? [] {
                 try? fm.removeItem(at: folder.appendingPathComponent(safe(name) + ".js"))

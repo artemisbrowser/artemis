@@ -95,17 +95,20 @@ struct SplitContentView: View {
 
     // MARK: - Click-to-focus
 
-    /// focuses whichever pane a left-mouse-down lands in and passes the event on;
-    /// SwiftUI taps don't reach reliably over a WKWebView
+    /// focuses whichever pane a left-mouse-down in this window lands in and passes the
+    /// event on; SwiftUI taps don't reach reliably over a WKWebView
     private func startFocusMonitor() {
         stopFocusMonitor()
         focusMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
-            guard let content = event.window?.contentView else { return event }
+            guard let window = event.window, BrowserWindows.shared.manager(for: window) === tabManager,
+                let content = window.contentView, let shown = tabManager.displayedSplitGroup
+            else { return event }
             // NSEvent is bottom-left origin; SwiftUI .global is top-left
             let point = CGPoint(
                 x: event.locationInWindow.x,
                 y: content.bounds.height - event.locationInWindow.y)
-            if let hit = paneFrames.first(where: { $0.value.contains(point) })?.key,
+            // frames outlive a pane that has left the split
+            if let hit = paneFrames.first(where: { shown.contains($0.key) && $0.value.contains(point) })?.key,
                 tabManager.selectedTabID != hit
             {
                 tabManager.selectedTabID = hit

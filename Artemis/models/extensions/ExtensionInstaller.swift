@@ -9,12 +9,14 @@ nonisolated enum ExtensionInstaller {
     enum InstallError: LocalizedError {
         case notReadable
         case noManifest
+        case holdsLink
         case copyFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .notReadable: "The extension file couldn't be read."
             case .noManifest: "No manifest.json was found in the extension."
+            case .holdsLink: "The extension contains a symbolic link, which Artemis won't install."
             case .copyFailed(let why): "Couldn't store the extension: \(why)"
             }
         }
@@ -37,21 +39,25 @@ nonisolated enum ExtensionInstaller {
         return manifestRoot(under: dir)
     }
 
-    /// copy a sideloaded source (folder, .zip, .xpi, or .crx) into storage,
-    /// returning the new stored id and the resource URL to load from
-    static func install(from source: URL) throws -> (id: String, resourceURL: URL) {
+    /// copy a sideloaded source (folder, .zip, .xpi, or .crx) into storage, returning its stored id
+    @concurrent static func install(from source: URL) async throws -> String {
         let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else {
+            throw InstallError.notReadable
+        }
         // a Web Store package keeps its store id, so `runtime.id` matches what
         // the extension and the sites it talks to expect
         let storeID = source.pathExtension.lowercased() == "crx"
             ? (try? FileHandle(forReadingFrom: source).read(upToCount: 64 * 1024))
                 .flatMap(webStoreID(ofCRX:)) : nil
-        let id = storeID.flatMap { fm.fileExists(atPath: storageRoot.appendingPathComponent($0).path) ? nil : $0 }
-            ?? UUID().uuidString.lowercased()
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else {
-            throw InstallError.notReadable
+        try fm.createDirectory(at: storageRoot, withIntermediateDirectories: true)
+        // creating the folder is what claims the id; a store id already taken leaves a fresh one
+        let claimed = storeID.flatMap { id in
+            (try? fm.createDirectory(at: storageRoot.appendingPathComponent(id), withIntermediateDirectories: false))
+                .map { _ in id }
         }
+        let id = claimed ?? UUID().uuidString.lowercased()
         let dest = storageRoot.appendingPathComponent(id, isDirectory: true)
         try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
@@ -61,8 +67,7 @@ nonisolated enum ExtensionInstaller {
                 for entry in entries {
                     try fm.copyItem(at: entry, to: dest.appendingPathComponent(entry.lastPathComponent))
                 }
-                guard let root = manifestRoot(under: dest) else { throw InstallError.noManifest }
-                return (id, root)
+                guard manifestRoot(under: dest) != nil else { throw InstallError.noManifest }
             } else {
                 let data = try Data(contentsOf: source)
                 let kind = source.pathExtension.lowercased()
@@ -74,8 +79,8 @@ nonisolated enum ExtensionInstaller {
                         to: dest.appendingPathComponent(packageOriginFile), atomically: true,
                         encoding: .utf8)
                 }
-                return (id, archive)
             }
+            return id
         } catch let err as InstallError {
             try? fm.removeItem(at: dest)
             throw err

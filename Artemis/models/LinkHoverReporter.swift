@@ -3,14 +3,15 @@
 
 import WebKit
 
-/// reports the href under the cursor, nil when it leaves for a non-link. one
-/// handler serves every frame of every tab on the shared content controller
+/// reports the href under the cursor and the page it is in, nil when it leaves
+/// for a non-link. one handler serves every frame of every tab on the shared
+/// content controller
 final class LinkHoverReporter: NSObject, WKScriptMessageHandler {
     private static let messageName = "artemisLinkHover"
 
-    private let onChange: (URL?) -> Void
+    private let onChange: (WKWebView?, URL?) -> Void
 
-    init(onChange: @escaping (URL?) -> Void) {
+    init(onChange: @escaping (WKWebView?, URL?) -> Void) {
         self.onChange = onChange
     }
 
@@ -24,7 +25,7 @@ final class LinkHoverReporter: NSObject, WKScriptMessageHandler {
         _ controller: WKUserContentController, didReceive message: WKScriptMessage
     ) {
         let string = message.body as? String ?? ""
-        onChange(string.isEmpty ? nil : URL(string: string))
+        onChange(message.webView, string.isEmpty ? nil : URL(string: string))
     }
 
     private static let source = """

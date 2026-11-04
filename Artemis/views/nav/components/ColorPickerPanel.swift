@@ -21,6 +21,7 @@ struct ColorSwatchPicker: View {
                 .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
         }
         .buttonStyle(.plain)
+        .tooltip("Colour")
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             ColorPickerPanel(color: $color)
         }
@@ -179,6 +180,7 @@ struct ColorPickerPanel: View {
                 TextField("", text: $value)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13).monospaced())
+                    .accessibilityLabel("Colour value")
                     .onSubmit(applyValue)
                     .padding(.horizontal, 11).padding(.vertical, 8)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.primary.opacity(0.06)))

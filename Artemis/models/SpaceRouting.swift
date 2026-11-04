@@ -170,8 +170,10 @@ final class RoutingStore {
         rules.first { $0.matches(url) }
     }
 
+    /// a pasted address loses its scheme: a pattern starts at the host
     func add(pattern: String, spaceID: UUID) {
-        let trimmed = pattern.trimmingCharacters(in: .whitespaces)
+        var trimmed = pattern.trimmingCharacters(in: .whitespaces)
+        if let scheme = trimmed.range(of: "://") { trimmed = String(trimmed[scheme.upperBound...]) }
         guard !trimmed.isEmpty else { return }
         rules.append(RoutingRule(pattern: trimmed, spaceID: spaceID))
         scheduleSave()

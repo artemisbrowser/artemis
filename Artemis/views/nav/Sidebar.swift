@@ -96,11 +96,14 @@ struct Sidebar: View {
     /// the pointer's last spot in the tab area, where a context-menu folder lands.
     /// an unobserved box: written on every mouse move, read only by the menu
     @State private var menuPoint = LastPoint()
-    @State private var tabsScrolled = false
+    /// the spaces whose tab list is scrolled under its header, each panel keeping its own
+    @State private var scrolledSpaces: Set<Space.ID> = []
     /// the Library is built only while open or sliding out
     @State private var isLibraryMounted = false
     @State private var libraryUnmountTask: Task<Void, Never>?
     @State private var renameDraft = ""
+    /// the name the dialog opened with: confirming it untouched renames nothing
+    @State private var renameOrigin = ""
 
     private var renamingBinding: Binding<Bool> {
         Binding(
@@ -275,13 +278,6 @@ struct Sidebar: View {
             .frame(maxHeight: .infinity)
             // clip so the off-screen panel stays hidden under the sidebar's edge
             .clipped()
-            // one coordinate space spanning favourites + tabs, so the unified
-            // drag's ghost and indicators (drawn here, above the clip) line up
-            // with both zones. frames are reported into this same space
-            .coordinateSpace(.named(Self.contentSpace))
-            // what follows the cursor lives in leaves of its own, so a drag
-            // re-runs them rather than this whole body on every move
-            .overlay { Live { dragOverlay } }
             .overlay { folderPeekOverlay }
             .onChange(of: drag.dropTick) { _, _ in commitDrop() }
             .background {
@@ -303,13 +299,24 @@ struct Sidebar: View {
             }
             .modifier(BlendedInk())
         }
+        // one coordinate space over favourites, tabs and the space icons: every
+        // drag frame is reported into it, and the ghost and insertion line draw in it
+        .coordinateSpace(.named(Self.contentSpace))
+        // what follows the cursor lives in a leaf of its own, so a drag re-runs
+        // it rather than this whole body on every move
+        .overlay { Live { dragOverlay } }
         .onChange(of: tabManager.renamingTab) { _, tab in
-            if let tab { renameDraft = tab.displayTitle }
+            if let tab {
+                renameDraft = tab.displayTitle
+                renameOrigin = renameDraft
+            }
         }
         .alert("Rename Tab", isPresented: renamingBinding) {
             TextField("Name", text: $renameDraft)
             Button("Rename") {
-                if let tab = tabManager.renamingTab { tabManager.rename(tab, to: renameDraft) }
+                if let tab = tabManager.renamingTab, renameDraft != renameOrigin {
+                    tabManager.rename(tab, to: renameDraft)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -404,6 +411,8 @@ struct Sidebar: View {
             if let folder = peekingFolder,
                 let row = measured.rowFrames.first(where: { $0.entry == .folder(folder.id) })
             {
+                // the row is in the shared drag space; the panel is clamped to this overlay
+                let origin = proxy.frame(in: .named(Self.contentSpace)).origin
                 let height = min(FolderPeek.maxHeight, proxy.size.height)
                 FolderPeek(folder: folder) { dismissFolderPeek() }
                     .fixedSize()
@@ -412,8 +421,8 @@ struct Sidebar: View {
                         if !hovering { setFolderPeek(nil, visible: false) }
                     }
                     .position(
-                        x: row.rect.maxX + 10 + FolderPeek.width / 2,
-                        y: min(max(row.rect.midY, height / 2), proxy.size.height - height / 2))
+                        x: row.rect.maxX - origin.x + 10 + FolderPeek.width / 2,
+                        y: min(max(row.rect.midY - origin.y, height / 2), proxy.size.height - height / 2))
                     .transition(.opacity)
             }
         }
@@ -474,7 +483,7 @@ struct Sidebar: View {
 
     /// the full tab area: pinned section, divider, New Tab, today section. a
     /// neighbour's panel is the same view, so it becomes live without a rebuild;
-    /// only the live one reports frames, scroll and pointer to the shared state
+    /// only the live one reports frames and pointer to the shared state
     private func tabArea(_ space: Space, live: Bool) -> some View {
         let selectedID = live ? tabManager.selectedTabID : tabManager.selectedTabID(in: space)
         let ink = live ? self.ink : space.appearance.chromeInk
@@ -482,7 +491,7 @@ struct Sidebar: View {
             VStack(spacing: metrics.tabSpacing) {
                 if !space.pinnedCollapsed {
                     ForEach(space.rows(in: .pinned)) { row in
-                        liveRow(row, selectedID: selectedID)
+                        liveRow(row, in: space, selectedID: selectedID)
                             .zIndex(-Double(row.depth))
                             .transition(row.depth > 0 ? .folderUnfurl : .identity)
                     }
@@ -506,7 +515,7 @@ struct Sidebar: View {
                     .background(boundaryReader)
 
                 ForEach(space.rows(in: .today)) { row in
-                    liveRow(row, selectedID: selectedID)
+                    liveRow(row, in: space, selectedID: selectedID)
                         .zIndex(-Double(row.depth))
                         .transition(row.depth > 0 ? .folderUnfurl : .identity)
                 }
@@ -515,10 +524,12 @@ struct Sidebar: View {
         .scrollIndicators(.automatic)
         .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 0.5 } action: {
             _, scrolled in
-            if live, scrolled != tabsScrolled {
-                withAnimation(Motion.fade) { tabsScrolled = scrolled }
+            withAnimation(Motion.fade) {
+                if scrolled { scrolledSpaces.insert(space.id) } else { scrolledSpaces.remove(space.id) }
             }
         }
+        // a rebuilt list starts at the top and reports no change
+        .onDisappear { scrolledSpaces.remove(space.id) }
         // the empty room below the rows is still the sidebar, and a right-click
         // there is how a folder gets made. rows are hit first, so their own
         // menus still win
@@ -563,12 +574,9 @@ struct Sidebar: View {
                 .fill(ink.opacity(0.12))
                 .frame(height: 1)
                 .padding(.horizontal, 4)
-                .opacity(live && tabsScrolled ? 1 : 0)
+                .opacity(scrolledSpaces.contains(space.id) ? 1 : 0)
         }
-        .onPreferenceChange(SidebarRowFrameKey.self) { if live { measured.rowFrames = $0 } }
-        .onPreferenceChange(NewTabBoundaryKey.self) { if live { measured.newTabBoundaryY = $0 } }
         .environment(\.isLivePanel, live)
-        .accessibilityHidden(!live)
     }
 
     /// right-clicking the sidebar where no row is: the other way a folder is
@@ -596,10 +604,6 @@ struct Sidebar: View {
 
     private func indent(_ depth: Int) -> CGFloat { CGFloat(depth) * Self.folderIndent }
 
-    private func rowWidth(_ depth: Int) -> CGFloat {
-        max(baseContentWidth - indent(depth), 1)
-    }
-
     private func draggableRow(
         _ tab: BrowserTab, in row: SidebarRow, selectedID: BrowserTab.ID?
     ) -> some View {
@@ -613,9 +617,7 @@ struct Sidebar: View {
         .opacity(drag.tab?.id == tab.id ? 0.6 : 1)
         .background { rowFrameReporter(.tab(tab.id), in: row) }
         .padding(.leading, indent(row.depth))
-        .gesture(
-            dragGesture(
-                tab, size: CGSize(width: rowWidth(row.depth), height: metrics.rowHeight)))
+        .gesture(dragGesture(tab))
     }
 
     private func rowFrameReporter(_ entry: SidebarEntry, in row: SidebarRow) -> some View {
@@ -636,20 +638,17 @@ struct Sidebar: View {
     /// segment row, or — while a dragged tab dwells over a single tab — the merge
     /// preview (the tab shrunk to one half, a grey drop highlight on the other)
     @ViewBuilder
-    private func liveRow(_ row: SidebarRow, selectedID: BrowserTab.ID?) -> some View {
+    private func liveRow(_ row: SidebarRow, in space: Space, selectedID: BrowserTab.ID?) -> some View {
         switch row.kind {
         case .folder(let folder):
             FolderRow(
-                folder: folder, isDropTarget: folderTarget == folder.id,
+                space: space, selectedID: selectedID, folder: folder, isDropTarget: folderTarget == folder.id,
                 dragInProgress: drag.isDragging,
                 onHoverChanged: { setFolderPeek(folder, visible: $0) })
                 .opacity(drag.folder?.id == folder.id ? 0.6 : 1)
                 .background { rowFrameReporter(.folder(folder.id), in: row) }
                 .padding(.leading, indent(row.depth))
-                .gesture(
-                    folderDragGesture(
-                        folder,
-                        size: CGSize(width: rowWidth(row.depth), height: metrics.rowHeight)))
+                .gesture(folderDragGesture(folder))
         case .tab(let tab):
             if let merge, merge.targetID == tab.id,
                 tabManager.currentSpace.splitGroup(containing: tab.id) == nil
@@ -683,9 +682,7 @@ struct Sidebar: View {
         let pills = isShown || insertIndex != nil
         let groupDragging = drag.group?.id == group.id
         let control = splitControl(group, members: allMembers)
-        let count = members.count + (insertIndex == nil ? 0 : 1)
         let gap: CGFloat = pills ? Self.splitSegmentGap : 0
-        let segW = max((rowWidth(row.depth) - CGFloat(count - 1) * gap) / CGFloat(max(count, 1)), 1)
         return HStack(spacing: gap) {
             ForEach(Array(members.enumerated()), id: \.element.id) { i, tab in
                 if insertIndex == i { greyPlaceholder }
@@ -708,7 +705,7 @@ struct Sidebar: View {
             if hovering { hoveredSplitID = group.id }
             else if hoveredSplitID == group.id { hoveredSplitID = nil }
         }
-        .gesture(splitRowGesture(group: group, members: members, segW: segW))
+        .gesture(splitRowGesture(group: group, members: members))
         .contextMenu { MenuEntriesView(entries: Self.splitRowMenuEntries(group, in: tabManager)) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(allMembers.map(\.displayTitle).joined(separator: ", "))
@@ -716,6 +713,11 @@ struct Sidebar: View {
         .accessibilityAddTraits(isShown ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { focusSplitAsWhole(group) }
         .accessibilityActions { MenuEntryActions(entries: Self.splitRowMenuEntries(group, in: tabManager)) }
+        .focusable(interactions: .activate)
+        .onKeyPress(keys: [.return, .space]) { _ in
+            focusSplitAsWhole(group)
+            return .handled
+        }
         .animation(Motion.pop, value: insertIndex)
         .animation(Motion.hover, value: hoveredSplitID == group.id)
     }
@@ -752,6 +754,7 @@ struct Sidebar: View {
     /// first). a no-op when it's already the shown split, so a click can't sneak
     /// a pane-focus change (that's the content window's job)
     private func focusSplitAsWhole(_ group: SplitGroup) {
+        guard tabManager.displayedSplitGroup?.id != group.id else { return }
         tabManager.clearSelection()
         let pane = group.lastFocusedID.flatMap { group.contains($0) ? $0 : nil } ?? group.tabIDs.first
         tabManager.selectedTabID = pane
@@ -782,15 +785,13 @@ struct Sidebar: View {
 
     // MARK: - Split row gesture (click re-opens / drag moves whole / hold lifts one)
 
-    private func splitRowGesture(group: SplitGroup, members: [BrowserTab], segW: CGFloat) -> some Gesture {
+    private func splitRowGesture(group: SplitGroup, members: [BrowserTab]) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.contentSpace))
-            .onChanged { onSplitDragChanged(group, members, segW, $0) }
+            .onChanged { onSplitDragChanged(group, members, $0) }
             .onEnded { onSplitDragEnded(group, $0) }
     }
 
-    private func onSplitDragChanged(
-        _ group: SplitGroup, _ members: [BrowserTab], _ segW: CGFloat, _ value: DragGesture.Value
-    ) {
+    private func onSplitDragChanged(_ group: SplitGroup, _ members: [BrowserTab], _ value: DragGesture.Value) {
         splitGestureLocation = value.location
         // press start: note the pane under the cursor and arm the lift timer
         if splitGestureGroupID != group.id {
@@ -823,10 +824,7 @@ struct Sidebar: View {
                         width: value.startLocation.x - $0.minX,
                         height: value.startLocation.y - $0.minY)
                 } ?? .zero
-                drag.begin(
-                    pane, fromEssentials: false,
-                    sourceSize: CGSize(width: segW, height: metrics.rowHeight),
-                    at: splitGestureLocation, grab: grab)
+                drag.begin(pane, fromEssentials: false, at: splitGestureLocation, grab: grab)
             }
             return
         }
@@ -842,10 +840,7 @@ struct Sidebar: View {
                 let grab = rowRect.map {
                     CGSize(width: value.startLocation.x - $0.minX, height: value.startLocation.y - $0.minY)
                 } ?? .zero
-                drag.beginGroup(
-                    group, representative: members[0],
-                    sourceSize: CGSize(width: baseContentWidth, height: metrics.rowHeight),
-                    at: value.location, grab: grab)
+                drag.beginGroup(group, representative: members[0], at: value.location, grab: grab)
             }
         case .group, .pane:
             drag.location = value.location
@@ -865,7 +860,7 @@ struct Sidebar: View {
         case .undecided:
             // a click (no drag, no lift) → re-open the split if it isn't shown
             liftedPaneID = nil
-            if tabManager.displayedSplitGroup?.id != group.id { focusSplitAsWhole(group) }
+            focusSplitAsWhole(group)
         case .group:
             liftedPaneID = nil
             drag.end()
@@ -911,7 +906,7 @@ struct Sidebar: View {
         guard drag.isDragging, let dragged = drag.tab, !dragged.isEssential,
             drag.group == nil,  // moving a whole split never merges
             drag.folder == nil,  // nor does moving a folder
-            !essentialZoneActive, drag.contentDropZone == nil
+            !essentialZoneActive, !drag.isOverContent, drag.spaceDropTarget == nil
         else { resetMerge(); return }
 
         // locked onto a target: keep it while the cursor stays within its row
@@ -1079,7 +1074,7 @@ struct Sidebar: View {
         }
     }
 
-    private func dragGesture(_ tab: BrowserTab, size: CGSize) -> some Gesture {
+    private func dragGesture(_ tab: BrowserTab) -> some Gesture {
         // instant drag; a small threshold keeps plain clicks selecting.
         // on macOS, scrolling is wheel/trackpad — no conflict with click-drag
         DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.contentSpace))
@@ -1089,8 +1084,7 @@ struct Sidebar: View {
                     let grab = CGSize(
                         width: value.startLocation.x - origin.x,
                         height: value.startLocation.y - origin.y)
-                    drag.begin(
-                        tab, fromEssentials: false, sourceSize: size, at: value.location, grab: grab)
+                    drag.begin(tab, fromEssentials: false, at: value.location, grab: grab)
                 } else {
                     drag.location = value.location
                 }
@@ -1103,7 +1097,7 @@ struct Sidebar: View {
 
     /// a folder is dragged whole — press-drag on its header row, exactly like a
     /// tab row, and its subtree travels with it
-    private func folderDragGesture(_ folder: TabFolder, size: CGSize) -> some Gesture {
+    private func folderDragGesture(_ folder: TabFolder) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.contentSpace))
             .onChanged { value in
                 if drag.folder == nil {
@@ -1111,7 +1105,7 @@ struct Sidebar: View {
                         measured.rowFrames.first { $0.entry == .folder(folder.id) }?.rect.origin
                         ?? value.startLocation
                     drag.beginFolder(
-                        folder, sourceSize: size, at: value.location,
+                        folder, at: value.location,
                         grab: CGSize(
                             width: value.startLocation.x - origin.x,
                             height: value.startLocation.y - origin.y))
@@ -1127,9 +1121,11 @@ struct Sidebar: View {
 
     /// the drag is over the favourites. the border is the space name's midline
     /// rather than the grid's own edge: one landmark you can aim at, with the
-    /// pinned section owning everything below it. a folder is never a favourite
+    /// pinned section owning everything below it. a folder or a whole split is
+    /// never a favourite
     private var essentialZoneActive: Bool {
-        guard drag.isDragging, drag.folder == nil, measured.essentialsFrame != .zero else { return false }
+        guard drag.isDragging, drag.folder == nil, drag.group == nil, measured.essentialsFrame != .zero
+        else { return false }
         guard measured.spaceHeaderRect != .zero else { return measured.essentialsFrame.contains(drag.location) }
         return drag.location.y < measured.spaceHeaderRect.midY
     }
@@ -1167,7 +1163,7 @@ struct Sidebar: View {
             // favourites grid opens a gap instead, and a dwell shows the merge
             // preview. its indent is what names the container it resolved to
             if merge == nil, liftSlot == nil, !essentialZoneActive,
-                drag.contentDropZone == nil,  // over the content → the card overlay owns the preview
+                !drag.isOverContent,  // over the content → the card overlay owns the preview
                 case .list(_, _, let lineY, let depth) = dropTarget
             {
                 let inset = indent(depth)
@@ -1257,7 +1253,7 @@ struct Sidebar: View {
         }
 
         // dropped onto the content area → tile into a split
-        if drag.contentDropZone != nil {
+        if drag.isOverContent {
             commitContentSplit(tab)
             return
         }
@@ -1330,7 +1326,8 @@ struct Sidebar: View {
 
     /// where the current drag would land
     private var dropTarget: DropResolution? {
-        guard drag.isDragging else { return nil }
+        // a lit space icon owns the drop; resolveDrop would still name a row beneath it
+        guard drag.isDragging, drag.spaceDropTarget == nil else { return nil }
         // a folder has nowhere to go outside the sidebar, so a release there
         // cancels instead of filing it wherever the cursor's y happened to point
         if drag.folder != nil, drag.location.x > measured.tabContentRect.maxX + metrics.rowTrailingPadding {
@@ -1401,7 +1398,17 @@ struct Sidebar: View {
         // a resolution inside the dragged folder would make the tree a cycle
         if case .folder(let id) = chosen, excluded.contains(.folder(id)) { return nil }
 
-        let index = rows.filter { $0.container == chosen && $0.rect.midY < point.y }.count
+        var index = rows.filter { $0.container == chosen && $0.rect.midY < point.y }.count
+        // a folded folder draws only the tab you are on, which may sit deeper in
+        // it: count from that tab's slot among the folder's own children
+        if index > 0, let above, case .folder(let id) = chosen, space.folder(id)?.isExpanded == false {
+            var entry = above.entry
+            while let up = space.parent(of: entry), up != chosen, case .folder(let parentID) = up {
+                entry = .folder(parentID)
+            }
+            let siblings = space.entries(in: chosen).filter { !excluded.contains($0) }
+            index = siblings.firstIndex(of: entry).map { $0 + 1 } ?? siblings.count
+        }
         return .list(
             container: chosen, index: index,
             lineY: lineY(above: above, below: below, in: section, boundary: boundary),
@@ -1551,6 +1558,7 @@ struct Sidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.chromeInk, live ? ink : space.appearance.chromeInk)
         .environment(\.spaceAccent, live ? tabManager.currentSpace.appearance.accent : space.appearance.accent)
+        .accessibilityHidden(!live)
     }
 
     /// space switching as a filmstrip: every built space side by side, scrolled
@@ -1576,6 +1584,10 @@ struct Sidebar: View {
             .modifier(PagerOffset(pitch: pitch))
             .frame(width: w, height: geo.size.height, alignment: .topLeading)
             .clipped()
+            // parked panels report nothing, so this is the live panel's geometry, and
+            // an empty or locked space clears what the last one left
+            .onPreferenceChange(SidebarRowFrameKey.self) { measured.rowFrames = $0 }
+            .onPreferenceChange(NewTabBoundaryKey.self) { measured.newTabBoundaryY = $0 }
             .onAppear {
                 panelWidth = w
                 tabManager.spacePagePosition = Double(currentIndex)
@@ -1683,6 +1695,19 @@ struct Sidebar: View {
         // already at the leftmost space and swiping further right → open the
         // Library (Archive/Downloads/History), arc's "swipe past the edge" feel
         if translation > threshold, base == 0 {
+            // a run of quick swipes lands on the first space before the Library covers it
+            if chainBase != nil {
+                if base != currentIndex {
+                    settledIndex = base
+                    previousSettledIndex = nil
+                    tabManager.selectSpace(tabManager.stripSpaces[base], animatePosition: false)
+                } else {
+                    tabManager.endContentSwitch()
+                }
+                chainBase = nil
+            }
+            withAnimation(Motion.spaceColorSettle) { tabManager.backdropPosition = Double(base) }
+            withAnimation(Motion.carousel) { tabManager.spacePagePosition = Double(base) }
             withAnimation(Motion.panel) {
                 tabManager.isLibraryOpen = true
             }
@@ -1713,6 +1738,7 @@ struct Sidebar: View {
         settleStart = CACurrentMediaTime()
         settleToken += 1
         let token = settleToken
+        let origin = tabManager.selectedSpaceID
         // the colour eases straight to the target with no overshoot, so the
         // spring's bounce can't flash the next space's colour mid-settle
         withAnimation(Motion.spaceColorSettle) {
@@ -1723,14 +1749,17 @@ struct Sidebar: View {
         } completion: {
             // bail if a newer swipe superseded this settle (it carries on the chain)
             guard token == settleToken else { return }
-            if target != currentIndex {
-                if chainBase != nil {
-                    settledIndex = target
-                    previousSettledIndex = nil
+            // a click or shortcut during the settle has already chosen the space
+            if tabManager.selectedSpaceID == origin {
+                if target != currentIndex {
+                    if chainBase != nil {
+                        settledIndex = target
+                        previousSettledIndex = nil
+                    }
+                    tabManager.selectSpace(landing)  // model catches up; panel reslots
+                } else {
+                    tabManager.endContentSwitch()
                 }
-                tabManager.selectSpace(landing)  // model catches up; panel reslots
-            } else {
-                tabManager.endContentSwitch()
             }
             chainBase = nil
             isSettling = false
@@ -1761,6 +1790,7 @@ struct Sidebar: View {
                 Spacer(minLength: 0)
             } else {
                 LibraryButton {
+                    peekTask?.cancel()
                     isPeekVisible = false
                     tabManager.isLibraryOpen = true
                 } onHoverChanged: { hovering in
@@ -1781,7 +1811,7 @@ struct Sidebar: View {
 /// row and reveals an edit button on the right that opens the space editor
 private struct SpaceHeader: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     // suppress hover affordances while a tab is being dragged, so the icon stays
     // put (no chevron swap / pencil) and slides with the row as the layout shifts
@@ -1808,7 +1838,7 @@ private struct SpaceHeader: View {
             // section away; it points down when open, right (−90°) when collapsed
             if hoverActive {
                 Button {
-                    withAnimation(Motion.pop) { space.pinnedCollapsed.toggle() }
+                    withAnimation(Motion.pop) { tabManager.setPinnedCollapsed(space, !space.pinnedCollapsed) }
                 } label: {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 13, weight: .bold))
@@ -1893,7 +1923,7 @@ private struct SpaceHeader: View {
         .accessibilityActions {
             if tabManager.kind == .main {
                 Button(space.pinnedCollapsed ? "Show Pinned Tabs" : "Hide Pinned Tabs") {
-                    withAnimation(Motion.pop) { space.pinnedCollapsed.toggle() }
+                    withAnimation(Motion.pop) { tabManager.setPinnedCollapsed(space, !space.pinnedCollapsed) }
                 }
                 Button("Rename Space") { beginRename(space) }
                 Button("Edit Space…") { isEditing = true }
@@ -1973,7 +2003,7 @@ private struct SpaceHeader: View {
 /// full-width "+ new tab" row with hover highlight
 private struct NewTabRow: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     var suppressHover = false
     @State private var isHovering = false
@@ -2007,7 +2037,7 @@ private struct NewTabRow: View {
 /// pill. the focused pane (the one the url bar drives) is brighter; the others
 /// carry a standing light-grey highlight. tapping a pane focuses it
 private struct SplitSegmentCell: View {
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     let tab: BrowserTab
     /// no pill background — for an unshown split, where the row carries the
@@ -2074,7 +2104,7 @@ private struct SplitSegmentCell: View {
 /// the self-test can render a real row
 struct TabRow: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     let tab: BrowserTab
     let isSelected: Bool
@@ -2087,6 +2117,8 @@ struct TabRow: View {
     @State private var cmdHeld = false
     @State private var flagsMonitor: Any?
     @State private var draftName = ""
+    /// the name the field opened with: committing it untouched renames nothing
+    @State private var nameAtEdit = ""
     /// renaming inline, in the row itself — click the tab you're already on
     @State private var isEditing = false
     @FocusState private var nameFocused: Bool
@@ -2100,6 +2132,7 @@ struct TabRow: View {
     private func commitInlineRename() {
         guard isEditing else { return }
         isEditing = false
+        guard draftName != nameAtEdit else { return }
         // an emptied field means "back to the page's own title" — the policy
         // lives in rename(_:to:) so the menu's dialog behaves the same way
         tabManager.rename(tab, to: draftName)
@@ -2164,10 +2197,11 @@ struct TabRow: View {
                 tabManager.toggleSelection(tab)
             } else if flags.contains(.shift) {
                 tabManager.extendSelection(to: tab)
-            } else if isSelected && !dragInProgress && !isEditing {
+            } else if isSelected && !dragInProgress && !isEditing && !tab.isPrivate {
                 // clicking the tab you're already on renames it in place —
                 // no menu, no dialog. Finder's rename gesture, on a tab
                 draftName = tab.displayTitle
+                nameAtEdit = draftName
                 isEditing = true
             } else {
                 select()
@@ -2176,6 +2210,13 @@ struct TabRow: View {
         // a tab you've navigated away from is no longer the one you were naming
         .onChange(of: isSelected) { _, selected in
             if !selected { isEditing = false }
+        }
+        // the off-pinned layout leaves under the pointer, so it never sees the hover end
+        .onChange(of: offPinned) { _, off in
+            if !off {
+                setIconHover(false)
+                textHovering = false
+            }
         }
         // a name that changed by itself: point out that it's yours to change.
         // keyed off the stored *name*, not the displayed text — a page
@@ -2294,11 +2335,11 @@ struct TabRow: View {
         // a name is remembered on disk, so incognito tabs keep the page's own
         if !isIncognito {
             entries.append(.button("Rename Tab…", "pencil") { tabManager.renamingTab = tab })
-        }
-        // only offered when there's something to revert *to* — a tab showing
-        // its own page title has nothing to put back
-        if TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) != nil {
-            entries.append(.button("Use Page Title", "arrow.uturn.backward") { tabManager.usePageTitle(for: tab) })
+            // only offered when there's something to revert *to* — a tab showing
+            // its own page title has nothing to put back
+            if TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) != nil {
+                entries.append(.button("Use Page Title", "arrow.uturn.backward") { tabManager.usePageTitle(for: tab) })
+            }
         }
         entries += [.divider] + splitMenuEntries + [.divider]
         if tab.isPinned, tab.pendingURL == nil {
@@ -2686,7 +2727,7 @@ private struct SplitDragGhost: View {
 /// the floating drag ghost, morphing between the zones: over the favourites a
 /// centred favicon, over the tabs the favicon at the leading edge with the name
 private struct DragGhost: View {
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     let tab: BrowserTab
     let overEssentials: Bool
@@ -2796,7 +2837,7 @@ private final class SidebarGeometry {
 /// or edit machinery
 private struct ParkedSpaceHeader: View {
     let space: Space
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
 
     var body: some View {
         HStack(spacing: 8) {

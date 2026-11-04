@@ -46,14 +46,19 @@ final class ArchiveStore {
         scheduleSave()
     }
 
-    /// fold in another browser's archive; a url already filed here is left alone
-    func merge(_ incoming: [ArchiveEntry]) {
-        guard !incoming.isEmpty else { return }
+    /// fold in another browser's archive; a url already filed here is left alone.
+    /// returns how many new entries the cap left in
+    @discardableResult
+    func merge(_ incoming: [ArchiveEntry]) -> Int {
+        guard !incoming.isEmpty else { return 0 }
         let known = Set(entries.map(\.url))
-        entries.append(contentsOf: incoming.filter { !known.contains($0.url) })
+        let fresh = incoming.filter { !known.contains($0.url) }
+        entries.append(contentsOf: fresh)
         entries.sort { $0.archivedAt > $1.archivedAt }
         if entries.count > Self.maxEntries { entries.removeLast(entries.count - Self.maxEntries) }
         scheduleSave()
+        let ids = Set(fresh.map(\.id))
+        return entries.count { ids.contains($0.id) }
     }
 
     func remove(_ entry: ArchiveEntry) {
@@ -70,18 +75,19 @@ final class ArchiveStore {
     }
 
     /// write now: a save still waiting on its debounce dies with the process
-    func saveNow() {
+    func saveNow(keepsBackup: Bool = true) {
         saveTask?.cancel()
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        AppStorageLocation.writeDurableNow(data, to: fileURL)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
     /// drop everything archived since `date` (Clear Browsing Data's time range)
     func clear(since date: Date) {
+        if date == .distantPast { AppStorageLocation.discardUnreadable(of: fileURL) }
         let before = entries.count
         entries.removeAll { $0.archivedAt >= date }
         guard entries.count != before else { return }
-        scheduleSave()
+        saveNow(keepsBackup: false)
     }
 
     /// matches for a query — title or url substring, recency order

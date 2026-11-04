@@ -44,9 +44,9 @@ nonisolated enum BookmarkImport {
     /// and an exported one is `.html` whoever wrote it.
     static func format(of data: Data) -> Format? {
         if data.starts(with: Data("bplist00".utf8)) { return .safariPlist }
-        guard let head = String(data: data.prefix(2048), encoding: .utf8)?
+        // decoding repairs a character the cut splits rather than failing the whole head
+        let head = String(decoding: data.prefix(2048), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        else { return nil }
         if head.hasPrefix("{") { return .chromeJSON }
         if head.hasPrefix("<?xml"), head.contains("<plist") { return .safariPlist }
         if head.lowercased().contains("<!doctype netscape-bookmark-file")
@@ -77,52 +77,48 @@ nonisolated enum BookmarkImport {
     // MARK: - Netscape HTML
 
     /// reads only `<H3>` (a folder), `<A HREF>` (a link) and `</DL>` (a folder's
-    /// end); everything else in the file is ignored
+    /// end); everything else in the file is ignored. A top-level root folder,
+    /// such as the bookmarks bar, gives its contents to the top level.
     private static func parseHTML(_ data: Data) -> Result? {
         guard let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1)
         else { return nil }
 
-        var folders: [Folder] = []
-        var loose: [Link] = []
-        /// the folder names we are inside, outermost first
-        var stack: [String] = []
-        /// links collected for each open folder, keyed by its depth
-        var pending: [Int: [Link]] = [:]
+        var top: [Node] = []
+        /// the folders we are inside, outermost first
+        var open: [(name: String, isRoot: Bool, children: [Node])] = []
+        func add(_ node: Node) {
+            if open.isEmpty { top.append(node) } else { open[open.count - 1].children.append(node) }
+        }
+        func close() {
+            guard let folder = open.popLast() else { return }
+            if open.isEmpty, folder.isRoot {
+                top += folder.children
+            } else {
+                add(.folder(folder.name, folder.children))
+            }
+        }
 
         for token in tags(in: text) {
             switch token {
-            case .folder(let name):
-                stack.append(name)
-            case .link(let link):
-                // depth 1 is a top-level folder; anything deeper is flattened
-                // into it, since a link kept three folders down is still kept
-                if stack.isEmpty {
-                    loose.append(link)
-                } else {
-                    pending[1, default: []].append(link)
-                }
-            case .closeFolder:
-                guard let name = stack.popLast() else { break }
-                if stack.isEmpty {
-                    let links = pending.removeValue(forKey: 1) ?? []
-                    if !links.isEmpty { folders.append(Folder(name: name, links: links)) }
-                }
+            case .folder(let name, let isRoot): open.append((name, isRoot, []))
+            case .link(let link): add(.link(link))
+            case .closeFolder: close()
             }
         }
-        // an unclosed final folder still counts
-        if let name = stack.first, let links = pending[1], !links.isEmpty {
-            folders.append(Folder(name: name, links: links))
-        }
-        let result = Result(folders: folders, loose: loose)
-        return result.isEmpty ? nil : result
+        // an unclosed folder still counts
+        while !open.isEmpty { close() }
+        return result([top])
     }
 
     private enum Token {
-        case folder(String)
+        case folder(String, isRoot: Bool)
         case link(Link)
         case closeFolder
     }
+
+    /// Safari marks none of its roots; these are its English names for them
+    private static let safariRoots: Set<String> = ["Favorites", "Favourites", "Bookmarks Menu"]
 
     /// walk the markup once, emitting only the three things that matter
     private static func tags(in text: String) -> [Token] {
@@ -135,7 +131,11 @@ nonisolated enum BookmarkImport {
             let after = text.index(after: close)
 
             if lower.hasPrefix("h3") {
-                out.append(.folder(innerText(of: text, from: after, until: "</h3")))
+                let name = innerText(of: text, from: after, until: "</h3")
+                let isRoot = attribute("personal_toolbar_folder", in: tag)?.lowercased() == "true"
+                    || attribute("unfiled_bookmarks_folder", in: tag)?.lowercased() == "true"
+                    || safariRoots.contains(name)
+                out.append(.folder(name, isRoot: isRoot))
             } else if lower.hasPrefix("a "), let href = attribute("href", in: tag),
                 let url = URL(string: href), isWeb(url)
             {

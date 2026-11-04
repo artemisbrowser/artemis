@@ -17,7 +17,9 @@ struct NowPlayingCard: View {
     private var sources: [(tab: BrowserTab, media: PageMedia)] {
         guard isEnabled else { return [] }
         let managers = BrowserWindows.shared.allManagers
-        let open = tabManager.spaces.filter { !SpaceLock.shared.isLocked($0) }
+        // `spaces` is every main window's; an incognito or Scout window reaches only its own
+        let reach = tabManager.kind == .main ? tabManager.spaces : [tabManager.currentSpace]
+        let open = reach.filter { !SpaceLock.shared.isLocked($0) }
         return (open.flatMap(\.tabs) + tabManager.essentials)
             .compactMap { tab in
                 guard let media = tab.media, !tab.isMiniPlayerActive,
@@ -46,7 +48,7 @@ struct NowPlayingCard: View {
 private struct Bar: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     let tab: BrowserTab
     let media: PageMedia
     /// nil for a favourite

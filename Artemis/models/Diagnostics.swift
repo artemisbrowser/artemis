@@ -85,8 +85,6 @@ nonisolated enum Diagnostics {
         try? handle.write(contentsOf: line)
     }
 
-    /// the real home, not the container's: paths in errors name it
-    private static let home = getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) }
     /// a match stops at a backslash so a redacted JSON string keeps its escapes
     private static let redactions: [(NSRegularExpression, String)] = [
         (#"\b[a-z][a-z0-9+.-]*://[^\s"'<>\\]*"#, "<url>"),
@@ -95,7 +93,7 @@ nonisolated enum Diagnostics {
     ].map { (try! NSRegularExpression(pattern: $0, options: .caseInsensitive), $1) }
 
     static func redact(_ text: String) -> String {
-        var out = home.map { text.replacingOccurrences(of: $0, with: "~") } ?? text
+        var out = text.replacingOccurrences(of: NSHomeDirectory(), with: "~")
         for (pattern, token) in redactions {
             out = pattern.stringByReplacingMatches(
                 in: out, range: NSRange(out.startIndex..., in: out), withTemplate: token)

@@ -102,15 +102,18 @@ struct PeekView: View {
         }
     }
 
-    // a local key monitor: SwiftUI key handling never sees keys over a WKWebView
+    /// a local key monitor: SwiftUI key handling never sees keys over a WKWebView. it
+    /// sees every window's keys, and leaves Esc to a page dialog or an IME composition
     private func startEscMonitor() {
         stopEscMonitor()
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 {  // Esc
-                tabManager.closePeek()
-                return nil
-            }
-            return event
+            guard event.keyCode == 53,  // Esc
+                let window = event.window, BrowserWindows.shared.manager(for: window) === tabManager,
+                tab.pendingDialog == nil,
+                (window.firstResponder as? NSTextInputClient)?.hasMarkedText() != true
+            else { return event }
+            tabManager.closePeek()
+            return nil
         }
     }
 

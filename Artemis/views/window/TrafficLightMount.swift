@@ -5,8 +5,8 @@ import AppKit
 import SwiftUI
 
 /// the window's real traffic lights, re-parented into the sidebar so they move on its exact
-/// frames; the sidebar hides by animating its width, as a `.transition` leaves hosted views behind.
-/// `MountView.layout()` holds 9pt gaps against AppKit's stock frames; fullscreen hands them back.
+/// frames. `MountView.layout()` holds 9pt gaps against AppKit's stock frames; fullscreen hands
+/// them back
 struct TrafficLightMount: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {

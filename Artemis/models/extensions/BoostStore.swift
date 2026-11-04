@@ -49,15 +49,15 @@ final class BoostStore {
     func update(_ boost: Boost) {
         guard let i = boosts.firstIndex(where: { $0.id == boost.id }) else { return }
         boosts[i] = boost
-        boosts[i].host = boost.host.trimmingCharacters(in: .whitespaces).lowercased()
+        boosts[i].host = Self.host(of: boost.host)
         persist()
     }
 
     @discardableResult
     func create(host: String) -> Boost? {
-        let trimmed = host.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !trimmed.isEmpty else { return nil }
-        let boost = Boost(host: trimmed)
+        let host = Self.host(of: host)
+        guard !host.isEmpty else { return nil }
+        let boost = Boost(host: host)
         boosts.append(boost)
         persist()
         return boost
@@ -95,6 +95,12 @@ final class BoostStore {
                 webView.evaluateJavaScript(boost.js)
             }
         }
+    }
+
+    /// the host `inject` compares, from a typed site or a pasted url (`https://github.com/`)
+    private static func host(of typed: String) -> String {
+        let site = typed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return URL(string: site)?.host() ?? URL(string: "https://" + site)?.host() ?? site
     }
 
     /// JSON-encode a string so it's safe to embed as a JS literal

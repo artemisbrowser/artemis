@@ -59,18 +59,21 @@ nonisolated enum AppStorageLocation {
     }
 
     /// `writeDurable`, finished before it returns: for `applicationWillTerminate`
-    /// and the other save-now paths, where a queued write dies with the process
-    static func writeDurableNow(_ data: Data, to url: URL) {
+    /// and the other save-now paths, where a queued write dies with the process.
+    /// a clear passes `keepsBackup: false`, so the `.bak` can't hold what it erased
+    static func writeDurableNow(_ data: Data, to url: URL, keepsBackup: Bool = true) {
         let takenAt = snapshotTime()
         writes.sync {
             newestWritten[url] = takenAt
-            rotate(data, to: url)
+            rotate(data, to: url, keepsBackup: keepsBackup)
         }
     }
 
-    private static func rotate(_ data: Data, to url: URL) {
+    private static func rotate(_ data: Data, to url: URL, keepsBackup: Bool = true) {
         let backup = url.appendingPathExtension("bak")
-        if let existing = try? Data(contentsOf: url), !existing.isEmpty {
+        if !keepsBackup {
+            try? FileManager.default.removeItem(at: backup)
+        } else if let existing = try? Data(contentsOf: url), !existing.isEmpty {
             try? existing.write(to: backup, options: .atomic)
         }
         do { try data.write(to: url, options: .atomic) } catch {
@@ -81,12 +84,15 @@ nonisolated enum AppStorageLocation {
 
     /// decode `url`, falling back to its `.bak` sibling when the primary is
     /// missing, empty, or unreadable. returns nil only when neither is usable.
+    /// an undecodable file is first copied once to `.unreadable`, where no rotation reaches it
     static func loadDurable<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
         let decoder = JSONDecoder()
         for candidate in [url, url.appendingPathExtension("bak")] {
             guard let data = try? Data(contentsOf: candidate), !data.isEmpty else { continue }
             do { return try decoder.decode(type, from: data) } catch {
                 debugLog("store: failed to decode \(candidate.lastPathComponent), trying backup")
+                let aside = candidate.appendingPathExtension("unreadable")
+                if !FileManager.default.fileExists(atPath: aside.path) { try? data.write(to: aside) }
                 // the case alone: a decoding error's text names the keys on its path,
                 // and some stores are keyed by host or by what was typed
                 let reason =
@@ -102,5 +108,12 @@ nonisolated enum AppStorageLocation {
             }
         }
         return nil
+    }
+
+    /// for a clear that empties the store at `url` for good: what `loadDurable` set aside goes too
+    static func discardUnreadable(of url: URL) {
+        for candidate in [url, url.appendingPathExtension("bak")] {
+            try? FileManager.default.removeItem(at: candidate.appendingPathExtension("unreadable"))
+        }
     }
 }

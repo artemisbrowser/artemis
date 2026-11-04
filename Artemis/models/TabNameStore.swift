@@ -71,12 +71,21 @@ final class TabNameStore {
     func clearGenerated(for url: URL?) {
         guard let key = Self.key(url), var entry = names[key] else { return }
         entry.generated = nil
+        entry.generatedFrom = nil
         write(entry, at: key)
     }
 
-    func clearAllGenerated() {
-        for (key, var entry) in names where entry.generated != nil {
+    /// forget the model's names, and the page titles they came from, except at `urls`;
+    /// anything typed stays
+    func clearAllGenerated(keeping urls: [URL?] = []) {
+        let kept = Set(urls.compactMap(Self.key))
+        let stale = names.filter {
+            ($0.value.generated != nil || $0.value.generatedFrom != nil) && !kept.contains($0.key)
+        }
+        guard !stale.isEmpty else { return }
+        for (key, var entry) in stale {
             entry.generated = nil
+            entry.generatedFrom = nil
             names[key] = entry.isEmpty ? nil : entry
         }
         save()
@@ -96,7 +105,7 @@ final class TabNameStore {
 
     /// computed keys by absolute url string. every sidebar row asks for its name
     /// on every body pass, so a hit must not allocate
-    nonisolated(unsafe) private static var keyCache: [String: String] = [:]
+    private static var keyCache: [String: String] = [:]
 
     /// the url without its fragment or tracking parameters. the rest of the query
     /// is kept: on many sites (`youtube.com/watch?v=…`) it is the page

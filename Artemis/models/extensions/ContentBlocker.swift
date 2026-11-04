@@ -52,7 +52,7 @@ final class ContentBlocker {
             onByDefault: false),
     ]
 
-    private static let enabledKey = "contentBlockingEnabledV1"
+    static let enabledKey = "contentBlockingEnabledV1"
     private static let lastUpdateKey = "contentBlockingLastUpdate"
     /// identifiers of the compiled chunks in WebKit's store, and their rule counts, which launch
     /// installs without converting the lists again
@@ -60,9 +60,11 @@ final class ContentBlocker {
     private static let compiledStatsKey = "contentBlockingCompiledStats"
     /// fingerprint of the `siteFixes` the compiled chunks were built with; a mismatch forces a rebuild
     private static let compiledFixesKey = "contentBlockingCompiledFixes"
-    private static var fixesFingerprint: String {
-        digest(String(data: (try? JSONEncoder().encode(siteFixes)) ?? Data(), encoding: .utf8) ?? "")
-    }
+    private static let fixesFingerprint: String = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return digest(String(data: (try? encoder.encode(siteFixes)) ?? Data(), encoding: .utf8) ?? "")
+    }()
     /// how often a running app looks for lists past their `maxAge`
     private static let refreshCheck: Duration = .seconds(3600)
 
@@ -70,7 +72,7 @@ final class ContentBlocker {
         didSet {
             guard oldValue != isEnabled else { return }
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
-            Task { await apply() }
+            if isEnabled { Task { await apply() } } else { uninstall() }
         }
     }
 
@@ -106,6 +108,7 @@ final class ContentBlocker {
     var statusLine: String {
         if let lastError { return "Couldn't update: \(lastError)" }
         guard isEnabled else { return "Blocking is off — pages load with their ads and trackers." }
+        guard !enabledLists.isEmpty else { return "No lists selected." }
         guard ruleCount > 0 else { return "Preparing blocklists…" }
         let updated = lastUpdated.map {
             $0.formatted(date: .abbreviated, time: .omitted)
@@ -195,13 +198,17 @@ final class ContentBlocker {
         await serialized { await self.applyLocked() }
     }
 
+    /// at once, ahead of any download or compile in flight, which then records its lists
+    /// without adding them
+    private func uninstall() {
+        guard !installed.isEmpty else { return }
+        for ucc in SharedWebContent.all { for list in installed { ucc.remove(list) } }
+        installed = []
+        Self.reloadLoadedTabs()
+    }
+
     private func applyLocked() async {
-        guard isEnabled else {
-            for ucc in SharedWebContent.all { for list in installed { ucc.remove(list) } }
-            installed = []
-            Self.reloadLoadedTabs()
-            return
-        }
+        guard isEnabled else { return uninstall() }
         let hadCache = enabledLists.contains {
             (try? cacheURL($0).checkResourceIsReachable()) == true
         }
@@ -249,6 +256,7 @@ final class ContentBlocker {
         isUpdating = true
         lastError = nil
         defer { isUpdating = false }
+        guard !enabledLists.isEmpty else { return await removeLists(reloadTabs: reloadTabs) }
 
         var sources: [String] = []
         var changed = false
@@ -325,15 +333,18 @@ final class ContentBlocker {
         }
         guard !compiled.isEmpty else { return }
 
-        replaceInstalled(with: compiled)
-        if reloadTabs { Self.reloadLoadedTabs() }
+        // the same chunks already in: nothing to swap, and no open page has to run again
+        if compiled.map(\.identifier) != installed.map(\.identifier) {
+            replaceInstalled(with: compiled)
+            if reloadTabs, isEnabled { Self.reloadLoadedTabs() }
+        }
         ruleCount = converted.ruleCount
         droppedCount = converted.droppedCount
         UserDefaults.standard.set(compiled.map(\.identifier), forKey: Self.compiledIdentifiersKey)
         UserDefaults.standard.set(Self.fixesFingerprint, forKey: Self.compiledFixesKey)
         UserDefaults.standard.set(
             [converted.ruleCount, converted.droppedCount], forKey: Self.compiledStatsKey)
-        if stamp {
+        if stamp, lastError == nil {
             lastUpdated = Date()
             UserDefaults.standard.set(lastUpdated, forKey: Self.lastUpdateKey)
         }
@@ -344,6 +355,7 @@ final class ContentBlocker {
     /// build from the cached lists without the network, reusing the last build's bytecode
     /// while it is still current
     private func rebuild() async {
+        guard !enabledLists.isEmpty else { return await removeLists(reloadTabs: false) }
         if await installPreviouslyCompiled() { return }
 
         var sources: [String] = []
@@ -382,6 +394,18 @@ final class ContentBlocker {
         if trackerHosts.isEmpty { trackerHosts = await Self.readTrackerHosts(trackerHostsCache) }
         debugLog("blocklists: reused \(lists.count) already-compiled chunks")
         return true
+    }
+
+    /// no list subscribed: nothing blocks, not even the starter list
+    private func removeLists(reloadTabs: Bool) async {
+        let hadLists = !installed.isEmpty
+        replaceInstalled(with: [])
+        if hadLists, reloadTabs, isEnabled { Self.reloadLoadedTabs() }
+        ruleCount = 0
+        droppedCount = 0
+        UserDefaults.standard.removeObject(forKey: Self.compiledIdentifiersKey)
+        UserDefaults.standard.removeObject(forKey: Self.compiledStatsKey)
+        await pruneStaleCompiledLists(keeping: [])
     }
 
     private func replaceInstalled(with lists: [WKContentRuleList]) {

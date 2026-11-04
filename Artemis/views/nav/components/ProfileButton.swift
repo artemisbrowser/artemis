@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import AppKit
 import SwiftUI
 
 /// the current space's profile, in the sidebar's bottom-right corner. its panel
@@ -46,7 +45,7 @@ private struct ProfilePanel: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("\(space.name.uppercased()) BROWSES AS")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(.primary.opacity(0.45))
                 .padding(.horizontal, 8)
                 .padding(.top, 2)
                 .padding(.bottom, 3)
@@ -58,10 +57,7 @@ private struct ProfilePanel: View {
             if isCreating {
                 creator
             } else {
-                PopoverActionRow(title: "New Profile…", icon: "plus.circle") {
-                    isCreating = true
-                    nameFocused = true
-                }
+                PopoverActionRow(title: "New Profile…", icon: "plus.circle") { isCreating = true }
             }
             Divider().padding(.vertical, 3)
             PopoverActionRow(title: "New Space…", icon: "plus") {
@@ -79,7 +75,7 @@ private struct ProfilePanel: View {
             }
             PopoverActionRow(title: "Settings…", icon: "gearshape") {
                 close()
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                SettingsView.open()
             }
         }
         .padding(6)
@@ -93,9 +89,9 @@ private struct ProfilePanel: View {
                 showingIconPicker.toggle()
             } label: {
                 SpaceGlyph(icon: icon, size: 13)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.primary.opacity(0.85))
                     .frame(width: 26, height: 26)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.white.opacity(0.1)))
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.primary.opacity(0.1)))
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingIconPicker, arrowEdge: .trailing) {
@@ -105,6 +101,7 @@ private struct ProfilePanel: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($nameFocused)
+                .onAppear { nameFocused = true }
                 .onSubmit(create)
                 .onExitCommand { isCreating = false }
         }
@@ -142,13 +139,13 @@ private struct ProfileRow: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
             }
-            .foregroundStyle(.white.opacity(isHovering || isCurrent ? 0.95 : 0.8))
+            .foregroundStyle(.primary.opacity(isHovering || isCurrent ? 0.95 : 0.8))
             .padding(.horizontal, 8)
             .frame(height: 28)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(.white.opacity(isHovering ? 0.13 : 0)))
+                    .fill(.primary.opacity(isHovering ? 0.13 : 0)))
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .animation(Motion.hover, value: isHovering)
         }

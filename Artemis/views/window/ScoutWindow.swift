@@ -13,11 +13,11 @@ enum ScoutWindow {
     /// released out from under its content
     private static var open: [NSWindow] = []
 
-    /// a link, opened for a look
+    /// a link, opened for a look; from a page, in its `opener` space's profile
     @discardableResult
-    static func open(_ url: URL) -> NSWindow {
+    static func open(_ url: URL, like opener: Space? = nil) -> NSWindow {
         let manager = TabManager(kind: .scout)
-        manager.openScoutSpace(on: url)
+        manager.openScoutSpace(on: url, like: opener)
         return present(manager, size: glanceSize(), centred: true)
     }
 

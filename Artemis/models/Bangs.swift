@@ -43,7 +43,15 @@ enum Bangs {
     }
 
     /// custom first, so a custom `!gh` beats the built-in one
-    private static var all: [Bang] { custom + builtin }
+    private static var all: [Bang] {
+        if let merged { return merged }
+        let built = custom + builtin
+        merged = built
+        return built
+    }
+
+    /// `all`, built once per `setCustom`
+    private static var merged: [Bang]?
 
     static var custom: [Bang] {
         guard let data = UserDefaults.standard.data(forKey: customKey),
@@ -55,6 +63,7 @@ enum Bangs {
     static func setCustom(_ bangs: [Bang]) {
         guard let data = try? JSONEncoder().encode(bangs) else { return }
         UserDefaults.standard.set(data, forKey: customKey)
+        merged = nil
     }
 
     static func lookup(_ trigger: String) -> Bang? {
@@ -73,26 +82,36 @@ enum Bangs {
         return Array((byTrigger + byName).prefix(limit))
     }
 
-    /// the bang ⇥ arms for a lone word naming it: its trigger (two letters or more,
-    /// so ⇥ after "g" still walks the list) or its name without spaces
+    /// the bang ⇥ arms for a lone word of two letters or more (so ⇥ after "g" or "x"
+    /// still walks the list) naming it: its trigger or its name without spaces
     static func tabTarget(_ input: String) -> Bang? {
         let word = input.trimmingCharacters(in: .whitespaces).lowercased()
-        guard isEnabled, !word.isEmpty, !word.contains(" "), !word.hasPrefix("!") else { return nil }
+        guard isEnabled, word.count >= 2, !word.contains(" "), !word.hasPrefix("!") else { return nil }
         return all.first {
-            ($0.trigger == word && word.count >= 2)
-                || $0.name.lowercased().replacingOccurrences(of: " ", with: "") == word
+            $0.trigger == word || $0.name.lowercased().replacingOccurrences(of: " ", with: "") == word
         }
     }
 
-    /// the bang token and what's left of the query. the token may sit at either
-    /// end, the way DuckDuckGo accepts it
+    /// the bang token and what's left of the query. the token may lead, and goes to
+    /// DuckDuckGo when unknown if it is plain letters and digits; it may trail only
+    /// when known, so `css !important` stays a search
     static func split(_ input: String) -> (trigger: String, query: String)? {
-        let words = input.split(separator: " ", omittingEmptySubsequences: true)
-        guard let index = words.firstIndex(where: { $0.hasPrefix("!") && $0.count > 1 })
-        else { return nil }
-        var rest = words
-        let token = rest.remove(at: index)
-        return (String(token.dropFirst()).lowercased(), rest.joined(separator: " "))
+        var words = input.split(separator: " ", omittingEmptySubsequences: true)
+        func trigger(_ word: Substring?) -> String? {
+            guard let word, word.hasPrefix("!"), word.count > 1 else { return nil }
+            return word.dropFirst().lowercased()
+        }
+        if let first = trigger(words.first),
+            lookup(first) != nil || first.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
+        {
+            words.removeFirst()
+            return (first, words.joined(separator: " "))
+        }
+        if let last = trigger(words.last), lookup(last) != nil {
+            words.removeLast()
+            return (last, words.joined(separator: " "))
+        }
+        return nil
     }
 
     /// the trigger being typed, when the input is nothing but a bare `!token`

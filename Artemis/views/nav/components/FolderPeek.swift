@@ -88,6 +88,17 @@ struct FolderPeek: View {
         // the panel comes up ready to type; focus has to wait a runloop turn for
         // the field to exist
         .onAppear { DispatchQueue.main.async { isSearchFocused = true } }
+        // the keyboard the field took goes back to the page however the panel closes,
+        // unless something else has claimed it since
+        .onDisappear {
+            let held = isSearchFocused
+            DispatchQueue.main.async { [tabManager] in
+                guard let host = tabManager.selectedTab?.webHost, let window = host.window,
+                    held || window.firstResponder === window
+                else { return }
+                host.focusHostedWebView()
+            }
+        }
         .onKeyPress(.escape) {
             dismiss()
             return .handled

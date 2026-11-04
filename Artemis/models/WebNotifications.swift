@@ -166,23 +166,14 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
     }
 
     /// `identifier` is `<tab id>/<notification id>`; a dismissal fires `close`.
-    /// A click goes to the window already on the tab's space or profile, waking the tab
+    /// A click reveals the tab in the window it answers to, waking it
     func respond(to identifier: String, clicked: Bool) {
         if ExtensionAPIBridge.shared.notificationResponded(identifier, clicked: clicked) { return }
         let parts = identifier.split(separator: "/", maxSplits: 1).map(String.init)
-        let managers = BrowserWindows.shared.allManagers
         guard parts.count == 2, let tabID = UUID(uuidString: parts[0]),
-            let tab = managers.lazy.flatMap(\.allTabs).first(where: { $0.id == tabID })
+            let tab = BrowserWindows.shared.allManagers.lazy.flatMap(\.allTabs).first(where: { $0.id == tabID })
         else { return }
-        if clicked {
-            let home =
-                managers.first { $0.isShowing(tab) }
-                ?? managers.first {
-                    tab.isEssential ? $0.currentProfile.id == tab.profileID : $0.space(of: tab) === $0.currentSpace
-                }
-                ?? BrowserWindows.shared.browserScope
-            home?.revealTab(tab)
-        }
+        if clicked { tab.manager?.revealTab(tab) }
         tab.webView.callAsyncJavaScript(
             WebNotificationPage.receive, arguments: ["m": ["type": clicked ? "click" : "close", "id": parts[1]]],
             in: nil, in: .page)

@@ -35,6 +35,8 @@ struct MainView: View {
     /// the overlay is springing in; its overshoot uncovering the edge strip is not "mouse left"
     @State private var overlayEntering = false
     @State private var overlayEnterTask: Task<Void, Never>?
+    /// waits out the spring of a sidebar pinned from off the window before it counts as settled
+    @State private var pinSlide: Task<Void, Never>?
     @State private var isResizingSidebar = false
     @State private var isFullScreen = false
     @State private var windowSize = CGSize(width: 1000, height: 700)
@@ -81,21 +83,22 @@ struct MainView: View {
             if dragging, !rearrange.incoming { startRearrangeMonitor() }
             else if !dragging { stopRearrangeMonitor() }
         }
+        // posted for every window, WebKit's element fullscreen too: each reads this window's mask
         .onReceive(
             NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)
         ) { _ in
-            isFullScreen = true
+            isFullScreen = BrowserWindows.shared.window(of: tabManager)?.styleMask.contains(.fullScreen) == true
         }
         .onReceive(
             NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)
         ) { _ in
-            isFullScreen = false
+            isFullScreen = BrowserWindows.shared.window(of: tabManager)?.styleMask.contains(.fullScreen) == true
         }
         // the grab strip when the rim is too thin to hold one; it must sit above
         // the sidebar's overlay or the sidebar's side of the seam loses its clicks
         .overlay(alignment: .leading) {
             if !isSidebarCollapsed, edgeInset < WindowChrome.minGrabWidth {
-                resizeHandle(width: Self.seamGrabWidth, centreOffsetFromEdge: libraryRailExtra)
+                resizeHandle(width: Self.seamGrabWidth)
                     // padding, not .offset: offset is render-only and leaves the AppKit hit area behind
                     .padding(.leading, pinnedFootprint - Self.seamGrabWidth / 2)
             }
@@ -165,6 +168,14 @@ struct MainView: View {
         }
         .onChange(of: tabManager.isSidebarPopoverOpen) { _, open in
             if !open { releaseOverlayHold() }
+        }
+        .onChange(of: isSidebarRevealed && !overlayEntering, initial: true) { was, settled in
+            pinSlide?.cancel()
+            guard settled, !was, !isSidebarCollapsed else { return tabManager.isSidebarSettled = settled }
+            pinSlide = Task {
+                try? await Task.sleep(for: .seconds(Motion.sidebarSpring.settlingDuration))
+                if !Task.isCancelled { tabManager.isSidebarSettled = true }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
             isMenuOpen = true
@@ -246,7 +257,9 @@ struct MainView: View {
             // everything below runs once per app, not per window
             guard BrowserWindows.shared.claimLaunchWork() else { return }
 
-            Task { await Intelligence.shared.prewarmChores() }
+            if Intelligence.isOn(Intelligence.tidyTitlesKey) {
+                Task { await Intelligence.shared.prewarmChores() }
+            }
             // dev hook: ARTEMIS_DIAG=ext dumps extension runtime state
             if SelfTest.isExtensionsDiagRequested {
                 Task { await SelfTest.runExtensionsDiag(manager: tabManager) }
@@ -577,7 +590,7 @@ struct MainView: View {
     }
 
     /// invisible grab strip between sidebar and web card
-    private func resizeHandle(width: CGFloat, centreOffsetFromEdge: CGFloat? = nil) -> some View {
+    private func resizeHandle(width: CGFloat) -> some View {
         SidebarResizeHandle(
             width: $sidebarWidth,
             range: Self.sidebarWidthRange,
@@ -586,8 +599,7 @@ struct MainView: View {
                 if !dragging, !overlayHeld {
                     isSidebarOverlayVisible = false
                 }
-            },
-            centreOffsetFromEdge: centreOffsetFromEdge
+            }
         )
         .frame(width: width)
     }
@@ -643,7 +655,7 @@ struct MainView: View {
     private func startContentDragMonitor() {
         stopContentDragMonitor()
         contentDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged]) { event in
-            updateContentDropZone(event)
+            updateContentDrop(event)
             return event
         }
     }
@@ -651,13 +663,13 @@ struct MainView: View {
     private func stopContentDragMonitor() {
         if let contentDragMonitor { NSEvent.removeMonitor(contentDragMonitor) }
         contentDragMonitor = nil
-        drag.contentDropZone = nil
+        drag.isOverContent = false
         if rearrange.incoming { rearrange.clear() }
     }
 
     /// drives the rearrange overlay as an incoming drag while a sidebar tab is over
-    /// the content; `contentDropZone` doubles as the sidebar's "over content" flag
-    private func updateContentDropZone(_ event: NSEvent) {
+    /// the content
+    private func updateContentDrop(_ event: NSEvent) {
         guard drag.isDragging, let tab = drag.tab, !tab.isEssential,
             drag.group == nil,  // dragging a whole split isn't a content drop
             frames.contentFrame != .zero, contentSplitEligible(tab),
@@ -676,7 +688,7 @@ struct MainView: View {
             return
         }
 
-        if drag.contentDropZone == nil { drag.contentDropZone = .right }
+        if !drag.isOverContent { drag.isOverContent = true }
 
         let group = tabManager.displayedSplitGroup
         let single = group == nil ? tabManager.selectedTab?.id : nil
@@ -685,7 +697,7 @@ struct MainView: View {
     }
 
     private func clearContentDrop() {
-        if drag.contentDropZone != nil { drag.contentDropZone = nil }
+        if drag.isOverContent { drag.isOverContent = false }
         if rearrange.incoming { rearrange.clear() }
     }
 
@@ -814,8 +826,8 @@ private struct CardCornerControls: View {
     }
 }
 
-/// the web card's pages and which of them stay mounted; owns the warm and
-/// crossfade-hold state, so a switch re-runs this and not the window body
+/// the web card's pages and which of them stay mounted; owns the warm state, so a
+/// switch re-runs this and not the window body
 private struct CardStack: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(RearrangeDragState.self) private var rearrange
@@ -823,11 +835,6 @@ private struct CardStack: View {
     // the spaces whose pages are kept mounted (current ± 1), refreshed after a
     // switch settles so the set never changes mid-gesture
     @State private var warmSpaceIDs: Set<Space.ID> = []
-    // the page the current one is crossfading over: mounted for the length of
-    // the fade so there's an opaque page underneath, then released
-    @State private var heldTabID: BrowserTab.ID?
-    @State private var shownBeforeID: BrowserTab.ID?
-    @State private var holdTask: Task<Void, Never>?
 
     /// a space with no tabs at all — the web card steps aside and lets the
     /// space's own backdrop (theme colour) fill the area, no start page
@@ -848,8 +855,10 @@ private struct CardStack: View {
                             cornerRadius: cornerRadius,
                             style: .continuous))
             } else if let split = tabManager.displayedSplitGroup {
-                // panes carry their own base, rounding and shadow
+                // panes carry their own base, rounding and shadow. keyed, so another split
+                // starts with no pane frames or link pick of this one's
                 SplitContentView(group: split)
+                    .id(split.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 singleCard
@@ -876,11 +885,10 @@ private struct CardStack: View {
             tabManager.hydrateNeighbors()
             warmSpaceIDs = tabManager.neighborSpaceIDs()
         }
-        .onChange(of: tabManager.displayedContentTab?.id, initial: true) { _, id in noteShown(id) }
     }
 
-    /// web views kept mounted: the shown page, the page it is crossfading over,
-    /// and the warm neighbours (current ± 1 space)
+    /// web views kept mounted: the shown page and the warm neighbours (current ± 1
+    /// space). PageStack keeps the page a switch fades from until the fade lands
     private var mountedTabs: [BrowserTab] {
         var tabs: [BrowserTab] = []
         func add(_ tab: BrowserTab?) {
@@ -892,31 +900,7 @@ private struct CardStack: View {
         for space in tabManager.spaces where warmSpaceIDs.contains(space.id) {
             add(tabManager.selectedTab(in: space) ?? space.tabs.first)
         }
-        if PerfFlags.holdsCrossfadePage {
-            add(heldTabID.flatMap(tab(withID:)))
-        }
         return tabs
-    }
-
-    private func tab(withID id: BrowserTab.ID) -> BrowserTab? {
-        for space in tabManager.spaces {
-            if let match = space.tabs.first(where: { $0.id == id }) { return match }
-        }
-        return tabManager.essentials.first { $0.id == id }
-    }
-
-    /// holds the outgoing page mounted for the length of the crossfade only
-    private func noteShown(_ id: BrowserTab.ID?) {
-        let outgoing = shownBeforeID
-        shownBeforeID = id
-        guard let outgoing, outgoing != id else { return }
-        holdTask?.cancel()
-        heldTabID = outgoing
-        holdTask = Task {
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            heldTabID = nil
-        }
     }
 
     /// the single-page card: its mounted web views, the error/start fallbacks, base, rounding and shadow
@@ -929,7 +913,7 @@ private struct CardStack: View {
             PageStack(tabs: tabs, shownID: shownID)
             ForEach(tabs) { tab in
                 Color.clear
-                    .pageDialog(for: tab)
+                    .pageDialog(for: tab, isShown: tab.id == shownID)
                     .translateSelection(for: tab)
                     .opacity(tab.id == shownID ? 1 : 0)
                     .allowsHitTesting(tab.id == shownID)

@@ -37,7 +37,7 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
 }
 
 @MainActor private func live(_ entity: SpaceEntity) throws -> Space {
-    guard let space = Scripting.spaces(incognito: false).first(where: { $0.id == entity.id }) else {
+    guard let space = BrowserCore.shared.spaces.first(where: { $0.id == entity.id }) else {
         throw IntentFailure.notFound
     }
     guard !SpaceLock.shared.isLocked(space) else { throw IntentFailure.locked }
@@ -210,6 +210,9 @@ struct GetCurrentPageIntent: AppIntent {
             else { throw IntentFailure.notFound }
             page = selected
         }
+        await page.wake()
+        // again once awake: the wake can take 15 s, and the space may lock meanwhile
+        guard Scripting.tabs(incognito: false).contains(where: { $0 === page }) else { throw IntentFailure.notFound }
         return .result(value: await PageEntity(page))
     }
 }
@@ -232,7 +235,7 @@ struct SearchHistoryIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<[HistoryEntryEntity]> {
         let profiles = BrowserCore.shared.profiles.filter { profile == nil || $0.id == profile?.id }
-        let found = profiles.flatMap { $0.history.search(text, limit: limit) }.prefix(max(limit, 0))
+        let found = HistoryStore.search(text, in: profiles.map(\.history), limit: max(limit, 0))
         return .result(value: found.map(HistoryEntryEntity.init))
     }
 }

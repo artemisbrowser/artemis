@@ -129,18 +129,18 @@ final class HistoryStore {
     }
 
     /// fold another browser's trail in: a url already known keeps the higher
-    /// counts and the later visit. returns how many pages were new
+    /// counts and the later visit. returns how many new pages the cap left in
     @discardableResult
     func merge(_ imported: [HistoryEntry]) -> Int {
         guard !imported.isEmpty else { return 0 }
         var byURL: [URL: Int] = [:]
-        var added = 0
+        var fresh: Set<URL> = []
         for (i, entry) in entries.enumerated() { byURL[entry.url] = i }
         for entry in imported {
             guard let i = byURL[entry.url] else {
                 byURL[entry.url] = entries.count
                 entries.append(entry)
-                added += 1
+                fresh.insert(entry.url)
                 continue
             }
             entries[i].visitCount = max(entries[i].visitCount, entry.visitCount)
@@ -150,27 +150,30 @@ final class HistoryStore {
         entries.sort { $0.lastVisited > $1.lastVisited }
         if entries.count > Self.maxEntries { entries.removeLast(entries.count - Self.maxEntries) }
         scheduleSave()
-        return added
+        return entries.count { fresh.contains($0.url) }
     }
 
-    /// best matches for a query — ranked by relevance then recency/frequency
-    func search(_ query: String, limit: Int = 6) -> [HistoryEntry] {
+    /// best matches for a query across `stores` — ranked by relevance then recency/frequency
+    static func search(_ query: String, in stores: [HistoryStore], limit: Int = 6) -> [HistoryEntry] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
         // a page whose mask lacks one of the query's letters can't match
         let mask = CommandMatcher.mask(q.utf8)
         let needle = Array(q.utf8)
-        var scored: [Ranked] = []
-        for entry in entries
-        where (mask & ~entry.searchMask) == 0
-            && CommandMatcher.contains(needle, entry.searchKey) {
-            scored.append(Ranked(entry: entry, score: Self.score(entry, query: q)))
+        let trails = stores.map(\.entries)
+        var scored: [(trail: Int, index: Int, score: Int)] = []
+        for (trail, entries) in trails.enumerated() {
+            for (index, entry) in entries.enumerated()
+            where (mask & ~entry.searchMask) == 0
+                && CommandMatcher.contains(needle, entry.searchKey) {
+                scored.append((trail, index, score(entry, query: q)))
+            }
         }
         scored.sort { lhs, rhs in
             if lhs.score != rhs.score { return lhs.score > rhs.score }
-            return lhs.entry.lastVisited > rhs.entry.lastVisited
+            return trails[lhs.trail][lhs.index].lastVisited > trails[rhs.trail][rhs.index].lastVisited
         }
-        return scored.prefix(limit).map { $0.entry }
+        return scored.prefix(limit).map { trails[$0.trail][$0.index] }
     }
 
     /// note that this page was reached by typing it, not by following a link
@@ -186,6 +189,7 @@ final class HistoryStore {
         _ needle: [UInt8], mask: UInt64, limit: Int, now: Date = Date()
     ) -> [HistoryMatch] {
         guard !needle.isEmpty else { return [] }
+        let entries = entries
         // rank indices and scores alone; only the `limit` survivors become matches
         var ranked: [(index: Int, score: Int, preferTitle: Bool)] = []
         for (index, entry) in entries.enumerated() where (mask & ~entry.searchMask) == 0 {
@@ -208,19 +212,15 @@ final class HistoryStore {
         }
     }
 
-    /// pages whose host starts with what's been typed, best first — the pool the
-    /// bar autofills from
-    func autofillCandidates(_ prefix: String, now: Date = Date()) -> [HistoryEntry] {
+    /// pages whose host starts with what's been typed, with their frecency, best
+    /// first — the pool the bar autofills from
+    func autofillCandidates(_ prefix: String, now: Date = Date()) -> [(entry: HistoryEntry, frecency: Double)] {
         guard !prefix.isEmpty else { return [] }
         return
             entries
             .filter { $0.autofillHost.hasPrefix(prefix) }
-            .sorted { $0.frecency(now: now) > $1.frecency(now: now) }
-    }
-
-    private struct Ranked {
-        let entry: HistoryEntry
-        let score: Int
+            .map { ($0, $0.frecency(now: now)) }
+            .sorted { $0.frecency > $1.frecency }
     }
 
     /// forget specific pages, leaving the rest of the trail alone, so a test or
@@ -234,10 +234,11 @@ final class HistoryStore {
 
     /// drop everything visited since `date`; `.distantPast` wipes the lot
     func clear(since date: Date) {
+        if date == .distantPast { AppStorageLocation.discardUnreadable(of: fileURL) }
         let before = entries.count
         entries.removeAll { $0.lastVisited >= date }
         guard entries.count != before else { return }
-        scheduleSave()
+        saveNow(keepsBackup: false)
     }
 
     // MARK: - Ranking
@@ -270,10 +271,10 @@ final class HistoryStore {
     }
 
     /// write synchronously, for a caller about to quit
-    func saveNow() {
+    func saveNow(keepsBackup: Bool = true) {
         saveTask?.cancel()
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        AppStorageLocation.writeDurableNow(data, to: fileURL)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
     private func load() {

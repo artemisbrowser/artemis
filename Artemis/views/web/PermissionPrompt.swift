@@ -57,6 +57,9 @@ struct PermissionPrompt: View {
         .frame(width: 340, alignment: .leading)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
         .shadow(color: .black.opacity(0.35), radius: 20, y: 6)
+        .accessibilityElement(children: .contain)
+        // the page stays live under it, so VoiceOver is told rather than moved
+        .onAppear { AccessibilityNotification.Announcement("\(host) wants to \(request.summary).").post() }
         // a fresh question never inherits the last one's checkbox
         .id(request.id)
     }

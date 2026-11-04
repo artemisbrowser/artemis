@@ -58,7 +58,7 @@ struct PrivacySettings: View {
                 Toggle(
                     isOn: Binding(
                         get: { incognitoRequiresUnlock },
-                        set: { SpaceLock.shared.setIncognitoRequiresUnlock($0) })
+                        set: { on in Task { await SpaceLock.shared.setIncognitoRequiresUnlock(on) } })
                 ) {
                     InfoLabel(
                         "Always require Touch ID for incognito windows",
@@ -138,16 +138,14 @@ struct PrivacySettings: View {
                 Toggle(isOn: $showsInSpotlight) {
                     InfoLabel(
                         "Show spaces and tabs in Spotlight",
-                        info: "Spotlight can find your spaces and open tabs. Incognito and locked spaces never appear.")
+                        info: "Spotlight can find your spaces and open tabs, and Siri can go to a space by name. Incognito and locked spaces never appear.")
                 }
                 .onChange(of: showsInSpotlight) { SpotlightIndex.enabledDidChange() }
             }
 
             Section("Reports") {
                 Toggle(isOn: $sendsErrorReports) {
-                    InfoLabel(
-                        "Send error reports",
-                        info: "Sends errors and crash reports with your Artemis and macOS versions. Never your pages or browsing.")
+                    InfoLabel("Send error reports", info: Reports.disclosure)
                 }
                 Button("Send Feedback…") { FeedbackDraft.open(in: tabManager) }
             }

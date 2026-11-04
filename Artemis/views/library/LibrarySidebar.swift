@@ -79,36 +79,40 @@ private enum DownloadFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// the Library's lists; a raw value is both the rail's label and what `storageKey` holds
+enum LibraryMode: String, CaseIterable {
+    case downloads = "Downloads", archive = "Archive"
+    case history = "History"
+
+    /// the list the Library opens on
+    static let storageKey = "libraryLastMode"
+
+    var icon: String {
+        switch self {
+        case .archive: "archivebox"
+        case .downloads: "arrow.down.circle"
+        case .history: "clock.arrow.circlepath"
+        }
+    }
+}
+
 /// the library: search, filter, and the contents of ~/Downloads
 /// grouped by how long ago files arrived
 struct LibrarySidebar: View {
     /// added on top of the sidebar width, so the lists keep the full sidebar width
     static let railWidth: CGFloat = 56
 
-    private enum Mode: String, CaseIterable {
-        case downloads = "Downloads", archive = "Archive"
-        case history = "History"
-
-        var icon: String {
-            switch self {
-            case .archive: "archivebox"
-            case .downloads: "arrow.down.circle"
-            case .history: "clock.arrow.circlepath"
-            }
-        }
-    }
-
     /// current sidebar width — drives the filter's icon-only collapse
     var width: Double = 250
 
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
-    @Environment(\.sidebarMetrics) private var metrics
-    @AppStorage("libraryLastMode") private var mode: Mode = .archive
+    private let metrics = SidebarMetrics.standard
+    @AppStorage(LibraryMode.storageKey) private var mode: LibraryMode = .archive
     @State private var query = ""
     @State private var filter: DownloadFilter = .all
-    @State private var files: [DownloadFile] = []
-    @FocusState private var isSearchFocused: Bool
+    /// nil until ~/Downloads has been read
+    @State private var files: [DownloadFile]?
 
     /// below this the search box would start clipping its placeholder,
     /// so the filter drops its label and becomes a square icon button
@@ -133,11 +137,7 @@ struct LibrarySidebar: View {
                 }
             }
         }
-        // the panel stays mounted all session, so ~/Downloads is scanned when the
-        // Library opens or a download lands while it's open, never on appear alone
-        .task(id: tabManager.isLibraryOpen ? finishedDownloads : nil) {
-            if tabManager.isLibraryOpen { files = await DownloadFile.loadAllOffMain() }
-        }
+        .task(id: finishedDownloads) { files = await DownloadFile.loadAllOffMain() }
     }
 
     // MARK: - Rail (arc-style left icon column)
@@ -145,7 +145,7 @@ struct LibrarySidebar: View {
     private var rail: some View {
         VStack(spacing: 14) {
             Spacer(minLength: 0)
-            ForEach(Mode.allCases, id: \.self) { item in
+            ForEach(LibraryMode.allCases, id: \.self) { item in
                 RailButton(icon: item.icon, label: item.rawValue, isActive: mode == item) {
                     if mode != item { query = "" }
                     mode = item
@@ -173,7 +173,6 @@ struct LibrarySidebar: View {
             .textFieldStyle(.plain)
             .font(.system(size: 13))
             .foregroundStyle(ink)
-            .focused($isSearchFocused)
         }
         .padding(.horizontal, 14)
         .frame(height: metrics.rowHeight)
@@ -220,7 +219,7 @@ struct LibrarySidebar: View {
     }
 
     private var visibleFiles: [DownloadFile] {
-        files.filter { file in
+        (files ?? []).filter { file in
             filter.matches(file)
                 && (query.isEmpty || file.name.localizedCaseInsensitiveContains(query))
         }
@@ -228,42 +227,46 @@ struct LibrarySidebar: View {
 
     @ViewBuilder
     private var downloadsList: some View {
-        if files.isEmpty {
+        let visible = visibleFiles
+        if files?.isEmpty == true {
             emptyState(
                 "You haven't downloaded anything with Artemis yet!",
                 detail: "As soon as you do, it'll be right here.")
-        } else if visibleFiles.isEmpty {
+        } else if files != nil, visible.isEmpty {
             emptyState(
                 "No downloads match",
                 detail: "Try a different search or filter.")
         } else {
-            filledList
+            filledList(visible)
         }
     }
 
     // MARK: - History
 
+    /// newest first, matched the way the command bar matches history
     private var visibleHistory: [HistoryEntry] {
-        let q = query.trimmingCharacters(in: .whitespaces)
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return tabManager.history.entries }
+        let mask = CommandMatcher.mask(q.utf8)
+        let needle = Array(q.utf8)
         return tabManager.history.entries.filter {
-            $0.title.localizedCaseInsensitiveContains(q)
-                || $0.url.absoluteString.localizedCaseInsensitiveContains(q)
+            (mask & ~$0.searchMask) == 0 && CommandMatcher.contains(needle, $0.searchKey)
         }
     }
 
     @ViewBuilder
     private var historyList: some View {
+        let visible = visibleHistory
         if tabManager.history.entries.isEmpty {
             emptyState(
                 "No history yet",
                 detail: "Pages you visit will show up here.")
-        } else if visibleHistory.isEmpty {
+        } else if visible.isEmpty {
             emptyState("No history matches", detail: "Try a different search.")
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Self.grouped(visibleHistory, by: \.lastVisited), id: \.0) { label, entries in
+                    ForEach(Self.grouped(visible, by: \.lastVisited), id: \.0) { label, entries in
                         Text(label)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(ink.opacity(0.55))
@@ -285,22 +288,19 @@ struct LibrarySidebar: View {
 
     // MARK: - Archive
 
-    private var visibleArchive: [ArchiveEntry] {
-        tabManager.archive.search(query)
-    }
-
     @ViewBuilder
     private var archiveList: some View {
+        let visible = tabManager.archive.search(query)
         if tabManager.archive.entries.isEmpty {
             emptyState(
                 "Nothing archived yet",
                 detail: "Tabs you leave open are tidied away here after a while — pin the ones you want to keep.")
-        } else if visibleArchive.isEmpty {
+        } else if visible.isEmpty {
             emptyState("No archived tabs match", detail: "Try a different search.")
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Self.grouped(visibleArchive, by: \.archivedAt), id: \.0) { label, entries in
+                    ForEach(Self.grouped(visible, by: \.archivedAt), id: \.0) { label, entries in
                         Text(label)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(ink.opacity(0.55))
@@ -339,10 +339,10 @@ struct LibrarySidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var filledList: some View {
+    private func filledList(_ visible: [DownloadFile]) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(Self.grouped(visibleFiles, by: \.date), id: \.0) { label, sectionFiles in
+                ForEach(Self.grouped(visible, by: \.date), id: \.0) { label, sectionFiles in
                     Text(label)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(ink.opacity(0.55))
@@ -384,9 +384,9 @@ struct LibrarySidebar: View {
         guard let type else { return "Download" }
         if type.conforms(to: .image) { return "Image" }
         if type.conforms(to: .audiovisualContent) { return "Movie" }
-        if type.conforms(to: .archive) { return "Zip Archive" }
         if type.conforms(to: .pdf) { return "PDF Document" }
-        return type.localizedDescription?.capitalized ?? "Download"
+        guard let name = type.localizedDescription else { return "Download" }
+        return name.prefix(1).uppercased() + name.dropFirst()
     }
 
     private static func ageLabel(for date: Date) -> String {

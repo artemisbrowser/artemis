@@ -128,6 +128,8 @@ nonisolated enum AdblockConverter {
             ruleCount: blocks.count + generic.count + specific.count + tail.count,
             droppedCount: dropped)
         let encoder = JSONEncoder()
+        // a chunk's identifier hashes this JSON, and unsorted key order varies between calls
+        encoder.outputFormatting = .sortedKeys
         for (rules, groupTail) in groups {
             for start in stride(from: 0, to: rules.count, by: rulesPerChunk) {
                 let slice = rules[start..<min(start + rulesPerChunk, rules.count)]

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
-import Foundation
+import WebKit
 
 /// the native-messaging endpoint a WebKit user agent sends Bitwarden's clipboard, export and popup
 /// calls to, answered in the shapes of its `SafariWebExtensionHandler`. biometric unlock needs a key
@@ -15,7 +15,10 @@ enum PasswordManagerBridge {
     /// `BiometricsStatus.PlatformUnsupported` in bitwarden/clients, which hides the biometrics option
     private static let biometricsPlatformUnsupported = 5
 
-    static func handle(_ message: [String: Any]) -> Any? {
+    /// nil, the host missing, for a sender without both clipboard permissions, which Bitwarden declares
+    static func handle(_ message: [String: Any], from context: WKWebExtensionContext) -> Any? {
+        guard ExtensionData.declares("clipboardRead", context), context.hasPermission(.clipboardWrite)
+        else { return nil }
         guard let command = message["command"] as? String else { return [:] }
         switch command {
         case "readFromClipboard":
@@ -30,11 +33,7 @@ enum PasswordManagerBridge {
 
         case "showPopover":
             // the same signal `action.openPopup` raises: the url bar presents the pending id
-            if let ext = ExtensionManager.shared.installed.first(where: {
-                $0.name.localizedCaseInsensitiveContains("bitwarden")
-            }) {
-                ExtensionManager.shared.pendingPopupExtensionID = ext.id
-            }
+            ExtensionManager.shared.pendingPopup = .init(extensionID: context.uniqueIdentifier)
             return [:]
 
         case "downloadFile":
@@ -52,8 +51,12 @@ enum PasswordManagerBridge {
             let panel = NSSavePanel()
             panel.canCreateDirectories = true
             panel.nameFieldStringValue = fileName
-            if panel.runModal() == .OK, let url = panel.url {
-                try? data.write(to: url)
+            guard panel.runModal() == .OK, let url = panel.url else { return [:] }
+            do {
+                try data.write(to: url)
+            } catch {
+                debugLog("bitwarden bridge: vault export not saved — \(error.localizedDescription)")
+                NSAlert(error: error).runModal()
             }
             return [:]
 

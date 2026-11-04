@@ -9,7 +9,7 @@ struct AgentSettings: View {
     private var bridge = AgentBridge.shared
     @State private var copied: String?
 
-    private static let executable = Bundle.main.bundlePath + "/Contents/MacOS/Artemis"
+    private static let executable = Bundle.main.executablePath!
 
     private static let setups: [(name: String, command: String)] = [
         ("Claude Code", "claude mcp add --transport stdio artemis -- \"\(executable)\" mcp"),

@@ -18,8 +18,8 @@ struct ClosedTab: Identifiable {
     /// its slot among that container's own children
     let index: Int
     let isPinned: Bool
-    /// `WKWebView.interactionState`, or nil for a tab that was asleep when it
-    /// was closed (a hibernated tab has no live session to capture)
+    let pinnedURL: URL?
+    /// the tab's session blob: its live page's, or the one held while asleep or unrestored
     let interactionState: Any?
     let closedAt: Date
     /// shared by every tab closed in the same act, so one ⇧⌘T brings a bulk

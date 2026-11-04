@@ -206,7 +206,7 @@ struct LinksSettings: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
                 .onSubmit(commit)
-            Picker("", selection: $draftSpaceID) {
+            Picker("Space", selection: $draftSpaceID) {
                 Text("Choose a space").tag(UUID?.none)
                 ForEach(tabManager.spaces) { space in
                     Text(space.name).tag(UUID?.some(space.id))

@@ -18,9 +18,9 @@ final class OffscreenDocument: NSObject, WKNavigationDelegate {
         super.init()
         webView.navigationDelegate = self
         webView.load(URLRequest(url: url))
-        Task {
+        Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
-            self.finish(false)
+            self?.finish(false)
         }
     }
 

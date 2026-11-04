@@ -135,11 +135,11 @@ private struct QuickLaunchView: View {
         )
         .frame(maxHeight: .infinity, alignment: .top)
         .onAppear { isFocused = true }
-        .onChange(of: input) { _, text in
+        .onChange(of: input, initial: true) { _, text in
             selection = 0
             matches = text.isEmpty
                 ? Array(history.entries.prefix(Self.limit))
-                : history.search(text, limit: Self.limit)
+                : HistoryStore.search(text, in: [history], limit: Self.limit)
         }
         .onExitCommand(perform: onClose)
     }
@@ -175,6 +175,7 @@ private struct QuickLaunchView: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 QuickLaunchRow(row: row, isSelected: index == selection)
                     .onTapGesture { open(row) }
+                    .accessibilityAction { open(row) }
             }
         }
         .padding(8)
@@ -230,6 +231,10 @@ private struct QuickLaunchRow: View {
         )
         .foregroundStyle(isSelected ? Color.white : Color.primary)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(row.title)
+        .accessibilityValue(row.host ?? "")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
     @ViewBuilder

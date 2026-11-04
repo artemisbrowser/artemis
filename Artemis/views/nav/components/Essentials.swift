@@ -7,7 +7,7 @@ import SwiftUI
 /// favicon tiles in balanced rows (see `BalancedTileLayout`)
 struct EssentialsGrid: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(SidebarDragState.self) private var drag
     @State private var frames: [EssentialFrame] = []
 
@@ -20,8 +20,6 @@ struct EssentialsGrid: View {
     /// a drag is active even if not over the grid — lets an empty grid (no
     /// favourites yet) open a slot so the first favourite has somewhere to land
     var dragActive = false
-
-    private static let maxPerRow = 5
 
     /// the dragged favourite is left out
     private var items: [BrowserTab] {
@@ -50,8 +48,7 @@ struct EssentialsGrid: View {
         BalancedTileLayout(
             spacing: metrics.tabSpacing,
             tileHeight: metrics.essentialTileHeight,
-            minTileWidth: metrics.essentialTileMin,
-            maxPerRow: Self.maxPerRow
+            minTileWidth: metrics.essentialTileMin
         ) {
             ForEach(slots) { slot in
                 switch slot {
@@ -87,9 +84,7 @@ struct EssentialsGrid: View {
                     let grab = CGSize(
                         width: value.startLocation.x - hit.rect.minX,
                         height: value.startLocation.y - hit.rect.minY)
-                    drag.begin(
-                        tab, fromEssentials: true, sourceSize: hit.rect.size, at: value.location,
-                        grab: grab)
+                    drag.begin(tab, fromEssentials: true, at: value.location, grab: grab)
                 } else {
                     drag.location = value.location
                 }
@@ -116,18 +111,17 @@ private enum GridSlot: Identifiable {
 }
 
 /// balanced rows: the fewest rows that keep tiles at `minTileWidth` or wider and
-/// at most `maxPerRow` each, filled evenly (five that fit four a row go 3+2).
-/// one container for every tile, so a reorder glides tiles across rows
+/// within `EssentialsGridMath`'s row limit, filled evenly (five that fit four a
+/// row go 3+2). one container for every tile, so a reorder glides tiles across rows
 private struct BalancedTileLayout: Layout {
     var spacing: CGFloat
     var tileHeight: CGFloat
     var minTileWidth: CGFloat
-    var maxPerRow: Int
 
     private func math(width: CGFloat, origin: CGPoint = .zero) -> EssentialsGridMath {
         EssentialsGridMath(
             width: width, origin: origin, spacing: spacing,
-            tileHeight: tileHeight, minTileWidth: minTileWidth, maxPerRow: maxPerRow)
+            tileHeight: tileHeight, minTileWidth: minTileWidth)
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -164,7 +158,7 @@ private struct BalancedTileLayout: Layout {
 /// active tab, drag to reorder / out to the tabs, right-click to remove
 private struct EssentialTile: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     @Environment(SidebarDragState.self) private var drag
     let tab: BrowserTab

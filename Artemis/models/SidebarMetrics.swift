@@ -3,36 +3,36 @@
 
 import SwiftUI
 
-/// every spacing dimension in the sidebar, in points, read through the
-/// environment so the row/header/url views share one source of truth
-struct SidebarMetrics: Equatable {
+/// every spacing dimension in the sidebar, in points: one source of truth for
+/// the row, header and url views
+struct SidebarMetrics {
     /// height of a tab/url/header highlight
-    var rowHeight: CGFloat
+    let rowHeight: CGFloat
     /// gap between adjacent tab rows
-    var tabSpacing: CGFloat
+    let tabSpacing: CGFloat
     /// gap from the url pill down to the space highlight
-    var urlToTabsGap: CGFloat
+    let urlToTabsGap: CGFloat
     /// gap from the space header highlight down to the first tab
-    var headerToTabsGap: CGFloat
+    let headerToTabsGap: CGFloat
     /// gap on each side of the pinned/unpinned divider line (last pinned tab
     /// above, New Tab row below), measured between highlight edges
-    var pinnedDividerGap: CGFloat
+    let pinnedDividerGap: CGFloat
     /// side of the per-tab ✕ close button's hit box
-    var closeBoxSize: CGFloat
+    let closeBoxSize: CGFloat
     /// point size of tab titles, space names and the New Tab label (not the url)
-    var fontSize: CGFloat
+    let fontSize: CGFloat
     /// leading inset of a row's content (favicon / icon)
-    var rowLeadingPadding: CGFloat
+    let rowLeadingPadding: CGFloat
     /// trailing inset of a row, sized to frame the ✕ box symmetrically
-    var rowTrailingPadding: CGFloat
+    let rowTrailingPadding: CGFloat
     /// minimum width of a favourite tile, sized so exactly two tiles fit inline
     /// at the narrowest sidebar (160pt − 14 inset = 146 inner; padded half).
     /// rows grow tiles past this to fill the width
-    var essentialTileMin: CGFloat
+    let essentialTileMin: CGFloat
     /// height of a favourite tile in the essentials grid
-    var essentialTileHeight: CGFloat
+    let essentialTileHeight: CGFloat
     /// favicon size inside a favourite tile
-    var essentialFaviconSize: CGFloat
+    let essentialFaviconSize: CGFloat
 
     /// vertical padding that grows a 16pt icon/text row to `rowHeight`
     var rowVPadding: CGFloat { (rowHeight - 16) / 2 }
@@ -46,8 +46,4 @@ struct SidebarMetrics: Equatable {
         essentialTileMin: 70, essentialTileHeight: 48, essentialFaviconSize: 20)
     /// diameter of a standalone glass button: as tall as the url bar
     static let glassSide = standard.rowHeight
-}
-
-extension EnvironmentValues {
-    @Entry var sidebarMetrics = SidebarMetrics.standard
 }

@@ -32,13 +32,8 @@ final class ArcImportModel {
     var selection: Selection
     var phase: Phase = .choosing
 
-    /// held only while the import runs — the folder grant from an open panel
-    private let scoped: URL?
-    private var released = false
-
-    init(survey: ArcImport.Survey, scoped: URL? = nil) {
+    init(survey: ArcImport.Survey) {
         self.survey = survey
-        self.scoped = scoped
         // a category with nothing in it is hidden from the sheet, so it must not
         // stay selected underneath — an invisible tick would ask for the
         // keychain to import no cookies
@@ -60,14 +55,7 @@ final class ArcImportModel {
     var needsKey: Bool { selection.cookies || selection.logins }
 
     func cancel(in manager: TabManager) {
-        release()
         manager.arcImport = nil
-    }
-
-    private func release() {
-        guard !released else { return }
-        released = true
-        scoped?.stopAccessingSecurityScopedResource()
     }
 
     func run(into manager: TabManager) {
@@ -80,57 +68,53 @@ final class ArcImportModel {
         var landed: [String] = []
         var key: Data?
 
-        // Arc's profiles exist here before anything lands in them
-        if let sidebar = survey.sidebar,
-            selection.spaces || selection.cookies || selection.history || selection.logins
-        {
-            manager.adoptProfiles(sidebar.profiles)
-        }
-
-        // cookies first: the space this lands you in loads its page the moment
-        // it arrives, and a page loaded before its cookies is a signed-out one
         if needsKey {
             phase = .working("Waiting for the keychain…")
             // the consent prompt blocks whichever thread asks, and that must not
             // be the one drawing this sheet
             key = await Task.detached(priority: .userInitiated) { try? ArcSecrets.key() }.value
-            guard let key else {
+            guard key != nil else {
                 phase = .failed(
                     "macOS didn't hand over Arc's key, so cookies and passwords stayed behind. "
                         + "Nothing else was touched — run the import again to take the rest.")
-                release()
                 return
             }
-            if selection.cookies {
-                switch await importCookies(key: key, into: manager) {
-                case .landed(let line): landed.append(line)
-                case .wrongKey(let reason):
-                    phase = .failed(reason)
-                    release()
-                    return
-                }
+        }
+
+        // after the key, so a refusal leaves nothing behind; before the cookies, which need their jars
+        if let sidebar = survey.sidebar, selection.cookies || selection.history || selection.logins {
+            manager.adoptProfiles(sidebar.profiles)
+        }
+
+        // cookies first: the space this lands you in loads its page the moment
+        // it arrives, and a page loaded before its cookies is a signed-out one
+        if selection.cookies, let key {
+            switch await importCookies(key: key, into: manager) {
+            case .landed(let line): landed.append(line)
+            case .wrongKey(let reason):
+                phase = .failed(reason)
+                return
             }
         }
 
         if var result = survey.sidebar, selection.spaces || selection.favourites || selection.archive
         {
             phase = .working("Spaces and tabs…")
-            if !selection.spaces {
-                result.spaces = []
-                // the names belong to the tabs that aren't coming
-                result.renames = [:]
-            }
-            if !selection.favourites { result.favouriteURLs = [] }
+            if !selection.spaces { result.spaces = [] }
+            if !selection.favourites { result.favourites = [] }
             if !selection.archive { result.archived = [] }
-            manager.importArc(result)
-            if selection.spaces {
-                landed.append("\(survey.spaces) spaces, \(survey.tabs) tabs")
+            // Arc's names only for the tabs that are coming
+            let coming = Set(result.favourites.map(\.url) + result.spaces.flatMap { $0.tabs.map(\.url) })
+            result.renames = result.renames.filter { coming.contains($0.key) }
+            let (made, archived) = manager.importArc(result)
+            if !made.isEmpty {
+                landed.append("\(made.count) spaces, \(made.reduce(0) { $0 + $1.tabs.count }) tabs")
             }
             if selection.favourites, survey.favourites > 0 {
                 landed.append("\(survey.favourites) favourites")
             }
-            if selection.archive, survey.archived > 0 {
-                landed.append("\(survey.archived) archived tabs")
+            if archived > 0 {
+                landed.append("\(archived) archived tabs")
             }
         }
 
@@ -150,13 +134,12 @@ final class ArcImportModel {
             landed.append(await importLogins(key: key, into: manager))
         }
 
-        release()
         phase = .done(landed)
     }
 
-    /// Cookies go to the profile their Arc profile became. One with no spaces in
-    /// Arc's sidebar has no profile here, and its cookies are left behind rather
-    /// than poured into someone else's jar.
+    /// Cookies go to the profile their Arc profile became. One with neither
+    /// spaces nor favourites in Arc's sidebar has no profile here, and its cookies
+    /// are left behind rather than poured into someone else's jar.
     private func importCookies(key: Data, into manager: TabManager) async -> CookieOutcome {
         var written = 0
         var rows = 0
@@ -259,7 +242,7 @@ enum ArcMigration {
     /// File ▸ Import from Arc…
     static func run(into manager: TabManager) {
         guard manager.arcImport == nil, let source = locate() else { return }
-        present(source.folder, into: manager, scoped: source.scoped)
+        present(source, into: manager)
     }
 
     /// A fresh install that finds Arc offers the move on first launch.
@@ -268,48 +251,36 @@ enum ArcMigration {
         guard !defaults.bool(forKey: offeredKey), ArcImport.isInstalled, ArcImport.isReadable(),
             manager.spaces.count == 1, manager.spaces[0].tabs.count <= 1
         else { return }
-        present(ArcImport.dataDirectory, into: manager) { defaults.set(true, forKey: offeredKey) }
+        defaults.set(true, forKey: offeredKey)
+        present(ArcImport.dataDirectory, into: manager, asked: false)
     }
 
-    /// counting means copying Arc's databases, which is disk work — off the
-    /// main thread, so the window doesn't hang while it happens
+    /// `asked` is false for the first-launch offer, which stays quiet when
+    /// there turns out to be nothing to move
     private static func present(
-        _ source: URL, into manager: TabManager, scoped: URL? = nil,
-        offered: (() -> Void)? = nil
+        _ source: URL, into manager: TabManager, asked: Bool = true
     ) {
         Task {
             let survey = await Task.detached { ArcImport.survey(source) }.value
-            if landed(survey, into: manager, scoped: scoped) { offered?() }
+            // a picker opened while one is already up would strand the first
+            guard manager.arcImport == nil else { return }
+            guard !survey.isEmpty else {
+                guard asked else { return }
+                let alert = NSAlert()
+                alert.messageText = "Artemis couldn't read Arc's data."
+                alert.informativeText =
+                    "It looks for “StorableSidebar.json” in Arc's folder — "
+                    + "~/Library/Application Support/Arc."
+                alert.runModal()
+                return
+            }
+            manager.arcImport = ArcImportModel(survey: survey)
         }
     }
 
-    @discardableResult
-    private static func landed(
-        _ survey: ArcImport.Survey, into manager: TabManager, scoped: URL?
-    ) -> Bool {
-        // a picker opened while one is already up would strand the first
-        guard manager.arcImport == nil else {
-            scoped?.stopAccessingSecurityScopedResource()
-            return false
-        }
-        guard !survey.isEmpty else {
-            scoped?.stopAccessingSecurityScopedResource()
-            let alert = NSAlert()
-            alert.messageText = "Artemis couldn't read Arc's data."
-            alert.informativeText =
-                "It looks for “StorableSidebar.json” in Arc's folder — "
-                + "~/Library/Application Support/Arc."
-            alert.runModal()
-            return false
-        }
-        manager.arcImport = ArcImportModel(survey: survey, scoped: scoped)
-        return true
-    }
-
-    /// the folder to read: Arc's own if the sandbox lets us at it, else whatever
-    /// the person points at — the panel is the grant
-    private static func locate() -> (folder: URL, scoped: URL?)? {
-        if ArcImport.isReadable() { return (ArcImport.dataDirectory, nil) }
+    /// Arc's own folder, else the one the person picks
+    private static func locate() -> URL? {
+        if ArcImport.isReadable() { return ArcImport.dataDirectory }
         let panel = NSOpenPanel()
         panel.message = "Choose Arc's data folder (Application Support ▸ Arc)."
         panel.directoryURL = ArcImport.dataDirectory
@@ -318,7 +289,6 @@ enum ArcMigration {
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
         guard panel.runModal() == .OK, let picked = panel.urls.first else { return nil }
-        let folder = picked.hasDirectoryPath ? picked : picked.deletingLastPathComponent()
-        return (folder, folder.startAccessingSecurityScopedResource() ? folder : nil)
+        return picked.hasDirectoryPath ? picked : picked.deletingLastPathComponent()
     }
 }

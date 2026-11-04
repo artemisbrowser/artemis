@@ -82,7 +82,9 @@ struct ProfilesSettings: View {
                         .frame(width: 220)
                         .frame(maxHeight: .infinity)
                         .padding([.leading, .vertical], 20)
+                    // one view per profile, so a pending rename commits to the profile it began on
                     ProfileDetail(profile: profile)
+                        .id(profile.id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -239,6 +241,7 @@ private struct ProfileDetail: View {
                     }
                     .buttonStyle(.plain)
                     .help("Change Icon")
+                    .accessibilityLabel("Change Icon")
                     .popover(isPresented: $showingIconPicker, arrowEdge: .bottom) {
                         IconPicker(
                             icon: Binding(
@@ -346,13 +349,8 @@ private struct ProfileDetail: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: takeNaming)
-        .onChange(of: profile.id) {
-            if isRenaming { commitName() }
-            siteCount = nil
-            takeNaming()
-        }
         .onDisappear { if isRenaming { commitName() } }
-        .task(id: profile.id) { siteCount = await PrivacyCleaner.siteRecordCount(in: profile) }
+        .task { siteCount = await PrivacyCleaner.siteRecordCount(in: profile) }
     }
 
     /// a profile setting that saves with the session when it changes
@@ -625,7 +623,9 @@ struct ClearBrowsingDataSettings: View {
                 toggle("Per-site zoom levels", .zoom)
                 toggle("Site permissions", .permissions)
             } header: {
-                InfoLabel("Every Profile", info: "These aren't kept per profile, so clearing them clears them everywhere.")
+                InfoLabel(
+                    "Every Profile",
+                    info: "These aren't kept per profile, so clearing them clears them everywhere. The time range doesn't apply to them.")
             }
 
             Section {
@@ -650,7 +650,7 @@ struct ClearBrowsingDataSettings: View {
             Button("Clear", role: .destructive) { performClear() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This can't be undone.")
+            Text((untimed.map { "The time range doesn't apply to \($0). " } ?? "") + "This can't be undone.")
         }
     }
 
@@ -662,6 +662,17 @@ struct ClearBrowsingDataSettings: View {
                 set: { on in
                     if on { targets.insert(target) } else { targets.remove(target) }
                 }))
+    }
+
+    /// the picked items with no timestamps, which a shorter range still clears in full
+    private var untimed: String? {
+        guard range != .all else { return nil }
+        let names: [(ClearTargets, String)] = [
+            (.downloads, "the downloads list"), (.zoom, "zoom levels"), (.permissions, "site permissions"),
+        ]
+        let picked = names.filter { targets.contains($0.0) }.map(\.1)
+        guard let last = picked.last else { return nil }
+        return picked.count == 1 ? last : picked.dropLast().joined(separator: ", ") + " or " + last
     }
 
     /// plain-language list of what's about to go, for the confirmation title

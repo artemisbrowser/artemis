@@ -61,8 +61,9 @@ final class InputHistory {
     }
 
     func clear() {
+        AppStorageLocation.discardUnreadable(of: fileURL)
         counts = [:]
-        scheduleSave()
+        saveNow(keepsBackup: false)
     }
 
     private static func normalize(_ input: String) -> String {
@@ -113,10 +114,10 @@ final class InputHistory {
         }
     }
 
-    func saveNow() {
+    func saveNow(keepsBackup: Bool = true) {
         saveTask?.cancel()
         let snapshot = Snapshot(counts: counts, lastDecay: lastDecay)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        AppStorageLocation.writeDurableNow(data, to: fileURL)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 }

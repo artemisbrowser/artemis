@@ -12,13 +12,14 @@ extension BackupArchive {
         TabManager.autoPictureInPictureKey,
         TabManager.hibernateAfterMinutesKey,
         SearchEngine.storageKey,
+        SearchSuggest.enabledKey,
         SplitOrientation.defaultKey,
         PinnedSeparationKeep.storageKey,
         PinnedSeparationDestination.storageKey,
         PeekControlsCorner.storageKey,
         MiniPlayer.cornerRadiusKey,
         MiniPlayer.skipSecondsKey,
-        "contentBlockingEnabledV1",
+        ContentBlocker.enabledKey,
         "sidebarWidth",
         "sidebarRevealDelay",
         "sidebarHoverAreaWidth",
@@ -108,7 +109,7 @@ enum BackupIO {
         alert.runModal()
     }
 
-    /// apply a backup: spaces are replaced, Boosts merged
+    /// apply a backup: spaces are replaced, profiles and Boosts merged
     static func restore(
         _ archive: BackupArchive, options: RestoreOptions, into manager: TabManager
     ) {
@@ -116,6 +117,10 @@ enum BackupIO {
             for (key, value) in archive.preferences where BackupArchive.preferenceKeys.contains(key) {
                 UserDefaults.standard.set(value.raw, forKey: key)
             }
+            // the blocker reads its default only at launch; setting it applies the rules now
+            ContentBlocker.shared.isEnabled =
+                UserDefaults.standard.object(forKey: ContentBlocker.enabledKey) as? Bool
+                ?? ContentBlocker.shared.isEnabled
             for (host, zoom) in archive.zoomLevels {
                 ZoomStore.shared.setZoom(zoom, for: URL(string: "https://\(host)/"))
             }
@@ -124,8 +129,12 @@ enum BackupIO {
             BoostStore.shared.merge(archive.boosts)
         }
         if options.spaces {
-            // restored through the session file, the same path as a launch
-            SessionStore.save(archive.session)
+            // restored through the session file, the same path as a launch; a profile
+            // the backup doesn't name stays, or the reload would sweep its jar
+            var session = archive.session
+            let named = Set(session.profiles.map(\.id))
+            session.profiles += manager.sessionSnapshot().profiles.filter { !named.contains($0.id) }
+            SessionStore.save(session)
             manager.reloadFromDisk()
         }
         debugLog("backup: restored \(archive.session.spaces.count) spaces")

@@ -471,13 +471,19 @@
     }
   } catch (e) {}
 
+  const manifest = (() => {
+    try { return api.runtime.getManifest() || {}; } catch (e) { return {}; }
+  })();
+  // required only: nothing grants an optional permission WebKit doesn't know
+  const declared = manifest.permissions || [];
+
   // === 6. chrome.idle — bridged to real system idle =====================
   // WebKit leaves chrome.idle undefined. Password managers use it for the
   // "lock the vault when the machine goes idle / locks" timeout — a real
   // security feature, not cosmetics — so the fill is backed by the actual
   // system idle clock (CGEventSource) and the real screen-lock state,
   // polled through the native bridge only while someone is listening.
-  if (!api.idle || typeof api.idle.queryState !== "function") {
+  if (declared.includes("idle") && (!api.idle || typeof api.idle.queryState !== "function")) {
     const onStateChanged = makeEvent();
     let detectionInterval = 60;  // Chrome's default and minimum, seconds
     let lastState = "active";
@@ -519,10 +525,6 @@
     };
   }
 
-  const manifest = (() => {
-    try { return api.runtime.getManifest() || {}; } catch (e) { return {}; }
-  })();
-  const declared = (manifest.permissions || []).concat(manifest.optional_permissions || []);
 
   // WebKit's importScripts drains microtasks even for an empty or missing file
   // (Chrome's doesn't), closing a worker's startup window; those never reach it
@@ -539,6 +541,14 @@
       if (live.length || !urls.length) return nativeImport.apply(this, live);
     };
   }
+  const base64 = (buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  };
   const expect = (reply, failure) => {
     if (!(reply && reply.ok)) throw new Error((reply && reply.error) || failure);
   };
@@ -591,7 +601,8 @@
   // === 7. chrome.notifications — Notification Center ===================
   // create() hands its id to a callback synchronously: one that never fires
   // strands the caller's promise chain
-  if (!api.notifications || typeof api.notifications.create !== "function") {
+  if (declared.includes("notifications")
+    && (!api.notifications || typeof api.notifications.create !== "function")) {
     let counter = 0;
     const finishWith = (cb, value) => {
       if (typeof cb === "function") { try { cb(value); } catch (e) {} return; }
@@ -632,7 +643,7 @@
   // full API and runtime messaging with the background
   const extensionURL = (path) =>
     /^[a-z][a-z0-9+.-]*:/i.test(path) ? path : api.runtime.getURL(path);
-  if (!api.offscreen) {
+  if (!api.offscreen && declared.includes("offscreen")) {
     const reasons = ["TESTING", "AUDIO_PLAYBACK", "IFRAME_SCRIPTING", "DOM_SCRAPING",
       "BLOBS", "DOM_PARSER", "USER_MEDIA", "DISPLAY_MEDIA", "WEB_RTC", "CLIPBOARD",
       "LOCAL_STORAGE", "WORKERS", "BATTERY_STATUS", "MATCH_MEDIA", "GEOLOCATION"];
@@ -675,7 +686,7 @@
   // === 9. identity — OAuth through a sign-in window =====================
   // the redirect host is the one the store registered for this package;
   // native stops the flow at that host and hands back the URL
-  if (!api.identity) {
+  if (!api.identity && declared.includes("identity")) {
     const redirectHost = manifest.artemis_redirect_host;
     const notSignedIn = () => Promise.reject(new Error("The user is not signed in."));
     api.identity = {
@@ -702,7 +713,7 @@
   // === 10. sidePanel — a panel window on the browser's edge =============
   // per-tab options live in this page; the global ones and the action-click
   // behaviour live natively, where the action click is handled
-  if (!api.sidePanel) {
+  if (!api.sidePanel && declared.includes("sidePanel")) {
     const perTab = new Map();
     const tabOptions = (options) =>
       options && options.tabId !== undefined ? perTab.get(options.tabId) : undefined;
@@ -833,16 +844,8 @@
   // === 13. downloads — into ~/Downloads ==================================
   // web URLs download through the current tab's session; blob: and data:
   // URLs resolve only in this page, so their bytes travel to native
-  if (!api.downloads) {
+  if (!api.downloads && declared.includes("downloads")) {
     let nextID = 1;
-    const base64 = async (blob) => {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-      }
-      return btoa(binary);
-    };
     const done = (cb, value) => settle(cb, Promise.resolve(value));
     api.downloads = {
       download: (options, cb) => settle(cb, (async () => {
@@ -850,7 +853,7 @@
         const url = String(o.url || "");
         const payload = { filename: String(o.filename || ""), saveAs: !!o.saveAs };
         if (/^(blob|data):/i.test(url)) {
-          payload.bytesBase64 = await base64(await (await fetch(url)).blob());
+          payload.bytesBase64 = base64(await (await fetch(url)).arrayBuffer());
         } else {
           payload.url = new URL(url, location && location.href).href;
         }
@@ -873,7 +876,7 @@
   }
 
   // === 14. search — the user's engine; Chrome's and Firefox's spellings ==
-  if (!api.search) {
+  if (!api.search && declared.includes("search")) {
     const query = (text, disposition, cb) => settle(cb, call("search.query", {
       text: String(text || ""), disposition: disposition || "CURRENT_TAB",
     }).then(() => {}));
@@ -937,12 +940,12 @@
             }
             if (cached.bridge) {
               const method = probe.method || "GET";
-              const body = method !== "GET" && method !== "HEAD"
-                ? await probe.clone().text() : null;
+              const bodyBase64 = method !== "GET" && method !== "HEAD"
+                ? base64(await probe.clone().arrayBuffer()) : null;
               const headers = {};
               probe.headers.forEach((value, key) => { headers[key] = value; });
               const reply = await call("fetch.perform",
-                { url: probe.url, method, headers, body });
+                { url: probe.url, method, headers, bodyBase64 });
               if (reply && typeof reply.status === "number") {
                 const bytes = reply.bodyBase64
                   ? Uint8Array.from(atob(reply.bodyBase64), (c) => c.charCodeAt(0))
@@ -970,7 +973,8 @@
   try {
     api.runtime.onMessage?.addListener((message) => {
       const relayed = message && message.__artemisCompatLog;
-      if (relayed) {
+      // a content world relays its console reports and nothing else
+      if (relayed && relayed.artemisCompat === "log") {
         try { api.runtime.sendNativeMessage(NATIVE_ID, relayed); } catch (e) {}
       }
     });
@@ -1432,8 +1436,8 @@
 
   // === userScripts — package files run through scripting ==================
   // each script's code is written into the package and registered as a content
-  // script. globs are checked in the file; the USER_SCRIPT world sees only
-  // Chrome's user-script runtime, and its messages reach onUserScriptMessage
+  // script, globs checked in the file. a USER_SCRIPT-world script shares the content
+  // world: its `chrome` is the user-script runtime, but `globalThis.chrome` is not
   if (!api.userScripts && declared.includes("userScripts") && api.scripting
     && typeof api.scripting.registerContentScripts === "function") {
     const PREFIX = "artemis-user:", TAG = "__artemisUserScript";
@@ -1498,6 +1502,11 @@
           known[script.id] = Object.assign({}, script, { files });
           entries.push(asContentScript(script, files));
         }
+        // WebKit may hold a registration this profile's registry lacks; registering over it throws
+        const ids = entries.map((entry) => entry.id);
+        const stale = (await api.scripting.getRegisteredContentScripts({ ids }))
+          .map((registered) => registered.id).filter((id) => ids.includes(id));
+        if (stale.length) await api.scripting.unregisterContentScripts({ ids: stale });
         await api.scripting.registerContentScripts(entries);
         await save();
       })()),
@@ -1592,13 +1601,16 @@
       });
     }
 
-    // a registration WebKit didn't keep across a relaunch is put back
+    // a registration WebKit didn't keep across a relaunch is put back, and one this profile's
+    // registry doesn't list is taken off
     load().then(async (state) => {
       const live = new Set((await api.scripting.getRegisteredContentScripts()).map((script) => script.id));
       const missing = Object.values(state.scripts).filter((script) => !live.has(PREFIX + script.id));
       if (missing.length) {
         await api.scripting.registerContentScripts(missing.map((script) => asContentScript(script, script.files)));
       }
+      const stray = [...live].filter((id) => id.startsWith(PREFIX) && !state.scripts[id.slice(PREFIX.length)]);
+      if (stray.length) await api.scripting.unregisterContentScripts({ ids: stray });
     }).catch(() => {});
   }
 
@@ -1818,12 +1830,13 @@
   };
 
   // --- chrome.proxy ----------------------------------------------------
-  const proxySettings = makeSetting("proxy", { mode: "system" });
-  api.proxy = {
-    settings: proxySettings,
-    onProxyError: makeEvent(),   // native has no push channel yet; inert
-    onError: makeEvent(),        // firefox alias some bundles fall back to
-  };
+  if (declared.includes("proxy")) {
+    api.proxy = {
+      settings: makeSetting("proxy", { mode: "system" }),
+      onProxyError: makeEvent(),   // native has no push channel yet; inert
+      onError: makeEvent(),        // firefox alias some bundles fall back to
+    };
+  }
 
   // --- Firefox proxy.onRequest -----------------------------------------
   // Firefox asks the extension per request; WebKit takes one proxy per data
@@ -1845,6 +1858,7 @@
       } catch (e) { return null; }
     };
     const resolve = async () => {
+      if (!handlers.length && !applied) return;
       let info = null;
       for (const handler of handlers.slice()) {
         try { info = await handler(sample()); } catch (e) {}
@@ -1882,21 +1896,22 @@
   }
 
   // --- chrome.privacy ---------------------------------------------------
-  api.privacy = api.privacy || {};
-  api.privacy.network = api.privacy.network || {};
-  api.privacy.network.webRTCIPHandlingPolicy = makeSetting("webRTCIPHandlingPolicy", "default");
-  api.privacy.network.peerConnectionEnabled = makeSetting("peerConnectionEnabled", true);
-  api.privacy.services = api.privacy.services || {};
-  // password managers flip these to disable a built-in password manager;
-  // Artemis doesn't have one, so an inert setting is the truthful answer
-  // (and an empty `services` object was a TypeError waiting to happen)
-  if (!api.privacy.services.passwordSavingEnabled) {
-    api.privacy.services.passwordSavingEnabled = makeSetting("passwordSavingEnabled", false);
+  if (declared.includes("privacy")) {
+    api.privacy = api.privacy || {};
+    api.privacy.network = api.privacy.network || {};
+    api.privacy.network.webRTCIPHandlingPolicy = makeSetting("webRTCIPHandlingPolicy", "default");
+    api.privacy.network.peerConnectionEnabled = makeSetting("peerConnectionEnabled", true);
+    api.privacy.services = api.privacy.services || {};
+    // password managers flip these to disable a built-in password manager;
+    // Artemis doesn't have one, so an inert setting is the truthful answer
+    if (!api.privacy.services.passwordSavingEnabled) {
+      api.privacy.services.passwordSavingEnabled = makeSetting("passwordSavingEnabled", false);
+    }
+    if (!api.privacy.services.autofillAddressEnabled) {
+      api.privacy.services.autofillAddressEnabled = makeSetting("autofillAddressEnabled", false);
+    }
+    api.privacy.websites = api.privacy.websites || {};
   }
-  if (!api.privacy.services.autofillAddressEnabled) {
-    api.privacy.services.autofillAddressEnabled = makeSetting("autofillAddressEnabled", false);
-  }
-  api.privacy.websites = api.privacy.websites || {};
 
   // --- proxy credentials (webRequest.onAuthRequired) ---------------------
   // WebKit fires onAuthRequired observationally and IGNORES listener return

@@ -43,7 +43,12 @@ indirect enum SplitNode: Identifiable {
         }
     }
 
-    func contains(_ tab: UUID) -> Bool { leafTabIDs.contains(tab) }
+    func contains(_ tab: UUID) -> Bool {
+        switch self {
+        case .leaf(_, let leafTab): leafTab == tab
+        case .split(_, _, let children): children.contains { $0.node.contains(tab) }
+        }
+    }
 
     // MARK: - Structural builders
 
@@ -294,8 +299,8 @@ final class SplitGroup: Identifiable {
     var lastFocusedID: UUID?
 
     /// the owning space dissolves a split that drops below this
-    static let minPanes = 2
-    static let maxPanes = 4
+    nonisolated static let minPanes = 2
+    nonisolated static let maxPanes = 4
     /// no pane may shrink below this fraction of its axis, so one can't vanish
     static let minRatio = 0.12
 
@@ -521,5 +526,13 @@ extension SplitGroupData {
         guard tabs.count >= SplitGroup.minPanes else { return nil }
         return SplitNode.linear(
             tabIDs: tabs, axis: orientation, ratios: ratios.isEmpty ? nil : ratios)
+    }
+}
+
+extension UserDefaults {
+    /// when on (the default), a drag-rearrange re-evens every split level so the
+    /// panes stay as balanced as possible; off preserves the existing ratios
+    var autoResizeSplitOnDrag: Bool {
+        object(forKey: "autoResizeSplitOnDrag") as? Bool ?? true
     }
 }

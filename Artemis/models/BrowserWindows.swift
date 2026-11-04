@@ -15,9 +15,6 @@ final class BrowserWindows {
     /// the manager of the window that last had focus — what ⌘R, ⌘F and the rest
     /// act on
     private(set) var current: TabManager?
-    /// the first window's manager: the one that owns app-wide work (session
-    /// restore, the extension runtime) and the fallback for menu commands
-    private(set) var primary: TabManager?
 
     private var registry: [ObjectIdentifier: (window: NSWindow, manager: TabManager)] = [:]
     @ObservationIgnored private var launchWorkClaimed = false
@@ -26,15 +23,18 @@ final class BrowserWindows {
     /// by the root view as it builds its manager
     @ObservationIgnored var pendingSpaceID: Space.ID?
 
-    /// the manager the app builds before any window exists — the menu bar needs
-    /// something to talk to at launch. The first window takes it rather than
-    /// making a second one
+    /// the manager the next browser window takes rather than making one: the
+    /// app's first, built before any window exists, or the last browser window's
+    /// once every one has closed, so what was done meanwhile shows up in it
     @ObservationIgnored var seed: TabManager?
 
+    /// posted with the window once its manager is registered, which can come after it turns key
+    static let didRegisterNotification = Notification.Name("dev.findles.Artemis.browserWindowDidRegister")
+
     private init() {
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { [weak self] note in
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) {
+            [weak self] note in
             MainActor.assumeIsolated {
                 guard let window = note.object as? NSWindow else { return }
                 if let manager = self?.registry[ObjectIdentifier(window)]?.manager {
@@ -43,24 +43,26 @@ final class BrowserWindows {
                 }
             }
         }
+        // app-wide, so the registry entry is a window's only strong reference here
+        center.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) {
+            [weak self] note in
+            MainActor.assumeIsolated {
+                if let window = note.object as? NSWindow { self?.unregister(window) }
+            }
+        }
     }
 
     func register(_ manager: TabManager, for window: NSWindow) {
         registry[ObjectIdentifier(window)] = (window, manager)
-        if primary == nil { primary = manager }
         if window.isKeyWindow || current == nil { current = manager }
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: window, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.unregister(window) }
-        }
+        NotificationCenter.default.post(name: Self.didRegisterNotification, object: window)
     }
 
     private func unregister(_ window: NSWindow) {
         guard let entry = registry.removeValue(forKey: ObjectIdentifier(window)) else { return }
         entry.manager.windowWillClose()
-        if current === entry.manager { current = registry.values.first?.manager ?? primary }
-        if primary === entry.manager { primary = registry.values.first?.manager }
+        if current === entry.manager { current = registry.values.first?.manager }
+        if entry.manager.kind == .main, mainManagers.isEmpty { seed = entry.manager }
     }
 
     /// true once per launch: the first window to ask runs the app-wide warm-ups
@@ -93,7 +95,7 @@ final class BrowserWindows {
     /// browser window
     var browserScope: TabManager? {
         if let current, current.kind == .main { return current }
-        return mainManagers.first ?? primary.flatMap { $0.kind == .main ? $0 : nil }
+        return mainManagers.first
     }
 }
 

@@ -58,6 +58,8 @@ nonisolated enum Keychain {
     static let passwords = "\(owner) Passwords"
     static let passkeys = "\(owner) Passkeys"
     static let index = "index"
+    /// the index's copy while `index` itself is deleted and added again
+    static let nextIndex = "index.next"
     /// a profile's suggested-password recipes, roots included, in the passwords service
     static func recipes(_ profile: UUID) -> String { "recipes." + profile.uuidString }
 
@@ -184,44 +186,77 @@ final class PasswordStore {
         (a.host, a.username) < (b.host, b.username)
     }
 
-    /// Only what the index lists is trusted; nil when it is there but unreadable. Without an
-    /// index, items still carrying `kSecAttrGeneric` metadata are migrated into one.
-    private nonisolated static func index<T: Codable>(_ service: String, _: T.Type) -> [T]? {
+    /// Only what the index lists is trusted; nil when it is there but unreadable. A missing index is
+    /// restored from `nextIndex`; with neither, items still carrying `kSecAttrGeneric` metadata are
+    /// migrated into one, and lose that metadata only once the index holds it.
+    nonisolated static func index<T: Codable>(_ service: String, _: T.Type) -> [T]? {
         let decoder = JSONDecoder()
-        let stored = Keychain.read(service, Keychain.index)
+        var stored = Keychain.read(service, Keychain.index)
+        if stored.status == errSecItemNotFound {
+            stored = Keychain.read(service, Keychain.nextIndex)
+            if let data = stored.data, Keychain.put(service, Keychain.index, data) == errSecSuccess {
+                Keychain.delete(service, Keychain.nextIndex)
+            }
+        }
         guard stored.status == errSecItemNotFound else {
             return stored.data.flatMap { try? decoder.decode([T].self, from: $0) }
         }
-        var migrated: [T] = []
-        for (account, meta) in Keychain.legacy(service) {
+        let legacy = Keychain.legacy(service).compactMap { account, meta -> (String, T, Data)? in
             guard let value = try? decoder.decode(T.self, from: meta), let data = Keychain.secret(service, account)
-            else { continue }
-            Keychain.put(service, account, data)
-            migrated.append(value)
+            else { return nil }
+            return (account, value, data)
         }
-        if !migrated.isEmpty, let data = try? JSONEncoder().encode(migrated) {
-            Keychain.put(service, Keychain.index, data)
-        }
+        let migrated = legacy.map(\.1)
+        guard !legacy.isEmpty, let data = try? JSONEncoder().encode(migrated),
+            Keychain.put(service, Keychain.index, data) == errSecSuccess
+        else { return migrated }
+        for (account, _, secret) in legacy { Keychain.put(service, account, secret) }
         return migrated
     }
 
-    /// the index goes after the items it names, so a crash leaves an orphan rather than a hole
+    /// The index goes after the items it names, so a crash leaves an orphan rather than a hole, and
+    /// through `nextIndex`, so a complete index exists at every moment. Nothing is deleted unless
+    /// the new index was kept.
     private func persist(_ service: String, writing items: [(String, Data)] = [], deleting gone: [String] = []) {
         guard !isUnreadable else { return }
         let index: Data? =
             service == Keychain.passwords ? try? JSONEncoder().encode(logins) : try? JSONEncoder().encode(passkeys)
         Self.queue.async {
             for (account, data) in items { Keychain.put(service, account, data) }
-            if let index { Keychain.put(service, Keychain.index, index) }
+            guard let index, Keychain.put(service, Keychain.nextIndex, index) == errSecSuccess,
+                Keychain.put(service, Keychain.index, index) == errSecSuccess
+            else { return }
+            Keychain.delete(service, Keychain.nextIndex)
             for account in gone { Keychain.delete(service, account) }
         }
     }
+
+    /// returns once every queued Keychain write has landed, for `applicationWillTerminate`
+    nonisolated static func saveNow() { queue.sync {} }
 
     // MARK: - Logins
 
     func password(for login: SavedLogin) -> String? {
         Self.queue.sync { Keychain.secret(Keychain.passwords, login.id.uuidString) }
             .flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    /// each login with its password and code setup, read in one job on `queue`; a login whose password
+    /// is gone is left out
+    func secrets(of logins: [SavedLogin]) async -> [(login: SavedLogin, password: String, code: String?)] {
+        await withCheckedContinuation { continuation in
+            Self.queue.async {
+                func text(_ account: String) -> String? {
+                    Keychain.secret(Keychain.passwords, account).flatMap { String(data: $0, encoding: .utf8) }
+                }
+                continuation.resume(
+                    returning: logins.compactMap { login in
+                        text(login.id.uuidString).map {
+                            (login, $0, login.hasOneTimeCode == true ? text(Keychain.code(login.id)) : nil)
+                        }
+                    })
+            }
+        }
     }
 
     func logins(in profile: UUID) -> [SavedLogin] { logins.filter { owner($0.profile) == profile } }
@@ -265,11 +300,12 @@ final class PasswordStore {
         return login
     }
 
+    /// `login` is found again by id, so a caller's older copy reverts nothing; a deleted one stays deleted
     func edit(
         _ login: SavedLogin, username: String, password: String?, notes: String? = nil,
         otherNames: [String]? = nil
     ) {
-        var changed = login
+        guard var changed = logins.first(where: { $0.id == login.id }) else { return }
         changed.username = username
         if let notes { changed.notes = notes.isEmpty ? nil : notes }
         if let otherNames { changed.otherNames = otherNames.isEmpty ? nil : otherNames }
@@ -278,15 +314,12 @@ final class PasswordStore {
     }
 
     func markUsed(_ login: SavedLogin) {
-        var used = login
+        guard var used = logins.first(where: { $0.id == login.id }) else { return }
         used.lastUsed = Date()
         replace(used, password: nil)
     }
 
-    /// `login`'s fields over the stored copy's code flag, which only `setOneTimeCode` changes
     private func replace(_ login: SavedLogin, password: String?) {
-        var login = login
-        if let stored = logins.first(where: { $0.id == login.id }) { login.hasOneTimeCode = stored.hasOneTimeCode }
         logins.removeAll { $0.id == login.id }
         logins.append(login)
         logins.sort(by: Self.loginOrder)
@@ -440,37 +473,24 @@ final class PasswordStore {
 
     // MARK: - Sites
 
-    /// public suffixes, ICANN and private, with more than one label; any other host's suffix is
-    /// its last label. Only passkey rpId checks rely on this.
-    private nonisolated static let multiLabelSuffixes: Set<String> = [
-        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
-        "com.au", "net.au", "org.au", "edu.au", "gov.au", "co.nz", "org.nz", "net.nz", "govt.nz",
-        "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "co.kr", "or.kr", "co.in", "net.in", "org.in",
-        "gov.in", "com.br", "net.br", "org.br", "gov.br", "com.cn", "net.cn", "org.cn", "gov.cn",
-        "com.hk", "org.hk", "com.tw", "org.tw", "com.sg", "edu.sg", "com.mx", "org.mx", "gob.mx",
-        "com.ar", "com.tr", "org.tr", "gov.tr", "co.za", "org.za", "gov.za", "com.my", "co.id",
-        "or.id", "co.il", "org.il", "co.th", "in.th", "com.ph", "com.pk", "com.ng", "com.eg",
-        "com.sa", "com.ua", "co.ke", "com.vn", "com.pl", "co.at", "or.at", "com.es", "com.pt",
-        "github.io", "gitlab.io", "pages.dev", "workers.dev", "netlify.app", "vercel.app",
-        "herokuapp.com", "blogspot.com", "appspot.com", "web.app", "firebaseapp.com",
-        "azurewebsites.net", "cloudfront.net", "s3.amazonaws.com", "fly.dev", "onrender.com",
-        "duckdns.org", "myshopify.com", "wordpress.com", "ngrok-free.app", "ngrok.io", "ngrok.app",
-        "glitch.me", "r2.dev", "readthedocs.io", "repl.co", "replit.app", "surge.sh", "deno.dev",
-        "webflow.io", "wixsite.com", "azurestaticapps.net", "trycloudflare.com", "no-ip.org",
-        "dyndns.org", "ddns.net", "hopto.org", "freemyip.com", "itch.io", "neocities.org",
-    ]
+    private typealias SuffixCheck = @convention(c) (CFString) -> DarwinBoolean
+    /// CFNetwork's copy of the Public Suffix List, ICANN and private sections with their wildcards
+    /// and exceptions: the one WebKit reads. Looked up in every loaded image (RTLD_DEFAULT).
+    private nonisolated static let isPublicSuffix = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_CFHostIsDomainTopLevel")
+        .map { unsafeBitCast($0, to: SuffixCheck.self) }
 
-    /// one label more than the public suffix; nil for a public suffix, a bare label,
-    /// or an IP address
+    /// The site boundary for passkey rpIds, verification codes, recipes and Settings' grouping: one
+    /// label more than the longest public suffix, or than the last label when none is listed. Nil for
+    /// a public suffix, a bare label, or an IP address.
     nonisolated static func registrableDomain(_ host: String) -> String? {
         let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !isIPAddress(host) else { return nil }
-        let labels = host.split(separator: ".").map(String.init)
+        let labels = host.split(separator: ".")
         let suffix =
-            multiLabelSuffixes.contains(labels.suffix(3).joined(separator: ".")) ? 3
-            : multiLabelSuffixes.contains(labels.suffix(2).joined(separator: ".")) ? 2 : 1
-        guard labels.count > suffix else { return nil }
-        return labels.suffix(suffix + 1).joined(separator: ".")
+            labels.indices.first { isPublicSuffix?(labels[$0...].joined(separator: ".") as CFString).boolValue == true }
+            ?? labels.count - 1
+        guard suffix > 0 else { return nil }
+        return labels[(suffix - 1)...].joined(separator: ".")
     }
 
     nonisolated static func isIPAddress(_ host: String) -> Bool {
@@ -491,32 +511,50 @@ final class PasswordStore {
         var skipped = 0
     }
 
-    /// Chromium-family, Firefox, Safari, Bitwarden and 1Password exports, told apart by header
-    /// names; nil when the header has no url or password column, or the store is unreadable
-    func importCSV(_ text: String, into profile: UUID) async -> ImportSummary? {
-        guard !isUnreadable else { return nil }
-        let existing = logins(in: profile)
-        let result = await withCheckedContinuation { continuation in
-            Self.queue.async {
-                continuation.resume(
-                    returning: Self.importRows(Self.parseCSV(text), into: existing, profile: profile))
-            }
-        }
-        guard let result else { return nil }
-        let changed = Set(result.changed.map(\.id))
-        logins.removeAll { changed.contains($0.id) }
-        logins.append(contentsOf: result.changed)
-        logins.sort(by: Self.loginOrder)
-        persist(Keychain.passwords)
-        return result.summary
+    /// one CSV row worth importing
+    private nonisolated struct ImportRow: Sendable {
+        let origin: String
+        let username: String
+        let password: String
+        let code: Data?
     }
 
-    /// runs on `queue`, writing each password item; the caller indexes what changed
-    nonisolated private static func importRows(
-        _ rows: [[String]], into existing: [SavedLogin], profile: UUID
-    ) -> (summary: ImportSummary, changed: [SavedLogin])?
-    {
-        guard let first = rows.first else { return nil }
+    /// Chromium-family, Firefox, Safari, Bitwarden and 1Password exports, told apart by header
+    /// names; nil when the header has no url or password column, or the store is unreadable. Each
+    /// row is its own job on `queue`, so a read made meanwhile waits for one row, not the file.
+    func importCSV(_ text: String, into profile: UUID) async -> ImportSummary? {
+        guard !isUnreadable, let rows = Self.importRows(Self.parseCSV(text)) else { return nil }
+        var summary = ImportSummary()
+        for row in rows {
+            guard let row else {
+                summary.skipped += 1
+                continue
+            }
+            let existing = logins(in: profile).first { $0.origin == row.origin && $0.username == row.username }
+            let written = await withCheckedContinuation { continuation in
+                Self.queue.async { continuation.resume(returning: Self.write(row, over: existing, in: profile)) }
+            }
+            if let written, existing == nil {
+                logins.append(written)
+                summary.added += 1
+            } else if let written, let i = logins.firstIndex(where: { $0.id == written.id }) {
+                // only what the import changed, over whatever was edited while it ran
+                logins[i].updated = written.updated
+                if written.hasOneTimeCode == true { logins[i].hasOneTimeCode = true }
+                summary.updated += 1
+            } else {
+                summary.skipped += 1
+            }
+        }
+        logins.sort(by: Self.loginOrder)
+        persist(Keychain.passwords)
+        return summary
+    }
+
+    /// the data rows of an export, nil for each one without a password or a web address; nil when the
+    /// header names no url or password column
+    nonisolated private static func importRows(_ table: [[String]]) -> [ImportRow?]? {
+        guard let first = table.first else { return nil }
         let header = first.map {
             $0.replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespaces).lowercased()
         }
@@ -531,12 +569,7 @@ final class PasswordStore {
             "username", "login_username", "user name", "login name", "login", "email", "e-mail",
         ])
         let codeColumn = column(["otpauth", "login_totp", "totp", "otp", "one-time password"])
-
-        var known = Dictionary(
-            existing.map { ("\($0.origin)\n\($0.username)", $0) }, uniquingKeysWith: { a, _ in a })
-        var summary = ImportSummary()
-        var changed: [UUID: SavedLogin] = [:]
-        for row in rows.dropFirst() where row.contains(where: { !$0.isEmpty }) {
+        return table.dropFirst().filter { $0.contains { !$0.isEmpty } }.map { row in
             func cell(_ index: Int?) -> String {
                 guard let index, index < row.count else { return "" }
                 return row[index].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -548,47 +581,38 @@ final class PasswordStore {
             let password = row.indices.contains(passwordColumn) ? row[passwordColumn] : ""
             guard !password.isEmpty, let origin = SitePermissionStore.originString(URL(string: address)),
                 origin.hasPrefix("http")
-            else {
-                summary.skipped += 1
-                continue
-            }
-            let username = cell(userColumn)
-            let key = "\(origin)\n\(username)"
-            let code = OneTimeCode(cell(codeColumn)).map { Data($0.setup.utf8) }
-            let now = Date()
-            if var login = known[key] {
-                let samePassword = Keychain.secret(Keychain.passwords, login.id.uuidString) == Data(password.utf8)
-                let sameCode = code == nil || Keychain.secret(Keychain.passwords, Keychain.code(login.id)) == code
-                if samePassword && sameCode {
-                    summary.skipped += 1
-                    continue
-                }
-                login.updated = now
-                if !samePassword { Keychain.put(Keychain.passwords, login.id.uuidString, Data(password.utf8)) }
-                if let code, !sameCode, Keychain.put(Keychain.passwords, Keychain.code(login.id), code) == errSecSuccess {
-                    login.hasOneTimeCode = true
-                }
-                known[key] = login
-                changed[login.id] = login
-                summary.updated += 1
-            } else {
-                var login = SavedLogin(
-                    id: UUID(), origin: origin, username: username, created: now, updated: now,
-                    profileID: stored(profile))
-                guard Keychain.put(Keychain.passwords, login.id.uuidString, Data(password.utf8)) == errSecSuccess
-                else {
-                    summary.skipped += 1
-                    continue
-                }
-                if let code, Keychain.put(Keychain.passwords, Keychain.code(login.id), code) == errSecSuccess {
-                    login.hasOneTimeCode = true
-                }
-                known[key] = login
-                changed[login.id] = login
-                summary.added += 1
-            }
+            else { return nil }
+            return ImportRow(
+                origin: origin, username: cell(userColumn), password: password,
+                code: OneTimeCode(cell(codeColumn)).map { Data($0.setup.utf8) })
         }
-        return (summary, Array(changed.values))
+    }
+
+    /// one row's Keychain writes, on `queue`: the login to index, flagged for a code only when this row
+    /// wrote one; nil when the row changes nothing or the Keychain refused it
+    nonisolated private static func write(_ row: ImportRow, over existing: SavedLogin?, in profile: UUID) -> SavedLogin? {
+        let now = Date()
+        let password = Data(row.password.utf8)
+        guard var login = existing else {
+            var login = SavedLogin(
+                id: UUID(), origin: row.origin, username: row.username, created: now, updated: now,
+                profileID: stored(profile))
+            guard Keychain.put(Keychain.passwords, login.id.uuidString, password) == errSecSuccess else { return nil }
+            if let code = row.code, Keychain.put(Keychain.passwords, Keychain.code(login.id), code) == errSecSuccess {
+                login.hasOneTimeCode = true
+            }
+            return login
+        }
+        let samePassword = Keychain.secret(Keychain.passwords, login.id.uuidString) == password
+        let sameCode = row.code == nil || Keychain.secret(Keychain.passwords, Keychain.code(login.id)) == row.code
+        guard !samePassword || !sameCode else { return nil }
+        login.updated = now
+        login.hasOneTimeCode = nil
+        if !samePassword { Keychain.put(Keychain.passwords, login.id.uuidString, password) }
+        if let code = row.code, !sameCode, Keychain.put(Keychain.passwords, Keychain.code(login.id), code) == errSecSuccess {
+            login.hasOneTimeCode = true
+        }
+        return login
     }
 
     /// RFC 4180: quoted fields may hold commas, doubled quotes and line breaks

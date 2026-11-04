@@ -28,6 +28,8 @@ nonisolated enum ContainerMigration {
             ("Application Support/Artemis", support),
             ("WebKit", library.appending(path: "WebKit/\(id)")),
             ("Caches/Artemis", library.appending(path: "Caches/\(folder)")),
+            // the default profile's jar: CFNetwork's sandboxed path, then its unsandboxed one
+            ("Cookies/Cookies.binarycookies", library.appending(path: "HTTPStorages/\(id).binarycookies")),
         ] {
             let source = old.appending(path: from)
             guard fm.fileExists(atPath: source.path) else { continue }

@@ -34,14 +34,11 @@
 	<string>Artemis asks before letting a website use your microphone, and remembers your answer per site.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Artemis asks before letting a website see your location, and remembers your answer per site.</string>
-	<!-- Handoff: the page you're reading, offered to your other devices (and
-	     picked up from them). The system browsing activity is the one every
-	     Apple platform already understands, so Safari on the iPhone hands its
-	     page to us and vice versa with no infrastructure on our side. -->
 	<!-- Draws the Dock tile while Artemis is quit, so a pinned tile shows the
 	     chosen app icon instead of the Dock's cached one. -->
 	<key>NSDockTilePlugIn</key>
 	<string>ArtemisDockTile.docktileplugin</string>
+	<!-- Handoff: the system browsing activity, shared with Safari on other devices. -->
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>NSUserActivityTypeBrowsingWeb</string>

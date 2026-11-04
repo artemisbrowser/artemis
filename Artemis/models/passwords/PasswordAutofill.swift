@@ -16,7 +16,18 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     /// seconds a username step is remembered for the password step that follows it
     private static let usernameLifetime: TimeInterval = 300
 
-    private var suggestions: (panel: NSPanel, tab: BrowserTab.ID)?
+    private struct Shown {
+        let panel: NSPanel
+        let tab: BrowserTab.ID
+        weak var webView: WKWebView?
+        let frame: WKFrameInfo?
+
+        var list: NSHostingView<LoginSuggestions>? { panel.contentView as? NSHostingView<LoginSuggestions> }
+    }
+
+    private var suggestions: Shown?
+    /// bumped by every focus and dismiss, so a list still resolving for an older focus never shows
+    private var ticket = 0
     private var commitChecks: [BrowserTab.ID: Task<Void, Never>] = [:]
 
     static func install(into controller: WKUserContentController) {
@@ -53,7 +64,16 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             tab.loginTarget = target
             suggest(body, into: target, in: tab)
         case "dismiss":
+            ticket += 1
             if suggestions?.tab == tab.id { closeSuggestions() }
+        case "highlight":
+            guard suggestions?.tab == tab.id else { return }
+            suggestions?.list?.rootView.highlighted = body["index"] as? Int
+        case "pick":
+            guard suggestions?.tab == tab.id, let rows = suggestions?.list?.rootView.rows, let index = body["index"] as? Int,
+                rows.indices.contains(index)
+            else { return }
+            rows[index].action()
         case "username":
             guard let name = body["username"] as? String, !name.isEmpty, !tab.isPrivate else { return }
             tab.loginUsernameHint = (origin, name, Date())
@@ -122,10 +142,12 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             PasswordStore.isSecure(candidate.topOrigin),
             let host = URL(string: candidate.origin)?.host(), !store.neverSave.contains(host)
         else { return }
-        let saved = store.logins(in: tab.loginProfile).filter { $0.origin == candidate.origin }
+        // the logins filling offers here, its www. twin's among them
+        let saved = store.matches(for: candidate.origin, in: tab.loginProfile)
         var replacing = saved.first { $0.username == candidate.username }
-        if replacing == nil, candidate.username.isEmpty, !candidate.current.isEmpty {
-            replacing = saved.first { store.password(for: $0) == candidate.current }
+        if replacing == nil, candidate.username.isEmpty {
+            let known = [candidate.current, candidate.password].filter { !$0.isEmpty }
+            replacing = saved.first { store.password(for: $0).map(known.contains) == true }
         }
         if let replacing, store.password(for: replacing) == candidate.password {
             return store.markUsed(replacing)
@@ -138,8 +160,9 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     func accept(in tab: BrowserTab) {
         guard let offer = tab.loginOffer else { return }
         tab.loginOffer = nil
-        if let replacing = offer.replacing {
-            PasswordStore.shared.edit(replacing, username: replacing.username, password: offer.password)
+        // the login as it is now, which may have been renamed or deleted since the offer was made
+        if let replacing = offer.replacing, let current = PasswordStore.shared.logins.first(where: { $0.id == replacing.id }) {
+            PasswordStore.shared.edit(current, username: current.username, password: offer.password)
         } else {
             PasswordStore.shared.save(
                 origin: offer.origin, username: offer.username, password: offer.password, in: tab.loginProfile)
@@ -215,6 +238,15 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         return result as? Bool == true
     }
 
+    /// whether the field focused in `frame` gets the login list: a username field on a site with logins to offer
+    func servesFocusedField(in frame: WKFrameInfo, origin: String, of tab: BrowserTab) async -> Bool {
+        let store = PasswordStore.shared
+        guard store.fillsFromSuggestions, !store.matches(for: origin, in: tab.loginProfile).isEmpty else { return false }
+        let kind = try? await tab.webView.callAsyncJavaScript(
+            "return globalThis.__artemisPasswords?.focusedKind() ?? null", in: frame, contentWorld: PasswordPage.world)
+        return kind as? String == "username"
+    }
+
     /// whether an iframe on `origin` shows in the top document; true when none can be found there
     func frameIsShown(_ origin: String, in tab: BrowserTab) async -> Bool {
         let script = """
@@ -254,18 +286,22 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     // MARK: - Suggestions
 
     private func suggest(_ body: [String: Any], into target: LoginTarget, in tab: BrowserTab) {
+        ticket += 1
+        let mine = ticket
         guard PasswordStore.shared.fillsFromSuggestions, let kind = body["kind"] as? String,
             let box = body["rect"] as? [String: Any], tab.webView.window != nil
         else { return }
-        let offersStrong = kind == "new"
+        let isNew = kind == "new"
+        // random passwords only where a save can follow them; a recipe's can be made again
+        let offersStrong = isNew && !tab.isPrivate
         let fillsCodes = kind == "code"
         let store = PasswordStore.shared
         let logins =
             fillsCodes
             ? store.codeMatches(for: target.origin, in: tab.loginProfile)
-            : offersStrong ? [] : store.matches(for: target.origin, in: tab.loginProfile)
-        guard offersStrong || !logins.isEmpty else { return closeSuggestions() }
-        let recipes = offersStrong ? store.recipes(in: tab.loginProfile).filter(\.isUsable) : []
+            : isNew ? [] : store.matches(for: target.origin, in: tab.loginProfile)
+        let recipes = isNew ? store.recipes(in: tab.loginProfile).filter(\.isUsable) : []
+        guard offersStrong || !logins.isEmpty || !recipes.isEmpty else { return closeSuggestions() }
         let host = URL(string: target.origin)?.host() ?? ""
         let rules = PasswordRules(field: body["rules"] as? [String: Any] ?? [:], host: host)
         let number = { (key: String) in (box[key] as? Double) ?? 0 }
@@ -278,6 +314,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             }
             let made = recipes.compactMap { recipe in recipe.password(for: host).map { (recipe.id, $0) } }
             let fits = await fitting(made.map(\.1), rules, in: target, of: tab)
+            guard ticket == mine else { return }
             let list = LoginSuggestions(
                 logins: logins, origin: target.origin, offersStrongPassword: offersStrong, fillsCodes: fillsCodes,
                 recipes: recipes, rules: rules, misfits: Set(zip(made, fits).filter { !$1 }.map(\.0.0)),
@@ -302,19 +339,23 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
                     self.closeSuggestions()
                     ProfilesNavigator.show(.passwords, for: tab.loginProfile)
                 })
-            present(list, below: field, in: tab)
+            present(list, below: field, in: tab, from: target.frame)
         }
     }
 
-    /// where a cross-origin child frame's content sits in the page, when exactly one iframe has its
-    /// origin and the page shows that iframe at each of `points`, `[x, y]` in the frame's CSS px
+    /// Where a cross-origin child frame's content sits in the page: the focused iframe with its origin
+    /// when no `points` are given (split card fields put one per field), else the only one shown, if
+    /// the page shows it at each of `points`, `[x, y]` in the frame's CSS px.
     func frameOffset(of origin: String, at points: [[Double]] = [], in tab: BrowserTab) async -> CGPoint? {
         let script = """
-            const frames = [...document.querySelectorAll("iframe")].filter(f => {
-              try { return new URL(f.src, location.href).origin === origin; } catch (e) { return false; }
-            }).filter(f => f.getBoundingClientRect().width > 0);
-            if (frames.length !== 1) return null;
-            const f = frames[0], b = f.getBoundingClientRect(), x = b.left + f.clientLeft, y = b.top + f.clientTop;
+            const ours = f => { try { return new URL(f.src, location.href).origin === origin; } catch (e) { return false; } };
+            const frames = [...document.querySelectorAll("iframe")].filter(f => ours(f) && f.getBoundingClientRect().width > 0);
+            let active = document.activeElement;
+            while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+            const focused = !points.length && active instanceof HTMLIFrameElement && ours(active)
+              && active.getBoundingClientRect().width > 0 ? active : null;
+            if (!focused && frames.length !== 1) return null;
+            const f = focused ?? frames[0], b = f.getBoundingClientRect(), x = b.left + f.clientLeft, y = b.top + f.clientTop;
             return points.every(([px, py]) => document.elementFromPoint(x + px, y + py) === f) ? [x, y] : null;
             """
         guard
@@ -326,21 +367,29 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         return CGPoint(x: point[0], y: point[1])
     }
 
-    private func present(_ list: LoginSuggestions, below css: CGRect, in tab: BrowserTab) {
-        closeSuggestions()
-        if let panel = suggestionPanel(list, below: css, in: tab.webView) { suggestions = (panel, tab.id) }
+    /// ↑ and ↓ in the field walk the rows from here on
+    private func present(_ list: LoginSuggestions, below css: CGRect, in tab: BrowserTab, from frame: WKFrameInfo?) {
+        closeSuggestions(tellingPage: false)
+        guard let panel = suggestionPanel(list, below: css, in: tab.webView) else { return }
+        suggestions = Shown(panel: panel, tab: tab.id, webView: tab.webView, frame: frame)
+        tab.webView.evaluateJavaScript(
+            "globalThis.__artemisPasswords?.listing(\(list.rows.count))", in: frame, in: PasswordPage.world)
     }
 
-    private func closeSuggestions() {
-        guard let panel = suggestions?.panel else { return }
+    /// `tellingPage` ends ↑ and ↓ in the field it was under
+    private func closeSuggestions(tellingPage: Bool = true) {
+        guard let shown = suggestions else { return }
         suggestions = nil
-        panel.parent?.removeChildWindow(panel)
-        panel.orderOut(nil)
+        shown.panel.parent?.removeChildWindow(shown.panel)
+        shown.panel.orderOut(nil)
+        if tellingPage {
+            shown.webView?.evaluateJavaScript("globalThis.__artemisPasswords?.listing(0)", in: shown.frame, in: PasswordPage.world)
+        }
     }
 
     // MARK: - Keys
 
-    /// the field kinds a key serves from what `origin` has saved; new-password fields always have one
+    /// the field kinds a key serves from what `origin` has saved
     private func savedKinds(for origin: String, in tab: BrowserTab) -> [String] {
         let store = PasswordStore.shared
         return (store.matches(for: origin, in: tab.loginProfile).isEmpty ? [] : ["username", "password"])
@@ -360,10 +409,12 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     @discardableResult
     func trackKeys(in frame: WKFrameInfo?, origin: String, of tab: BrowserTab, optional: Bool = false) async -> Bool {
         guard PasswordStore.shared.fillsFromSuggestions else { return false }
+        // a new-password field has random passwords to offer outside incognito, else only a recipe's
+        let offersNew = !tab.isPrivate || PasswordStore.shared.recipes(in: tab.loginProfile).contains(where: \.isUsable)
         let tracked = try? await tab.webView.callAsyncJavaScript(
             "return globalThis.__artemisPasswords?.track(kinds, size, optional) ?? false",
             arguments: [
-                "kinds": savedKinds(for: origin, in: tab), "optional": optional,
+                "kinds": (offersNew ? ["new"] : []) + savedKinds(for: origin, in: tab), "optional": optional,
                 "size": LoginKeys.side / (tab.webView.pageZoom * tab.webView.magnification),
             ],
             in: frame, contentWorld: PasswordPage.world)
@@ -432,6 +483,13 @@ func suggestionPanel(_ content: some View, below css: CGRect, in webView: WKWebV
 
 /// the list under a focused login field
 struct LoginSuggestions: View {
+    struct Row {
+        let icon: String
+        let title: String
+        let detail: String?
+        let action: () -> Void
+    }
+
     let logins: [SavedLogin]
     let origin: String
     let offersStrongPassword: Bool
@@ -444,41 +502,49 @@ struct LoginSuggestions: View {
     /// fills the first candidate the field's `pattern` accepts, else the first
     let generate: ([String]) -> Void
     let manage: () -> Void
+    /// the row ↑ and ↓ in the page have reached, an index into `rows`
+    var highlighted: Int?
+
+    /// every row but Manage Passwords…, in order
+    var rows: [Row] {
+        let host = URL(string: origin)?.host() ?? origin
+        let saved = logins.map { login in
+            let name = login.username.isEmpty ? "No username" : login.username
+            let elsewhere = login.origin == origin ? nil : login.host
+            return fillsCodes
+                ? Row(icon: "lock.badge.clock", title: "Verification Code", detail: elsewhere.map { "\(name) · \($0)" } ?? name) {
+                    pick(login)
+                }
+                : Row(icon: "key.fill", title: name, detail: elsewhere) { pick(login) }
+        }
+        let suggested = recipes.compactMap { recipe in
+            recipe.password(for: host).map { password in
+                Row(
+                    icon: "key.horizontal.fill", title: recipe.name,
+                    detail: rules.problem(with: password)
+                        ?? (misfits.contains(recipe.id) ? "Not in the form this site asks for" : recipe.masked(for: host))
+                ) { generate([password]) }
+            }
+        }
+        guard offersStrongPassword else { return saved + suggested }
+        // symbol-free candidates trail, for a pattern that turns symbols away
+        let strong = Row(icon: "wand.and.sparkles", title: "Use Strong Password", detail: nil) {
+            generate(
+                (0..<8).map { _ in PasswordPage.strongPassword(rules) }
+                    + (0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
+        }
+        let plain = Row(icon: "textformat.abc", title: "Strong Password Without Symbols", detail: nil) {
+            generate((0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
+        }
+        return saved + suggested + (rules.namesCharacters ? [strong] : [strong, plain])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(logins) { login in
-                let name = login.username.isEmpty ? "No username" : login.username
-                if fillsCodes {
-                    SuggestionRow(icon: "lock.badge.clock", title: "Verification Code", detail: name) { pick(login) }
-                } else {
-                    SuggestionRow(
-                        icon: "key.fill", title: name, detail: login.origin == origin ? nil : login.host
-                    ) { pick(login) }
-                }
-            }
-            let host = URL(string: origin)?.host() ?? origin
-            ForEach(recipes) { recipe in
-                if let password = recipe.password(for: host) {
-                    SuggestionRow(
-                        icon: "key.horizontal.fill", title: recipe.name,
-                        detail: rules.problem(with: password)
-                            ?? (misfits.contains(recipe.id) ? "Not in the form this site asks for" : recipe.masked(for: host))
-                    ) { generate([password]) }
-                }
-            }
-            if offersStrongPassword {
-                // symbol-free candidates trail, for a pattern that turns symbols away
-                SuggestionRow(icon: "wand.and.sparkles", title: "Use Strong Password", detail: nil) {
-                    generate(
-                        (0..<8).map { _ in PasswordPage.strongPassword(rules) }
-                            + (0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
-                }
-                if !rules.namesCharacters {
-                    SuggestionRow(icon: "textformat.abc", title: "Strong Password Without Symbols", detail: nil) {
-                        generate((0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
-                    }
-                }
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                SuggestionRow(
+                    icon: row.icon, title: row.title, detail: row.detail, isHighlighted: highlighted == index,
+                    action: row.action)
             }
             Divider().padding(.vertical, 2)
             SuggestionRow(icon: "gearshape", title: "Manage Passwords…", detail: nil, action: manage)

@@ -17,8 +17,8 @@ enum ExternalSchemes {
 
     /// schemes never handed out, whatever the user clicks
     private static let blocked: Set<String> = [
-        "x-apple-helpbasic", "help", "ftp", "afp", "smb", "vnc", "ssh", "telnet",
-        "applescript", "shortcuts", "x-apple-systempreferences",
+        "x-apple-helpbasic", "help", "ftp", "afp", "smb", "vnc", "ssh", "telnet", "x-man-page",
+        "applescript", "shortcuts", "x-apple.systempreferences", "settings-navigation",
     ]
 
     static func isInternal(_ scheme: String?) -> Bool {
@@ -60,7 +60,8 @@ enum ExternalSchemes {
     /// clears every remembered answer; part of Clear Browsing Data
     static func forgetAll() {
         allowed = []
-        save()
+        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(file))
+        save(keepsBackup: false)
     }
 
     private static func load() -> Set<String> {
@@ -68,16 +69,8 @@ enum ExternalSchemes {
         return Set(AppStorageLocation.loadDurable([String].self, from: url) ?? [])
     }
 
-    private static func save() {
+    private static func save(keepsBackup: Bool = true) {
         guard let data = try? JSONEncoder().encode(Array(allowed).sorted()) else { return }
-        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(file))
-    }
-
-    // MARK: - Handoff
-
-    /// false when the launch failed
-    @discardableResult
-    static func open(_ url: URL) -> Bool {
-        NSWorkspace.shared.open(url)
+        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(file), keepsBackup: keepsBackup)
     }
 }

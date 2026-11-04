@@ -251,6 +251,7 @@ struct FeedbackSheet: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(draft.category == category ? .isSelected : [])
             }
         }
         .animation(Motion.hover, value: draft.category)
@@ -259,6 +260,7 @@ struct FeedbackSheet: View {
             .font(.system(size: 13))
             .scrollContentBackground(.hidden)
             .focused($isWriting)
+            .accessibilityLabel(draft.category.prompt)
             .frame(height: 110)
             .padding(6)
             .background(well)
@@ -270,6 +272,7 @@ struct FeedbackSheet: View {
                         .padding(.horizontal, 11)
                         .padding(.vertical, 6)
                         .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
             }
 
@@ -282,6 +285,7 @@ struct FeedbackSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(.red.opacity(emailIsValid ? 0 : 0.6)))
+            .accessibilityHint(emailIsValid ? "" : "Not a valid email address")
 
         VStack(alignment: .leading, spacing: 6) {
             if !draft.isPrivate {
@@ -295,6 +299,7 @@ struct FeedbackSheet: View {
                             .frame(width: 80)
                             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                             .opacity(draft.includesScreenshot ? 1 : 0.35)
+                            .accessibilityHidden(true)
                     }
                 }
                 if draft.page != nil {
@@ -302,7 +307,11 @@ struct FeedbackSheet: View {
                 }
             }
             Toggle("Include diagnostics", isOn: $draft.includesDiagnostics)
-            Toggle("Send error reports automatically", isOn: $sendsErrorReports)
+            // the ⓘ sits outside the checkbox: a click on a checkbox's label toggles it
+            HStack(spacing: 6) {
+                Toggle("Send error reports automatically", isOn: $sendsErrorReports)
+                InfoButton(Reports.disclosure)
+            }
             Toggle("Keep this private", isOn: $draft.keepsPrivate)
         }
         .toggleStyle(.checkbox)

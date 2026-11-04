@@ -151,13 +151,19 @@ struct CommandBarEngine {
                     ? searchItem(trimmed)
                     : Bangs.lookup(partial).map { bangItem($0, query: "") }
                         ?? unknownBangItem(partial, query: "")
-                let listed = Bangs.matching(partial).map { bangItem($0, query: "") }
-                return deduped([literal] + listed + [searchItem(trimmed)])
+                let listed = deduped(
+                    [literal] + Bangs.matching(partial, limit: Self.rowLimit).map { bangItem($0, query: "") })
+                // the search row closes the list inside rowLimit; for a bare `!` it is the literal
+                return deduped(
+                    listed.prefix(Self.rowLimit - (literal.isSearch ? 0 : 1)) + [searchItem(trimmed)])
             }
             if Bangs.isEnabled, let (trigger, query) = Bangs.split(trimmed) {
                 head.append(
                     Bangs.lookup(trigger).map { bangItem($0, query: query) }
                         ?? unknownBangItem(trigger, query: query))
+            } else if URLInput.isPathLike(trimmed) {
+                // no disk access per keystroke: run checks the file exists
+                head.append(openItem(URL(filePath: (trimmed as NSString).expandingTildeInPath)))
             } else if let url = URLInput.directURL(trimmed) {
                 head.append(openItem(url))
             } else {
@@ -392,8 +398,8 @@ struct CommandBarEngine {
             }
         }
 
-        for entry in manager.history.autofillCandidates(typed, now: now).prefix(24) {
-            offer(entry.autofillHost, entry.frecency(now: now))
+        for (entry, frecency) in manager.history.autofillCandidates(typed, now: now).prefix(24) {
+            offer(entry.autofillHost, frecency)
         }
         for tab in manager.switchableTabs {
             guard var host = tab.url?.host()?.lowercased() else { continue }
@@ -410,8 +416,26 @@ struct CommandBarEngine {
 
     // MARK: - Running
 
+    /// where the held modifiers send a result; ⇧ never reaches Scout from incognito,
+    /// whose pages must stay on the window's own jar
+    func launch(for modifiers: EventModifiers, address: Bool) -> CommandLaunch {
+        if modifiers.contains(.shift), manager.kind != .incognito { return .scout }
+        if modifiers.contains(.command) { return .beside }
+        if modifiers.contains(.option) || address { return .current }
+        return .normal
+    }
+
     func run(_ item: CommandItem, input: String, launch: CommandLaunch) {
-        if let key = item.learningKey { habits?.record(input: input, key: key) }
+        // a pick from another profile's space is never learned into this one
+        let profile: Profile.ID? =
+            switch item.kind {
+            case .tab(let tab): tab.profileID
+            case .closed(let closed): spaces.first { $0.id == closed.spaceID }?.profileID
+            default: manager.currentProfile.id
+            }
+        if let key = item.learningKey, profile == manager.currentProfile.id {
+            habits?.record(input: input, key: key)
+        }
         switch item.kind {
         case .tab(let tab):
             if launch == .beside { manager.openBeside(tab) } else { manager.focus(tab) }
@@ -426,7 +450,9 @@ struct CommandBarEngine {
             open(entry.url, launch)
         case .pageText(let hit):
             open(hit.url, launch)
-        case .openURL(let url):
+        case .openURL(var url):
+            // a missing file is a search
+            if url.isFileURL, let resolved = URLInput.resolve(input) { url = resolved }
             if manager.kind != .incognito { manager.history.markTyped(url) }
             open(url, launch)
         case .bang(let bang, let trigger, let query):
@@ -563,13 +589,13 @@ struct CommandBarEngine {
                 run: { manager.isLibraryOpen = true }),
             CommandAction(
                 id: "history", title: "History", symbol: "clock.arrow.circlepath",
-                keywords: ["visited", "trail"], run: { openLibrary("History") }),
+                keywords: ["visited", "trail"], run: { manager.openLibrary(.history) }),
             CommandAction(
                 id: "archive", title: "Archive", symbol: "archivebox",
-                keywords: ["old tabs", "stale"], run: { openLibrary("Archive") }),
+                keywords: ["old tabs", "stale"], run: { manager.openLibrary(.archive) }),
             CommandAction(
                 id: "downloads", title: "Downloads", symbol: "arrow.down.circle",
-                keywords: ["files", "saved"], run: { openLibrary("Downloads") }),
+                keywords: ["files", "saved"], run: { manager.openLibrary(.downloads) }),
             CommandAction(
                 id: "clear-today", title: "Clear Today’s Tabs", symbol: "sparkles",
                 keywords: ["close all", "tidy", "clean"], run: { manager.clearTodayTabs() }),
@@ -599,6 +625,10 @@ struct CommandBarEngine {
                 symbol: "menubar.rectangle", keywords: ["address bar", "url", "top bar"],
                 run: { UserDefaults.standard.set(!BrowserToolbar.isShown, forKey: BrowserToolbar.shownKey) }),
         ]
+        // an incognito window has no spaces to add to and no way back out of the Library
+        if manager.kind != .main {
+            out.removeAll { ["new-space", "import", "library", "history", "archive", "downloads"].contains($0.id) }
+        }
 
         if Updates.shared.isEnabled {
             out.append(
@@ -761,10 +791,5 @@ struct CommandBarEngine {
                 id: "close", title: "Close Tab", symbol: "xmark",
                 keywords: ["quit", "dismiss"], run: { manager.closeSelectedTab() }))
         return out
-    }
-
-    private func openLibrary(_ mode: String) {
-        UserDefaults.standard.set(mode, forKey: "libraryLastMode")
-        manager.isLibraryOpen = true
     }
 }

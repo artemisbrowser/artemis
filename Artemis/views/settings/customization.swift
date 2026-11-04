@@ -28,6 +28,7 @@ struct AppearanceSettings: View {
                         value: $edgeInset,
                         in: WindowChrome.range,
                         step: 1)
+                    .accessibilityLabel("Edge thickness")
                 }
             }
 
@@ -317,6 +318,7 @@ private struct AppIconTile: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -328,8 +330,18 @@ private struct CustomBangsEditor: View {
     @State private var name = ""
     @State private var template = ""
 
+    /// the trigger as stored: lowercased, without its `!`
+    private var key: String {
+        trigger.lowercased().trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "!"))
+    }
+
+    /// a trigger is one word, since the bar splits what you type on spaces, and the
+    /// destination is a web address
     private var canAdd: Bool {
-        !trigger.isEmpty && !name.isEmpty && template.contains("{q}")
+        let scheme = URL(string: template.replacingOccurrences(of: "{q}", with: "x"))?.scheme?.lowercased()
+        return !key.isEmpty && !key.contains(where: \.isWhitespace) && !name.isEmpty
+            && template.contains("{q}") && (scheme == "http" || scheme == "https")
     }
 
     var body: some View {
@@ -371,9 +383,7 @@ private struct CustomBangsEditor: View {
     }
 
     private func add() {
-        let key = trigger.lowercased().trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "!"))
-        guard !key.isEmpty else { return }
+        guard canAdd else { return }
         bangs.removeAll { $0.trigger == key }
         bangs.append(Bang(trigger: key, name: name, template: template))
         Bangs.setCustom(bangs)

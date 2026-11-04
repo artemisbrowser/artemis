@@ -37,7 +37,7 @@ enum ScoutBarStyle: String, CaseIterable, Identifiable {
 
 /// the user's custom Scout-bar look (a `SpaceAppearance`, reusing the space
 /// theme model) persisted as JSON in `@AppStorage`
-enum ScoutBarAppearanceStore {
+private enum ScoutBarAppearanceStore {
     static let key = "scoutBarAppearance"
 
     /// a pleasant gradient out of the box
@@ -70,10 +70,13 @@ struct ScoutView: View {
 
     /// the one page this window holds
     private var tab: BrowserTab? { tabManager.selectedTab }
-    /// the space "Open in …" targets: the url's preferred space until the user picks one
+    /// the space "Open in …" targets: the url's preferred space among those in
+    /// this page's profile, until the user picks one
     @State private var targetSpace: Space?
     @State private var pickedManually = false
     @State private var showSpaceMenu = false
+    /// true while a promote waits for its browser window; presses meanwhile do nothing
+    @State private var isPromoting = false
     /// colours sampled left→right across the live page's top edge
     @State private var sampledStops: [Color]?
     @State private var lastScrollY: Double = -1
@@ -85,9 +88,11 @@ struct ScoutView: View {
     /// the browser window a promoted page lands in
     private var browser: TabManager? { BrowserWindows.shared.browserScope }
 
-    /// falls back to the browser's current space
+    /// falls back to the browser's current space, else the one a new browser window opens on;
+    /// never this window's own space, which no browser window holds
     private var target: Space {
-        targetSpace ?? browser?.currentSpace ?? tabManager.currentSpace
+        targetSpace ?? browser?.currentSpace
+            ?? tabManager.spaces.first { $0.id == tabManager.core.persistedSpaceID } ?? tabManager.spaces[0]
     }
 
     private var barStyle: ScoutBarStyle { ScoutBarStyle(rawValue: barStyleRaw) ?? .fallback }
@@ -153,12 +158,14 @@ struct ScoutView: View {
         )
         .onAppear {
             if targetSpace == nil, let url = tab?.url ?? tab?.lastAttemptedURL {
-                targetSpace = browser?.preferredSpace(for: url)
+                targetSpace = (browser ?? BrowserWindows.shared.seed)?.preferredSpace(for: url, in: tabManager.currentSpace.profileID)
             }
         }
         .onChange(of: tab?.url) { _, newURL in
             guard let newURL else { return }
-            if !pickedManually { targetSpace = browser?.preferredSpace(for: newURL) }
+            if !pickedManually {
+                targetSpace = (browser ?? BrowserWindows.shared.seed)?.preferredSpace(for: newURL, in: tabManager.currentSpace.profileID)
+            }
             scheduleSample()
         }
         .onChange(of: tab?.isLoading) { _, loading in
@@ -292,7 +299,7 @@ struct ScoutView: View {
 
     private var spaceMenu: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(browser?.spaces ?? []) { space in
+            ForEach(tabManager.spaces) { space in
                 SpaceMenuRow(space: space, isTarget: space.id == target.id) {
                     showSpaceMenu = false
                     pick(space)
@@ -309,14 +316,24 @@ struct ScoutView: View {
         promote(into: space)
     }
 
-    /// hands the page to the main browser as a tab in `space`, then closes
+    /// hands the page to the main browser as a tab in `space`, opening a browser window
+    /// when none is open, then closes; stays open if no window comes
     private func promote(into space: Space) {
-        guard tab?.isPrivate != true,
+        guard !isPromoting, tab?.isPrivate != true,
             let url = tab?.url ?? tab?.lastAttemptedURL ?? tab?.pendingURL
         else { return }
-        browser?.adoptIntoBrowser(url, into: space)
-        tab?.stopLoading()
-        onClose()
+        isPromoting = true
+        Task {
+            var destination = browser
+            if destination == nil { destination = await Scripting.openWindow(incognito: false, on: space.id) }
+            guard let destination else {
+                isPromoting = false
+                return
+            }
+            destination.adoptIntoBrowser(url, into: space)
+            tab?.stopLoading()
+            onClose()
+        }
     }
 }
 
@@ -351,7 +368,7 @@ private struct ToolbarRow: Layout {
 }
 
 /// what fills the Scout frame, toolbar and rim alike
-enum ScoutBarPaint {
+private enum ScoutBarPaint {
     case glass
     /// a left→right gradient of colours sampled from the page
     case sampled([Color])
@@ -426,7 +443,7 @@ private struct GradientBar: View, Animatable {
 }
 
 /// flattened sRGB colour components SwiftUI can interpolate, so a gradient animates
-struct AnimatableVector: VectorArithmetic {
+private struct AnimatableVector: VectorArithmetic {
     var values: [Double]
 
     init(values: [Double]) { self.values = values }
@@ -827,7 +844,7 @@ private struct ScoutPresetSwatch: View {
     }
 }
 
-extension Color {
+private extension Color {
     /// rough perceptual-luminance test, for picking contrasting ink over a fill
     var isDark: Bool {
         let ns = NSColor(self).usingColorSpace(.sRGB) ?? .gray
@@ -862,13 +879,18 @@ private extension NSImage {
 
         let bytesPerRow = count * 4
         var data = [UInt8](repeating: 0, count: bytesPerRow)
-        guard let context = CGContext(
-            data: &data, width: count, height: 1, bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.interpolationQuality = .medium
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: count, height: 1))
+        // the context draws through the pointer, so it must not outlive the closure
+        let drawn = data.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(
+                data: bytes.baseAddress, width: count, height: 1, bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.interpolationQuality = .medium
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: count, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
 
         return (0..<count).map { i in
             let o = i * 4

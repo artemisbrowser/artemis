@@ -126,12 +126,14 @@ struct GeneralSettings: View {
                             .monospacedDigit()
                     }
                     Slider(value: $pipCornerRadius, in: 0...28, step: 1)
+                        .accessibilityLabel("Corner rounding")
                 }
 
                 HStack {
                     InfoLabel("Skip buttons jump", info: "How far the skip buttons either side of play jump.")
                     Spacer()
                     TextField("", value: $pipSkipSeconds, format: .number)
+                        .accessibilityLabel("Skip buttons jump")
                         .frame(width: 56)
                         .multilineTextAlignment(.trailing)
                         .textFieldStyle(.roundedBorder)

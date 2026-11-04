@@ -19,9 +19,9 @@ extension RGBA {
 }
 
 extension SpaceAppearance {
-    /// the mesh's colours if it has any, else `colors`
+    /// the colours the fill paints
     var paletteColors: [RGBA] {
-        meshPoints.isEmpty ? colors : meshPoints.map(\.color)
+        fill == .solid ? Array(colors.prefix(1)) : effectiveMeshPoints.map(\.color)
     }
 
     /// changes that cross-fade the backdrop. mesh points and `glassBlur` are left

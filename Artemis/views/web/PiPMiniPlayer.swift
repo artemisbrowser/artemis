@@ -19,7 +19,7 @@ import WebKit
 }
 
 /// one caption track the page exposes
-struct CaptionTrack: Identifiable, Equatable {
+private struct CaptionTrack: Identifiable, Equatable {
     let id: String
     let label: String
 }
@@ -32,16 +32,16 @@ final class MiniPlayer {
     static let cornerRadiusKey = "pipCornerRadius"
     static let defaultCornerRadius = 16.0
     /// the panel's last on-screen frame, restored next open
-    static let frameKey = "pipPanelFrame"
+    private static let frameKey = "pipPanelFrame"
     /// the same for call mode, which keeps its own size and spot
-    static let callFrameKey = "pipCallFrame"
+    private static let callFrameKey = "pipCallFrame"
     /// call mode: the glass frame's inset around the page, and the control row
-    static let callInset: CGFloat = 8
-    static let callControlsHeight: CGFloat = 52
+    fileprivate static let callInset: CGFloat = 8
+    fileprivate static let callControlsHeight: CGFloat = 52
     /// how much of a call site's own control bar to crop off the page's bottom
     private static let callBarCrop: [String: CGFloat] = ["meet.google.com": 80]
     /// captions drawn in our overlay (true) or by the website (false)
-    static let customCaptionsKey = "pipCustomCaptions"
+    fileprivate static let customCaptionsKey = "pipCustomCaptions"
     /// how far the centre ⟲/⟳ buttons jump, in seconds
     static let skipSecondsKey = "pipSkipSeconds"
     static let defaultSkipSeconds = 10.0
@@ -56,11 +56,15 @@ final class MiniPlayer {
     @ObservationIgnored private var seekTarget: (time: Double, until: Date)?
     @ObservationIgnored private var frameObservers: [NSObjectProtocol] = []
     @ObservationIgnored private(set) weak var tab: BrowserTab?
+    /// the page in the panel, `tab`'s view when it was borrowed; every control acts on it
+    @ObservationIgnored private var webView: WKWebView?
     @ObservationIgnored var onReturnToBrowser: ((BrowserTab) -> Void)?
 
     @ObservationIgnored private var pollTimer: Timer?
     /// a faster timer for caption text alone
     @ObservationIgnored private var captionTimer: Timer?
+    /// the page has captions `caption()` could read: a site profile's overlay or a live text track
+    @ObservationIgnored private var hasCaptionSource = false
     @ObservationIgnored private var aspectApplied = false
 
     // playback state, observed by `MiniPlayerChrome`
@@ -85,7 +89,7 @@ final class MiniPlayer {
 
     // captions
     private(set) var captionCount = 0
-    private(set) var captionTracks: [CaptionTrack] = []
+    fileprivate private(set) var captionTracks: [CaptionTrack] = []
     /// id of the live track, "" when off
     private(set) var activeCaptionID = ""
     /// the caption text our overlay draws right now
@@ -93,8 +97,7 @@ final class MiniPlayer {
     var hasCaptions: Bool { captionCount > 0 }
     var captionsOn: Bool { !activeCaptionID.isEmpty }
 
-    /// page buttons (e.g. "Skip Recap") allowed for this site and showing now; the
-    /// drag layer eats page clicks, so pills proxy them into the page
+    /// page buttons (e.g. "Skip Recap") allowed for this site and showing now
     private(set) var pageButtons: [String] = []
 
     var isActive: Bool { panel != nil }
@@ -103,12 +106,12 @@ final class MiniPlayer {
     /// a short-form feed (Shorts, Reels, TikTok): the panel gets up / down
     /// controls and can move on by itself when a video comes round
     private(set) var isShortForm = false
-    static let autoScrollKey = "pipAutoScroll"
+    private static let autoScrollKey = "pipAutoScroll"
     var autoScroll = UserDefaults.standard.bool(forKey: MiniPlayer.autoScrollKey) {
         didSet { UserDefaults.standard.set(autoScroll, forKey: Self.autoScrollKey) }
     }
 
-    static func isShortForm(_ url: URL?) -> Bool {
+    private static func isShortForm(_ url: URL?) -> Bool {
         guard let url, let host = url.host else { return false }
         return (host.hasSuffix("youtube.com") && url.path.hasPrefix("/shorts"))
             || (host.hasSuffix("instagram.com") && url.path.contains("/reel"))
@@ -121,7 +124,7 @@ final class MiniPlayer {
     private(set) var cameraOn: Bool?
     private(set) var canLeave = false
 
-    static func isInCall(_ tab: BrowserTab) -> Bool {
+    private static func isInCall(_ tab: BrowserTab) -> Bool {
         tab.webView.cameraCaptureState != .none || tab.webView.microphoneCaptureState != .none
     }
 
@@ -136,6 +139,7 @@ final class MiniPlayer {
         open(tab)
     }
 
+    /// `tab` is closing or replacing its web view, which the panel must not keep alive
     func exitIfActive(for tab: BrowserTab) {
         guard isActive, self.tab === tab else { return }
         close(returnToBrowser: false)
@@ -149,9 +153,12 @@ final class MiniPlayer {
     // MARK: - Open / close
 
     private func open(_ tab: BrowserTab) {
-        guard panel == nil else { return }
+        // a locked space shows none of its pages, and the panel floats over every app
+        guard panel == nil, tab.manager?.space(of: tab).map(SpaceLock.shared.isLocked) != true
+        else { return }
         let webView = tab.webView
         self.tab = tab
+        self.webView = webView
         tab.isMiniPlayerActive = true
         resetState()
         isCall = Self.isInCall(tab)
@@ -280,9 +287,10 @@ final class MiniPlayer {
         captionTimer?.invalidate()
         captionTimer = nil
         motion.stop()
-        guard let tab else { panel?.close(); panel = nil; return }
-        let webView = tab.webView
-
+        frameObservers.forEach(NotificationCenter.default.removeObserver)
+        frameObservers = []
+        switchingShort = false
+        guard let webView, let panel else { return }
         setOcclusionDetection(true, on: webView)
 
         // pause while the video is still live
@@ -293,14 +301,16 @@ final class MiniPlayer {
         webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.remove()",
             completionHandler: nil)
 
-        frameObservers.forEach(NotificationCenter.default.removeObserver)
-        frameObservers = []
         webView.removeFromSuperview()
-        panel?.close()
-        panel = nil
+        // a short-form step in flight leaves the page hidden
+        webView.alphaValue = 1
+        panel.close()
+        self.panel = nil
+        self.webView = nil
+        guard let tab else { return }
         tab.isMiniPlayerActive = false
-
-        tab.webHost?.host(webView, borrowed: false)
+        // a tab that replaced its view meanwhile keeps the new one
+        if tab.webView === webView { tab.webHost?.host(webView, borrowed: false) }
         self.tab = nil
 
         if returnToBrowser { onReturnToBrowser?(tab) }
@@ -330,6 +340,7 @@ final class MiniPlayer {
         captionTracks = []
         activeCaptionID = ""
         captionText = ""
+        hasCaptionSource = false
         pageButtons = []
     }
 
@@ -352,7 +363,7 @@ final class MiniPlayer {
     }
 
     func toggleMute() {
-        tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.mute()") {
+        webView?.evaluateJavaScript("window.__artemisPip && window.__artemisPip.mute()") {
             [weak self] result, _ in
             self?.muted = (result as? Bool) ?? self?.muted ?? false
         }
@@ -367,7 +378,7 @@ final class MiniPlayer {
     /// retries while the list is empty: some players fill it only a beat after
     /// their captions module loads
     func refreshCaptionTracks(retries: Int = 6) {
-        tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.ccList()") {
+        webView?.evaluateJavaScript("window.__artemisPip && window.__artemisPip.ccList()") {
             [weak self] result, _ in
             guard let self else { return }
             let rows = (result as? [[String: Any]]) ?? []
@@ -401,35 +412,38 @@ final class MiniPlayer {
         eval("window.__artemisPip && window.__artemisPip.clickAllowed('\(label.jsEscaped)')")
     }
 
-    /// pins the site's invisible skip button under ours (CSS px == panel points), so
-    /// the physical click falls through to it as a trusted event
+    /// pins the site's invisible skip button under ours, so the physical click falls
+    /// through to it as a trusted event. `rect` is in panel points; one CSS px is
+    /// pageZoom × magnification points
     func setSkipTarget(_ rect: CGRect) {
+        let s = webView.map { $0.pageZoom * $0.magnification } ?? 1
         eval("window.__artemisPip && window.__artemisPip.setSkipTarget("
-            + "\(Int(rect.minX)), \(Int(rect.minY)), \(Int(rect.width)), \(Int(rect.height)))")
+            + "\(Int(rect.minX / s)), \(Int(rect.minY / s)), \(Int(rect.width / s)), \(Int(rect.height / s)))")
     }
 
     /// the catalog key for the current site: its host without "www."
     private var siteHost: String? {
-        guard var h = tab?.webView.url?.host else { return nil }
+        guard var h = webView?.url?.host else { return nil }
         if h.hasPrefix("www.") { h.removeFirst(4) }
         return h
     }
 
     private func eval(_ js: String) {
-        tab?.webView.evaluateJavaScript(js, completionHandler: nil)
+        webView?.evaluateJavaScript(js, completionHandler: nil)
     }
 
     // MARK: - Short-form feeds
 
-    /// the next (1) or previous (-1) video in the feed. the page is let go while
-    /// it moves (isolation pins the old video's ancestors), then isolated again
-    /// around whichever video is playing, hidden throughout
+    /// the next (1) or previous (-1) video in the feed. the page is let go while it moves
+    /// (isolation pins the old video's ancestors), then isolated again around whichever
+    /// video is playing, hidden throughout; a step gives up once its panel closes
     func stepShort(_ direction: Int) {
-        guard isShortForm, !switchingShort, let webView = tab?.webView, let host = webView.superview
+        guard isShortForm, !switchingShort, let webView, let host = webView.superview,
+            let session = panel
         else { return }
         switchingShort = true
         webView.takeSnapshot(with: nil) { [weak self] image, _ in
-            guard let self else { return }
+            guard let self, self.panel === session else { return }
             // the old video holds still on top while the feed moves underneath
             let still = NSImageView(frame: webView.frame)
             still.image = image
@@ -439,10 +453,13 @@ final class MiniPlayer {
             self.eval("window.__artemisPip && window.__artemisPip.remove()")
             self.eval(Self.stepJS(direction))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-                guard let self else { return }
+                guard let self, self.panel === session else { return }
                 self.aspectApplied = false
                 webView.evaluateJavaScript(Self.applyJS) { [weak self] _, _ in
-                    self?.shapeToVideo { self?.slide(from: still, to: webView, direction: direction) }
+                    self?.shapeToVideo { [weak self] in
+                        guard let self, self.panel === session else { return }
+                        self.slide(from: still, to: webView, direction: direction)
+                    }
                 }
             }
         }
@@ -503,7 +520,8 @@ final class MiniPlayer {
     }
 
     private func pollCall() {
-        guard let webView = tab?.webView else { return }
+        // an orphan: its tab is gone or has replaced its view
+        guard let webView, tab?.webView === webView else { return dismiss() }
         webView.evaluateJavaScript("window.__artemisCall && window.__artemisCall.state()") {
             [weak self, weak webView] result, _ in
             guard let self, let webView else { return }
@@ -518,7 +536,7 @@ final class MiniPlayer {
 
     /// the site's own button where it has one, else WebKit's capture mute
     func toggleCall(_ kind: String) {
-        guard let webView = tab?.webView else { return }
+        guard let webView else { return }
         webView.evaluateJavaScript("window.__artemisCall && window.__artemisCall.toggle('\(kind)')") {
             [weak self, weak webView] result, _ in
             guard let self, let webView else { return }
@@ -563,7 +581,7 @@ final class MiniPlayer {
     // MARK: - Video isolation + polling
 
     private func isolateVideo() {
-        guard let webView = tab?.webView else { return }
+        guard let webView else { return }
         webView.evaluateJavaScript(Self.applyJS) { [weak self] result, _ in
             guard let self else { return }
             if (result as? Bool) != true { self.close(returnToBrowser: false); return }
@@ -579,7 +597,7 @@ final class MiniPlayer {
 
     /// fits the still-invisible panel to the video's shape in one resize
     private func shapeToVideo(then done: @escaping () -> Void) {
-        tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.state()") {
+        webView?.evaluateJavaScript("window.__artemisPip && window.__artemisPip.state()") {
             [weak self] result, _ in
             guard let self, let panel = self.panel else { return done() }
             if let d = result as? [String: Any], let w = d["w"] as? Double, let h = d["h"] as? Double,
@@ -595,15 +613,35 @@ final class MiniPlayer {
     /// `done` once the page's latest change is on screen, so the panel never
     /// shows a frame from before the isolation
     private func afterPresentation(_ done: @escaping () -> Void) {
-        guard let webView = tab?.webView,
+        guard let webView,
             webView.responds(to: Selector(("_doAfterNextPresentationUpdate:")))
         else { return done() }
         unsafeBitCast(webView, to: WKWebViewPresentationSPI.self)._doAfterNextPresentationUpdate(done)
     }
 
+    /// captions drawn in our overlay rather than by the website
+    private var customCaptions: Bool {
+        UserDefaults.standard.object(forKey: Self.customCaptionsKey) as? Bool ?? true
+    }
+
     func applyCaptionRender() {
-        let custom = UserDefaults.standard.object(forKey: Self.customCaptionsKey) as? Bool ?? true
-        eval("window.__artemisPip && window.__artemisPip.setCaptionRender(\(custom))")
+        eval("window.__artemisPip && window.__artemisPip.setCaptionRender(\(customCaptions))")
+        updateCaptionTimer()
+    }
+
+    /// reads caption text at 10Hz only while our overlay draws it and the page has some to read
+    private func updateCaptionTimer() {
+        let wanted = isActive && customCaptions && hasCaptionSource
+        guard wanted != (captionTimer != nil) else { return }
+        captionTimer?.invalidate()
+        captionTimer = nil
+        guard wanted else {
+            captionText = ""
+            return
+        }
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.pollCaption() }
+        RunLoop.main.add(timer, forMode: .common)
+        captionTimer = timer
     }
 
     private func startPolling() {
@@ -613,38 +651,33 @@ final class MiniPlayer {
         }
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
-
-        captionTimer?.invalidate()
-        let cap = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.pollCaption()
-        }
-        RunLoop.main.add(cap, forMode: .common)
-        captionTimer = cap
     }
 
     private func pollCaption() {
-        tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.caption()") {
+        webView?.evaluateJavaScript("window.__artemisPip && window.__artemisPip.caption()") {
             [weak self] result, _ in
             self?.captionText = (result as? String) ?? ""
         }
     }
 
-    /// catalogs every labelled page button per site; the allowed ones showing now
-    /// become pills, read each tick so a Settings toggle applies live
+    /// catalogs every labelled page button per site, an incognito page's excepted; the
+    /// allowed ones showing now become pills, read each tick so a Settings toggle applies live
     private func pollButtons() {
-        guard let webView = tab?.webView, let host = siteHost else { return }
+        guard let webView, let host = siteHost else { return }
+        let catalogs = tab?.isPrivate == false
         webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.buttons()") {
             [weak self] result, _ in
             guard let self, let labels = result as? [String] else { return }
-            PiPSiteButtons.merge(host: host, labels: labels)
-            let allowed = PiPSiteButtons.allowed(host: host)
+            let allowed = catalogs
+                ? PiPSiteButtons.merge(host: host, labels: labels) : PiPSiteButtons.allowed(host: host)
             let shown = labels.filter { allowed.contains($0) }
             if shown != self.pageButtons { self.pageButtons = shown }
         }
     }
 
     private func pollState() {
-        guard let webView = tab?.webView, let panel else { return }
+        // an orphan: its tab is gone or has replaced its view
+        guard let webView, let panel, tab?.webView === webView else { return dismiss() }
         pollButtons()
         webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.state()") {
             [weak self] result, _ in
@@ -654,6 +687,11 @@ final class MiniPlayer {
             self.muted = (d["muted"] as? Bool) ?? false
             if !self.isAdjustingVolume { self.volume = (d["volume"] as? Double) ?? self.volume }
             self.activeCaptionID = (d["ccActive"] as? String) ?? ""
+            let captionSource = (d["capSource"] as? Bool) ?? false
+            if captionSource != self.hasCaptionSource {
+                self.hasCaptionSource = captionSource
+                self.updateCaptionTimer()
+            }
             self.adActive = (d["ad"] as? Bool) ?? false
             self.isSkippable = (d["skippable"] as? Bool) ?? false
             if let label = d["skipLabel"] as? String, !label.isEmpty { self.skipLabel = label }
@@ -691,8 +729,7 @@ private extension String {
 
 // MARK: - Chrome overlay
 
-/// the panel's controls over a full-window drag layer; while hidden they stop
-/// hit-testing so the whole window drags
+/// the panel's controls; while hidden they stop hit-testing so clicks reach the page
 private struct MiniPlayerChrome: View {
     @Bindable var player: MiniPlayer
     @AppStorage(MiniPlayer.cornerRadiusKey) private var cornerRadius = MiniPlayer.defaultCornerRadius
@@ -824,9 +861,10 @@ private struct MiniPlayerChrome: View {
                     ? "-" + Self.clock(max(player.duration - player.currentTime, 0))
                     : Self.clock(player.currentTime), opacity: 0.85)
 
+                // no seeking through an ad, a live stream or a video without metadata yet
                 TimeSlider(player: player)
-                    .opacity(player.adActive ? 0.35 : 1)
-                    .disabled(player.adActive)
+                    .opacity(player.adActive || player.duration <= 0 ? 0.35 : 1)
+                    .disabled(player.adActive || player.duration <= 0)
 
                 timeLabel(Self.clock(player.duration), opacity: 0.6)
             }
@@ -1246,7 +1284,7 @@ private struct GlassCircle: ViewModifier {
 /// the mini-player's panel. drag and resize are resolved by geometry in `sendEvent`,
 /// so clicks still reach the web view as trusted events; it must be able to become
 /// key, or web-content clicks are silently dropped
-final class PiPPanel: NSPanel {
+private final class PiPPanel: NSPanel {
     /// where a click-drag moves the panel (window coords); clicks there still
     /// reach the controls on release. default: the top band
     var isDragHandle: ((NSPoint) -> Bool)?
@@ -1493,8 +1531,9 @@ final class PanelMotion: NSObject {
         let spring = Motion.pipSpring
         let t = CACurrentMediaTime() - start
         guard t < spring.settlingDuration else {
-            panel.setFrameOrigin(to)
-            return stop()
+            // stopped first: the panel's frame is saved only on a move with no motion running
+            stop()
+            return panel.setFrameOrigin(to)
         }
         let p = CGFloat(spring.value(fromValue: 0.0, toValue: 1.0, initialVelocity: velocity, time: t))
         panel.setFrameOrigin(NSPoint(x: from.x + (to.x - from.x) * p, y: from.y + (to.y - from.y) * p))
@@ -1525,7 +1564,7 @@ final class PanelMotion: NSObject {
 }
 
 /// reports hover from a tracking area, which never takes a click from the web view
-final class PiPContentView: NSView {
+private final class PiPContentView: NSView {
     var onHover: ((Bool) -> Void)?
 
     override func updateTrackingAreas() {
@@ -1546,25 +1585,29 @@ final class PiPContentView: NSView {
 /// [host: [label: allowed]] in UserDefaults
 enum PiPSiteButtons {
     static let key = "pipSiteButtons"
+    /// unallowed labels kept per site; past it, ones not showing now are dropped
+    private static let unallowedLimit = 50
 
     static func all() -> [String: [String: Bool]] {
         UserDefaults.standard.dictionary(forKey: key) as? [String: [String: Bool]] ?? [:]
     }
 
-    /// new labels arrive unallowed
-    static func merge(host: String, labels: [String]) {
-        guard !labels.isEmpty else { return }
+    /// files the labels showing now, new ones unallowed, and returns the site's allowed labels
+    static func merge(host: String, labels: [String]) -> Set<String> {
         var catalog = all()
         var site = catalog[host] ?? [:]
-        var changed = false
-        for label in labels where site[label] == nil {
-            site[label] = false
-            changed = true
-        }
-        if changed {
+        let new = labels.filter { site[$0] == nil }
+        if !new.isEmpty {
+            for label in new { site[label] = false }
+            var excess = site.values.filter { !$0 }.count - unallowedLimit
+            for (label, allowed) in site where excess > 0 && !allowed && !labels.contains(label) {
+                site[label] = nil
+                excess -= 1
+            }
             catalog[host] = site
             UserDefaults.standard.set(catalog, forKey: key)
         }
+        return Set(site.filter(\.value).keys)
     }
 
     static func allowed(host: String) -> Set<String> {
@@ -2009,7 +2052,10 @@ extension MiniPlayer {
             (st.root.classList.contains('ad-showing') || st.root.classList.contains('ad-interrupting'))); } catch (e) {}
           var sk = null; try { sk = findSkip(); } catch (e) {}
           try { moveSkip(); } catch (e) {}
-          return { ad: ad,
+          var capSource = !!(st.prof && st.prof.cap && st.prof.cap.length);
+          if (v.textTracks) for (var i = 0; i < v.textTracks.length; i++)
+            if (v.textTracks[i].mode !== 'disabled') capSource = true;
+          return { ad: ad, capSource: capSource,
             skippable: !!sk, skipLabel: sk ? sk.label : '',
             playing: !v.paused, current: v.currentTime || 0,
             duration: isFinite(v.duration) ? v.duration : 0, muted: !!v.muted,

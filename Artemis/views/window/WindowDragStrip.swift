@@ -5,8 +5,8 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// drags the window, and zooms it on a double click: the titlebar's job, since the
-/// window is `isMovable = false`
+/// drags the window, and answers a double click as the titlebar would: the titlebar's
+/// job, since the window is `isMovable = false`
 struct WindowDragStrip: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
@@ -40,8 +40,13 @@ struct WindowDragStrip: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return super.mouseDown(with: event) }
-            if event.clickCount == 2 { return window.zoom(nil) }
-            WindowDragStrip.drag(window, with: event)
+            guard event.clickCount == 2 else { return WindowDragStrip.drag(window, with: event) }
+            // Desktop & Dock's double-click setting; Fill has no public call, so it zooms
+            switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+            case "Minimize": window.miniaturize(nil)
+            case "None": break
+            default: window.zoom(nil)
+            }
         }
     }
 }

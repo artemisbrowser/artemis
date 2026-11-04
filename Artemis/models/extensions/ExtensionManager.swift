@@ -85,9 +85,14 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         }
     }
 
-    /// set by the url bar so a programmatically-triggered popup has somewhere to
-    /// present from; the settings button observes it and shows the popup
-    var pendingPopupExtensionID: String?
+    /// an extension's request to show its popup; a repeat from the same extension is still a new value
+    struct PopupRequest: Equatable {
+        let extensionID: String
+        let id = UUID()
+    }
+
+    /// set when an extension asks to show its popup; the focused window's site-settings button presents it
+    var pendingPopup: PopupRequest?
 
     @ObservationIgnored weak var tabManager: TabManager?
     @ObservationIgnored private var window: ExtensionWindow?
@@ -119,13 +124,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // before any tab loads: a VPN extension restores "connected" from its own storage and
         // may never set its proxy again
         ExtensionProxyBridge.shared.restorePersisted()
-        Task { @MainActor in
-            await loadPersisted()
-            // a proxy restored at launch whose extension didn't come back is no one's
-            ExtensionProxyBridge.shared.releaseUnless { owner, profile in
-                self.installed.contains { $0.contexts[profile].map { $0.uniqueIdentifier == owner && $0.isLoaded } ?? false }
-            }
-        }
+        Task { @MainActor in await loadPersisted() }
     }
 
     /// the single browser window exposed to the runtime (nil until attached)
@@ -160,8 +159,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// enables it
     @MainActor
     func installFromDisk(_ url: URL) async throws -> InstalledExtension {
-        let (id, resourceURL) = try ExtensionInstaller.install(from: url)
-        return try await register(id: id, source: .disk, resourceURL: resourceURL)
+        try await register(id: ExtensionInstaller.install(from: url), source: .disk)
     }
 
     /// install from a Chrome Web Store or Firefox Add-ons page, added switched off like a sideload
@@ -169,17 +167,16 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func installFromStore(pageURL: URL) async throws -> InstalledExtension {
         let (tempFile, source) = try await ExtensionStores.download(from: pageURL)
         defer { try? FileManager.default.removeItem(at: tempFile) }
-        let (id, resourceURL) = try ExtensionInstaller.install(from: tempFile)
-        return try await register(id: id, source: source, resourceURL: resourceURL)
+        return try await register(id: ExtensionInstaller.install(from: tempFile), source: source)
     }
 
     /// add freshly stored resources as an extension in no profile; a failure removes them
     @MainActor
-    private func register(
-        id: String, source: ExtensionSource, resourceURL: URL
-    ) async throws -> InstalledExtension {
+    private func register(id: String, source: ExtensionSource) async throws -> InstalledExtension {
         do {
-            let resourceURL = await ExtensionCompat.prepare(storedID: id) ?? resourceURL
+            guard let resourceURL = await ExtensionCompat.prepare(storedID: id) else {
+                throw ExtensionInstaller.InstallError.holdsLink
+            }
             let ext = try await WKWebExtension(resourceBaseURL: resourceURL)
 
             // a second copy is matched by name, the one id shared by every store and disk
@@ -239,20 +236,9 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// taken for a new install); any other first instance is a real install
     @MainActor
     private func prepareStorage(for ext: InstalledExtension, in profile: UUID, context: WKWebExtensionContext) {
-        // WebKit nests its data under the bundle ID unless it runs in a container
-        let webKit = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WebKit", isDirectory: true)
-        let root = (AppStorageLocation.isContainerised
-            ? webKit : webKit.appendingPathComponent(Bundle.main.bundleIdentifier ?? "", isDirectory: true))
-            .appendingPathComponent("WebExtensions", isDirectory: true)
-        let folder = { (profile: UUID) in
-            root.appendingPathComponent(
-                profile == Profile.defaultID ? "Default" : profile.uuidString.uppercased(), isDirectory: true)
-                .appendingPathComponent(ext.id, isDirectory: true)
-        }
-        let target = folder(profile)
+        let target = storageFolder(of: ext, in: profile)
         guard !FileManager.default.fileExists(atPath: target.path) else { return }
-        let source = folder(Profile.defaultID)
+        let source = storageFolder(of: ext, in: Profile.defaultID)
         if ext.seedsFromDefault, profile != Profile.defaultID,
             FileManager.default.fileExists(atPath: source.path)
         {
@@ -262,6 +248,20 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         } else {
             installedThisSession.insert(ExtensionAPIBridge.key(of: context, in: profile))
         }
+    }
+
+    /// WebKit's storage and registered scripts for one extension in one profile, whether or not
+    /// that profile has a controller. WebKit nests its data under the bundle ID unless it runs in
+    /// a container
+    private func storageFolder(of ext: InstalledExtension, in profile: UUID) -> URL {
+        let webKit = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WebKit", isDirectory: true)
+        return (AppStorageLocation.isContainerised
+            ? webKit : webKit.appendingPathComponent(Bundle.main.bundleIdentifier ?? "", isDirectory: true))
+            .appendingPathComponent("WebExtensions", isDirectory: true)
+            .appendingPathComponent(
+                profile == Profile.defaultID ? "Default" : profile.uuidString.uppercased(), isDirectory: true)
+            .appendingPathComponent(ext.id, isDirectory: true)
     }
 
     @MainActor
@@ -274,11 +274,10 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         try? controller.unload(context)
     }
 
+    /// every window's tabs live in the shared core, so one manager lists them all
     @MainActor
     private func openTabs(in profile: UUID) -> [BrowserTab] {
-        let managers = [tabManager].compactMap { $0 }
-            + BrowserWindows.shared.allManagers.filter { $0 !== tabManager }
-        return managers.flatMap(\.allTabs).filter { !$0.isPrivate && $0.profileID == profile }
+        (tabManager?.allTabs ?? []).filter { !$0.isPrivate && $0.profileID == profile }
     }
 
     /// a deleted profile takes its extensions' state with it. its controller holds the
@@ -301,10 +300,15 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         persist()
     }
 
-    /// a profile's first tab made its controller: its extensions start there
+    /// a profile's first tab made its controller: its extensions start there, and a proxy restored
+    /// for it whose extension didn't start is no one's
     @MainActor
     fileprivate func controllerCreated(for profile: UUID) {
+        guard hasRehydrated else { return }
         for ext in installed where ext.profiles.contains(profile) { load(ext, in: profile) }
+        ExtensionProxyBridge.shared.releaseUnless(in: profile) { owner in
+            installed.contains { $0.id == owner && $0.contexts[profile]?.isLoaded == true }
+        }
     }
 
     /// the extension a context belongs to, whichever profile it runs in
@@ -348,15 +352,9 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for profile in ext.contexts.keys { unload(ext, in: profile) }
         installed.removeAll { $0.id == ext.id }
         ExtensionInstaller.removeStorage(forID: ext.id)
-        // WebKit keeps a context's storage and registered scripts under its unique
-        // identifier, per profile controller; Chrome's uninstall drops all of it
-        for (profile, context) in ext.contexts {
-            guard let root = WebExtensionRuntime.controllers[profile]?.configuration
-                .value(forKey: "_storageDirectoryPath") as? String
-            else { continue }
-            try? FileManager.default.removeItem(
-                atPath: (root as NSString).appendingPathComponent(context.uniqueIdentifier))
-        }
+        // Chrome's uninstall drops every profile's data, run this session or not
+        for profile in allProfiles { try? FileManager.default.removeItem(at: storageFolder(of: ext, in: profile)) }
+        ExtensionAPIBridge.shared.forgetPanelSettings(of: ext.id)
         persist()
     }
 
@@ -401,10 +399,12 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     var actionTab: BrowserTab? { (BrowserWindows.shared.current ?? tabManager)?.selectedTab }
 
-    /// the action (icon, badge, popup) for an extension in the current tab
+    /// the action (icon, badge, popup) for an extension in the current tab; a view reading it
+    /// redraws on the extension's `actionRevision`
     @MainActor
     func action(for ext: InstalledExtension) -> WKWebExtension.Action? {
-        ext.context.action(for: actionTab)
+        _ = ext.actionRevision
+        return ext.context.action(for: actionTab)
     }
 
     /// click handler shared by the pinned bar and the dropdown grid: run the
@@ -420,21 +420,33 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     func openOptionsPage(for ext: InstalledExtension) {
         guard let url = ext.context.optionsPageURL else { return }
-        _ = newExtensionTab(url: url, context: ext.context)
-    }
-
-    /// a new tab on one of an extension's own pages, which WebKit refuses (-1008) in a web view
-    /// not built from the context's configuration
-    @MainActor
-    private func newExtensionTab(url: URL, context: WKWebExtensionContext, select: Bool = true) -> BrowserTab? {
-        tabManager?.newTab(url: url, configuration: context.webViewConfiguration, select: select)
+        openTab(url, for: ext.context)
     }
 
     /// open a store landing page in a new tab so the user can browse for
     /// extensions (the in-page banner then offers one-click install)
     @MainActor
     func openStorePage(_ url: URL) {
-        tabManager?.newTab(url: url)
+        openTab(url, for: nil)
+    }
+
+    /// a tab in the front browser window, in `context`'s profile: that window's space when it is
+    /// the profile's, else the profile's first, selected only on screen. an extension's own page
+    /// needs the loaded context's configuration, or WebKit refuses it (-1008)
+    @MainActor
+    @discardableResult
+    private func openTab(_ url: URL?, for context: WKWebExtensionContext?, select: Bool = true) -> BrowserTab? {
+        guard let manager = BrowserWindows.shared.browserScope ?? BrowserWindows.shared.seed ?? tabManager
+        else { return nil }
+        let profile = context?.webExtensionController.flatMap(WebExtensionRuntime.profile(of:))
+        let home = profile.flatMap { id in
+            manager.currentSpace.profileID == id ? nil : manager.spaces.first { $0.profileID == id }
+        } ?? manager.currentSpace
+        let ownPage = url?.scheme == "webkit-extension"
+        let configuration = ownPage ? context?.webViewConfiguration : nil
+        if ownPage, configuration == nil { return nil }
+        return manager.newTab(
+            url: url, configuration: configuration, select: select && home === manager.currentSpace, in: home)
     }
 
     // MARK: - Extension keyboard commands
@@ -450,11 +462,11 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     private func installCommandKeyMonitor() {
         guard commandMonitor == nil else { return }
         commandMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.isMasterEnabled,
+            guard let self, self.isMasterEnabled, let window = BrowserWindows.shared.current ?? self.tabManager,
                 event.modifierFlags.intersection([.command, .control, .option]) != []
             else { return event }
             let profile = self.currentProfile
-            for ext in self.installed {
+            for ext in self.enabledExtensions(in: window) {
                 guard let context = ext.contexts[profile], context.isLoaded else { continue }
                 if context.performCommand(for: event) { return nil }
             }
@@ -512,7 +524,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// a page an open incognito window has been to; it never reaches history through an extension
     @MainActor
     func isVisitedPrivately(_ url: URL) -> Bool {
-        BrowserWindows.shared.allManagers.flatMap(\.allTabs).contains { tab in
+        (tabManager?.allTabs ?? []).contains { tab in
             let list = tab.webView.backForwardList
             return tab.isPrivate && (tab.url == url
                 || ([list.currentItem].compactMap { $0 } + list.backList + list.forwardList).contains { $0.url == url })
@@ -571,7 +583,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             ExtensionRecord(
                 id: $0.id, source: $0.source, isEnabled: $0.isEnabled, isPinned: $0.isPinned,
                 profiles: Array($0.profiles), allowsIncognito: $0.allowsIncognito)
-        }
+        } + unrestored
         if let data = try? JSONEncoder().encode(records) {
             UserDefaults.standard.set(data, forKey: Self.recordsKey)
         }
@@ -587,11 +599,19 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             let records = try? JSONDecoder().decode([ExtensionRecord].self, from: data)
         else { return }
 
+        unrestored = records
         for record in records {
-            guard let resourceURL = await ExtensionCompat.prepare(storedID: record.id)
-                ?? ExtensionInstaller.resourceURL(forStoredID: record.id)
-            else {
-                debugLog("extension \(record.id): resources missing, skipping")
+            guard let resourceURL = await ExtensionCompat.prepare(storedID: record.id) else {
+                // a package still on disk was refused for a link: its record stays, as for one that fails to load
+                if FileManager.default.fileExists(
+                    atPath: ExtensionInstaller.storageRoot.appendingPathComponent(record.id).path)
+                {
+                    Diagnostics.record(
+                        area: "extensions", message: "a stored extension holds a symbolic link and wasn't loaded")
+                } else {
+                    debugLog("extension \(record.id): resources missing, skipping")
+                    unrestored.removeAll { $0.id == record.id }
+                }
                 continue
             }
             do {
@@ -603,6 +623,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 installedExt.seedsFromDefault = record.profiles == nil
                 installedExt.allowsIncognito = record.allowsIncognito ?? false
                 installed.append(installedExt)
+                unrestored.removeAll { $0.id == record.id }
             } catch {
                 debugLog("extension \(record.id): failed to load — \(error.localizedDescription)")
                 Diagnostics.record(
@@ -613,7 +634,9 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
     /// contexts wait for the stored extensions to be rebuilt, so a profile whose
     /// first tab came earlier loads them then
-    @ObservationIgnored private var hasRehydrated = false
+    @ObservationIgnored private(set) var hasRehydrated = false
+    /// stored records not rebuilt, still on the way or failing to load: `persist()` keeps them
+    @ObservationIgnored private var unrestored: [ExtensionRecord] = []
 
     // MARK: - WKWebExtensionControllerDelegate
 
@@ -641,7 +664,10 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             }
         case PasswordManagerBridge.bitwardenAppID:
             Task { @MainActor in
-                replyHandler(PasswordManagerBridge.handle(dict), nil)
+                guard let reply = PasswordManagerBridge.handle(dict, from: extensionContext) else {
+                    return replyHandler(nil, Self.hostNotFound)
+                }
+                replyHandler(reply, nil)
             }
         default:
             replyHandler(nil, Self.hostNotFound)
@@ -684,12 +710,13 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openNewTabUsing configuration: WKWebExtension.TabConfiguration,
         for context: WKWebExtensionContext
     ) async throws -> (any WKWebExtensionTab)? {
-        // an extension opening its own page (onboarding/changelog/options) needs
-        // the context's configuration; ordinary URLs use a normal tab
-        if let url = configuration.url, url.scheme == "webkit-extension" {
-            return newExtensionTab(url: url, context: context, select: configuration.shouldBeActive)
+        // an incognito window's request stays in it; an extension's own pages need a normal one
+        if let window = configuration.window as? ExtensionWindow, window.isPrivate(for: context),
+            configuration.url?.scheme != "webkit-extension"
+        {
+            return window.tabManager?.newTab(url: configuration.url, select: configuration.shouldBeActive)
         }
-        return tabManager?.newTab(url: configuration.url, select: configuration.shouldBeActive)
+        return openTab(configuration.url, for: context, select: configuration.shouldBeActive)
     }
 
     @MainActor
@@ -698,7 +725,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openOptionsPageFor context: WKWebExtensionContext
     ) async throws {
         guard let url = context.optionsPageURL else { return }
-        _ = newExtensionTab(url: url, context: context)
+        openTab(url, for: context)
     }
 
     /// `permissions.request()`, and WebKit's lazy grants of declared permissions: what the manifest
@@ -777,14 +804,34 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// answers the escalation alert in place of the modal, for the self-test
     @ObservationIgnored var escalationAnswerForTesting: Bool?
 
+    /// a badge, icon or title changed: the extension's buttons redraw
+    func webExtensionController(
+        _ controller: WKWebExtensionController, didUpdate action: WKWebExtension.Action,
+        forExtensionContext context: WKWebExtensionContext
+    ) {
+        owner(of: context)?.actionRevision += 1
+    }
+
     /// an extension asked to show its popup programmatically — flag it so the url
-    /// bar's settings button presents it from a sensible anchor
+    /// bar's settings button presents it from a sensible anchor. a context the focused window doesn't
+    /// run is refused and closed, or WebKit holds it open and refuses the next
     @MainActor
     func webExtensionController(
         _ controller: WKWebExtensionController,
         presentActionPopup action: WKWebExtension.Action,
         for context: WKWebExtensionContext
     ) async throws {
-        pendingPopupExtensionID = context.uniqueIdentifier
+        guard let window = BrowserWindows.shared.current,
+            enabledExtensions(in: window).contains(where: { $0.contexts[currentProfile] === context })
+        else {
+            action.closePopup()
+            throw Self.noPopupWindow
+        }
+        pendingPopup = PopupRequest(extensionID: context.uniqueIdentifier)
     }
+
+    /// what a refused `action.openPopup()` rejects with
+    private static let noPopupWindow = NSError(
+        domain: "ArtemisExtensions", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Could not find an active browser window."])
 }

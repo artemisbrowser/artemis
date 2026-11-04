@@ -107,8 +107,9 @@ enum PageTranslation {
         }
     }
 
-    /// `T` is the frame's translator in this world, installed on first use.
-    /// a unit is a text node, an attribute or the document title; `written` is what it last held from us
+    /// `T` is the frame's translator in this world, installed on first use. a unit is a text
+    /// node, an attribute or the document title; `written` is what it last held from us. units
+    /// hold their node weakly and leave `units` when replaced or collected
     private static let prelude = #"""
         const T = window.artemisTranslation ??= (() => {
             const never = "[translate=no],.notranslate,[contenteditable]:not([contenteditable=false]),[role=textbox]";
@@ -119,27 +120,29 @@ enum PageTranslation {
             const TEXT = Node.TEXT_NODE, ELEMENT = Node.ELEMENT_NODE;
             let s = null;
 
-            const read = (u) => u.kind === "#text" ? u.node.data
-                : u.kind === "#title" ? document.title : u.node.getAttribute(u.kind);
-            const write = (u, value) => {
-                if (u.kind === "#text") u.node.data = value;
-                else if (u.kind === "#title") document.title = value;
-                else u.node.setAttribute(u.kind, value);
+            const read = (node, kind) => kind === "#text" ? node.data
+                : kind === "#title" ? document.title : node.getAttribute(kind);
+            const write = (node, kind, value) => {
+                if (kind === "#text") node.data = value;
+                else if (kind === "#title") document.title = value;
+                else node.setAttribute(kind, value);
             };
             const ours = (node, kind, value) => value === s.tracked.get(node)?.[kind]?.written;
 
             function consider(node, kind, out) {
-                const value = read({ node, kind });
+                const value = read(node, kind);
                 const units = s.tracked.get(node) ?? {};
                 const old = units[kind];
                 if (old && value === old.written) return;
-                if (old) old.dead = true;
+                if (old) s.units.delete(old.id);
                 const text = value?.trim();
                 if (!text || value.length > 5000 || !letter.test(text)) return;
-                const unit = { node, kind, original: value, written: value };
+                const unit = { id: s.nextID++, ref: new WeakRef(node), kind, original: value, written: value };
                 units[kind] = unit;
                 s.tracked.set(node, units);
-                out.push([s.units.push(unit) - 1, text]);
+                s.units.set(unit.id, unit);
+                s.collected.register(node, unit.id);
+                out.push([unit.id, text]);
             }
 
             function attributes(el, out) {
@@ -253,9 +256,11 @@ enum PageTranslation {
             const api = {
                 start() {
                     if (s) return s.token;
+                    const units = new Map();
                     s = {
                         token: Math.random().toString(36).slice(2) + Date.now().toString(36),
-                        units: [], tracked: new WeakMap(), shadows: new WeakSet(), pending: new Map(),
+                        units, nextID: 0, collected: new FinalizationRegistry((id) => units.delete(id)),
+                        tracked: new WeakMap(), shadows: new WeakSet(), pending: new Map(),
                         roots: [[document, false], [document.body ?? document.documentElement, true]],
                         walker: null, out: [], timer: 0, wake: null, frames: false, size: 8, last: null,
                         observer: new MutationObserver(observed),
@@ -282,11 +287,11 @@ enum PageTranslation {
                     for (let i = 0; i < pairs.length; ) {
                         const started = performance.now(), count = Math.min(run.size, pairs.length - i);
                         for (const end = i + count; i < end; i++) {
-                            const u = run.units[pairs[i][0]];
-                            if (!u || u.dead || read(u) !== u.written) continue;
+                            const u = run.units.get(pairs[i][0]), node = u?.ref.deref();
+                            if (!node || read(node, u.kind) !== u.written) continue;
                             const [, lead, trail] = u.original.match(/^(\s*)[\s\S]*?(\s*)$/);
-                            write(u, lead + pairs[i][1] + trail);
-                            u.written = read(u);
+                            write(node, u.kind, lead + pairs[i][1] + trail);
+                            u.written = read(node, u.kind);
                         }
                         // resumes after the page's mutation observers have had these records
                         await null;
@@ -312,7 +317,10 @@ enum PageTranslation {
                     run.observer.disconnect();
                     clearTimeout(run.timer);
                     run.wake?.();
-                    for (const u of run.units) if (!u.dead && read(u) === u.written) write(u, u.original);
+                    for (const u of run.units.values()) {
+                        const node = u.ref.deref();
+                        if (node && read(node, u.kind) === u.written) write(node, u.kind, u.original);
+                    }
                 },
                 // for detection: up to 400 strings, stateless
                 sample() {
@@ -340,7 +348,7 @@ enum PageTranslation {
         })();
         """#
 
-    static func script(_ body: String) -> String { prelude + "\n" + body }
+    private static func script(_ body: String) -> String { prelude + "\n" + body }
 
     static let sample = script("return T.sample();")
     static let start = script("return T.start();")
@@ -490,6 +498,9 @@ final class PageTranslator {
         polling += 1
         Task {
             defer {
+                // a frame that stops answering mid-pass (navigated, restored) has still finished scanning
+                queued += 1
+                sink.yield(Batch(frame: frame, token: token, units: [], framesChanged: false, more: false))
                 polling -= 1
                 if polling == 0 { sink.finish() }
             }

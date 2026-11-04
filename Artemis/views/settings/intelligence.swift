@@ -9,15 +9,17 @@ struct IntelligenceSettings: View {
     @AppStorage(Intelligence.enabledKey) private var isEnabled = false
     @AppStorage(Intelligence.tidyTitlesKey) private var tidyTitles = true
     @AppStorage(Intelligence.askPageKey) private var askPage = true
-    @AppStorage(Intelligence.tidyDownloadsKey) private var tidyDownloads = true
 
-    private var readiness: Intelligence.Readiness { Intelligence.readiness }
+    /// a copy the pane can observe: `Intelligence.readiness` is a plain cache
+    @State private var readiness = Intelligence.readiness
+    private var isReady: Bool { readiness == .ready }
 
     var body: some View {
         Form {
             Section {
                 Toggle("Use the on-device model", isOn: $isEnabled)
-                    .disabled(!Intelligence.isReady)
+                    // only turning it on needs the model; turning it off is what restores page names
+                    .disabled(!isReady && !isEnabled)
                     .onChange(of: isEnabled) { _, on in
                         if !on {
                             // switching off puts every generated name back to the
@@ -26,10 +28,10 @@ struct IntelligenceSettings: View {
                             Task { await Intelligence.shared.reset() }
                         }
                     }
-                Label(readiness.explanation, systemImage: Intelligence.isReady ? "checkmark.seal" : "exclamationmark.triangle")
+                Label(readiness.explanation, systemImage: isReady ? "checkmark.seal" : "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(Intelligence.isReady ? Color.secondary : Color.orange)
-                if !Intelligence.isReady {
+                    .foregroundStyle(isReady ? Color.secondary : Color.orange)
+                if !isReady {
                     Button("Open Apple Intelligence Settings") {
                         if let url = URL(
                             string: "x-apple.systempreferences:com.apple.Siri-Settings.extension")
@@ -58,14 +60,8 @@ struct IntelligenceSettings: View {
                         info: "Adds a question mode to Find that answers only from the current page."
                     )
                 }
-                Toggle(isOn: $tidyDownloads) {
-                    InfoLabel(
-                        "Suggest download names",
-                        info: "Suggests a better name for a download based on its page. Files are only renamed if you accept."
-                    )
-                }
             }
-            .disabled(!isEnabled || !Intelligence.isReady)
+            .disabled(!isEnabled || !isReady)
 
             Section("What this will never do") {
                 Text(
@@ -76,7 +72,15 @@ struct IntelligenceSettings: View {
             }
         }
         .formStyle(.grouped)
-        // readiness changes when Apple Intelligence is switched on in System Settings
-        .onAppear { Intelligence.refreshReadiness() }
+        .onAppear(perform: refreshReadiness)
+        // coming back from System Settings, where Apple Intelligence is switched on
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshReadiness()
+        }
+    }
+
+    private func refreshReadiness() {
+        Intelligence.refreshReadiness()
+        readiness = Intelligence.readiness
     }
 }

@@ -107,13 +107,14 @@ enum ExtensionStores {
 
     private static func downloadToTemp(_ url: URL, ext: String) async throws -> URL {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                throw StoreError.downloadFailed("server returned \(http.statusCode)")
-            }
+            let (location, response) = try await URLSession.shared.download(from: url)
             let dest = FileManager.default.temporaryDirectory
                 .appendingPathComponent("artemis-ext-\(UUID().uuidString).\(ext)")
-            try data.write(to: dest)
+            try FileManager.default.moveItem(at: location, to: dest)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                try? FileManager.default.removeItem(at: dest)
+                throw StoreError.downloadFailed("server returned \(http.statusCode)")
+            }
             return dest
         } catch let err as StoreError {
             throw err

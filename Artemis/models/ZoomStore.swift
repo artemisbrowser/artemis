@@ -59,18 +59,19 @@ final class ZoomStore {
 
     /// forget every per-site zoom
     func clear() {
+        AppStorageLocation.discardUnreadable(of: fileURL)
         guard !levels.isEmpty else { return }
         levels = [:]
-        scheduleSave()
+        saveNow(keepsBackup: false)
     }
 
     /// write synchronously, for app termination, where a debounced write dies
     /// with the process
-    func saveNow() {
+    func saveNow(keepsBackup: Bool = true) {
         saveTask?.cancel()
         saveTask = nil
         guard let data = try? JSONEncoder().encode(levels) else { return }
-        AppStorageLocation.writeDurableNow(data, to: fileURL)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
     private func scheduleSave() {

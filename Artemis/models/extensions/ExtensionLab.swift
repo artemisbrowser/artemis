@@ -182,11 +182,11 @@ enum ExtensionLab {
         }
         guard let ext = try? await em.installFromDisk(root.appendingPathComponent(key)) else { return }
         em.setEnabled(ext, true, in: Profile.defaultID)
-        UserDefaults.standard.set(Tab.extensions.rawValue, forKey: "settingsPane")
+        UserDefaults.standard.set(SettingsPane.extensions.rawValue, forKey: "settingsPane")
         // the opener, without SettingsView.open's activate: nothing may come to the front
         SettingsView.openSettingsAction?()
         try? await Task.sleep(for: .milliseconds(300))
-        let window = NSApp.windows.first { $0.isVisible && $0.title == Tab.extensions.rawValue }
+        let window = NSApp.windows.first { $0.isVisible && $0.title == SettingsPane.extensions.rawValue }
         window?.setFrameOrigin(NSPoint(x: -6000, y: -6000))
         window?.orderBack(nil)
         try? await Task.sleep(for: .seconds(3))
@@ -451,7 +451,7 @@ enum ExtensionLab {
             ? backgroundWindow(hosting: webView, size: CGSize(width: 400, height: 600)) : nil
         defer {
             action.closePopup()
-            em.pendingPopupExtensionID = nil
+            em.pendingPopup = nil
             host?.orderOut(nil)
         }
         try? await Task.sleep(for: .seconds(3))

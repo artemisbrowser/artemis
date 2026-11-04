@@ -102,7 +102,9 @@ nonisolated struct PasswordRules {
     /// whether the site says which characters it takes
     var namesCharacters: Bool { !required.isEmpty || !allowed.isEmpty || pattern != nil }
 
+    /// text over a kilobyte is ignored, as if the site named no rules
     init(_ text: String = "") {
+        guard text.utf8.count <= 1024 else { return }
         for property in Self.split(text, on: ";") {
             let parts = property.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
             guard parts.count == 2 else { continue }
@@ -255,8 +257,14 @@ enum PwnedPasswords {
 enum PasswordStrength: Int, Comparable {
     case weak, fair, good, strong
 
-    init(_ password: String) {
-        let bits = Self.bits(password)
+    /// what the dictionary said of each piece, kept by whoever rates one password while it is typed,
+    /// so each keystroke asks only about the pieces it made
+    final class Words {
+        fileprivate var known: [String: Bool] = [:]
+    }
+
+    init(_ password: String, words: Words = Words()) {
+        let bits = Self.bits(password, words: words)
         self = bits < 40 ? .weak : bits < 55 ? .fair : bits < 70 ? .good : .strong
     }
 
@@ -265,13 +273,13 @@ enum PasswordStrength: Int, Comparable {
     private static let runs = ["abcdefghijklmnopqrstuvwxyz", "0123456789", "qwertyuiop", "asdfghjkl", "zxcvbnm"]
     private static let leet: [Character: Character] = ["0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"]
 
-    static func bits(_ password: String) -> Double {
+    static func bits(_ password: String, words: Words = Words()) -> Double {
         let chars = Array(password)
         var cost = [0.0] + Array(repeating: Double.infinity, count: chars.count)
         for end in stride(from: 1, through: chars.count, by: 1) {
             cost[end] = cost[end - 1] + log2(pool(chars[end - 1]))
             for start in max(0, end - 24)..<max(0, end - 2) {
-                if let bits = pattern(chars[start..<end]) { cost[end] = min(cost[end], cost[start] + bits) }
+                if let bits = pattern(chars[start..<end], words) { cost[end] = min(cost[end], cost[start] + bits) }
             }
         }
         return cost[chars.count]
@@ -282,12 +290,15 @@ enum PasswordStrength: Int, Comparable {
     }
 
     /// the system dictionary knows it
-    private static func isWord(_ word: String) -> Bool {
-        NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+    private static func isWord(_ word: String, _ words: Words) -> Bool {
+        if let known = words.known[word] { return known }
+        let known = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+        words.known[word] = known
+        return known
     }
 
     /// bits for a piece of three or more characters that one pattern covers, nil when none does
-    private static func pattern(_ piece: ArraySlice<Character>) -> Double? {
+    private static func pattern(_ piece: ArraySlice<Character>, _ words: Words) -> Double? {
         let first = log2(pool(piece.first!))
         let length = log2(Double(piece.count))
         if Set(piece).count == 1 { return first + length }
@@ -297,7 +308,7 @@ enum PasswordStrength: Int, Comparable {
             return first + length + 1
         }
         let word = String(lower.map { leet[$0] ?? $0 })
-        guard word.allSatisfy(\.isLetter), isWord(word) else { return nil }
+        guard word.allSatisfy(\.isLetter), isWord(word, words) else { return nil }
         return log2(20_000) + (piece.contains(where: \.isUppercase) ? 1 : 0) + (word == lower ? 0 : 1)
     }
 }

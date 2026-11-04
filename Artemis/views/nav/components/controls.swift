@@ -13,9 +13,7 @@ struct NavigationControls: View {
     var onToggleSidebar: (() -> Void)? = nil
 
     var body: some View {
-        // displayedContentTab so back/forward/reload track the shown page in
-        // lockstep with a space switch, matching the url field
-        let tab = tabManager.displayedContentTab
+        let tab = tabManager.unlockedContentTab
         let canGoForward = tab?.canGoForward == true
 
         // back and forward share one capsule; forward only exists while there
@@ -58,7 +56,14 @@ struct NavigationControls: View {
     @ViewBuilder
     private func trailing(_ tab: BrowserTab?) -> some View {
         if isCompact {
-            CompactNavMenu(onToggleSidebar: onToggleSidebar)
+            // not a SwiftUI Menu, which swallows the pointer tracking hover and the tooltip need
+            HoverIconButton("ellipsis", standalone: true) {
+                NativeMenu.popUp([
+                    (tab?.isLoading == true ? "Stop" : "Reload Page", tab?.url == nil ? nil : { reloadOrStop(tab) }),
+                    (tabManager.isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar", { onToggleSidebar?() }),
+                ])
+            }
+            .tooltip("More")
         } else {
             HoverIconButton(
                 tab?.isLoading == true ? "xmark" : "arrow.clockwise",
@@ -66,61 +71,20 @@ struct NavigationControls: View {
                 enabled: tab?.url != nil,
                 standalone: true
             ) {
-                if tab?.isLoading == true {
-                    tab?.stopLoading()
-                } else {
-                    tab?.reload()
-                }
+                reloadOrStop(tab)
             }
-            .tooltip(tab?.isLoading == true ? "Stop loading" : "Reload", keys: ["⌘", "R"])
+            // ⌘R reloads; stopping has no shortcut
+            .tooltip(
+                tab?.isLoading == true ? "Stop loading" : "Reload", keys: tab?.isLoading == true ? [] : ["⌘", "R"])
         }
     }
-}
 
-/// … dropdown shown when the sidebar is too narrow for every button
-private struct CompactNavMenu: View {
-    @Environment(TabManager.self) private var tabManager
-    var onToggleSidebar: (() -> Void)?
-    @State private var isHovering = false
-
-    var body: some View {
-        let tab = tabManager.displayedContentTab
-
-        Menu {
-            Button {
-                if tab?.isLoading == true {
-                    tab?.stopLoading()
-                } else {
-                    tab?.reload()
-                }
-            } label: {
-                Label(
-                    tab?.isLoading == true ? "Stop" : "Reload Page",
-                    systemImage: tab?.isLoading == true ? "xmark" : "arrow.clockwise"
-                )
-                .labelStyle(.titleAndIcon)  // macOS menus hide icons by default
-            }
-            .disabled(tab?.url == nil)
-
-            Button {
-                onToggleSidebar?()
-            } label: {
-                Label(
-                    tabManager.isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar",
-                    systemImage: "sidebar.left"
-                )
-                .labelStyle(.titleAndIcon)
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 13, weight: .bold))
-                .modifier(ChromeButtonFace(isHovering: isHovering, standalone: true))
+    private func reloadOrStop(_ tab: BrowserTab?) {
+        if tab?.isLoading == true {
+            tab?.stopLoading()
+        } else {
+            tab?.reload()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()  // exactly one button slot, like its siblings
-        .onHover { isHovering = $0 }
-        .tooltip("More")
     }
 }
 

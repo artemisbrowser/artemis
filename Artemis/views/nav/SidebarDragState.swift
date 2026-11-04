@@ -3,13 +3,6 @@
 
 import SwiftUI
 
-/// the edge of the content area a dragged tab is hovering, for drag-to-split.
-/// the content area sets this live as the cursor moves over it during a sidebar
-/// drag; the sidebar's drop commit reads it to tile instead of reorder
-enum ContentDropZone: Equatable {
-    case left, right, top, bottom
-}
-
 /// the sidebar's one drag, fed by tab rows and favourite tiles alike. every
 /// gesture reports into `contentSpace`, where the ghost and drop indicators draw
 /// above the scroll view's clip
@@ -39,13 +32,11 @@ final class SidebarDragState {
     /// the ghost keeps the grab alignment (grab the left edge → ghost's left edge
     /// stays under the cursor) instead of snapping its centre to the cursor
     var grabOffset: CGSize = .zero
-    /// the source tile/row size, so the ghost can start at the right dimensions
-    var sourceSize: CGSize = .zero
     /// bumped on release; the sidebar observes it to commit the drop
     var dropTick = 0
-    /// the content-area edge the cursor is over (drag-to-split), or nil when the
-    /// cursor is in the sidebar / not eligible to split
-    var contentDropZone: ContentDropZone?
+    /// the cursor is over the content area as a split drop (not over the
+    /// sidebar), so the drop tiles instead of reordering
+    var isOverContent = false
     /// the sidebar's window-space frame (pinned or floating overlay), so the
     /// content drop-to-split can ignore drags that are still over the sidebar —
     /// the overlay sidebar floats above the web card, so geometry alone isn't enough
@@ -68,42 +59,31 @@ final class SidebarDragState {
         return spaceDropFrames.first { $0.value.contains(point) }?.key
     }
 
-    func begin(
-        _ tab: BrowserTab, fromEssentials: Bool, sourceSize: CGSize, at p: CGPoint,
-        grab: CGSize = .zero
-    ) {
+    func begin(_ tab: BrowserTab, fromEssentials: Bool, at p: CGPoint, grab: CGSize) {
         self.tab = tab
         group = nil
         folder = nil
         self.fromEssentials = fromEssentials
-        self.sourceSize = sourceSize
         grabOffset = grab
         location = p
     }
 
     /// begin dragging a whole split as a unit (move it, don't break it apart)
-    func beginGroup(
-        _ group: SplitGroup, representative: BrowserTab, sourceSize: CGSize, at p: CGPoint,
-        grab: CGSize = .zero
-    ) {
+    func beginGroup(_ group: SplitGroup, representative: BrowserTab, at p: CGPoint, grab: CGSize) {
         self.group = group
         tab = representative
         folder = nil
         fromEssentials = false
-        self.sourceSize = sourceSize
         grabOffset = grab
         location = p
     }
 
     /// begin dragging a folder — everything filed under it moves with it
-    func beginFolder(
-        _ folder: TabFolder, sourceSize: CGSize, at p: CGPoint, grab: CGSize = .zero
-    ) {
+    func beginFolder(_ folder: TabFolder, at p: CGPoint, grab: CGSize) {
         self.folder = folder
         tab = nil
         group = nil
         fromEssentials = false
-        self.sourceSize = sourceSize
         grabOffset = grab
         location = p
     }
@@ -118,7 +98,7 @@ final class SidebarDragState {
         folder = nil
         fromEssentials = false
         grabOffset = .zero
-        contentDropZone = nil
+        isOverContent = false
         spaceDropTarget = nil
     }
 }
@@ -127,19 +107,18 @@ final class SidebarDragState {
 /// from the reflowing tile frames: one source for the layout and the drag math
 struct EssentialsGridMath {
     /// at most this many favourites share a row
-    static let maxPerRow = 5
+    private static let maxPerRow = 5
 
     var width: CGFloat
     var origin: CGPoint
     var spacing: CGFloat
     var tileHeight: CGFloat
     var minTileWidth: CGFloat
-    var maxPerRow = EssentialsGridMath.maxPerRow
 
     /// the tile count for each row, top to bottom, for a grid of `count` tiles
     func rowCounts(_ count: Int) -> [Int] {
         guard count > 0, width > 0 else { return count > 0 ? [count] : [] }
-        let fit = max(1, min(maxPerRow, Int((width + spacing) / (minTileWidth + spacing))))
+        let fit = max(1, min(Self.maxPerRow, Int((width + spacing) / (minTileWidth + spacing))))
         let rows = Int(ceil(Double(count) / Double(fit)))
         let base = count / rows
         let extra = count % rows
@@ -161,9 +140,9 @@ struct EssentialsGridMath {
         return width
     }
 
-    /// the row-major slot a point would insert at, among `count` tiles. uses
-    /// the row's vertical midpoint as a hard boundary (no overlap between rows)
-    /// and each tile's centre X within the row, so it never oscillates
+    /// the row-major slot a point would insert at, among `count` tiles: each row
+    /// owns down to the middle of the gap below it and columns split at tile
+    /// centres, so it never oscillates
     func insertionIndex(at p: CGPoint, count: Int) -> Int {
         guard count > 0 else { return 0 }
         let rows = rowCounts(count)
@@ -171,7 +150,6 @@ struct EssentialsGridMath {
         var y = origin.y
         for (r, n) in rows.enumerated() {
             let isLast = r == rows.count - 1
-            // the row owns everything down to halfway into the gap below it
             if p.y < y + tileHeight + spacing / 2 || isLast {
                 let tileW = tileWidth(perRow: n)
                 var col = 0

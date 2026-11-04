@@ -42,7 +42,7 @@ struct ChromeButtonFace: ViewModifier {
 /// a url-bar button's highlight: a circle as tall as the bar, centred on the
 /// button without widening it
 struct UrlBarHighlight: View {
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     let fill: Color
 
     var body: some View {

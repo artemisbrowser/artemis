@@ -435,7 +435,6 @@ enum Bench {
             let tabs = await openTabs(manager)
             let split = loop == "split" ? manager.createSplit(Array(tabs.prefix(2))) : nil
             try? await Task.sleep(for: .seconds(1))
-            let defaults = UserDefaults.standard
             var newTabs: [BrowserTab] = []
             var stepDirection = 1
             // the selected space's index; turns `stepDirection` around at either end
@@ -529,8 +528,7 @@ enum Bench {
                         withAnimation(Motion.panel) { manager.isLibraryOpen = !manager.isLibraryOpen }
                     // the Library held open, flipping between its three lists
                     case "libmode":
-                        manager.isLibraryOpen = true
-                        defaults.set(["Archive", "Downloads", "History"][i % 3], forKey: "libraryLastMode")
+                        manager.openLibrary([LibraryMode.archive, .downloads, .history][i % 3])
                     // ⌘T, a beat to type, Enter: the bar closes as the page opens
                     case "newtab":
                         manager.requestNewTab()

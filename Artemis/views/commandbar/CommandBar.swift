@@ -19,6 +19,8 @@ struct CommandBar: View {
     @State private var selectedIndex = 0
     @State private var items: [CommandItem] = []
     @State private var fill: CommandAutofill?
+    /// the bang ⇥ would arm, set beside `fill` in `refresh()`
+    @State private var tabBang: Bang?
     /// full-text hits and engine suggestions arrive late; both are held so the
     /// item list can stay a synchronous function of what's typed
     @State private var textHits: [PageTextHit] = []
@@ -134,7 +136,8 @@ struct CommandBar: View {
         .task(id: query) {
             let trimmed = query.trimmingCharacters(in: .whitespaces)
             guard scope == nil, SearchSuggest.isEnabled, tabManager.kind != .incognito,
-                !trimmed.isEmpty, URLInput.directURL(trimmed) == nil, !trimmed.hasPrefix("!")
+                !trimmed.isEmpty, !URLInput.isPathLike(trimmed), URLInput.directURL(trimmed) == nil,
+                !(Bangs.isEnabled && (Bangs.partial(trimmed) != nil || Bangs.split(trimmed) != nil))
             else {
                 if !suggestions.isEmpty {
                     suggestions = []
@@ -144,7 +147,7 @@ struct CommandBar: View {
             }
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            let fetched = await SearchSuggest.suggestions(for: trimmed)
+            let fetched = await SearchSuggest.suggestions(for: trimmed, profile: tabManager.currentProfile.id)
             guard !Task.isCancelled else { return }
             suggestions = fetched
             refresh()
@@ -159,7 +162,7 @@ struct CommandBar: View {
         .onKeyPress(.return, phases: .down) { press in
             let held = press.modifiers.intersection([.shift, .command, .option])
             guard !held.isEmpty else { return .ignored }
-            executeSelected(launch: launch(for: press.modifiers))
+            executeSelected(launch: engine.launch(for: press.modifiers, address: address))
             return .handled
         }
         .onKeyPress(.escape) {
@@ -195,6 +198,7 @@ struct CommandBar: View {
     private func refresh() {
         let held = selectedIndex == 0 ? nil : selected?.id
         fill = scope == nil ? engine.autofill(for: query) : nil
+        tabBang = scope == nil ? Bangs.tabTarget(query) : nil
         items = engine.items(
             input: query, scope: scope, textHits: textHits, suggestions: suggestions)
         selectedIndex =
@@ -210,14 +214,16 @@ struct CommandBar: View {
         guard !items.isEmpty else { return .handled }
         pointerMoved = false
         selectedIndex = (selectedIndex + delta + items.count) % items.count
+        // focus stays in the field, so VoiceOver says nothing of the row on its own
+        if let selected { AccessibilityNotification.Announcement("\(selected.title), \(kindName(selected))").post() }
         return .handled
     }
 
     /// ⇥ arms the site search a lone word names, else finishes the host the bar is
     /// offering, else walks the list
     private func acceptCompletionOrMove(_ delta: Int) -> KeyPress.Result {
-        if scope == nil, let bang = Bangs.tabTarget(query) {
-            query = "!\(bang.trigger) "
+        if let tabBang {
+            query = "!\(tabBang.trigger) "
             return .handled
         }
         if let fill, !fill.completion.isEmpty {
@@ -225,13 +231,6 @@ struct CommandBar: View {
             return .handled
         }
         return move(delta)
-    }
-
-    private func launch(for modifiers: EventModifiers) -> CommandLaunch {
-        if modifiers.contains(.shift) { return .scout }
-        if modifiers.contains(.command) { return .beside }
-        if modifiers.contains(.option) || address { return .current }
-        return .normal
     }
 
     /// typing a whole mode token drops you into that mode, chip and all
@@ -301,6 +300,7 @@ struct CommandBar: View {
         HStack(spacing: Metrics.iconGap) {
             fieldIcon
                 .frame(width: Metrics.icon, height: Metrics.icon)
+                .accessibilityHidden(true)
 
             TextField("URL", text: $query, selection: $selection, prompt: Text(prompt).foregroundStyle(.tertiary))
                 .textFieldStyle(.plain)
@@ -309,7 +309,7 @@ struct CommandBar: View {
                 .onSubmit {
                     // pasted or expanded text can arrive with its ↵ before the rows catch up
                     refresh()
-                    executeSelected(launch: launch(for: []))
+                    executeSelected(launch: engine.launch(for: [], address: address))
                 }
 
             if let completion {
@@ -330,7 +330,7 @@ struct CommandBar: View {
     /// what ⇥ would do, kept apart from the typed text so it never reads as
     /// where ↵ goes
     private var completion: String? {
-        if scope == nil, let bang = Bangs.tabTarget(query) { return "Search \(bang.name)" }
+        if let tabBang { return "Search \(tabBang.name)" }
         if let fill, !fill.completion.isEmpty { return fill.host }
         return nil
     }
@@ -405,8 +405,8 @@ struct CommandBar: View {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         row(item, isSelected: index == selectedIndex)
                             .id(item.id)
-                            .onTapGesture { execute(item, launch: launch(for: heldModifiers)) }
-                            .accessibilityAction { execute(item, launch: launch(for: [])) }
+                            .onTapGesture { execute(item, launch: engine.launch(for: heldModifiers, address: address)) }
+                            .accessibilityAction { execute(item, launch: engine.launch(for: [], address: address)) }
                             .onHover { hovering in
                                 if hovering, pointerMoved { selectedIndex = index }
                             }
@@ -584,7 +584,7 @@ struct CommandBar: View {
 
     /// the launch a held modifier would pick, for results it changes
     private func heldLaunch(for item: CommandItem) -> CommandLaunch {
-        let launch = launch(for: heldModifiers)
+        let launch = engine.launch(for: heldModifiers, address: address)
         switch item.kind {
         case .tab: return launch == .beside ? .beside : .normal
         case .space, .action, .scope: return .normal

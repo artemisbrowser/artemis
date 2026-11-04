@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
+import ImageIO
+import UniformTypeIdentifiers
 import WebKit
 
 /// one connected `Artemis mcp` process
@@ -12,6 +14,7 @@ final class AgentSession: Identifiable {
     private(set) var version = ""
     private(set) var parentPath = ""
     @ObservationIgnored fileprivate var isApproved = false
+    @ObservationIgnored fileprivate var isRefused = false
     @ObservationIgnored fileprivate var isClosed = false
     /// calls that arrived before the user answered the approval prompt
     @ObservationIgnored fileprivate var waiting: [(id: Int, name: String, arguments: [String: Any])] = []
@@ -117,6 +120,8 @@ final class AgentBridge {
     /// why the socket couldn't open, shown in Settings
     private(set) var socketError: String?
 
+    /// identities refused this run, refused again without asking until agents are switched off
+    @ObservationIgnored private var denied: Set<String> = []
     @ObservationIgnored private var listener: DispatchSourceRead?
     @ObservationIgnored private var prompts: [AgentSession] = []
     @ObservationIgnored private var isPrompting = false
@@ -153,6 +158,7 @@ final class AgentBridge {
         unlink(AgentSocket.path)
         listener.cancel()
         self.listener = nil
+        denied = []
         for session in sessions { session.close() }
     }
 
@@ -174,6 +180,8 @@ final class AgentBridge {
             session.attach(attach["client"] as? [String: Any] ?? [:])
             if let identity = session.identity, approved.contains(identity) {
                 approve(session)
+            } else if let identity = session.identity, denied.contains(identity) {
+                session.isRefused = true
             } else {
                 requestApproval(session)
             }
@@ -182,6 +190,7 @@ final class AgentBridge {
             let arguments = call["arguments"] as? [String: Any] ?? [:]
             if session.isApproved { run(id, name, arguments, for: session) } else {
                 session.waiting.append((id, name, arguments))
+                if session.isRefused { refuse(session) }
             }
         }
     }
@@ -189,7 +198,7 @@ final class AgentBridge {
     fileprivate func ended(_ session: AgentSession) {
         sessions.removeAll { $0 === session }
         let stillUsed = Set(sessions.flatMap(\.touched))
-        for tab in BrowserCore.shared.spaces.flatMap(\.tabs)
+        for tab in BrowserCore.shared.spaces.flatMap(\.tabs) + BrowserCore.shared.allEssentials
         where session.touched.contains(tab.id) && !stillUsed.contains(tab.id) {
             tab.agentName = nil
         }
@@ -226,17 +235,24 @@ final class AgentBridge {
             let next = prompts.removeFirst()
             guard !next.isClosed else { continue }
             let identity = next.identity
-            if identity.map(approved.contains) == true || ask(next) {
+            if identity.map(denied.contains) == true {
+                refuse(next)
+            } else if identity.map(approved.contains) == true || ask(next) {
                 if let identity, !approved.contains(identity) { approved.append(identity) }
                 approve(next)
             } else {
-                for call in next.waiting {
-                    next.reply(call.id, Self.failure("The user didn't allow “\(next.name)” to use Artemis."))
-                }
-                next.close()
+                if let identity { denied.insert(identity) }
+                refuse(next)
             }
         }
         isPrompting = false
+    }
+
+    private func refuse(_ session: AgentSession) {
+        for call in session.waiting {
+            session.reply(call.id, Self.failure("The user didn't allow “\(session.name)” to use Artemis."))
+        }
+        session.close()
     }
 
     private func ask(_ session: AgentSession) -> Bool {
@@ -270,7 +286,8 @@ final class AgentBridge {
     private func perform(_ name: String, _ arguments: [String: Any], for session: AgentSession) async throws
         -> [String: Any]
     {
-        guard isEnabled, let manager = BrowserWindows.shared.browserScope else {
+        // a call approved after its session closed, or queued behind the close, does nothing
+        guard isEnabled, !session.isClosed, let manager = BrowserWindows.shared.browserScope else {
             throw AgentFailure("Artemis has no browser window open, or agents were just turned off.")
         }
         switch name {
@@ -294,13 +311,16 @@ final class AgentBridge {
             if show { manager.selectSpace(space) }
             let tab = manager.newTab(url: url, select: show, in: space)
             touch(tab, by: session)
-            await Self.settle(tab)
+            await tab.settle()
             return Self.text(Self.json(info(tab, in: space, manager: manager)))
         default:
-            let (tab, space) = try resolveTab(arguments)
+            let (tab, _) = try resolveTab(arguments)
             touch(tab, by: session)
+            // resolved again in turn: earlier calls on the tab can run for a minute, and its space
+            // may lock or stop being shared meanwhile
             return try await serially(tab.id) {
-                try await self.perform(name, arguments, on: tab, in: space, manager: manager)
+                let (tab, space) = try self.resolveTab(arguments)
+                return try await self.perform(name, arguments, on: tab, in: space, manager: manager)
             }
         }
     }
@@ -320,7 +340,8 @@ final class AgentBridge {
             manager.close(tab)
             return Self.text("Closed.")
         case "navigate":
-            await Self.prepare(tab)
+            await tab.wake()
+            _ = try resolveTab(arguments)
             switch (arguments["url"], arguments["action"] as? String) {
             case (let raw?, nil): tab.load(try Self.webURL(raw))
             case (nil, "back"?): tab.goBack()
@@ -328,21 +349,23 @@ final class AgentBridge {
             case (nil, "reload"?): tab.reload()
             default: throw AgentFailure("Pass either url or action (back, forward or reload).")
             }
-            await Self.settle(tab)
+            await tab.settle()
             return Self.text(Self.json(info(tab, in: space, manager: manager)))
         default:
             break
         }
 
         guard Self.location(of: tab) != nil else { throw AgentFailure("This tab has no page loaded; navigate it first.") }
-        await Self.prepare(tab)
+        await tab.wake()
+        // again once awake, which can take 15 s
+        _ = try resolveTab(arguments)
         let uid = arguments["uid"] as? String
         switch name {
         case "take_snapshot":
             return Self.text(try await Self.page(tab, "return A.snapshot();"))
         case "click", "hover":
             let text = try await Self.page(tab, "return A.\(name)(uid);", ["uid": try Self.required(uid, "uid")])
-            if name == "click" { await Self.settle(tab) }
+            if name == "click" { await tab.settle() }
             return Self.text(text)
         case "fill":
             let value = try Self.required(arguments["value"] as? String, "value")
@@ -356,7 +379,7 @@ final class AgentBridge {
             let modifiers = arguments["modifiers"] as? [String] ?? []
             let text = try await Self.page(
                 tab, "return A.pressKey(key, modifiers);", ["key": key, "modifiers": modifiers])
-            await Self.settle(tab)
+            await tab.settle()
             return Self.text(text)
         case "scroll":
             return Self.text(try await Self.page(
@@ -367,7 +390,7 @@ final class AgentBridge {
         case "wait_for":
             return Self.text(try await Self.wait(
                 for: arguments["text"] as? String, in: tab,
-                timeout: min((arguments["timeout_ms"] as? Double) ?? 10_000, 60_000)))
+                timeout: max(0, min((arguments["timeout_ms"] as? Double) ?? 10_000, 60_000))))
         case "evaluate_script":
             guard allowsScripts else {
                 throw AgentFailure("Running scripts is off. The user can allow it in Artemis › Settings › Agents › “Let agents run scripts in pages”.")
@@ -441,24 +464,6 @@ final class AgentBridge {
         return url
     }
 
-    /// wake a lazy or hibernated tab, and give an unmounted web view a page-sized frame
-    private static func prepare(_ tab: BrowserTab) async {
-        if tab.pendingURL != nil {
-            tab.activateIfNeeded()
-            await settle(tab)
-        }
-        if tab.webView.frame.isEmpty { tab.webView.frame = CGRect(x: 0, y: 0, width: 1280, height: 800) }
-    }
-
-    /// until the current load finishes, at most 15s
-    private static func settle(_ tab: BrowserTab) async {
-        try? await Task.sleep(for: .milliseconds(200))
-        let deadline = Date(timeIntervalSinceNow: 15)
-        while tab.webView.isLoading, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-    }
-
     private static func page(
         _ tab: BrowserTab, _ call: String, _ arguments: [String: Any] = [:], world: WKContentWorld = AgentPage.world
     ) async throws -> String {
@@ -486,25 +491,31 @@ final class AgentBridge {
         throw AgentFailure("Timed out after \(Int(milliseconds))ms waiting for \(text.map { "“\($0)”" } ?? "the page to load").")
     }
 
-    /// base64 PNG, at most 1600px wide
     private static func screenshot(_ tab: BrowserTab) async throws -> String {
         let image = try await tab.webView.takeSnapshot(configuration: nil)
-        guard var cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            throw AgentFailure("The tab couldn't be captured.")
-        }
-        if cgImage.width > 1600, let context = CGContext(
-            data: nil, width: 1600, height: cgImage.height * 1600 / cgImage.width, bitsPerComponent: 8,
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            let png = await png(cgImage)
+        else { throw AgentFailure("The tab couldn't be captured.") }
+        return png
+    }
+
+    /// base64 PNG, at most 1600px wide
+    @concurrent nonisolated private static func png(_ image: CGImage) async -> String? {
+        var image = image
+        if image.width > 1600, let context = CGContext(
+            data: nil, width: 1600, height: image.height * 1600 / image.width, bitsPerComponent: 8,
             bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         {
             context.interpolationQuality = .high
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: context.width, height: context.height))
-            cgImage = context.makeImage() ?? cgImage
+            context.draw(image, in: CGRect(x: 0, y: 0, width: context.width, height: context.height))
+            image = context.makeImage() ?? image
         }
-        guard let png = NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:]) else {
-            throw AgentFailure("The tab couldn't be captured.")
-        }
-        return png.base64EncodedString()
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination) ? (data as Data).base64EncodedString() : nil
     }
 
     private static func text(_ text: String) -> [String: Any] {

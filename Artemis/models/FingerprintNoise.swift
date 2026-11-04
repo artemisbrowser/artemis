@@ -4,35 +4,29 @@
 import Foundation
 import WebKit
 
-/// per-site, per-launch noise in canvas readback, the WebGL GPU strings, Web Audio data and
-/// `hardwareConcurrency`: one answer per site within a launch, different across sites and launches.
-/// the seed is drawn per launch and never persisted
+/// per-site noise in canvas readback, the WebGL GPU strings, Web Audio data and `hardwareConcurrency`:
+/// one answer per site within a controller (a profile, or its incognito pages) for the launch, different
+/// across sites, controllers and launches. the seed is drawn per controller and never persisted
 enum FingerprintNoise {
     static let enabledKey = "fingerprintDefence"
 
-    private static let sessionSeed: UInt32 = UInt32.random(in: 1...UInt32.max)
+    /// read once per launch: `removeAllUserScripts`, the only removal API, would drop extension
+    /// content scripts
+    static let isEnabled = UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
 
-    static var isEnabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
-    }
-
-    /// at document start, before any page script reads a surface. the setting is read once per
-    /// launch: `removeAllUserScripts`, the only removal API, would drop extension content scripts
+    /// at document start, before any page script reads a surface
     static func install(into controller: WKUserContentController) {
         guard isEnabled else { return }
         controller.addUserScript(
             WKUserScript(
-                source: script(seed: sessionSeed), injectionTime: .atDocumentStart,
+                source: script(seed: UInt32.random(in: 1...UInt32.max)), injectionTime: .atDocumentStart,
                 forMainFrameOnly: false))
     }
 
     private static func script(seed: UInt32) -> String {
         """
         (() => {
-          if (window.__artemisFingerprintNoise) return;
-          window.__artemisFingerprintNoise = true;
-
-          // one number per (session, origin). xorshift over the session seed
+          // one number per (controller, origin). xorshift over the seed
           // mixed with the origin's characters: cheap, deterministic, and
           // different for every site — which is the whole point
           let h = \(seed) >>> 0;
@@ -63,21 +57,29 @@ enum FingerprintNoise {
             }
           };
 
+          // a replacement reads as its native original: name, length, no
+          // prototype, and its source through Function.prototype.toString
+          const natives = new WeakMap();
+          const toString = Function.prototype.toString;
+          const nativeToString = {
+            toString() { return toString.call(natives.get(this) || this); },
+          }.toString;
+          natives.set(nativeToString, toString);
+          Function.prototype.toString = nativeToString;
+
           const wrap = (object, name, make) => {
             const original = object && object[name];
             if (typeof original !== "function") return;
-            const replacement = make(original);
-            // keep toString() looking native, so the patch isn't itself a
-            // fingerprintable oddity
-            try {
-              Object.defineProperty(replacement, "name", { value: name });
-              replacement.toString = () => original.toString();
-            } catch (e) {}
+            const body = make(original);
+            const replacement = { [name](...args) { return body.apply(this, args); } }[name];
+            Object.defineProperty(replacement, "length", { value: original.length });
+            natives.set(replacement, original);
             object[name] = replacement;
           };
 
           // --- canvas -------------------------------------------------------
           const C2D = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+          const readPixels = C2D && C2D.getImageData;
           wrap(C2D, "getImageData", (original) => function (...args) {
             const result = original.apply(this, args);
             try { perturb(result.data); } catch (e) {}
@@ -85,15 +87,27 @@ enum FingerprintNoise {
           });
 
           const noisyCopy = (canvas) => {
-            // read, perturb, and draw into a scratch canvas, so the encoded
-            // bytes differ without the visible canvas changing
+            // perturb a scratch copy, so the encoded bytes differ without the
+            // visible canvas changing; past a megapixel only the flipped pixels
+            // make the round trip
             const copy = document.createElement("canvas");
             copy.width = canvas.width;
             copy.height = canvas.height;
+            const { width, height } = copy;
             const context = copy.getContext("2d");
             context.drawImage(canvas, 0, 0);
-            const image = context.getImageData(0, 0, copy.width, copy.height);
-            context.putImageData(image, 0, 0);
+            if (width * height <= 1 << 20) {
+              context.putImageData(context.getImageData(0, 0, width, height), 0, 0);
+              return copy;
+            }
+            // the pixels perturb() flips over the whole image, in its order
+            for (let i = 0; i < offsets.length; i++) {
+              const at = Math.floor(offsets[i] * width * height);
+              const x = at % width, y = Math.floor(at / width);
+              const pixel = readPixels.call(context, x, y, 1, 1);
+              pixel.data[i % 3] ^= 1;
+              context.putImageData(pixel, x, y);
+            }
             return copy;
           };
 
@@ -130,6 +144,7 @@ enum FingerprintNoise {
           // --- Web Audio ----------------------------------------------------
           // far below the least significant bit of 16-bit audio: inaudible, and
           // enough to move a hash of the buffer
+          const noised = new WeakSet();
           const jitter = (array) => {
             for (let i = 0; i < offsets.length && i < array.length; i++) {
               const at = Math.floor(offsets[i] * array.length);
@@ -139,8 +154,11 @@ enum FingerprintNoise {
           wrap(
             window.AudioBuffer && AudioBuffer.prototype, "getChannelData",
             (original) => function (...args) {
+              // a live view of the buffer, the same array on every call
               const data = original.apply(this, args);
-              try { jitter(data); } catch (e) {}
+              try {
+                if (!noised.has(data)) { noised.add(data); jitter(data); }
+              } catch (e) {}
               return data;
             });
           wrap(
@@ -151,11 +169,14 @@ enum FingerprintNoise {
             });
 
           // --- navigator ----------------------------------------------------
-          try {
-            Object.defineProperty(navigator, "hardwareConcurrency", {
-              get: () => 8, configurable: true,
-            });
-          } catch (e) {}
+          const NAVIGATOR = window.Navigator && Navigator.prototype;
+          const cores = NAVIGATOR && Object.getOwnPropertyDescriptor(NAVIGATOR, "hardwareConcurrency");
+          if (cores && cores.get) {
+            const get = Object.getOwnPropertyDescriptor(
+              { get hardwareConcurrency() { return 8; } }, "hardwareConcurrency").get;
+            natives.set(get, cores.get);
+            Object.defineProperty(NAVIGATOR, "hardwareConcurrency", { ...cores, get });
+          }
         })();
         """
     }

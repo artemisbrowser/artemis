@@ -59,7 +59,9 @@ struct FindBar: View {
             if canAsk {
                 Button {
                     isAsking.toggle()
+                    answerTask?.cancel()
                     answer = nil
+                    isThinking = false
                     isFocused = true
                     if !isAsking { startSearch() } else { clearSelection() }
                 } label: {
@@ -153,9 +155,12 @@ struct FindBar: View {
         answerTask?.cancel()
         answer = nil
         isThinking = true
+        // a replaced task still resumes; only the current one may touch the panel
         answerTask = Task {
-            defer { isThinking = false }
-            guard let text = await PageText.extract(from: tab.webView) else {
+            defer { if !Task.isCancelled { isThinking = false } }
+            let text = await PageText.extract(from: tab.webView)
+            guard !Task.isCancelled else { return }
+            guard let text else {
                 answer = "There's no readable text on this page."
                 return
             }

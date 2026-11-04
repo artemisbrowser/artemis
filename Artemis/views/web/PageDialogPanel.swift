@@ -8,11 +8,15 @@ import SwiftUI
 struct PageDialogPanel: View {
     let tab: BrowserTab
     let request: PageDialogRequest
+    /// false over a warm page mounted out of sight, which neither speaks nor takes focus
+    let isShown: Bool
 
     @State private var text = ""
     @State private var secondary = ""
     @State private var checked = false
     @FocusState private var fieldFocused: Bool
+    /// VoiceOver's cursor, moved onto the question: an overlay isn't a window it notices opening
+    @AccessibilityFocusState private var titleFocused: Bool
 
     private var site: String { request.host.isEmpty ? "This page" : request.host }
 
@@ -79,6 +83,7 @@ struct PageDialogPanel: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
+                    .accessibilityFocused($titleFocused)
 
                 if !detail.isEmpty {
                     Text(detail)
@@ -126,14 +131,21 @@ struct PageDialogPanel: View {
             .frame(width: 360, alignment: .leading)
             .glassEffect(.regular, in: .rect(cornerRadius: 14))
             .shadow(color: .black.opacity(0.35), radius: 24, y: 8)
+            .accessibilityElement(children: .contain)
+            .disabled(!isShown)
         }
         .transition(.opacity)
+        .accessibilityHidden(!isShown)
         .onAppear {
-            if case .prompt(let defaultText) = request.kind {
-                text = defaultText
-                fieldFocused = true
+            if case .prompt(let defaultText) = request.kind { text = defaultText }
+        }
+        .onChange(of: isShown, initial: true) {
+            guard isShown else { return }
+            switch request.kind {
+            case .prompt, .httpAuth: fieldFocused = true
+            default: titleFocused = true
             }
-            if case .httpAuth = request.kind { fieldFocused = true }
+            AccessibilityNotification.Announcement(detail.isEmpty ? title : "\(title). \(detail)").post()
         }
         // a fresh question never inherits the last one's typed text or checkbox
         .id(request.id)
@@ -147,10 +159,10 @@ struct PageDialogPanel: View {
 extension View {
     /// overlays whatever question `tab`'s page is blocked on; every surface that
     /// hosts a web view must apply it, or the dialog is never drawn
-    func pageDialog(for tab: BrowserTab) -> some View {
+    func pageDialog(for tab: BrowserTab, isShown: Bool = true) -> some View {
         overlay {
             if let request = tab.pendingDialog {
-                PageDialogPanel(tab: tab, request: request)
+                PageDialogPanel(tab: tab, request: request, isShown: isShown)
             }
         }
         .animation(Motion.fade, value: tab.pendingDialog?.id)

@@ -19,7 +19,7 @@ extension SpaceAppearance {
     var accent: Color {
         if fill == .glass { return .white.opacity(0.9) }
         let palette = paletteColors
-        let base = palette.max(by: { saturation($0) < saturation($1) }) ?? palette.first ?? RGBA(0.6, 0.5, 0.95)
+        let base = palette.max(by: { saturation($0) < saturation($1) }) ?? RGBA(0.6, 0.5, 0.95)
         let ns = NSColor(base.color).usingColorSpace(.sRGB) ?? .white
         var h: CGFloat = 0, s: CGFloat = 0, v: CGFloat = 0, a: CGFloat = 0
         ns.getHue(&h, saturation: &s, brightness: &v, alpha: &a)

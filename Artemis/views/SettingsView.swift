@@ -4,7 +4,7 @@
 import AppKit
 import SwiftUI
 
-enum Tab: String, CaseIterable, Identifiable {
+enum SettingsPane: String, CaseIterable, Identifiable {
     var id: Self { self }
     case general = "General"
     case appearance = "Appearance"
@@ -18,7 +18,7 @@ enum Tab: String, CaseIterable, Identifiable {
     case intelligence = "Intelligence"
     case agents = "Agents"
 
-    fileprivate static let groups: [[Tab]] = [
+    fileprivate static let groups: [[SettingsPane]] = [
         [.general, .appearance, .profiles, .privacy],
         [.sidebar, .tabs, .links, .search],
         [.extensions, .intelligence, .agents],
@@ -40,20 +40,23 @@ enum Tab: String, CaseIterable, Identifiable {
         }
     }
 
-    /// what the sidebar search matches besides the title: the page's section names
+    /// what the sidebar search matches besides the title: the page's sections and what they hold
     private var keywords: [String] {
         switch self {
-        case .general: ["Default Browser", "Memory", "Sleep", "Picture in Picture", "Mini-Player"]
+        case .general:
+            ["Default Browser", "Import", "Arc", "Memory", "Sleep", "Picture in Picture", "Mini-Player"]
+                + (Updates.shared.isEnabled ? ["Updates", "Beta"] : [])
         case .appearance: [
             "Window", "Edge thickness", "Now Playing", "Folders", "App Icon",
         ]
         case .profiles: [
             "Passwords", "Passkeys", "Logins", "Cookies", "History", "Favourites", "Clear Browsing Data", "Sign out",
-            "Search engine", "Suggestions", "Archive", "Auto-Archive",
+            "Search engine", "Suggestions", "Archive", "Auto-Archive", "Translation", "Translate",
         ]
         case .privacy: [
             "Content Blocking", "Ads", "Trackers", "Incognito", "Touch ID", "Fingerprint", "Site Permissions",
-            "Camera", "Microphone", "Location", "On-Device Data",
+            "Camera", "Microphone", "Location", "Automation", "AppleScript", "Spotlight", "Reports", "Feedback",
+            "On-Device Data",
         ]
         case .sidebar: ["Reveal", "Hover", "Spaces", "Switching speed"]
         case .tabs: ["Pinned Tabs", "Split View", "Panes", "Drop guides", "Linked"]
@@ -72,9 +75,11 @@ enum Tab: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     private static let paneKey = "settingsPane"
-    @AppStorage(paneKey) private var selectedTab: Tab = .general
-    @State private var back: [Tab] = []
-    @State private var forward: [Tab] = []
+    @AppStorage(paneKey) private var selectedPane: SettingsPane = .general
+    @State private var back: [SettingsPane] = []
+    @State private var forward: [SettingsPane] = []
+    /// where Back or Forward is moving to, which records no history of its own
+    @State private var stepTarget: SettingsPane?
     @State private var query = ""
     @State private var profiles = ProfilesNavigator.shared
 
@@ -83,7 +88,7 @@ struct SettingsView: View {
     @MainActor static var openSettingsAction: OpenSettingsAction?
 
     @MainActor
-    static func open(_ pane: Tab? = nil) {
+    static func open(_ pane: SettingsPane? = nil) {
         if let pane { UserDefaults.standard.set(pane.rawValue, forKey: paneKey) }
         NSApp.activate()
         if let openSettingsAction {
@@ -95,12 +100,12 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            SettingsSidebar(selection: selectedTab, query: query, select: go, open: openProfilePage)
+            SettingsSidebar(selection: selectedPane, query: query, select: go, open: openProfilePage)
                 .searchable(text: $query, placement: .sidebar, prompt: "Search settings")
                 .navigationSplitViewColumnWidth(240)
         } detail: {
-            page(selectedTab)
-                .navigationTitle(subpage?.title ?? selectedTab.rawValue)
+            page(selectedPane)
+                .navigationTitle(subpage?.title ?? selectedPane.rawValue)
                 // a profile's page says whose it is
                 .navigationSubtitle(subpage == nil ? "" : profiles.profile.name)
                 .toolbar {
@@ -117,18 +122,24 @@ struct SettingsView: View {
         }
         .frame(width: 900, height: 700)
         .background(UnifiedToolbar())
+        // every change of pane is history, a link inside a page or an `open` from outside included
+        .onChange(of: selectedPane) { old, new in
+            if new == stepTarget {
+                stepTarget = nil
+                return
+            }
+            back.append(old)
+            forward.removeAll()
+        }
     }
 
     /// the profile page open under Profiles, if one is
-    private var subpage: ProfilesNavigator.Page? { selectedTab == .profiles ? profiles.page : nil }
+    private var subpage: ProfilesNavigator.Page? { selectedPane == .profiles ? profiles.page : nil }
 
-    private func go(_ tab: Tab) {
+    private func go(_ pane: SettingsPane) {
         // choosing Profiles again from the sidebar comes back up to the list
-        if tab == .profiles, subpage != nil { withAnimation(Motion.panel) { profiles.page = nil } }
-        guard tab != selectedTab else { return }
-        back.append(selectedTab)
-        forward.removeAll()
-        selectedTab = tab
+        if pane == .profiles, subpage != nil { withAnimation(Motion.panel) { profiles.page = nil } }
+        selectedPane = pane
     }
 
     private func openProfilePage(_ page: ProfilesNavigator.Page) {
@@ -143,20 +154,22 @@ struct SettingsView: View {
             withAnimation(Motion.panel) { profiles.page = nil }
             return
         }
-        guard let tab = back.popLast() else { return }
-        forward.append(selectedTab)
-        selectedTab = tab
+        guard let pane = back.popLast() else { return }
+        forward.append(selectedPane)
+        stepTarget = pane
+        selectedPane = pane
     }
 
     private func goForward() {
-        guard let tab = forward.popLast() else { return }
-        back.append(selectedTab)
-        selectedTab = tab
+        guard let pane = forward.popLast() else { return }
+        back.append(selectedPane)
+        stepTarget = pane
+        selectedPane = pane
     }
 
     @ViewBuilder
-    private func page(_ tab: Tab) -> some View {
-        switch tab {
+    private func page(_ pane: SettingsPane) -> some View {
+        switch pane {
         case .general: GeneralSettings()
         case .appearance: AppearanceSettings()
         case .profiles: ProfilesSettings()
@@ -187,9 +200,9 @@ private struct UnifiedToolbar: NSViewRepresentable {
 }
 
 private struct SettingsSidebar: View {
-    let selection: Tab
+    let selection: SettingsPane
     let query: String
-    let select: (Tab) -> Void
+    let select: (SettingsPane) -> Void
     let open: (ProfilesNavigator.Page) -> Void
     @AppStorage(AppIconChoice.storageKey) private var iconRaw = AppIconChoice.bundled.rawValue
 
@@ -200,11 +213,11 @@ private struct SettingsSidebar: View {
             VStack(alignment: .leading, spacing: 16) {
                 if query.isEmpty {
                     AppCard(icon: icon)
-                    ForEach(Tab.groups, id: \.self) { group in
+                    ForEach(SettingsPane.groups, id: \.self) { group in
                         rows(group)
                     }
                 } else {
-                    let found = Tab.allCases.filter { $0.matches(query) }
+                    let found = SettingsPane.allCases.filter { $0.matches(query) }
                     let pages = [ProfilesNavigator.Page.passwords, .autofill, .clearData].filter {
                         $0.title.localizedCaseInsensitiveContains(query)
                     }
@@ -229,10 +242,10 @@ private struct SettingsSidebar: View {
         }
     }
 
-    private func rows(_ tabs: [Tab]) -> some View {
+    private func rows(_ panes: [SettingsPane]) -> some View {
         VStack(spacing: 2) {
-            ForEach(tabs) { tab in
-                SettingsRow(tab: tab, icon: icon, isSelected: tab == selection) { select(tab) }
+            ForEach(panes) { pane in
+                SettingsRow(pane: pane, icon: icon, isSelected: pane == selection) { select(pane) }
             }
         }
     }
@@ -247,7 +260,7 @@ private struct ProfilePageRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                SettingsBadge(tab: .profiles, icon: icon)
+                SettingsBadge(pane: .profiles, icon: icon)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(page.title)
                     Text("Profiles › \(ProfilesNavigator.shared.profile.name)")
@@ -290,7 +303,7 @@ private struct AppCard: View {
 }
 
 private struct SettingsRow: View {
-    let tab: Tab
+    let pane: SettingsPane
     let icon: AppIconChoice
     let isSelected: Bool
     let select: () -> Void
@@ -298,8 +311,8 @@ private struct SettingsRow: View {
     var body: some View {
         Button(action: select) {
             HStack(spacing: 10) {
-                SettingsBadge(tab: tab, icon: icon)
-                Text(tab.rawValue)
+                SettingsBadge(pane: pane, icon: icon)
+                Text(pane.rawValue)
                     .foregroundStyle(isSelected ? .white : .primary)
                 Spacer(minLength: 0)
             }
@@ -311,13 +324,14 @@ private struct SettingsRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
 /// a page's symbol drawn like the app icon: its glyph colour on the icon's black
 /// (or, with light icons, white) glass
 private struct SettingsBadge: View {
-    let tab: Tab
+    let pane: SettingsPane
     let icon: AppIconChoice
     private let size: CGFloat = 24
 
@@ -331,7 +345,7 @@ private struct SettingsBadge: View {
             .overlay(shape.strokeBorder(dark ? .white.opacity(0.14) : .black.opacity(0.1), lineWidth: 0.5))
             .frame(width: size, height: size)
             .overlay {
-                Image(systemName: tab.symbol)
+                Image(systemName: pane.symbol)
                     .font(.system(size: size * 0.52, weight: .semibold))
                     .foregroundStyle(LinearGradient(
                         colors: [icon.glyph.light, icon.glyph.base], startPoint: .top, endPoint: .bottom))

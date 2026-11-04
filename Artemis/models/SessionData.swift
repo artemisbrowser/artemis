@@ -29,7 +29,7 @@ nonisolated struct BrowsingSession: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
         profiles = try c.decodeIfPresent([ProfileData].self, forKey: .profiles) ?? []
-        spaces = try c.decodeIfPresent([SpaceData].self, forKey: .spaces) ?? []
+        spaces = try c.decodeIfPresent([Lossy<SpaceData>].self, forKey: .spaces)?.compactMap(\.value) ?? []
         essentialURLs = try c.decodeIfPresent([String].self, forKey: .essentialURLs) ?? []
         selectedSpaceID = try c.decodeIfPresent(UUID.self, forKey: .selectedSpaceID)
         migrateToProfiles()
@@ -60,6 +60,14 @@ nonisolated struct BrowsingSession: Codable {
     }
 }
 
+/// an array element that decodes to nil instead of throwing, so one bad record
+/// costs only itself
+private nonisolated struct Lossy<Element: Decodable>: Decodable {
+    let value: Element?
+
+    init(from decoder: Decoder) throws { value = try? Element(from: decoder) }
+}
+
 /// one persisted tab. `id` is stable across relaunches, so a session blob or a
 /// Shortcuts entity can name the same tab after a restart.
 nonisolated struct TabRecord: Codable, Identifiable, Equatable {
@@ -71,22 +79,17 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     var isPinned: Bool
     /// drives the auto-archive clock
     var lastAccessed: Date
-    var createdAt: Date
-    var modifiedAt: Date
     var keepsLoaded = false
 
     init(
         id: UUID = UUID(), url: String, pinnedURL: String? = nil, isPinned: Bool = false,
-        lastAccessed: Date = Date(), createdAt: Date = Date(), modifiedAt: Date = Date(),
-        keepsLoaded: Bool = false
+        lastAccessed: Date = Date(), keepsLoaded: Bool = false
     ) {
         self.id = id
         self.url = url
         self.pinnedURL = pinnedURL
         self.isPinned = isPinned
         self.lastAccessed = lastAccessed
-        self.createdAt = createdAt
-        self.modifiedAt = modifiedAt
         self.keepsLoaded = keepsLoaded
     }
 
@@ -96,15 +99,12 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
         url = try c.decode(String.self, forKey: .url)
         pinnedURL = try c.decodeIfPresent(String.self, forKey: .pinnedURL)
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
-        let now = Date()
-        lastAccessed = try c.decodeIfPresent(Date.self, forKey: .lastAccessed) ?? now
-        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? now
-        modifiedAt = try c.decodeIfPresent(Date.self, forKey: .modifiedAt) ?? now
+        lastAccessed = try c.decodeIfPresent(Date.self, forKey: .lastAccessed) ?? Date()
         keepsLoaded = try c.decodeIfPresent(Bool.self, forKey: .keepsLoaded) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, url, pinnedURL, isPinned, lastAccessed, createdAt, modifiedAt, keepsLoaded
+        case id, url, pinnedURL, isPinned, lastAccessed, keepsLoaded
     }
 }
 
@@ -161,13 +161,14 @@ nonisolated struct SpaceData: Codable {
     var pinnedEntries: [EntryData]
     var todayEntries: [EntryData]
     var requiresUnlock: Bool
+    var pinnedCollapsed: Bool
 
     init(
         id: UUID, name: String, icon: String, appearance: SpaceAppearance,
         profileID: UUID? = nil,
         splitGroups: [SplitGroupData] = [], tabs: [TabRecord] = [], selectedTabID: UUID? = nil,
         pinnedEntries: [EntryData] = [], todayEntries: [EntryData] = [],
-        requiresUnlock: Bool = false
+        requiresUnlock: Bool = false, pinnedCollapsed: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -180,6 +181,7 @@ nonisolated struct SpaceData: Codable {
         self.pinnedEntries = pinnedEntries
         self.todayEntries = todayEntries
         self.requiresUnlock = requiresUnlock
+        self.pinnedCollapsed = pinnedCollapsed
     }
 
     // every field is optional or has a fallback, including the legacy `themeIndex`
@@ -188,7 +190,7 @@ nonisolated struct SpaceData: Codable {
         id = try c.decode(UUID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? "circle.fill"
-        if let appearance = try c.decodeIfPresent(SpaceAppearance.self, forKey: .appearance) {
+        if let appearance = try? c.decodeIfPresent(SpaceAppearance.self, forKey: .appearance) {
             self.appearance = appearance
         } else {
             let legacy = try c.decodeIfPresent(Int.self, forKey: .themeIndex) ?? 0
@@ -200,13 +202,14 @@ nonisolated struct SpaceData: Codable {
         case "ephemeral": legacyIsolatedJar = UUID()
         default: break
         }
-        splitGroups = try c.decodeIfPresent([SplitGroupData].self, forKey: .splitGroups) ?? []
+        splitGroups = (try? c.decodeIfPresent([SplitGroupData].self, forKey: .splitGroups)) ?? []
         pinnedEntries = (try? c.decode([EntryData].self, forKey: .pinnedEntries)) ?? []
         todayEntries = (try? c.decode([EntryData].self, forKey: .todayEntries)) ?? []
         requiresUnlock = try c.decodeIfPresent(Bool.self, forKey: .requiresUnlock) ?? false
+        pinnedCollapsed = try c.decodeIfPresent(Bool.self, forKey: .pinnedCollapsed) ?? false
 
-        if let records = try c.decodeIfPresent([TabRecord].self, forKey: .tabs) {
-            tabs = records
+        if let records = try c.decodeIfPresent([Lossy<TabRecord>].self, forKey: .tabs) {
+            tabs = records.compactMap(\.value)
             selectedTabID = try c.decodeIfPresent(UUID.self, forKey: .selectedTabID)
         } else {
             // a v1 file: build records from the parallel arrays, minting the ids
@@ -265,6 +268,7 @@ nonisolated struct SpaceData: Codable {
         try c.encode(pinnedEntries, forKey: .pinnedEntries)
         try c.encode(todayEntries, forKey: .todayEntries)
         if requiresUnlock { try c.encode(true, forKey: .requiresUnlock) }
+        if pinnedCollapsed { try c.encode(true, forKey: .pinnedCollapsed) }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -272,7 +276,7 @@ nonisolated struct SpaceData: Codable {
         case pinnedURLs, pinnedAnchorURLs, todayURLs, todayLastAccessed, selectedIndex
         case profileID, containerMode, containerID, splitGroups
         case tabs, selectedTabID
-        case pinnedEntries, todayEntries, requiresUnlock
+        case pinnedEntries, todayEntries, requiresUnlock, pinnedCollapsed
     }
 }
 
@@ -294,6 +298,21 @@ nonisolated struct ProfileData: Codable {
     }
 }
 
+// in an extension so the memberwise init survives. every field but `id` has a fallback, and a
+// bad `id` fails the whole session: a profile is never dropped while its spaces and jar remain
+nonisolated extension ProfileData {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = (try? c.decode(String.self, forKey: .name)) ?? "Profile"
+        icon = (try? c.decode(String.self, forKey: .icon)) ?? "person.crop.circle"
+        essentialURLs = (try? c.decode([String].self, forKey: .essentialURLs)) ?? []
+        searchEngine = try? c.decodeIfPresent(String.self, forKey: .searchEngine)
+        searchSuggestions = try? c.decodeIfPresent(Bool.self, forKey: .searchSuggestions)
+        archiveAfterHours = try? c.decodeIfPresent(Double.self, forKey: .archiveAfterHours)
+    }
+}
+
 /// how a split tiles its panes along one axis. a layout is a *tree* of these:
 /// each split node stacks its children along its axis, and a child can itself be
 /// another split — so columns-of-rows (and rows-of-columns) give arbitrary 2-D
@@ -301,6 +320,11 @@ nonisolated struct ProfileData: Codable {
 nonisolated enum SplitOrientation: String, Codable, CaseIterable, Identifiable {
     case columns  // children side by side, vertical dividers
     case rows     // children stacked, horizontal dividers
+
+    /// an axis from a newer build reads as side by side
+    init(from decoder: Decoder) throws {
+        self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .columns
+    }
 
     var id: String { rawValue }
 
@@ -345,7 +369,11 @@ nonisolated indirect enum SplitNodeData: Codable {
                 tabIndex: try leaf.decodeIfPresent(Int.self, forKey: .tabIndex) ?? -1)
             return
         }
-        let split = try c.nestedContainer(keyedBy: SplitKey.self, forKey: .split)
+        // a node kind from a newer build is an empty split, which restore drops
+        guard let split = try? c.nestedContainer(keyedBy: SplitKey.self, forKey: .split) else {
+            self = .split(axis: .columns, children: [])
+            return
+        }
         self = .split(
             axis: try split.decodeIfPresent(SplitOrientation.self, forKey: .axis) ?? .columns,
             children: try split.decodeIfPresent([Child].self, forKey: .children) ?? [])
@@ -450,6 +478,12 @@ nonisolated struct MeshPoint: Codable, Equatable, Hashable, Identifiable {
 nonisolated enum SpaceFill: String, Codable, CaseIterable, Identifiable {
     case solid, gradient, glass
     var id: Self { self }
+
+    /// a fill from a newer build reads as the default gradient
+    init(from decoder: Decoder) throws {
+        self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .gradient
+    }
+
     var label: String {
         switch self {
         case .solid: "Solid"

@@ -255,13 +255,20 @@ extension BrowserTab {
             return Scripting.fail(command, "No JavaScript given.")
         }
         command.suspendExecution()
-        webView.evaluateJavaScript(source) { result, error in
-            if let error = error as NSError? {
-                command.scriptErrorNumber = errAEEventFailed
-                command.scriptErrorString =
-                    error.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+        Task {
+            await wake()
+            // the wake can take 15 s, and the space may lock meanwhile
+            if let space = Scripting.space(of: self), SpaceLock.shared.isLocked(space) {
+                return command.resumeExecution(withResult: Scripting.fail(command, "That space is locked."))
             }
-            command.resumeExecution(withResult: Scripting.descriptor(result))
+            webView.evaluateJavaScript(source) { result, error in
+                if let error = error as NSError? {
+                    command.scriptErrorNumber = errAEEventFailed
+                    command.scriptErrorString =
+                        error.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+                }
+                command.resumeExecution(withResult: Scripting.descriptor(result))
+            }
         }
         return nil
     }

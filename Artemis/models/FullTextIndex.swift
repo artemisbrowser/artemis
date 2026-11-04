@@ -51,6 +51,7 @@ actor FullTextIndex {
         db = handle
         exec("PRAGMA journal_mode = WAL;")
         exec("PRAGMA synchronous = NORMAL;")
+        exec("PRAGMA secure_delete = ON;")
         // `visited` is seconds since 1970, stored as text
         exec(
             """
@@ -59,55 +60,63 @@ actor FullTextIndex {
                 tokenize = 'unicode61 remove_diacritics 2'
             );
             """)
+        // each url's row, so a re-visit finds it without scanning every page's text;
+        // an index from before the table maps its rows once
+        exec("CREATE TABLE IF NOT EXISTS urls(url TEXT PRIMARY KEY, id INTEGER NOT NULL) WITHOUT ROWID;")
+        let mapped = integer("PRAGMA user_version;") > 0 || exec(
+            """
+            BEGIN;
+            INSERT OR REPLACE INTO urls SELECT url, rowid FROM pages WHERE url IS NOT NULL;
+            PRAGMA user_version = 1;
+            COMMIT;
+            """)
+        if !mapped { exec("ROLLBACK;") }
         return db
     }
 
-    private func exec(_ sql: String) {
-        guard let db else { return }
+    @discardableResult
+    private func exec(_ sql: String) -> Bool {
+        guard let db else { return false }
         var error: UnsafeMutablePointer<CChar>?
-        if sqlite3_exec(db, sql, nil, nil, &error) != SQLITE_OK, let error {
-            debugLog("fulltext: \(String(cString: error))")
-            sqlite3_free(error)
+        guard sqlite3_exec(db, sql, nil, nil, &error) == SQLITE_OK else {
+            if let error {
+                debugLog("fulltext: \(String(cString: error))")
+                sqlite3_free(error)
+            }
+            return false
         }
+        return true
     }
 
     // MARK: - Writing
 
     /// replaces any earlier row for the same url
     func record(url: URL, title: String, body: String) {
-        guard let db = open() else { return }
+        guard open() != nil else { return }
         let trimmed = String(body.prefix(200_000))
         guard !trimmed.isEmpty else { return }
-
-        var delete: OpaquePointer?
-        if sqlite3_prepare_v2(db, "DELETE FROM pages WHERE url = ?;", -1, &delete, nil) == SQLITE_OK {
-            bind(delete, 1, url.absoluteString)
-            sqlite3_step(delete)
-        }
-        sqlite3_finalize(delete)
-
-        var insert: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            db, "INSERT INTO pages(url, title, body, visited) VALUES(?, ?, ?, ?);", -1, &insert,
-            nil) == SQLITE_OK
-        else { return }
-        bind(insert, 1, url.absoluteString)
-        bind(insert, 2, title)
-        bind(insert, 3, trimmed)
-        bind(insert, 4, String(Date().timeIntervalSince1970))
-        sqlite3_step(insert)
-        sqlite3_finalize(insert)
-
+        let key = url.absoluteString
+        exec("BEGIN;")
+        run("DELETE FROM pages WHERE rowid = (SELECT id FROM urls WHERE url = ?1);", key)
+        run(
+            "INSERT INTO pages(url, title, body, visited) VALUES(?1, ?2, ?3, ?4);",
+            key, title, trimmed, String(Date().timeIntervalSince1970))
+        run("INSERT OR REPLACE INTO urls(url, id) VALUES(?1, last_insert_rowid());", key)
+        exec("COMMIT;")
         pruneIfNeeded()
     }
 
+    /// past the limit, down to 95% of it in one go. a re-visit re-inserts its row,
+    /// so rowids rise with each read and the lowest are the longest unread
     private func pruneIfNeeded() {
-        guard count() > Self.pageLimit else { return }
+        let excess = count() - Self.pageLimit
+        guard excess > 0 else { return }
         exec(
             """
-            DELETE FROM pages WHERE rowid NOT IN (
-                SELECT rowid FROM pages ORDER BY CAST(visited AS REAL) DESC LIMIT \(Self.pageLimit)
+            DELETE FROM pages WHERE rowid IN (
+                SELECT id FROM pages_docsize ORDER BY id LIMIT \(excess + Self.pageLimit / 20)
             );
+            DELETE FROM urls WHERE id NOT IN (SELECT id FROM pages_docsize);
             """)
     }
 
@@ -145,14 +154,10 @@ actor FullTextIndex {
         return hits
     }
 
+    /// from the per-page size table: counting `pages` itself reads every page's text
     func count() -> Int {
-        guard let db = open() else { return 0 }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT count(*) FROM pages;", -1, &statement, nil)
-            == SQLITE_OK
-        else { return 0 }
-        defer { sqlite3_finalize(statement) }
-        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
+        guard open() != nil else { return 0 }
+        return integer("SELECT count(*) FROM pages_docsize;")
     }
 
     /// bytes on disk, database plus write-ahead log
@@ -172,22 +177,48 @@ actor FullTextIndex {
         isOpen = false
     }
 
+    // a clear leaves no text behind: secure_delete zeroes freed pages, 'optimize' merges
+    // away a deleted page's terms, which FTS5 otherwise keeps, and the checkpoint empties the log
     func clear() {
         guard open() != nil else { return }
-        exec("DELETE FROM pages;")
+        exec("DELETE FROM pages; DELETE FROM urls; INSERT INTO pages(pages) VALUES('optimize');")
         exec("VACUUM;")
+        exec("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
     /// drops everything indexed since `date`
     func clear(since date: Date) {
         guard open() != nil else { return }
-        exec("DELETE FROM pages WHERE CAST(visited AS REAL) >= \(date.timeIntervalSince1970);")
+        exec(
+            """
+            DELETE FROM pages WHERE CAST(visited AS REAL) >= \(date.timeIntervalSince1970);
+            DELETE FROM urls WHERE id NOT IN (SELECT id FROM pages_docsize);
+            INSERT INTO pages(pages) VALUES('optimize');
+            PRAGMA wal_checkpoint(TRUNCATE);
+            """)
     }
 
     // MARK: - Helpers
 
     private func bind(_ statement: OpaquePointer?, _ index: Int32, _ value: String) {
         sqlite3_bind_text(statement, index, value, -1, Self.transient)
+    }
+
+    /// one statement, its `?N` parameters bound in order
+    private func run(_ sql: String, _ values: String...) {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        for (index, value) in values.enumerated() { bind(statement, Int32(index + 1), value) }
+        sqlite3_step(statement)
+    }
+
+    /// the first column of a one-row query, or 0
+    private func integer(_ sql: String) -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int64(statement, 0)) : 0
     }
 
     /// each word of two or more alphanumerics quoted, the last as a prefix; raw input

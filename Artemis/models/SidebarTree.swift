@@ -76,7 +76,7 @@ struct SidebarRow: Identifiable {
 /// agree, and every mutation ends in it.
 extension Space {
     /// folder levels a space may hold; deeper entries are dropped by `normalizeTree`
-    static let maxFolderDepth = 5
+    nonisolated static let maxFolderDepth = 5
 
     func folder(_ id: TabFolder.ID) -> TabFolder? { folders.first { $0.id == id } }
 
@@ -279,13 +279,14 @@ extension Space {
 
     /// `tabs` in tree order, each tab's section taken from the root it hangs in
     private func flattenedTabs() -> [BrowserTab] {
+        let byID = Dictionary(tabs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var out: [BrowserTab] = []
         func walk(_ list: [SidebarEntry], _ section: SidebarSection, _ depth: Int) {
             guard depth <= Space.maxFolderDepth else { return }
             for entry in list {
                 switch entry {
                 case .tab(let id):
-                    guard let tab = tabs.first(where: { $0.id == id }) else { continue }
+                    guard let tab = byID[id] else { continue }
                     // the tree, not the flag, says which section a tab is in,
                     // and a pin without its anchor is a pin nothing can deviate from
                     tab.isPinned = section == .pinned
@@ -309,11 +310,15 @@ extension Space {
 
     // MARK: Rows
 
-    /// the section's rows as drawn, top to bottom: folder headers, their visible
-    /// children indented beneath them, and each split's panes collapsed into one
-    /// row. A collapsed folder contributes its header and, if the tab you are on
-    /// is filed under it, that one row.
+    /// the section's rows as drawn, top to bottom: folder headers over their visible
+    /// children, each split's panes as one row, and for a collapsed folder its header
+    /// plus the tab you are on if it is filed there
     func rows(in section: SidebarSection) -> [SidebarRow] {
+        let byID = Dictionary(tabs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var groupOf: [BrowserTab.ID: SplitGroup] = [:]
+        for group in splitGroups {
+            for id in group.tabIDs where groupOf[id] == nil { groupOf[id] = group }
+        }
         var out: [SidebarRow] = []
         func walk(_ container: SidebarContainer, depth: Int) {
             guard depth <= Space.maxFolderDepth else { return }
@@ -331,13 +336,13 @@ extension Space {
                         walk(.folder(id), depth: depth + 1)
                     } else if let active = selectedTabID,
                         case let filed = tabIDs(under: .folder(id)), filed.contains(active),
-                        let tab = tabs.first(where: { $0.id == active })
+                        let tab = byID[active]
                     {
                         // a folded folder still shows the tab you are on, so
                         // folding never hides where you are; a split shows whole
-                        let group = splitGroup(containing: active)
+                        let group = groupOf[active]
                         let members = group.map { group in
-                            filed.filter(group.contains).compactMap { id in tabs.first { $0.id == id } }
+                            filed.filter { groupOf[$0] === group }.compactMap { byID[$0] }
                         } ?? []
                         let kind: SidebarRowKind =
                             if let group, members.count >= SplitGroup.minPanes {
@@ -352,16 +357,15 @@ extension Space {
                     }
                     i += 1
                 case .tab(let id):
-                    guard let tab = tabs.first(where: { $0.id == id }) else { i += 1; continue }
+                    guard let tab = byID[id] else { i += 1; continue }
                     // a split is one row: the maximal run of its panes among
                     // these siblings, which is what keeps a group's members
                     // contiguous inside one container
-                    if let group = splitGroup(containing: id) {
+                    if let group = groupOf[id] {
                         var run = [tab]
                         var j = i + 1
                         while j < list.count, case .tab(let next) = list[j],
-                            splitGroup(containing: next)?.id == group.id,
-                            let member = tabs.first(where: { $0.id == next })
+                            groupOf[next] === group, let member = byID[next]
                         {
                             run.append(member)
                             j += 1

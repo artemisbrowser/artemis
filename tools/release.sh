@@ -91,8 +91,10 @@ echo "$ITEM" > "$OUT/item.xml"
 if [[ -n $DRY ]]; then echo "dry run: $OUT"; exit 0; fi
 
 echo "→ GitHub release $TAG"
-gh release create "$TAG" "$OUT/$ASSET" -R artemisbrowser/artemis --title "Artemis $VERSION$BETA (alpha)" \
-  --notes-file "$NOTES" --prerelease --target main >/dev/null
+PRERELEASE=""
+if [[ $CHANNEL == beta ]]; then PRERELEASE=--prerelease; fi
+gh release create "$TAG" "$OUT/$ASSET" -R artemisbrowser/artemis --title "Artemis $VERSION$BETA" \
+  --notes-file "$NOTES" $PRERELEASE --target main >/dev/null
 curl -sfIL -o /dev/null "$URL"
 
 echo "→ appcast and site"

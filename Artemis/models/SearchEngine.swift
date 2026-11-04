@@ -64,7 +64,10 @@ enum SearchEngine: String, CaseIterable, Identifiable {
     func searchURL(for query: String) -> URL? {
         guard var components = URLComponents(string: endpoint) else { return nil }
         let name = self == .wikipedia ? "search" : "q"
-        components.queryItems = [URLQueryItem(name: name, value: query)]
+        // queryItems leaves `+` bare, which every engine reads as a space
+        components.percentEncodedQueryItems = [
+            URLQueryItem(name: name, value: query.addingPercentEncoding(withAllowedCharacters: Bangs.queryAllowed))
+        ]
         return components.url
     }
 }

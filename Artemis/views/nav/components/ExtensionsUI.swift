@@ -71,7 +71,9 @@ private struct ExtensionActionButton: View {
     }
 
     @ViewBuilder private var iconImage: some View {
-        if let icon = ext.icon(size: iconSize) {
+        if let icon = extensions.action(for: ext)?.icon(for: CGSize(width: iconSize, height: iconSize))
+            ?? ext.icon(size: iconSize)
+        {
             Image(nsImage: icon)
                 .resizable()
                 .interpolation(.high)
@@ -121,7 +123,15 @@ private struct ExtensionActionButton: View {
         }
         Divider()
         Button("Disable") { extensions.setEnabled(ext, false, in: extensions.currentProfile) }
-        Button("Remove…", role: .destructive) { extensions.remove(ext) }
+        Button("Remove…", role: .destructive) {
+            // Settings' question, as an `NSAlert`: a SwiftUI alert won't attach from inside a popover
+            let alert = NSAlert()
+            alert.messageText = "Remove \(ext.name)?"
+            alert.informativeText = "This deletes the extension and its data from Artemis."
+            alert.addButton(withTitle: "Remove").hasDestructiveAction = true
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn { extensions.remove(ext) }
+        }
     }
 
     private func handleClick() {

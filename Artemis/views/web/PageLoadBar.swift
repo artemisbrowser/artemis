@@ -71,7 +71,10 @@ struct PageLoadBar: View {
         if !shown, reveal == nil {
             reveal = Task {
                 try? await Task.sleep(for: Self.revealDelay)
-                guard !Task.isCancelled, tab.isLoading else { return }
+                // a task not cancelled is still the current handle
+                guard !Task.isCancelled else { return }
+                reveal = nil
+                guard tab.isLoading else { return }
                 withAnimation(Motion.fade) { shown = true }
             }
         }

@@ -25,8 +25,7 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
         var contentX: CGFloat
     }
 
-    /// The state whose changes pick the motion, mirroring the old per-value
-    /// SwiftUI animations: pinning, peeking, and the Library's rail.
+    /// the state whose changes pick the motion: pinning, peeking, and the Library's rail
     struct Cause: Equatable {
         var collapsed: Bool
         var overlayVisible: Bool

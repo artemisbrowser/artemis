@@ -12,14 +12,14 @@
   ],
   "ratelimits": [
     {
-      "name": "LIMITER",
-      "namespace_id": "1001",
-      "simple": { "limit": 10, "period": 60 },
-    },
-    {
       "name": "ADDRESS_LIMITER",
       "namespace_id": "1002",
-      "simple": { "limit": 30, "period": 60 },
+      "simple": { "limit": 6, "period": 60 },
+    },
+    {
+      "name": "PUBLIC_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 2, "period": 60 },
     },
   ],
   "vars": {

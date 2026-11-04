@@ -20,8 +20,7 @@ struct ArtemisApp: App {
     private let containerMigration: Void = ContainerMigration.run()
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
-    /// the first window's manager; also the fallback for menu commands raised
-    /// before any window has taken focus
+    /// the manager that loads the session; the first window takes it
     @State private var seedManager = TabManager()
     @State private var windows = BrowserWindows.shared
     /// the focused window's manager, mirrored into `@State`: menu items refresh
@@ -33,14 +32,22 @@ struct ArtemisApp: App {
     // owns external links, so the WindowGroup never spawns a window per URL
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    /// the window a menu command belongs to: whichever browser window has focus
-    private var tabManager: TabManager { focusedManager ?? seedManager }
+    /// the window a menu command belongs to: whichever browser window has focus,
+    /// else the manager the next window takes
+    private var tabManager: TabManager { focusedManager ?? windows.seed ?? seedManager }
 
     /// commands only the full browser can answer — a new tab, the Library, the
     /// spaces — belong to a browser window even when a Scout window has focus
     private var browser: TabManager {
         if let focusedManager, focusedManager.kind == .main { return focusedManager }
-        return windows.browserScope ?? seedManager
+        return windows.browserScope ?? windows.seed ?? seedManager
+    }
+
+    /// `manager`, once a window is on its way to show it: with every browser
+    /// window closed the next one takes it
+    private func shown(_ manager: TabManager) -> TabManager {
+        if manager.kind == .main, windows.window(of: manager) == nil { openWindow(id: Self.browserWindowID) }
+        return manager
     }
 
     /// the focused window's own tabs, sidebar and splits; a Scout window has none
@@ -55,7 +62,6 @@ struct ArtemisApp: App {
         // before any window exists, or AppKit's window-tab items stay in the menus
         NSWindow.allowsAutomaticWindowTabbing = false
         BrowserWindows.shared.seed = seedManager
-        appDelegate.tabManager = seedManager
     }
 
     var body: some Scene {
@@ -91,7 +97,7 @@ struct ArtemisApp: App {
             // replaces `.newItem` so the group's own New Window item isn't shown too
             CommandGroup(replacing: .newItem) {
                 Button("New Tab…") {
-                    tabManager.requestNewTab()
+                    shown(tabManager).requestNewTab()
                 }
                 .keyboardShortcut("t")
                 .disabled(tabManager.kind == .scout)
@@ -116,7 +122,7 @@ struct ArtemisApp: App {
                 }
 
                 Button(browser.reopensFolderNext ? "Reopen Closed Folder" : "Reopen Closed Tab") {
-                    browser.reopenLastClosedTab()
+                    shown(browser).reopenLastClosedTab()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(browser.closedTabs.isEmpty && browser.closedFolders.isEmpty)
@@ -165,7 +171,7 @@ struct ArtemisApp: App {
                 Divider()
 
                 Button("Open Location…") {
-                    tabManager.urlFieldFocusRequest += 1
+                    shown(tabManager).urlFieldFocusRequest += 1
                 }
                 .keyboardShortcut("l")
 
@@ -303,10 +309,16 @@ struct ArtemisApp: App {
 
                 // Arc's own split keys, alongside Artemis' ⌘⌥V
                 Button("Add Split Pane") {
-                    strip?.toggleSplit()
+                    guard let strip else { return }
+                    let pane = strip.newTab(select: false)
+                    strip.openBeside(pane)
+                    strip.selectedTabID = pane.id
+                    strip.urlFieldFocusRequest += 1
                 }
                 .keyboardShortcut("+", modifiers: [.control, .shift])
-                .disabled(strip?.selectedTab == nil)
+                .disabled(
+                    strip?.selectedTab == nil
+                        || (strip?.displayedSplitGroup?.leafCount ?? 0) >= SplitGroup.maxPanes)
 
                 Button("Close Split Pane") {
                     if let strip, let tab = strip.selectedTab, strip.displayedSplitGroup != nil {
@@ -374,42 +386,42 @@ struct ArtemisApp: App {
 
             CommandMenu("Navigate") {
                 Button("Reload Page") {
-                    tabManager.selectedTab?.reload()
+                    tabManager.unlockedContentTab?.reload()
                 }
                 .keyboardShortcut("r")
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 // Safari's key: ⌘⇧R is Reader
                 Button("Reload From Origin") {
-                    tabManager.selectedTab?.reloadFromOrigin()
+                    tabManager.unlockedContentTab?.reloadFromOrigin()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .option])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Button("Back") {
-                    tabManager.selectedTab?.goBack()
+                    tabManager.unlockedContentTab?.goBack()
                 }
                 .keyboardShortcut("[")
-                .disabled(tabManager.selectedTab?.canGoBack != true)
+                .disabled(tabManager.unlockedContentTab?.canGoBack != true)
 
                 Button("Forward") {
-                    tabManager.selectedTab?.goForward()
+                    tabManager.unlockedContentTab?.goForward()
                 }
                 .keyboardShortcut("]")
-                .disabled(tabManager.selectedTab?.canGoForward != true)
+                .disabled(tabManager.unlockedContentTab?.canGoForward != true)
 
                 // Arc's arrow spellings of the same two
                 Button("Back ") {
-                    tabManager.selectedTab?.goBack()
+                    if !textFieldTookKey() { tabManager.unlockedContentTab?.goBack() }
                 }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
-                .disabled(tabManager.selectedTab?.canGoBack != true)
+                .disabled(tabManager.unlockedContentTab?.canGoBack != true)
 
                 Button("Forward ") {
-                    tabManager.selectedTab?.goForward()
+                    if !textFieldTookKey() { tabManager.unlockedContentTab?.goForward() }
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
-                .disabled(tabManager.selectedTab?.canGoForward != true)
+                .disabled(tabManager.unlockedContentTab?.canGoForward != true)
 
                 Divider()
 
@@ -453,25 +465,22 @@ struct ArtemisApp: App {
                 Divider()
 
                 Button("History") {
-                    UserDefaults.standard.set("History", forKey: "libraryLastMode")
-                    browser.isLibraryOpen = true
+                    shown(browser).openLibrary(.history)
                 }
                 .keyboardShortcut("y")
 
                 Button("Archive") {
-                    UserDefaults.standard.set("Archive", forKey: "libraryLastMode")
-                    browser.isLibraryOpen = true
+                    shown(browser).openLibrary(.archive)
                 }
                 .keyboardShortcut("y", modifiers: [.command, .shift])
 
                 Button("Downloads") {
-                    UserDefaults.standard.set("Downloads", forKey: "libraryLastMode")
-                    browser.isLibraryOpen = true
+                    shown(browser).openLibrary(.downloads)
                 }
                 .keyboardShortcut("j", modifiers: [.command, .shift])
 
                 Button("Library") {
-                    browser.isLibraryOpen.toggle()
+                    shown(browser).isLibraryOpen.toggle()
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
@@ -500,7 +509,7 @@ struct ArtemisApp: App {
             // spaces
             CommandMenu("Spaces") {
                 Button("New Space…") {
-                    browser.isSpaceCreatorVisible = true
+                    shown(browser).isSpaceCreatorVisible = true
                 }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(tabManager.kind != .main)
@@ -513,13 +522,13 @@ struct ArtemisApp: App {
                 Divider()
 
                 Button("Previous Space") {
-                    browser.cycleSpace(by: -1)
+                    shown(browser).cycleSpace(by: -1)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
                 .disabled(tabManager.kind != .main)
 
                 Button("Next Space") {
-                    browser.cycleSpace(by: 1)
+                    shown(browser).cycleSpace(by: 1)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
                 .disabled(tabManager.kind != .main)
@@ -530,7 +539,7 @@ struct ArtemisApp: App {
                 ForEach(Array(browser.spaces.prefix(9).enumerated()), id: \.element.id) {
                     index, space in
                     Button(space.name) {
-                        browser.selectSpace(space)
+                        shown(browser).selectSpace(space)
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character("\(index + 1)")), modifiers: .control)
@@ -619,8 +628,6 @@ struct ArtemisApp: App {
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].resolvingSymlinksInPath()
         guard panel.runModal() == .OK, let url = panel.urls.first else { return }
 
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url), let parsed = BookmarkImport.parse(data) else {
             let alert = NSAlert()
             alert.messageText = "Artemis couldn't read that file."
@@ -651,20 +658,31 @@ struct ArtemisApp: App {
         panel.canChooseDirectories = false
         panel.message = "Choose a file to open in Artemis."
         guard panel.runModal() == .OK else { return }
-        for url in panel.urls { tabManager.newTab(url: url, select: url == panel.urls.first) }
+        let target = shown(strip ?? browser)
+        let opened = panel.urls.map { target.newTab(url: $0, select: false) }
+        if let first = opened.first { target.revealTab(first) }
     }
 
-    /// ⌘W: close the focused browser window's tab. a window with no tab, a Scout
-    /// window, and every auxiliary window close outright
+    /// main-menu key equivalents beat the field editor: a focused text field gets
+    /// ⌘← and ⌘→ back for its own line, through the user's key bindings
+    private func textFieldTookKey() -> Bool {
+        guard let field = NSApp.keyWindow?.firstResponder as? NSTextView,
+            let event = NSApp.currentEvent, event.type == .keyDown
+        else { return false }
+        field.interpretKeyEvents([event])
+        return true
+    }
+
+    /// ⌘W: close the focused window's tab. a window with no tab, a Scout window,
+    /// and every auxiliary window close outright
     private func handleCloseShortcut() {
         guard let window = NSApp.keyWindow else { return }
         guard let manager = BrowserWindows.shared.manager(for: window),
-            manager.kind == .main, manager.selectedTab != nil
+            manager.kind != .scout, manager.selectedTab != nil
         else { return window.performClose(nil) }
         manager.closeSelectedTab()
     }
 
-    /// ⌘⇧C / ⌘⇧⌥C: copy the page's link, tracking parameters stripped
     private func exportPage(_ kind: BrowserTab.PageExport) {
         guard let tab = tabManager.selectedTab else { return }
         Task { await tab.export(kind) }
@@ -687,9 +705,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// never it. the command bar needs the real instance to open a Scout window
     static private(set) weak var shared: AppDelegate?
 
-    /// set once the model exists, so a Scout can promote its page into the browser
-    weak var tabManager: TabManager?
-
     /// the app icon follows light/dark when the icon style is automatic
     private var iconAppearance: NSKeyValueObservation?
 
@@ -701,17 +716,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// every debounced or queued store write, made synchronously: a quit from
     /// the front never leaves `.active`, so `scenePhase` alone misses it
     func applicationWillTerminate(_ notification: Notification) {
-        tabManager?.saveNow()
+        (BrowserWindows.shared.browserScope ?? BrowserWindows.shared.seed)?.saveNow()
         TabNameStore.shared.saveNow()
-        for profile in BrowserCore.shared.profiles {
-            profile.history.saveNow()
-            profile.archive.saveNow()
-            profile.inputHistory.saveNow()
-        }
+        for profile in BrowserCore.shared.profiles { profile.saveNow() }
         ZoomStore.shared.saveNow()
         SitePermissionStore.shared.saveNow()
         RoutingStore.shared.saveNow()
         AutofillStore.shared.saveNow()
+        PasswordStore.saveNow()
         // a page's notifications die with its document
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
@@ -765,31 +777,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
     ) -> Bool {
         guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
-            let url = userActivity.webpageURL, let tabManager
+            let url = userActivity.webpageURL
         else { return false }
-        let tab = tabManager.newTab(url: url, select: true)
-        tabManager.revealTab(tab)
+        Task { await openInBrowser([url]) }
         return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            // a file gets a tab; a web link gets a Scout window
-            if url.isFileURL {
-                if let tab = tabManager?.newTab(url: url, select: true) {
-                    tabManager?.revealTab(tab)
-                }
-            } else if url.scheme == "http" || url.scheme == "https" {
-                openScoutWindow(url)
-            }
-        }
+        // files get tabs, all in one window; a web link gets a Scout window
+        let files = urls.filter(\.isFileURL)
+        if !files.isEmpty { Task { await openInBrowser(files) } }
+        for url in urls where url.scheme == "http" || url.scheme == "https" { openScoutWindow(url) }
     }
 
-    /// a Scout window on `url`, or a tab in its routed space when routing is direct.
-    /// needs no manager: the Scout window builds its own
+    /// a tab per url in the front browser window, else in one opened for them, else in
+    /// the manager the next window takes. before the first window registers,
+    /// `Scripting.openWindow` waits for it
+    private func openInBrowser(_ urls: [URL]) async {
+        let windows = BrowserWindows.shared
+        var manager = windows.browserScope
+        if manager == nil { manager = await Scripting.openWindow(incognito: false) ?? windows.seed }
+        guard let manager else { return }
+        for url in urls { manager.revealTab(manager.newTab(url: url, select: true)) }
+    }
+
+    /// a Scout window on `url`, or a tab in its routed space when routing is direct
+    /// and a browser window is open. needs no manager: the Scout window builds its own
     func openScoutWindow(_ url: URL) {
         if UserDefaults.standard.externalLinkRouting == .direct,
-            let manager = BrowserWindows.shared.browserScope ?? tabManager,
+            let manager = BrowserWindows.shared.browserScope,
             let destination = manager.routedSpace(for: url)
         {
             manager.selectSpace(destination)

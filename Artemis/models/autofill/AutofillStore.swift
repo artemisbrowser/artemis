@@ -167,9 +167,8 @@ nonisolated struct CardVault: Sendable {
     }
 }
 
-/// One profile's addresses and cards. Addresses and card details sit in `autofill.json`; each card number is a
-/// login-keychain item named by the card's UUID. The data-protection keychain (which could demand user presence
-/// itself) answers -34018 here, so every use of a number goes through `OwnerUnlock` first.
+/// Addresses and card details sit in `autofill.json`; each card number is a login-keychain item named by the
+/// card's UUID. The data-protection keychain, which could demand user presence itself, answers -34018 here.
 @MainActor
 @Observable
 final class AutofillStore {
@@ -221,8 +220,8 @@ final class AutofillStore {
     }
 
     /// the write finished before it returns, for `applicationWillTerminate`, where a queued one dies with the process
-    func saveNow() {
-        if let encoded { AppStorageLocation.writeDurableNow(encoded, to: file) }
+    func saveNow(keepsBackup: Bool = true) {
+        if let encoded { AppStorageLocation.writeDurableNow(encoded, to: file, keepsBackup: keepsBackup) }
     }
 
     private static func recent(_ a: Date?, _ b: Date?) -> Bool { (a ?? .distantPast) > (b ?? .distantPast) }
@@ -305,7 +304,7 @@ final class AutofillStore {
         let touched = { (changed: Date, used: Date?) in max(changed, used ?? changed) >= since }
         for card in cards where card.profile == profile && touched(card.updated, card.lastUsed) { delete(card) }
         addresses.removeAll { $0.profile == profile && touched($0.updated, $0.lastUsed) }
-        persist()
+        saveNow(keepsBackup: false)
     }
 
     /// ISO code for what a country field holds: a code, or a name in English or this Mac's language

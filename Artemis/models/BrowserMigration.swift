@@ -44,8 +44,7 @@ final class BrowserImportModel {
         guard manager.browserImport == nil else { return }
         let target = manager.currentProfile.id
         Task {
-            let home = ArcImport.home
-            let sources = await Task.detached { BrowserImport.detect(home: home) }.value
+            let sources = await Task.detached { BrowserImport.detect(home: .homeDirectory) }.value
             guard manager.browserImport == nil else { return }
             let model = BrowserImportModel(
                 sources: sources, offersArc: ArcImport.isReadable(), profileID: target)
@@ -72,9 +71,14 @@ final class BrowserImportModel {
         panel.message = "Choose the bookmarks file Safari exported."
         panel.directoryURL = Self.downloads
         panel.allowedContentTypes = [.html]
-        guard panel.runModal() == .OK, let url = panel.url,
-            let parsed = (try? Data(contentsOf: url)).flatMap(BookmarkImport.parse)
-        else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let parsed = (try? Data(contentsOf: url)).flatMap(BookmarkImport.parse) else {
+            let alert = NSAlert()
+            alert.messageText = "Artemis couldn't read that file."
+            alert.informativeText = "Choose the file Safari saves from File ▸ Export ▸ Bookmarks."
+            alert.runModal()
+            return
+        }
         survey?.bookmarks = parsed
         selection.bookmarks = true
     }

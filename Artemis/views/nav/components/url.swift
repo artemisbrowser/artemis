@@ -19,9 +19,7 @@ struct UrlField: View {
 
     var body: some View {
         let locked = SpaceLock.shared.isLocked(tabManager.currentSpace)
-        // displayedContentTab (not selectedTab) so the url flips in lockstep with
-        // the page on a space switch, instead of lagging until the carousel settles
-        let tab = tabManager.displayedContentTab.flatMap { $0.isEssential || !locked ? $0 : nil }
+        let tab = tabManager.unlockedContentTab
         HStack(spacing: 6) {
             if inToolbar, let tab { CopyURLButton(tab: tab, standalone: true) }
             pill(tab)
@@ -48,8 +46,8 @@ struct UrlField: View {
             if !inToolbar, let tab {
                 ReaderButton(tab: tab)
                 PageTranslationButton(tab: tab)
-                PasswordKeyButton(tab: tab)
-                AutofillOfferButton(tab: tab)
+                PasswordKeyButton(tab: tab, isOnScreen: tabManager.isSidebarSettled)
+                AutofillOfferButton(tab: tab, isOnScreen: tabManager.isSidebarSettled)
             }
             PinnedExtensionsBar()
             if !inToolbar {
@@ -91,7 +89,7 @@ struct UrlField: View {
 
 /// the shared glass pill around the url text
 private struct PillChrome: ViewModifier {
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     /// as wide as its contents, rather than the width it's offered
     var hugs = false
     var endsInButton = true
@@ -263,6 +261,8 @@ private struct PageTranslationButton: View {
 /// a fresh save offer opens its popover once, as the direct answer to a sign-in
 private struct PasswordKeyButton: View {
     let tab: BrowserTab
+    /// false while a collapsed sidebar holds the button off the window; an offer waits for it
+    var isOnScreen = true
     @State private var isHovering = false
     @State private var isShowingPanel = false
     @State private var target: LoginTarget?
@@ -281,8 +281,8 @@ private struct PasswordKeyButton: View {
             .buttonStyle(.plain)
             .onHover { isHovering = $0 }
             .tooltip(tab.loginOffer == nil ? "Passwords for this site" : "Save password")
-            .task(id: tab.loginOffer?.id) {
-                guard tab.loginOffer?.shown == false else { return }
+            .task(id: isOnScreen ? tab.loginOffer?.id : nil) {
+                guard isOnScreen, tab.loginOffer?.shown == false else { return }
                 tab.loginOffer?.shown = true
                 target = PasswordAutofill.shared.target(in: tab)
                 isShowingPanel = true
@@ -300,6 +300,8 @@ private struct PasswordKeyButton: View {
 /// direct answer to the submit
 private struct AutofillOfferButton: View {
     let tab: BrowserTab
+    /// false while a collapsed sidebar holds the button off the window; an offer waits for it
+    var isOnScreen = true
     @State private var isShowingPanel = false
 
     var body: some View {
@@ -314,8 +316,8 @@ private struct AutofillOfferButton: View {
             }
             .buttonStyle(.plain)
             .tooltip(offer.card == nil ? "Save address" : "Save card")
-            .task(id: offer.id) {
-                guard tab.autofillOffer?.shown == false else { return }
+            .task(id: isOnScreen ? offer.id : nil) {
+                guard isOnScreen, tab.autofillOffer?.shown == false else { return }
                 tab.autofillOffer?.shown = true
                 isShowingPanel = true
             }
@@ -441,7 +443,7 @@ private struct PasswordPanel: View {
                                         guard await OwnerUnlock.authenticate(.passwords, "copy the password for \(login.host)"),
                                             let password = PasswordStore.shared.password(for: login)
                                         else { return }
-                                        copy(password, "Password copied", from: login)
+                                        copy(password, "Password copied", from: login, concealed: true)
                                     }
                                 }),
                             ])
@@ -486,9 +488,13 @@ private struct PasswordPanel: View {
         }
     }
 
-    private func copy(_ text: String, _ note: String, from login: SavedLogin) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+    private func copy(_ text: String, _ note: String, from login: SavedLogin, concealed: Bool = false) {
+        if concealed {
+            NSPasteboard.general.copySecret(text)
+        } else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
         copied = Copy(login: login.id, note: note)
     }
 }
@@ -566,11 +572,13 @@ private struct SiteSettingsButton: View {
             }
         }
         // every window has one of these buttons; the focused window's presents
-        .onChange(of: extensions.pendingPopupExtensionID) { _, id in
-            guard let id, tabManager === BrowserWindows.shared.current, let ext = extensions.installed.first(where: { $0.id == id }) else { return }
+        .onChange(of: extensions.pendingPopup) { _, request in
+            guard let request, tabManager === BrowserWindows.shared.current else { return }
+            extensions.pendingPopup = nil
+            guard let ext = extensions.enabledExtensions(in: tabManager).first(where: { $0.id == request.extensionID })
+            else { return }
             programmaticPopup = extensions.action(for: ext)
             showProgrammaticPopup = programmaticPopup?.presentsPopup == true
-            extensions.pendingPopupExtensionID = nil
         }
         .onChange(of: showProgrammaticPopup) { _, shown in
             if !shown { programmaticPopup?.closePopup() }
@@ -603,7 +611,13 @@ private struct SiteSettingsPanel: View {
     @State private var menuHover = false
     @State private var showActions = false
 
-    private var isSecure: Bool { tab?.url?.scheme == "https" }
+    private var isSecure: Bool {
+        tab?.url?.scheme == "https" && !isTrustedManually && tab?.exceptionHost != tab?.url?.host()
+    }
+    private var isTrustedManually: Bool {
+        guard let tab, let host = tab.url?.host() else { return false }
+        return CertificateTrust.hasException(for: host, ephemeral: tab.isPrivate)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -683,6 +697,13 @@ private struct SiteSettingsPanel: View {
             .tooltip("More actions")
             .popover(isPresented: $showActions, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
+                    if let tab, let host = tab.url?.host(), isTrustedManually {
+                        PopoverActionRow(title: "Stop Trusting This Certificate", icon: "xmark.shield") {
+                            showActions = false
+                            CertificateTrust.forget(host)
+                            tab.reload()
+                        }
+                    }
                     PopoverActionRow(title: "Clear Cookies for This Site", icon: "trash") {
                         showActions = false
                         if let tab { Task { await SiteSettingsPanel.clear([WKWebsiteDataTypeCookies], of: tab) } }
@@ -792,7 +813,8 @@ private struct ChromeDisguiseRow: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear { isOn = ChromeDisguise.isOn(for: host, ephemeral: tab.isPrivate) }
+        // the popover outlives a redirect to another host
+        .onChange(of: host, initial: true) { isOn = ChromeDisguise.isOn(for: host, ephemeral: tab.isPrivate) }
     }
 }
 

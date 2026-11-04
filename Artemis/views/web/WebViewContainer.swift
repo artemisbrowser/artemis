@@ -19,7 +19,12 @@ final class WebHostView: NSView {
         still.autoresizingMask = [.width, .height]
         still.isHidden = true
         addSubview(still)
-        observeKeyWindow()
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(reclaim), name: NSWindow.didBecomeKeyNotification, object: nil)
+        center.addObserver(
+            self, selector: #selector(reclaim), name: BrowserWindows.didRegisterNotification, object: nil)
+        center.addObserver(
+            self, selector: #selector(windowDidResignKey), name: NSWindow.didResignKeyNotification, object: nil)
     }
 
     @available(*, unavailable)
@@ -30,10 +35,23 @@ final class WebHostView: NSView {
     func host(_ webView: WKWebView, borrowed: Bool) {
         guard !borrowed else {
             if webView.superview === self { webView.removeFromSuperview() }
+            // the mini-player hands the page back to the slot that last held it, else to this
+            if tab?.webHost == nil { tab?.webHost = self }
             return
         }
         guard webView.superview !== self else { return }
         guard canTakeLiveView(webView) else { return showStill() }
+        if let tab, let holder = webView.window, holder !== window,
+            BrowserWindows.shared.manager(for: holder)?.isShowing(tab) == true
+        {
+            // the frame the window it leaves still shows, taken before the move resizes it
+            let configuration = WKSnapshotConfiguration()
+            configuration.rect = webView.bounds
+            configuration.afterScreenUpdates = false
+            webView.takeSnapshot(with: configuration) { image, _ in
+                MainActor.assumeIsolated { tab.stillFrame = image }
+            }
+        }
         // a page renders in its window's colour space. a named one reaches Core
         // Animation as a number; a display's ICC profile is re-parsed per surface
         if window?.colorSpace != .displayP3 { window?.colorSpace = .displayP3 }
@@ -42,17 +60,21 @@ final class WebHostView: NSView {
         // the page's frame is managed in `layout()`
         webView.autoresizingMask = []
         addSubview(webView)
+        tab?.webHost = self
         hideStill()
+        if let tab, tab.stillFrame != nil, !isShownInSeveralWindows(tab) { tab.stillFrame = nil }
         focusHostedWebView()
     }
 
-    /// free, already ours, or held by an unfocused browser window. the mini-player's
-    /// panel isn't a browser window, so its claim is never deferred to
+    /// free, already ours, or held by another browser window while this one is key and
+    /// showing the tab: a warm or fading mount never takes a page from where it's seen.
+    /// the mini-player's panel isn't a browser window, so its claim is never deferred to
     private func canTakeLiveView(_ webView: WKWebView) -> Bool {
         guard let window else { return false }
         guard let holder = webView.window, holder !== window else { return true }
         guard BrowserWindows.shared.manager(for: holder) != nil else { return true }
-        return window.isKeyWindow
+        guard window.isKeyWindow, let tab else { return false }
+        return BrowserWindows.shared.manager(for: window)?.isShowing(tab) == true
     }
 
     /// the other window took the live view: stand its last frame in its place
@@ -61,9 +83,10 @@ final class WebHostView: NSView {
         if subview is WKWebView { showStill() }
     }
 
-    /// called on every re-render, so a snapshot that lands late still appears
-    func showStill() {
-        still.image = tab?.stillFrame
+    /// called on every re-render, so a snapshot that lands late still appears. the
+    /// mini-player's slot stays empty
+    fileprivate func showStill() {
+        still.image = tab?.isMiniPlayerActive == true ? nil : tab?.stillFrame
         still.frame = bounds
         still.isHidden = still.image == nil
     }
@@ -73,41 +96,24 @@ final class WebHostView: NSView {
         still.image = nil
     }
 
-    /// takes the page back when this window comes forward, and stills it when it goes back
-    private func observeKeyWindow() {
-        let center = NotificationCenter.default
-        center.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self, let tab = self.tab,
-                    note.object as? NSWindow === self.window
-                else { return }
-                self.host(tab.webView, borrowed: tab.isMiniPlayerActive)
-            }
-        }
-        center.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self, let tab = self.tab,
-                    note.object as? NSWindow === self.window,
-                    tab.webView.superview === self
-                else { return }
-                self.captureStill(of: tab)
-            }
-        }
+    /// takes the page back when this window turns key or registers: a claim from another
+    /// window needs both, in either order
+    @objc private func reclaim(_ note: Notification) {
+        guard note.object as? NSWindow === window, let tab else { return }
+        host(tab.webView, borrowed: tab.isMiniPlayerActive)
     }
 
-    /// only pages on screen in more than one window need a still
-    private func captureStill(of tab: BrowserTab) {
-        let showing = BrowserWindows.shared.allManagers.filter { $0.isShowing(tab) }
-        guard showing.count > 1 else { return }
-        let configuration = WKSnapshotConfiguration()
-        configuration.rect = tab.webView.bounds
-        tab.webView.takeSnapshot(with: configuration) { image, _ in
-            MainActor.assumeIsolated { tab.stillFrame = image }
-        }
+    /// lets go of the still when this window goes back with the page on screen nowhere else
+    @objc private func windowDidResignKey(_ note: Notification) {
+        guard note.object as? NSWindow === window, let tab, tab.webView.superview === self,
+            !isShownInSeveralWindows(tab)
+        else { return }
+        tab.stillFrame = nil
+    }
+
+    /// only a page on screen in more than one window needs a still
+    private func isShownInSeveralWindows(_ tab: BrowserTab) -> Bool {
+        BrowserWindows.shared.allManagers.count { $0.isShowing(tab) } > 1
     }
 
     // MARK: - Resize settling
@@ -169,7 +175,7 @@ final class WebHostView: NSView {
     /// the field of a command bar that stays open
     func focusHostedWebView() {
         guard let window, window.isKeyWindow,
-            !(window.firstResponder is NSText && tab?.manager?.isCommandBarVisible == true),
+            !(window.firstResponder is NSText && BrowserWindows.shared.manager(for: window)?.isCommandBarVisible == true),
             let webView = subviews.first(where: { $0 is WKWebView }) as? WKWebView,
             let scheme = webView.url?.scheme, scheme == "http" || scheme == "https"
         else { return }
@@ -184,7 +190,7 @@ final class WebHostView: NSView {
     }
 
     /// true while this slot holds the real page rather than a still
-    var hostsLiveView: Bool { subviews.contains { $0 is WKWebView } }
+    fileprivate var hostsLiveView: Bool { subviews.contains { $0 is WKWebView } }
 }
 
 /// hosts a tab's `WKWebView` in SwiftUI. the tab owns the web view; callers key
@@ -203,7 +209,6 @@ struct WebViewContainer: NSViewRepresentable {
     func makeNSView(context: Context) -> WebHostView {
         let container = WebHostView()
         container.tab = tab
-        tab.webHost = container
         container.host(tab.webView, borrowed: tab.isMiniPlayerActive)
         container.isHidden = !isVisible && PerfFlags.hidesOffscreenPages
         return container
@@ -211,8 +216,7 @@ struct WebViewContainer: NSViewRepresentable {
 
     func updateNSView(_ nsView: WebHostView, context: Context) {
         nsView.tab = tab
-        // the mini-player hands the view back to whichever slot last asked for it
-        if nsView.hostsLiveView { tab.webHost = nsView } else { nsView.showStill() }
+        if !nsView.hostsLiveView { nsView.showStill() }
         // reading `isMiniPlayerActive` re-runs this when the mini-player hands the view back
         nsView.host(tab.webView, borrowed: tab.isMiniPlayerActive)
         let hidden = !isVisible && PerfFlags.hidesOffscreenPages
@@ -249,9 +253,11 @@ struct PageStack: NSViewRepresentable {
 final class PageStackView: NSView {
     private var hosts: [BrowserTab.ID: (host: WebHostView, generation: Int)] = [:]
     private var shownID: BrowserTab.ID?
-    /// held opaque under the incoming page until its fade lands
+    /// held opaque under the incoming page until its fade lands, mounted or not
     private var fadingID: BrowserTab.ID?
     private var fadeToken = 0
+    /// the tabs the card last asked for; a held page outside them goes when its fade lands
+    private var mounted: Set<BrowserTab.ID> = []
 
     init() {
         super.init(frame: .zero)
@@ -262,20 +268,20 @@ final class PageStackView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func update(tabs: [BrowserTab], shownID new: BrowserTab.ID?) {
-        let mounted = Set(tabs.map(\.id))
-        for (id, entry) in hosts where !mounted.contains(id) {
+        mounted = Set(tabs.map(\.id))
+        let switched = new != shownID
+        if switched {
+            let holds = PerfFlags.holdsCrossfadePage
+            fadingID = shownID.flatMap { hosts[$0] != nil && (holds || mounted.contains($0)) ? $0 : nil }
+            shownID = new
+        }
+        for (id, entry) in hosts where !mounted.contains(id) && id != fadingID {
             entry.host.removeFromSuperview()
             hosts[id] = nil
         }
-        let switched = new != shownID
-        if switched {
-            fadingID = shownID.flatMap { mounted.contains($0) ? $0 : nil }
-            shownID = new
-        }
         for tab in tabs {
             if let entry = hosts[tab.id], entry.generation == tab.webViewGeneration {
-                // the mini-player hands the view back to whichever slot last asked for it
-                if entry.host.hostsLiveView { tab.webHost = entry.host } else { entry.host.showStill() }
+                if !entry.host.hostsLiveView { entry.host.showStill() }
                 entry.host.host(tab.webView, borrowed: tab.isMiniPlayerActive)
                 continue
             }
@@ -283,7 +289,6 @@ final class PageStackView: NSView {
             let host = WebHostView(frame: bounds)
             host.wantsLayer = true
             host.tab = tab
-            tab.webHost = host
             // hidden before it joins the window, so a warm page never starts out visible
             host.isHidden = isHidden(tab.id)
             addSubview(host)
@@ -323,6 +328,10 @@ final class PageStackView: NSView {
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
             guard let self, token == fadeToken else { return }
+            if let id = fadingID, !mounted.contains(id) {
+                hosts[id]?.host.removeFromSuperview()
+                hosts[id] = nil
+            }
             fadingID = nil
             applyVisibility()
         }

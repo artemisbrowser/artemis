@@ -32,10 +32,31 @@ final class Profile: Identifiable {
         didSet { mirror(archiveAfterHours, TabManager.autoArchiveHoursKey) }
     }
 
-    @ObservationIgnored private(set) lazy var history = HistoryStore(fileURL: file("history.json"))
-    @ObservationIgnored private(set) lazy var archive = ArchiveStore(fileURL: file("archive.json"))
-    @ObservationIgnored private(set) lazy var inputHistory = InputHistory(
-        fileURL: file("input-history.json"))
+    @ObservationIgnored private var openedHistory: HistoryStore?
+    @ObservationIgnored private var openedArchive: ArchiveStore?
+    @ObservationIgnored private var openedInputHistory: InputHistory?
+
+    var history: HistoryStore {
+        if let openedHistory { return openedHistory }
+        let store = HistoryStore(fileURL: file("history.json"))
+        openedHistory = store
+        return store
+    }
+
+    var archive: ArchiveStore {
+        if let openedArchive { return openedArchive }
+        let store = ArchiveStore(fileURL: file("archive.json"))
+        openedArchive = store
+        return store
+    }
+
+    var inputHistory: InputHistory {
+        if let openedInputHistory { return openedInputHistory }
+        let store = InputHistory(fileURL: file("input-history.json"))
+        openedInputHistory = store
+        return store
+    }
+
     @ObservationIgnored private(set) lazy var pageIndex = FullTextIndex(fileURL: file("pagetext.sqlite"))
     @ObservationIgnored private(set) lazy var translationRules = TranslationRules(
         fileURL: file("translation-rules.json"))
@@ -57,6 +78,14 @@ final class Profile: Identifiable {
     }
 
     var isDefault: Bool { id == Self.defaultID }
+
+    /// the opened stores' writes, made synchronously for a quit; a store never opened has
+    /// nothing to write, and opening it would decode its file on main first
+    func saveNow() {
+        openedHistory?.saveNow()
+        openedArchive?.saveNow()
+        openedInputHistory?.saveNow()
+    }
 
     private func mirror(_ value: Any, _ key: String) {
         if isDefault { UserDefaults.standard.set(value, forKey: key) }

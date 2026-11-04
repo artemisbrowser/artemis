@@ -2,37 +2,38 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
+import CryptoKit
 import Foundation
 import SQLite3
 
 /// Arc's sidebar file, spaces plus a flat pool of items linked by parent/child
 /// ids, as Artemis `SpaceData`, so an import lands through the relaunch path
-enum ArcImport {
+nonisolated enum ArcImport {
     static let bundleID = "company.thebrowser.Browser"
 
     struct Result {
         var spaces: [SpaceData] = []
-        /// Arc's top apps, which are Artemis' favourites
-        var favouriteURLs: [String] = []
-        var archived: [ArchiveEntry] = []
+        /// Arc's top apps, which are Artemis' favourites, by Arc profile folder
+        var favourites: [(folder: String, url: String)] = []
+        /// archived tabs, by the Arc profile folder of the space they left
+        var archived: [(folder: String, entry: ArchiveEntry)] = []
         /// url → the page title Arc had, shown until the tab is hydrated
         var titles: [String: String] = [:]
         /// url → the name you gave the tab in Arc, which outranks any title
         var renames: [String: String] = [:]
         /// Arc profile folder ("Default", "Profile 1") → the Artemis profile its
-        /// spaces, cookies, history and passwords land in
+        /// spaces, favourites, archive, cookies, history and passwords land in
         var profileIDs: [String: UUID] = ["Default": Profile.defaultID]
         /// Arc profile folder → the name Arc shows for it
         var profileNames: [String: String] = [:]
-        var historyCount = 0
 
-        var tabCount: Int { spaces.reduce(favouriteURLs.count) { $0 + $1.tabs.count } }
+        var tabCount: Int { spaces.reduce(favourites.count) { $0 + $1.tabs.count } }
         var folderCount: Int {
             spaces.reduce(0) { $0 + folders(in: $1.pinnedEntries) + folders(in: $1.todayEntries) }
         }
-        var isEmpty: Bool { spaces.isEmpty && favouriteURLs.isEmpty }
+        var isEmpty: Bool { spaces.isEmpty && favourites.isEmpty }
 
-        /// the profiles Arc's spaces browse in, other than the default one
+        /// the profiles Arc's spaces and favourites browse in, other than the default one
         var profiles: [ProfileData] {
             profileIDs.compactMap { folder, id in
                 guard id != Profile.defaultID else { return nil }
@@ -52,23 +53,12 @@ enum ArcImport {
 
     // MARK: - Finding Arc
 
-    /// the real home directory — `NSHomeDirectory()` is the sandbox container,
-    /// and Arc's data sits outside it
-    static var home: URL {
-        guard let path = getpwuid(getuid())?.pointee.pw_dir else {
-            return URL(fileURLWithPath: NSHomeDirectory())
-        }
-        return URL(fileURLWithPath: String(cString: path))
-    }
+    static var dataDirectory: URL { URL.homeDirectory.appending(path: "Library/Application Support/Arc") }
 
-    static var dataDirectory: URL { home.appending(path: "Library/Application Support/Arc") }
-
-    static var isInstalled: Bool {
+    @MainActor static var isInstalled: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
     }
 
-    /// the sandbox exception covers `~/Library/Application Support/Arc/`; a
-    /// folder picked in an open panel is the fallback when it doesn't
     static func isReadable(_ directory: URL = dataDirectory) -> Bool {
         FileManager.default.isReadableFile(
             atPath: directory.appending(path: "StorableSidebar.json").path)
@@ -83,7 +73,7 @@ enum ArcImport {
         parsed.result.profileNames = profileNames(in: directory)
         if let archive = try? Data(contentsOf: directory.appending(path: "StorableArchiveItems.json"))
         {
-            parsed.result.archived = parse(archive: archive, spaceNames: parsed.spaceNames)
+            parsed.result.archived = parse(archive: archive, spaces: parsed.spaces)
         }
         return parsed.result
     }
@@ -92,34 +82,38 @@ enum ArcImport {
 
     static func parse(sidebar data: Data) -> Result? { parseSidebar(data)?.result }
 
-    /// the space names come back with the result: an archived tab names the
-    /// space it was archived from by id
-    private static func parseSidebar(_ data: Data) -> (result: Result, spaceNames: [String: String])? {
+    /// each space's name and profile folder come back with the result: an
+    /// archived tab names the space it was archived from by id
+    private static func parseSidebar(_ data: Data)
+        -> (result: Result, spaces: [String: (name: String, folder: String)])?
+    {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let containers = (root["sidebar"] as? [String: Any])?["containers"] as? [[String: Any]],
             let container = containers.first(where: { $0["spaces"] != nil })
         else { return nil }
 
+        let items = pairs(container["items"] as? [Any] ?? [])
         var index: [String: [String: Any]] = [:]
-        for (id, item) in pairs(container["items"] as? [Any] ?? []) { index[id] = item }
+        for (id, item) in items { index[id] = item }
 
         var result = Result()
-        var spaceNames: [String: String] = [:]
+        var spaces: [String: (name: String, folder: String)] = [:]
 
         for (arcID, space) in pairs(container["spaces"] as? [Any] ?? []) {
             let name = (space["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Space"
-            spaceNames[arcID] = name
             let sections = sectionIDs(space)
             let builder = Builder(items: index)
             let pinned = builder.entries(under: sections.pinned, pinned: true)
             let today = builder.entries(under: sections.unpinned, pinned: false)
             // spaces on the same Arc profile share one profile here
-            let folder = profileFolder(space)
-            let profileID = result.profileIDs[folder] ?? UUID()
-            result.profileIDs[folder] = profileID
+            let owner = arcProfile(space["profile"] as? [String: Any])
+            let profileID = result.profileIDs[owner.folder] ?? owner.id
+            result.profileIDs[owner.folder] = profileID
+            spaces[arcID] = (name, owner.folder)
             result.spaces.append(
                 SpaceData(
-                    id: UUID(), name: name, icon: icon(space), appearance: appearance(space),
+                    id: stableID("arc-space/\(arcID)"), name: name, icon: icon(space),
+                    appearance: appearance(space),
                     profileID: profileID,
                     splitGroups: builder.splits, tabs: builder.tabs,
                     selectedTabID: builder.tabs.first?.id,
@@ -128,20 +122,24 @@ enum ArcImport {
             result.renames.merge(builder.renames) { current, _ in current }
         }
 
-        // the top-apps container's children are the favourites
+        // each Arc profile has a top-apps container; its children are that profile's favourites
         let favourites = Builder(items: index)
-        for (_, item) in index {
+        for (id, item) in items {
             guard let type = (item["data"] as? [String: Any])?["itemContainer"] as? [String: Any],
-                (type["containerType"] as? [String: Any])?["topApps"] != nil,
-                let id = item["id"] as? String
+                let owner = (type["containerType"] as? [String: Any]).flatMap({ payload($0, "topApps") })
             else { continue }
+            let before = favourites.tabs.count
             _ = favourites.entries(under: id, pinned: false)
+            guard favourites.tabs.count > before else { continue }
+            let profile = arcProfile(owner)
+            result.profileIDs[profile.folder] = result.profileIDs[profile.folder] ?? profile.id
+            result.favourites += favourites.tabs[before...].map { (profile.folder, $0.url) }
         }
-        result.favouriteURLs = favourites.tabs.map(\.url)
         result.titles.merge(favourites.titles) { current, _ in current }
         result.renames.merge(favourites.renames) { current, _ in current }
 
-        return result.isEmpty ? nil : (result, spaceNames)
+        guard !result.isEmpty else { return nil }
+        return (result, spaces)
     }
 
     /// Arc writes its collections as flat `[id, value, id, value…]` arrays
@@ -167,13 +165,22 @@ enum ArcImport {
         return (pinned, unpinned)
     }
 
-    /// the folder of the Arc profile a space browses in
-    private static func profileFolder(_ space: [String: Any]) -> String {
-        guard let profile = space["profile"] as? [String: Any], profile["default"] == nil,
-            let custom = payload(profile, "custom"),
-            let name = custom["directoryBasename"] as? String
-        else { return "Default" }
-        return name
+    /// the folder of the Arc profile a space or top-apps container belongs to,
+    /// and the profile it is here
+    private static func arcProfile(_ profile: [String: Any]?) -> (folder: String, id: UUID) {
+        guard let profile, profile["default"] == nil, let custom = payload(profile, "custom"),
+            let folder = custom["directoryBasename"] as? String
+        else { return ("Default", Profile.defaultID) }
+        return (folder, stableID("arc-profile/\(custom["machineID"] as? String ?? "")/\(folder)"))
+    }
+
+    /// the same Arc name gives the same id on every import, so a re-run finds
+    /// what the last one made: a version 8 UUID over SHA-256 of the name
+    private static func stableID(_ name: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data(name.utf8)).prefix(16))
+        bytes[6] = bytes[6] & 0x0F | 0x80
+        bytes[8] = bytes[8] & 0x3F | 0x80
+        return bytes.withUnsafeBytes { UUID(uuid: $0.load(as: uuid_t.self)) }
     }
 
     /// the names Arc shows for its profiles, from Chromium's `Local State`
@@ -193,11 +200,13 @@ enum ArcImport {
         var splits: [SplitGroupData] = []
         var titles: [String: String] = [:]
         var renames: [String: String] = [:]
+        /// containers already walked: a damaged file can list a folder under itself
+        private var walked: Set<String> = []
 
         init(items: [String: [String: Any]]) { self.items = items }
 
         func entries(under id: String?, pinned: Bool, depth: Int = 0) -> [EntryData] {
-            guard let id, let node = items[id] else { return [] }
+            guard let id, walked.insert(id).inserted, let node = items[id] else { return [] }
             var out: [EntryData] = []
             for childID in node["childrenIds"] as? [String] ?? [] {
                 guard let child = items[childID], let data = child["data"] as? [String: Any]
@@ -205,6 +214,7 @@ enum ArcImport {
                 if data["tab"] != nil {
                     if let entry = tab(child, pinned: pinned) { out.append(entry) }
                 } else if data["list"] != nil {
+                    guard !walked.contains(childID) else { continue }
                     let children = entries(under: childID, pinned: pinned, depth: depth + 1)
                     // deeper than Artemis nests: the tabs come up a level rather
                     // than being dropped
@@ -231,7 +241,7 @@ enum ArcImport {
             else { return nil }
             let record = TabRecord(
                 url: raw, pinnedURL: pinned ? raw : nil, isPinned: pinned,
-                lastAccessed: date(info["timeLastActiveAt"]), createdAt: date(item["createdAt"]))
+                lastAccessed: date(info["timeLastActiveAt"]))
             tabs.append(record)
             if let title = info["savedTitle"] as? String, !title.isEmpty { titles[raw] = title }
             if let name = item["title"] as? String, !name.isEmpty { renames[raw] = name }
@@ -267,7 +277,9 @@ enum ArcImport {
 
     // MARK: - Archive
 
-    private static func parse(archive data: Data, spaceNames: [String: String]) -> [ArchiveEntry] {
+    private static func parse(
+        archive data: Data, spaces: [String: (name: String, folder: String)]
+    ) -> [(folder: String, entry: ArchiveEntry)] {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
@@ -283,9 +295,12 @@ enum ArcImport {
                 .map(Date.init(timeIntervalSinceReferenceDate:)) ?? Date()
             let source = ((item["source"] as? [String: Any])?["space"] as? [String: Any])?["_0"]
                 as? String
-            return ArchiveEntry(
-                url: url, title: title, archivedAt: archivedAt,
-                spaceName: source.flatMap { spaceNames[$0] } ?? "Arc")
+            let space = source.flatMap { spaces[$0] }
+            return (
+                space?.folder ?? "Default",
+                ArchiveEntry(
+                    url: url, title: title, archivedAt: archivedAt, spaceName: space?.name ?? "Arc")
+            )
         }
     }
 
@@ -353,12 +368,14 @@ enum ArcImport {
         guard let type = (space["customInfo"] as? [String: Any])?["iconType"] as? [String: Any]
         else { return "square.stack" }
         if let emoji = type["emoji"] as? String, !emoji.isEmpty { return emoji }
-        if let code = type["emoji"] as? Int, let scalar = UnicodeScalar(UInt32(code)) {
+        if let code = type["emoji"] as? Int,
+            let scalar = UInt32(exactly: code).flatMap(UnicodeScalar.init)
+        {
             return String(Character(scalar))
         }
         guard let name = type["icon"] as? String else { return "square.stack" }
         if let symbol = symbols[name] { return symbol }
-        return SFSymbols.allSymbols.contains(name) ? name : "square.stack"
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : "square.stack"
     }
 
     /// Arc's icon names against the nearest SF Symbol; anything unmapped that is
@@ -438,11 +455,12 @@ enum ArcImport {
         var spaces: Int { sidebar?.spaces.count ?? 0 }
         var tabs: Int { (sidebar?.tabCount ?? 0) - favourites }
         var folders: Int { sidebar?.folderCount ?? 0 }
-        var favourites: Int { sidebar?.favouriteURLs.count ?? 0 }
+        var favourites: Int { sidebar?.favourites.count ?? 0 }
         var archived: Int { sidebar?.archived.count ?? 0 }
         var isEmpty: Bool { sidebar == nil && history == 0 && cookies == 0 && logins == 0 }
     }
 
+    /// copies and counts Arc's databases: disk work, so never on the main thread
     static func survey(_ directory: URL = dataDirectory) -> Survey {
         var out = Survey(directory: directory, sidebar: read(from: directory))
         for profile in profiles(in: directory) {

@@ -96,9 +96,17 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             let handle = (user["id"] as? String).flatMap(Data.init(base64URL:)), (1...64).contains(handle.count)
         else { return .refused(prompted: false) }
         let name = PasskeyPage.clean(user["name"] as? String ?? "")
-        guard await OwnerUnlock.authenticate(.passwords, "create a passkey for \(rpID) as \u{201C}\(name)\u{201D}") else {
-            return .refused(prompted: true)
-        }
+        // every ceremony asks on screen, so an unlock still in its window never acts for a page unseen
+        guard let window = tab.webView.window else { return .refused(prompted: false) }
+        let confirm = NSAlert()
+        confirm.messageText = "Create a passkey for \(rpID)" + (name.isEmpty ? "?" : " as \u{201C}\(name)\u{201D}?")
+        confirm.informativeText = "Passkeys made in Artemis are kept on this Mac only."
+        // click-only: a Return typed for the page must not answer for the person
+        confirm.addButton(withTitle: "Continue").keyEquivalent = ""
+        confirm.addButton(withTitle: "Cancel")
+        guard await confirm.beginSheetModal(for: window) == .alertFirstButtonReturn,
+            await OwnerUnlock.authenticate(.passwords, "create a passkey for \(rpID) as \u{201C}\(name)\u{201D}")
+        else { return .refused(prompted: true) }
         let store = PasswordStore.shared
         let excluded = Set(body["exclude"] as? [String] ?? [])
         if store.passkeys(in: tab.loginProfile).contains(where: { $0.rpID == rpID && excluded.contains($0.id) }) {
@@ -135,7 +143,7 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             await Self.inform(tab, "Artemis has no passkey for \(rpID).")
             return .refused(prompted: true)
         }
-        guard let passkey = candidates.count == 1 ? candidates[0] : await Self.choose(candidates, rpID, tab),
+        guard let passkey = await Self.choose(candidates, rpID, tab),
             await OwnerUnlock.authenticate(
                 .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}")
         else { return .refused(prompted: true) }
@@ -172,7 +180,7 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             picker.menu?.addItem(withTitle: display.isEmpty ? name : "\(name) — \(display)", action: nil, keyEquivalent: "")
         }
         alert.accessoryView = picker
-        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Continue").keyEquivalent = ""
         alert.addButton(withTitle: "Cancel")
         guard await alert.beginSheetModal(for: window) == .alertFirstButtonReturn else { return nil }
         return passkeys[picker.indexOfSelectedItem]

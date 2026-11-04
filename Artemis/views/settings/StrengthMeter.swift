@@ -6,9 +6,11 @@ import SwiftUI
 /// four bars and a word for how hard `password` is to guess
 struct StrengthMeter: View {
     let password: String
+    /// fragments of the password, kept only while the meter is shown
+    @State private var words = PasswordStrength.Words()
 
     var body: some View {
-        let strength = PasswordStrength(password)
+        let strength = PasswordStrength(password, words: words)
         let (title, color): (String, Color) =
             switch strength {
             case .weak: ("Weak", .red)

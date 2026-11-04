@@ -80,18 +80,32 @@ enum PrivacyCleaner {
         if targets.contains(.history) {
             profile.history.clear(since: since)
             await Intelligence.shared.reset()
-            // the command bar's learned inputs and each tab's back/forward blob
-            // are history too, but untimestamped: only a full clear takes them
+            // the recently closed stack names pages too; a space since deleted counts as this profile's
+            func isCleared(_ space: UUID, _ closedAt: Date) -> Bool {
+                closedAt >= since && (manager.spaces.first { $0.id == space }?.profileID ?? profile.id) == profile.id
+            }
+            manager.closedTabs.removeAll { isCleared($0.spaceID, $0.closedAt) }
+            manager.closedFolders.removeAll { isCleared($0.spaceID, $0.closedAt) }
+            // the command bar's learned inputs, each tab's back/forward list and the
+            // model's tab names are history too, but untimestamped: only a full clear takes them
             if range == .all {
                 profile.inputHistory.clear()
+                TabNameStore.shared.clearAllGenerated()
+                for tab in profile.essentials { tab.forgetSessionHistory() }
                 for space in manager.spaces where space.profileID == profile.id {
-                    for tab in space.tabs { TabStateStore.remove(tab.id) }
+                    for tab in space.tabs {
+                        tab.forgetSessionHistory()
+                        TabStateStore.remove(tab.id)
+                    }
                 }
             }
         }
+        // an icon on disk names a site visited, and is only a cache
+        if !targets.isDisjoint(with: [.history, .cache]) { FaviconStore.shared.removeIcons(since: since) }
         if targets.contains(.archive) { profile.archive.clear(since: since) }
+        // the downloads list, zoom and the per-site consents aren't timestamped: any range
+        // clears them all
         if targets.contains(.downloads) { DownloadManager.shared.clearFinished() }
-        // zoom and the per-site consents aren't timestamped: any range clears them all
         if targets.contains(.zoom) { ZoomStore.shared.clear() }
         if targets.contains(.permissions) {
             SitePermissionStore.shared.forgetAll()

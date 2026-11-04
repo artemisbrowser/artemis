@@ -31,18 +31,24 @@ nonisolated enum ExtensionCompat {
     /// manifest key holding the host `identity.getRedirectURL` answers with;
     /// `runtime.getManifest()` exposes it to the shim synchronously
     static let redirectHostKey = "artemis_redirect_host"
+    /// manifest key naming the permissions the patch added, which the consent leaves out
+    static let addedPermissionsKey = "artemis_added_permissions"
+    /// what the patch can add: the bridge channel, and the registry userScripts runs on. a package
+    /// can ship `addedPermissionsKey` itself, so the consent hides no other name
+    static let patchPermissions: Set<String> = ["nativeMessaging", "scripting"]
     /// manifest key mapping the worker's literal importScripts targets that run no code
     /// to whether they exist (an empty file) or not (a failed fetch)
     private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    private static let shimVersion = 45
+    private static let shimVersion = 52
 
     // MARK: - Entry point
 
     /// unpack and patch a stored extension in place, returning the URL for
-    /// `WKWebExtension(resourceBaseURL:)`. idempotent per shim version
+    /// `WKWebExtension(resourceBaseURL:)`; nil for a package that is missing or holds a link.
+    /// idempotent per shim version
     @concurrent static func prepare(storedID id: String) async -> URL? {
-        guard var root = await migrateZipIfNeeded(id: id) else { return nil }
+        guard var root = await migrateZipIfNeeded(id: id), !holdsLink(root) else { return nil }
         if let dir = ExtensionInstaller.manifestRoot(under: root) { root = dir }
         patchIfNeeded(packageRoot: root, storedID: id)
         return root
@@ -77,6 +83,21 @@ nonisolated enum ExtensionCompat {
         try? fm.removeItem(at: zip)
         debugLog("compat: unpacked \(id) for patching")
         return dir
+    }
+
+    /// WebKit serves a package's files through a link in it, and the patch would write through one
+    private static func holdsLink(_ dir: URL) -> Bool {
+        let key = URLResourceKey.isSymbolicLinkKey
+        let walker = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [key])
+        return walker?.contains { (try? ($0 as? URL)?.resourceValues(forKeys: [key]))?.isSymbolicLink == true }
+            ?? false
+    }
+
+    /// a manifest-named file, nil when `..` takes it out of `root`. lexical: `standardizedFileURL`
+    /// drops a `/private` prefix only from paths that exist
+    private static func packageFile(_ path: String, in root: URL) -> URL? {
+        let file = root.appendingPathComponent(path).standardized
+        return file.path.hasPrefix(root.standardized.path + "/") ? file : nil
     }
 
     // MARK: - Patching
@@ -146,17 +167,18 @@ nonisolated enum ExtensionCompat {
             // a manifest naming both (Chrome reads the worker, Firefox the scripts):
             // WebKit runs the scripts as a document, which has no importScripts
             let scriptsWin = !((background["scripts"] as? [String]) ?? []).isEmpty
-            if scriptsWin, let worker = background["service_worker"] as? String {
-                let file = packageRoot.appendingPathComponent(worker)
-                if let data = try? Data(contentsOf: file) {
-                    let stripped = withoutShimImport(data)
-                    if stripped != data { try? stripped.write(to: file) }
-                }
+            if scriptsWin, let worker = background["service_worker"] as? String,
+                let file = packageFile(worker, in: packageRoot), let data = try? Data(contentsOf: file)
+            {
+                let stripped = withoutShimImport(data)
+                if stripped != data { try? stripped.write(to: file, options: .atomic) }
             }
-            if !scriptsWin, let worker = background["service_worker"] as? String {
+            if !scriptsWin, let worker = background["service_worker"] as? String,
+                let file = packageFile(worker, in: packageRoot)
+            {
                 let isModule = (background["type"] as? String) == "module"
-                if needsServiceWorkerEnvironment(packageRoot: packageRoot, entry: worker, isModule: isModule) {
-                    importShim(into: packageRoot.appendingPathComponent(worker), isModule: isModule)
+                if needsServiceWorkerEnvironment(file, isModule: isModule) {
+                    importShim(into: file, isModule: isModule)
                     manifest[inertImportsKey] = inertImports(packageRoot: packageRoot, worker: worker)
                 } else {
                     background["scripts"] = ["__artemis/compat.js", worker]
@@ -186,13 +208,15 @@ nonisolated enum ExtensionCompat {
         // 4. the bridge channel: sendNativeMessage is permission-gated. userScripts
         // runs on scripting's registry, which WebKit only exposes when declared
         var permissions = (manifest["permissions"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let optional = (manifest["optional_permissions"] as? [Any])?.compactMap { $0 as? String } ?? []
+        var added = Set((manifest[addedPermissionsKey] as? [String]) ?? [])
         var needed = ["nativeMessaging"]
-        if (permissions + optional).contains("userScripts") { needed.append("scripting") }
+        if permissions.contains("userScripts") { needed.append("scripting") }
         for permission in needed where !permissions.contains(permission) {
             permissions.append(permission)
+            added.insert(permission)
         }
         manifest["permissions"] = permissions
+        manifest[addedPermissionsKey] = added.sorted()
 
         // 5. declarativeNetRequest rulesets trimmed to what WebKit will compile:
         // every enabled ruleset becomes ONE content-rule-list, capped at 150,000
@@ -206,7 +230,7 @@ nonisolated enum ExtensionCompat {
         guard let out = try? JSONSerialization.data(
             withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
         else { return false }
-        try? out.write(to: manifestURL)
+        try? out.write(to: manifestURL, options: .atomic)
 
         // 6. every packaged HTML page loads the shim first
         patchHTMLFiles(under: packageRoot)
@@ -264,7 +288,7 @@ nonisolated enum ExtensionCompat {
             return sources[id] ?? (entry["path"] as? String)
         }
         let readRules = { (path: String) -> [[String: Any]]? in
-            guard let data = try? Data(contentsOf: packageRoot.appendingPathComponent(path))
+            guard let data = packageFile(path, in: packageRoot).flatMap({ try? Data(contentsOf: $0) })
             else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
         }
@@ -297,7 +321,8 @@ nonisolated enum ExtensionCompat {
                 try? FileManager.default.createDirectory(
                     at: outDir, withIntermediateDirectories: true)
                 guard let out = try? JSONSerialization.data(withJSONObject: kept),
-                    (try? out.write(to: outDir.appendingPathComponent("\(id).json"))) != nil
+                    let file = packageFile("\(id).json", in: outDir),
+                    (try? out.write(to: file, options: .atomic)) != nil
                 else { return }
 
                 sources[id] = path
@@ -405,7 +430,7 @@ nonisolated enum ExtensionCompat {
         let bom = Data([0xEF, 0xBB, 0xBF])
         let at = data.starts(with: bom) ? bom.count : 0
         data.insert(contentsOf: Data((isModule ? moduleImport : classicImport).utf8), at: at)
-        if data != original { try? data.write(to: worker) }
+        if data != original { try? data.write(to: worker, options: .atomic) }
     }
 
     /// the shim's import is always the file's first line, in any form a shim version has written
@@ -425,12 +450,9 @@ nonisolated enum ExtensionCompat {
 
     /// does this background use APIs only a real service worker has? a textual check, whose
     /// false positive keeps the environment the extension asked for
-    private static func needsServiceWorkerEnvironment(
-        packageRoot: URL, entry: String, isModule: Bool
-    ) -> Bool {
+    private static func needsServiceWorkerEnvironment(_ entry: URL, isModule: Bool) -> Bool {
         if isModule { return true }  // module backgrounds are worker-shaped anyway
-        guard let source = try? String(
-            contentsOf: packageRoot.appendingPathComponent(entry), encoding: .utf8)
+        guard let source = try? String(contentsOf: entry, encoding: .utf8)
         else { return true }  // unreadable → assume it needs what it asked for
         return serviceWorkerOnlyAPIs.contains { source.contains($0) }
     }
@@ -468,7 +490,7 @@ nonisolated enum ExtensionCompat {
             guard let data = try? Data(contentsOf: url), !data.starts(with: bom),
                 data.contains(where: { $0 >= 0x80 })
             else { continue }
-            try? (bom + data).write(to: url)
+            try? (bom + data).write(to: url, options: .atomic)
         }
     }
 

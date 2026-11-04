@@ -161,7 +161,8 @@ struct MeshEditor: View {
     }
 
     private func deleteSelected() -> Bool {
-        guard let id = selectedID, let i = draft.firstIndex(where: { $0.id == id })
+        // an empty draft reads back as the default mesh, so the last blob stays
+        guard let id = selectedID, draft.count > 1, let i = draft.firstIndex(where: { $0.id == id })
         else { return false }
         draft.remove(at: i)
         selectedID = nil

@@ -48,24 +48,46 @@ nonisolated enum CommandMatcher {
     static func match(_ query: [UInt8], _ candidate: String) -> CommandMatch? {
         guard !query.isEmpty else { return nil }
         var candidate = candidate
-        return candidate.withUTF8 { score(query, $0) }
+        return candidate.withUTF8 { text in query.withUnsafeBufferPointer { score($0, text) } }
     }
 
     /// byte-wise substring test; `String.contains` goes through ICU, never use it here
     static func contains(_ needle: [UInt8], _ candidate: String) -> Bool {
-        guard let first = needle.first else { return true }
+        guard !needle.isEmpty else { return true }
         var candidate = candidate
-        return candidate.withUTF8 { bytes in
-            guard bytes.count >= needle.count else { return false }
-            for start in 0...(bytes.count - needle.count) where bytes[start] == first {
-                var offset = 1
-                while offset < needle.count, bytes[start + offset] == needle[offset] {
-                    offset += 1
-                }
-                if offset == needle.count { return true }
-            }
-            return false
+        return candidate.withUTF8 { text in
+            needle.withUnsafeBufferPointer { offset(of: $0, in: text, from: 0) != nil }
         }
+    }
+
+    /// where `needle` next occurs in `text`, at or after `start`
+    private static func offset(
+        of needle: UnsafeBufferPointer<UInt8>, in text: UnsafeBufferPointer<UInt8>, from start: Int
+    ) -> Int? {
+        let n = text.count, m = needle.count
+        guard n - start >= m, let base = text.baseAddress else { return nil }
+        let raw = UnsafeRawPointer(base)
+        let ones: UInt64 = 0x0101_0101_0101_0101
+        let first = ones &* UInt64(needle[0]), last = ones &* UInt64(needle[m - 1])
+        var i = start
+        // eight starts per load, lane k at byte k (little-endian): a lane is zero where the
+        // needle's first and last bytes both line up, and each flagged lane is confirmed in full
+        while i + m + 7 <= n {
+            let lanes = (raw.loadUnaligned(fromByteOffset: i, as: UInt64.self) ^ first)
+                | (raw.loadUnaligned(fromByteOffset: i + m - 1, as: UInt64.self) ^ last)
+            var zeros = (lanes &- ones) & ~lanes & (ones << 7)
+            while zeros != 0 {
+                let at = i + zeros.trailingZeroBitCount / 8
+                if memcmp(base + at, needle.baseAddress, m) == 0 { return at }
+                zeros &= zeros &- 1
+            }
+            i += 8
+        }
+        while i <= n - m {
+            if memcmp(base + i, needle.baseAddress, m) == 0 { return i }
+            i += 1
+        }
+        return nil
     }
 
     /// bytes that end a word, so the next byte starts one
@@ -78,38 +100,30 @@ nonisolated enum CommandMatcher {
     }
 
     private static func score(
-        _ query: [UInt8], _ text: UnsafeBufferPointer<UInt8>
+        _ query: UnsafeBufferPointer<UInt8>, _ text: UnsafeBufferPointer<UInt8>
     ) -> CommandMatch? {
         let n = text.count, m = query.count
         guard m <= n else { return nil }
-
-        var ascii = true
-        for byte in text where byte >= 0x80 {
-            ascii = false
-            break
-        }
         let lengthPenalty = min(40, n / 4)
 
         // contiguous run: the best hit is the earliest one, and one starting a
         // word beats one buried mid-word
         var hit = -1
         var hitAtBoundary = false
-        var i = 0
-        while i <= n - m {
-            if text[i] == query[0] {
-                var k = 1
-                while k < m, text[i + k] == query[k] { k += 1 }
-                if k == m {
-                    let boundary = i == 0 || isSeparator(text[i - 1])
-                    if hit < 0 || (boundary && !hitAtBoundary) {
-                        hit = i
-                        hitAtBoundary = boundary
-                    }
-                    if boundary { break }
-                }
+        var from = 0
+        while let i = offset(of: query, in: text, from: from) {
+            let boundary = i == 0 || isSeparator(text[i - 1])
+            if hit < 0 || (boundary && !hitAtBoundary) {
+                hit = i
+                hitAtBoundary = boundary
             }
-            i += 1
+            if boundary { break }
+            from = i + 1
         }
+        // fuzzy tiers apply to name-length candidates only, never a long title+url key
+        guard hit >= 0 || n <= 96 else { return nil }
+
+        let ascii = text.reduce(0, |) < 0x80
 
         if hit >= 0 {
             let ranges = ascii ? [hit..<(hit + m)] : []
@@ -121,10 +135,7 @@ nonisolated enum CommandMatcher {
             return CommandMatch(score: base - min(60, hit) - lengthPenalty, ranges: ranges)
         }
 
-        // fuzzy tiers apply to name-length candidates only, never a long title+url key
-        guard n <= 96 else { return nil }
-
-        // initials: "sto" finds "Stack Overflow · Tagged Questions"
+        // initials: "so" finds "Stack Overflow", "pl" finds "Pricing – Linear"
         if let acronym = acronymMatch(query, text, ascii: ascii) {
             return CommandMatch(score: Tier.acronym - lengthPenalty, ranges: acronym)
         }
@@ -146,7 +157,7 @@ nonisolated enum CommandMatcher {
     }
 
     private static func acronymMatch(
-        _ query: [UInt8], _ text: UnsafeBufferPointer<UInt8>, ascii: Bool
+        _ query: UnsafeBufferPointer<UInt8>, _ text: UnsafeBufferPointer<UInt8>, ascii: Bool
     ) -> [Range<Int>]? {
         var ranges: [Range<Int>] = []
         var qi = 0
@@ -158,6 +169,8 @@ nonisolated enum CommandMatcher {
                 continue
             }
             if atBoundary {
+                // punctuation and non-ascii bytes (`(`, `–`, `·`) start no word: the next letter does
+                guard (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) else { continue }
                 guard byte == query[qi] else { return nil }
                 if ascii { append(index, to: &ranges) }
                 qi += 1

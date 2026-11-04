@@ -165,7 +165,7 @@ private struct BoostsSection: View {
             ForEach(store.boosts) { boost in
                 HStack(spacing: 8) {
                     Toggle(
-                        "",
+                        boost.host,
                         isOn: Binding(
                             get: { boost.isEnabled }, set: { store.setEnabled(boost, $0) })
                     )
@@ -178,8 +178,10 @@ private struct BoostsSection: View {
                     Spacer()
                     Button("Edit") { editing = boost }
                         .controlSize(.small)
+                        .accessibilityLabel("Edit \(boost.host)")
                     Button("Remove", role: .destructive) { store.remove(boost) }
                         .controlSize(.small)
+                        .accessibilityLabel("Remove \(boost.host)")
                 }
             }
 
@@ -302,12 +304,12 @@ private struct ExtensionRow: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .tooltip("Turn it on in other profiles too")
+                    .tooltip("Use \(ext.name) in other profiles too")
                 }
                 Toggle("", isOn: enabled(in: extensions.currentProfile))
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .tooltip("On in this profile")
+                    .tooltip("Use \(ext.name) in this profile")
             }
 
             if let summary = ext.summary, !summary.isEmpty {
@@ -322,6 +324,7 @@ private struct ExtensionRow: View {
                     get: { ext.allowsIncognito }, set: { extensions.setAllowsIncognito(ext, $0) }))
                     .toggleStyle(.checkbox)
                     .disabled(ext.refusesIncognito)
+                    .accessibilityLabel("Allow \(ext.name) in incognito")
                 InfoButton(ext.refusesIncognito
                     ? "This extension doesn't run in incognito windows."
                     : "It can see and change pages in incognito windows.")
@@ -398,13 +401,14 @@ private struct ExtensionRow: View {
                         extensions.openOptionsPage(for: ext)
                     }
                     .controlSize(.small)
-                    .disabled(!ext.isEnabled)
+                    .disabled(!extensions.isMasterEnabled || !ext.profiles.contains(extensions.currentProfile))
                 }
 
                 Spacer()
 
                 Button("Remove", role: .destructive, action: onRemove)
                     .controlSize(.small)
+                    .accessibilityLabel("Remove \(ext.name)")
             }
         }
         .padding(.vertical, 4)

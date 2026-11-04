@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
+import Network
 import Observation
 import SwiftUI
 
@@ -44,6 +45,17 @@ final class FaviconStore {
         return dir.appendingPathComponent(safe).appendingPathExtension("png")
     }
 
+    /// delete the icons written since `since`, each named for a site visited; icons
+    /// already in memory stay, so open tabs keep theirs
+    func removeIcons(since: Date) {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for file in files {
+            let written = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            if (written ?? .now) >= since { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+
     /// the icon for a host, or nil. reading `generation` here ties every caller
     /// into observation so a later fetch repaints them; a disk hit warms memory.
     func icon(for host: String?) -> NSImage? {
@@ -76,93 +88,102 @@ final class FaviconStore {
 
     /// kick off a fetch for a host if we don't already have its icon. cheap to
     /// call repeatedly — it no-ops when cached or already loading.
-    func prefetch(host: String?, isPrivate: Bool) {
-        guard let host, !host.isEmpty else { return }
+    func prefetch(host: String?, profile: UUID, isPrivate: Bool) {
+        guard let host, !host.isEmpty, icon(for: host) == nil else { return }
         let key = Self.key(for: host)
-        if cache[key] != nil || inFlight.contains(key) { return }
-        if NSImage(contentsOf: fileURL(for: key)) != nil { return }
-        fetch(key: key, declared: nil, isPrivate: isPrivate)
+        if inFlight.contains(key) { return }
+        fetch(key: key, declared: nil, profile: profile, isPrivate: isPrivate)
     }
 
     /// record a page-declared icon URL (from a `<link rel="icon">`) and fetch it.
     /// a private (incognito) icon is memory-only and never asks the remote service
-    func update(host: String?, declaredIconURL: URL?, isPrivate: Bool) {
+    func update(host: String?, declaredIconURL: URL?, profile: UUID, isPrivate: Bool) {
         guard let host, !host.isEmpty else { return }
         let key = Self.key(for: host)
         if inFlight.contains(key) { return }
         // a declared icon always refetches; a guessed one stands once cached
         if declaredIconURL == nil, cache[key] != nil { return }
-        fetch(key: key, declared: declaredIconURL, isPrivate: isPrivate)
+        fetch(key: key, declared: declaredIconURL, profile: profile, isPrivate: isPrivate)
     }
 
     // MARK: - Fetch pipeline
 
-    /// in order: the page-declared icon, the site's /favicon.ico, then, outside
-    /// incognito only, Google's favicon service, which learns the host
+    /// in order: the page-declared icon if it is on the web or inline, the site's
+    /// /favicon.ico, then, outside incognito only, Google's favicon service, which learns the host
     static func sources(for key: String, declared: URL?, isPrivate: Bool) -> [URL] {
         [
-            declared,
+            declared.flatMap { ["http", "https", "data"].contains($0.scheme?.lowercased()) ? $0 : nil },
             URL(string: "https://\(key)/favicon.ico"),
             isPrivate ? nil : URL(string: "https://www.google.com/s2/favicons?domain=\(key)&sz=64"),
         ].compactMap { $0 }
     }
 
-    /// the first decodable image wins and is cached, and saved unless private
-    private func fetch(key: String, declared: URL?, isPrivate: Bool) {
+    /// the first decodable image wins and is cached, and saved unless private. each fetch has a
+    /// session of its own through the profile's extension proxy: no connection, cookie or cache
+    /// shared with another, and no request alive past 15 seconds
+    private func fetch(key: String, declared: URL?, profile: UUID, isPrivate: Bool) {
         inFlight.insert(key)
-        attempt(
-            Self.sources(for: key, declared: declared, isPrivate: isPrivate), index: 0, key: key,
-            persist: !isPrivate)
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.urlCache = nil
+        config.timeoutIntervalForResource = 15
+        if let proxy = ExtensionProxyBridge.shared.activeProxy(in: profile) {
+            config.proxyConfigurations = [proxy.config]
+        }
+        let session = URLSession(configuration: config)
+        let urls = Self.sources(for: key, declared: declared, isPrivate: isPrivate)
+        Task {
+            defer {
+                inFlight.remove(key)
+                session.finishTasksAndInvalidate()
+            }
+            for url in urls {
+                guard let png = await Self.download(url, via: session), let image = NSImage(data: png)
+                else { continue }
+                cache[key] = image
+                knownMissing.remove(key)
+                accentCache[key] = nil  // recompute the ring colour from the new icon
+                generation &+= 1
+                if !isPrivate { try? png.write(to: fileURL(for: key)) }
+                return
+            }
+        }
     }
 
-    /// private fetches keep no cookies or cache on disk
-    private static let privateSession = URLSession(configuration: .ephemeral)
+    nonisolated private static let maxBytes = 1 << 20
+    /// the long side an icon is kept at, in pixels; the 64pt passwords tile draws it at about 82
+    nonisolated private static let maxPixels = 128
+    /// the longest side an icon may declare, in pixels: drawing it down decodes it whole first
+    nonisolated private static let maxSourcePixels = 4096
 
-    private func attempt(_ urls: [URL], index: Int, key: String, persist: Bool) {
-        guard index < urls.count else {
-            DispatchQueue.main.async { self.inFlight.remove(key) }
-            return
-        }
-        var request = URLRequest(url: urls[index])
+    /// the icon at `url` as a PNG of at most `maxPixels` a side; nil when it isn't an image,
+    /// declares more than `maxSourcePixels` a side, or passes `maxBytes` or the session's deadline
+    @concurrent
+    private nonisolated static func download(_ url: URL, via session: URLSession) async -> Data? {
+        var request = URLRequest(url: url)
         // some servers serve a degraded response (or 403) to an unknown agent
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
             forHTTPHeaderField: "User-Agent")
-        (persist ? URLSession.shared : Self.privateSession).dataTask(with: request) { [weak self] data, _, _ in
-            guard let self else { return }
-            if let data, let image = NSImage(data: data), image.size.width > 0 {
-                DispatchQueue.main.async {
-                    self.store(image, data: data, key: key, persist: persist)
-                }
-            } else {
-                self.attempt(urls, index: index + 1, key: key, persist: persist)
+        guard let (bytes, response) = try? await session.bytes(for: request) else { return nil }
+        defer { bytes.task.cancel() }
+        guard response.expectedContentLength <= maxBytes else { return nil }
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                guard data.count <= maxBytes else { return nil }
             }
-        }.resume()
-    }
-
-    /// commit an icon to memory + disk and wake observers. PNG-normalises so the
-    /// on-disk form is uniform regardless of the source (.ico, svg, etc).
-    private func store(_ image: NSImage, data: Data, key: String, persist: Bool) {
-        cache[key] = image
-        knownMissing.remove(key)
-        accentCache[key] = nil  // recompute the ring colour from the new icon
-        generation &+= 1
-        if persist {
-            let url = fileURL(for: key)
-            if let png = Self.png(from: image) {
-                try? png.write(to: url)
-            } else {
-                try? data.write(to: url)
-            }
-        }
-        inFlight.remove(key)
-    }
-
-    private static func png(from image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-            let rep = NSBitmapImageRep(data: tiff)
-        else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        } catch { return nil }
+        guard let image = NSImage(data: data), image.size.width > 0, image.size.height > 0 else { return nil }
+        // a vector rep reports no pixels and renders at the cap
+        let pixels = image.representations.map { max($0.pixelsWide, $0.pixelsHigh) }.max() ?? 0
+        guard pixels <= maxSourcePixels else { return nil }
+        let scale = CGFloat(pixels > 0 ? min(pixels, maxPixels) : maxPixels)
+            / max(image.size.width, image.size.height)
+        let rep = bitmap(
+            of: image, width: max(1, Int(image.size.width * scale)), height: max(1, Int(image.size.height * scale)))
+        return rep?.representation(using: .png, properties: [:])
     }
 
     // MARK: - Dominant colour
@@ -171,7 +192,7 @@ final class FaviconStore {
     /// a legible ring tint; a monochrome icon gets its own average tone instead
     private static func dominantColor(of image: NSImage) -> Color {
         let dim = 24
-        guard let rep = bitmap(of: image, dim: dim) else { return Color(white: 0.85) }
+        guard let rep = bitmap(of: image, width: dim, height: dim) else { return Color(white: 0.85) }
 
         let bins = 12
         var weight = [Double](repeating: 0, count: bins)
@@ -220,17 +241,17 @@ final class FaviconStore {
             brightness: Double(max(b, 0.85)))
     }
 
-    /// render an icon into a small RGBA bitmap for sampling
-    private static func bitmap(of image: NSImage, dim: Int) -> NSBitmapImageRep? {
+    /// render an icon into an RGBA bitmap of the given pixel size
+    private nonisolated static func bitmap(of image: NSImage, width: Int, height: Int) -> NSBitmapImageRep? {
         guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: dim, pixelsHigh: dim,
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
         else { return nil }
-        rep.size = NSSize(width: dim, height: dim)
+        rep.size = NSSize(width: width, height: height)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(x: 0, y: 0, width: dim, height: dim))
+        image.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
         NSGraphicsContext.restoreGraphicsState()
         return rep
     }

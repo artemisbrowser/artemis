@@ -31,7 +31,7 @@ nonisolated enum ReaderMode {
     ]
 
     /// nil below 120 words, which is a landing page or app shell, not an article
-    static func extract(html: String, url: URL) -> Article? {
+    @concurrent static func extract(html: String, url: URL) async -> Article? {
         let title = firstMatch(in: html, pattern: "<title[^>]*>(.*?)</title>")
             .map(decodeEntities)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -108,7 +108,7 @@ nonisolated enum ReaderMode {
             index = html.index(after: close)
         }
         out += html[index...]
-        return replace("(\\s*\n\\s*){2,}", in: out, with: "\n")
+        return out
     }
 
     /// the kept tag with only `href`, `src` and `alt`, minus `javascript:` urls
@@ -170,7 +170,7 @@ nonisolated enum ReaderMode {
     // MARK: - Markdown
 
     /// the article's sanitised html as Markdown, links and images absolute
-    static func markdown(for article: Article) -> String {
+    @concurrent static func markdown(for article: Article) async -> String {
         // a link, quote or code block collects into its own buffer, wrapped as it closes
         var buffers = [""]
         var hrefs: [String?] = []
@@ -260,7 +260,10 @@ nonisolated enum ReaderMode {
         }
         text(html[index...])
         while buffers.count > 1 { buffers[buffers.count - 2] += buffers.removeLast() }
-        let tidy = replace("[ \\t]+\n", in: buffers[0], with: "\n")
+        // linear in each line's length
+        let tidy = buffers[0].split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            line[..<(line.lastIndex { $0 != " " && $0 != "\t" }.map(line.index(after:)) ?? line.startIndex)]
+        }.joined(separator: "\n")
         return replace("\n{3,}", in: tidy, with: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

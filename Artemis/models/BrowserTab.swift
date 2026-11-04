@@ -58,10 +58,11 @@ final class BrowserTab: NSObject, Identifiable {
     private(set) var title = "New Tab"
 
     /// the sidebar's title: the user's name for the tab, else the model's short
-    /// name for the page title, else the page title. see `TabNameStore`
+    /// name for the page title, else the page title; an incognito page's own
+    /// title only. see `TabNameStore`
     @MainActor
     var displayTitle: String {
-        TabNameStore.shared.name(for: url ?? pendingURL) ?? title
+        isPrivate ? title : TabNameStore.shared.name(for: url ?? pendingURL) ?? title
     }
     private(set) var url: URL?
     private(set) var isLoading = false
@@ -71,7 +72,8 @@ final class BrowserTab: NSObject, Identifiable {
     /// a stopped load ends without the run to 100%
     @ObservationIgnored private var stopRequested = false
 
-    /// last url the user asked for (survives failed loads, unlike `webView.url`)
+    /// the url last asked of `load`, or the main-frame url that last failed;
+    /// survives failed loads, unlike `webView.url`
     private(set) var lastAttemptedURL: URL?
     /// human-readable load failure, nil when fine; drives the error page
     private(set) var loadError: String?
@@ -159,8 +161,22 @@ final class BrowserTab: NSObject, Identifiable {
     /// the page settled on a real title, possibly well after it finished loading
     @ObservationIgnored var onDidSettleTitle: ((URL, String) -> Void)?
 
-    /// the owning model, set in `TabManager.wire`
-    @ObservationIgnored weak var manager: TabManager?
+    /// the window that wired this tab, and whether it was a browser window, whose
+    /// tabs are shared and outlive it
+    @ObservationIgnored weak var maker: TabManager?
+    @ObservationIgnored var isShared = false
+
+    /// the window this page answers to. A Scout, incognito or Peek page keeps the one that
+    /// made it; a shared tab or favourite takes a browser window showing it, else one on its
+    /// space (its profile, for a favourite), else the front one, else the next window's manager
+    var manager: TabManager? {
+        guard isShared, maker?.peekTab !== self else { return maker }
+        let windows = BrowserWindows.shared
+        let mains = [windows.browserScope].compactMap { $0 } + windows.mainManagers
+        return mains.first { $0.isShowing(self) }
+            ?? mains.first { isEssential ? $0.currentProfile.id == profileID : $0.space(of: self) === $0.currentSpace }
+            ?? mains.first ?? windows.seed ?? maker
+    }
 
     /// rebuilt (not mutated) when the tab changes profile — WebKit fixes a web
     /// view's data store at creation, so a new jar means a new web view
@@ -169,10 +185,12 @@ final class BrowserTab: NSObject, Identifiable {
     /// store per profile, so `===` tells a real profile move from a no-op
     @ObservationIgnored private(set) var dataStore: WKWebsiteDataStore
     /// bumps each time `webView` is rebuilt; the SwiftUI host's `.id`, so must stay observed
-    private(set) var webViewGeneration = 0
+    private(set) var webViewGeneration = 0 {
+        didSet { stillFrame = nil }
+    }
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
-    /// the main-window slot hosting this tab's web view; re-set on every mount
+    /// the slot that last held this tab's web view, where the mini-player hands it back
     @ObservationIgnored weak var webHost: WebHostView?
 
     /// the page's last frame, for a second window showing the same tab: only one
@@ -193,6 +211,12 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// this load failed on a certificate the user could choose to accept
     private(set) var canOverrideCertificate = false
+    /// each host's trust from this page's challenges, until the next commit. a failed
+    /// load carries none, so the certificate its error page asks about is kept here
+    @ObservationIgnored private(set) var serverTrusts: [String: SecTrust] = [:]
+    /// the main-frame host a certificate exception let through; holds until a page on another host commits,
+    /// as the connection it opened can carry that host's later loads, exception or not
+    private(set) var exceptionHost: String?
 
     // MARK: - Translation
 
@@ -491,7 +515,9 @@ final class BrowserTab: NSObject, Identifiable {
     func probeReaderAvailability() {
         // `innerText` forces layout: only the displayed page. a script into a web
         // view with no page launches its web process on main
-        guard webView.url != nil, manager == nil || manager?.displayedContentTab === self else {
+        guard webView.url != nil,
+            manager == nil || BrowserWindows.shared.allManagers.contains(where: { $0.displayedContentTab === self })
+        else {
             isReaderAvailable = false
             return
         }
@@ -521,9 +547,10 @@ final class BrowserTab: NSObject, Identifiable {
         guard let current = url else { return }
         let html = (try? await webView.evaluateJavaScript("document.documentElement.outerHTML"))
             as? String
-        guard let html,
-            let article = ReaderMode.extract(html: html, url: current)
-        else {
+        let article = await ReaderMode.extract(html: html ?? "", url: current)
+        // the page may have moved on, or a second toggle got there first
+        guard url == current, !isReaderMode else { return }
+        guard let article else {
             isReaderAvailable = false
             return
         }
@@ -594,21 +621,34 @@ final class BrowserTab: NSObject, Identifiable {
         guard newStore !== dataStore else { return }
         // the old view's unanswered question holds a handler nothing could call
         abandonDialog()
+        BrowserCore.shared.miniPlayer.exitIfActive(for: self)
+        // a jar's extensions know only its own tabs: this one leaves the old
+        // profile's controller here and joins the new one's once rebuilt
+        ExtensionManager.shared.tabDidClose(self)
         let wasPending = pendingURL
         let resume = url ?? lastAttemptedURL ?? pendingURL
-
-        observations.forEach { $0.invalidate() }
-        observations = []
-
-        webView = ArtemisWebView(
-            frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: newStore))
-        dataStore = newStore
-        configureWebView()
-        observeWebView()
-        webViewGeneration += 1
+        replaceWebView(on: newStore)
+        ExtensionManager.shared.tabDidOpen(self)
 
         // a tab that hadn't loaded stays lazy
         if wasPending == nil, let resume { load(resume) }
+    }
+
+    /// a fresh web view on `store`; until it loads it spawns no web process, and
+    /// the url and history observers have re-read it empty
+    private func replaceWebView(on store: WKWebsiteDataStore) {
+        observations.forEach { $0.invalidate() }
+        observations = []
+        webView = ArtemisWebView(frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: store))
+        dataStore = store
+        configureWebView()
+        observeWebView()
+        webViewGeneration += 1
+    }
+
+    /// the host, less a leading "www.": the title a page stands under until it gives one
+    private static func hostTitle(of url: URL) -> String? {
+        url.host().map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 }
     }
 
     /// restore a tab without loading it yet; the host name stands in as the
@@ -622,9 +662,7 @@ final class BrowserTab: NSObject, Identifiable {
         self.pinnedURL = pinned ? (pinnedURL ?? url) : nil
         pendingURL = url
         self.lastAccessed = lastAccessed
-        if let host = url.host() {
-            title = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        }
+        if let host = Self.hostTitle(of: url) { title = host }
         addressText = url.absoluteString
     }
 
@@ -652,7 +690,8 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// fetch the site's favicon without loading the page
     func prefetchFavicon() {
-        FaviconStore.shared.prefetch(host: faviconHost, isPrivate: isPrivate)
+        FaviconStore.shared.prefetch(
+            host: faviconHost, profile: ProfileStore.proxyProfile(of: dataStore), isPrivate: isPrivate)
     }
 
     /// mark the tab as just-used, resetting its auto-archive clock
@@ -683,6 +722,25 @@ final class BrowserTab: NSObject, Identifiable {
         } else {
             load(pendingURL)
         }
+    }
+
+    /// until the current load finishes, at most 15 s
+    func settle() async {
+        try? await Task.sleep(for: .milliseconds(200))
+        let deadline = Date(timeIntervalSinceNow: 15)
+        while webView.isLoading, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// loaded for something to read it unseen: a lazy or hibernated tab wakes and settles, and a
+    /// web view never mounted gets a page-sized frame
+    func wake() async {
+        if pendingURL != nil {
+            activateIfNeeded()
+            await settle()
+        }
+        if webView.frame.isEmpty { webView.frame = CGRect(x: 0, y: 0, width: 1280, height: 800) }
     }
 
     // MARK: - Hibernation
@@ -750,10 +808,22 @@ final class BrowserTab: NSObject, Identifiable {
     /// set by navigation; a debounced save writes only tabs that have it
     @ObservationIgnored var hasUnsavedState = true
 
-    /// a restored tab's state from last launch, replayed by `activateIfNeeded`
+    /// a restored tab's state from last launch, replayed by `activateIfNeeded`;
+    /// it is already on disk, so a debounced save skips it
     func adopt(interactionState state: Any?) {
         guard pendingURL != nil else { return }
         savedInteractionState = state
+        hasUnsavedState = false
+    }
+
+    /// a full history clear: the back/forward list goes, from the live page and from
+    /// what a lazy or sleeping tab holds; the page on screen stays
+    func forgetSessionHistory() {
+        savedInteractionState = nil
+        // SPI: `_clear` drops every item but the current one
+        let clear = Selector(("_clear"))
+        if webView.backForwardList.responds(to: clear) { webView.backForwardList.perform(clear) }
+        hasUnsavedState = true
     }
 
     /// a tab worth putting to sleep: loaded, not already asleep, and not doing
@@ -763,7 +833,7 @@ final class BrowserTab: NSObject, Identifiable {
         guard let current = url ?? lastAttemptedURL, current.scheme?.hasPrefix("http") == true
         else { return false }
         return !keepsLoaded && !isCapturing && !isPlayingMediaContent && !isMiniPlayerActive
-            && !isLoading && agentName == nil
+            && !isLoading && agentName == nil && pendingDialog == nil && !isInspectorVisible
     }
 
     /// release the web view and its web content process, keeping enough to
@@ -773,20 +843,8 @@ final class BrowserTab: NSObject, Identifiable {
         savedInteractionState = webView.interactionState
         pendingURL = current
         isHibernated = true
-
-        observations.forEach { $0.invalidate() }
-        observations = []
-        // a WKWebView that never loads spawns no web process
-        webView = ArtemisWebView(
-            frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
-        configureWebView()
-        observeWebView()
-        webViewGeneration += 1
-        // the observers just re-read an empty view
-        if let host = current.host() {
-            title = title.isEmpty || title == "New Tab"
-                ? (host.hasPrefix("www.") ? String(host.dropFirst(4)) : host) : title
-        }
+        replaceWebView(on: dataStore)
+        if title.isEmpty || title == "New Tab", let host = Self.hostTitle(of: current) { title = host }
         url = current
         addressText = current.absoluteString
         canGoBack = false
@@ -798,26 +856,19 @@ final class BrowserTab: NSObject, Identifiable {
     /// of a restored pin at `pinnedURL`, with its session dropped
     func closeToPinned() {
         guard let anchor = pinnedURL ?? url ?? lastAttemptedURL ?? pendingURL else { return }
+        abandonDialog()
+        BrowserCore.shared.miniPlayer.exitIfActive(for: self)
         WebNotifications.shared.forgetPage(in: id)
         appBadge = nil
         savedInteractionState = nil
         isHibernated = false
         pendingURL = anchor
         loadError = nil
-
-        observations.forEach { $0.invalidate() }
-        observations = []
-        webView = ArtemisWebView(
-            frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
-        configureWebView()
-        observeWebView()
-        webViewGeneration += 1
+        replaceWebView(on: dataStore)
 
         url = anchor
         addressText = anchor.absoluteString
-        if let host = anchor.host() {
-            title = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        }
+        if let host = Self.hostTitle(of: anchor) { title = host }
         canGoBack = false
         canGoForward = false
     }
@@ -911,38 +962,60 @@ final class BrowserTab: NSObject, Identifiable {
     @MainActor
     func export(_ kind: PageExport) async {
         guard url != nil, pendingURL == nil else { return }
-        let data: Data?
-        let ext: String
-        switch kind {
-        case .pdf:
-            data = try? await webView.pdf(configuration: WKPDFConfiguration())
-            ext = "pdf"
-        case .webArchive:
-            data = await withCheckedContinuation { done in
-                webView.createWebArchiveData { done.resume(returning: try? $0.get()) }
-            }
-            ext = "webarchive"
-        case .fullPageImage:
-            data = await fullPageSnapshot()?.tiffRepresentation
-                .flatMap(NSBitmapImageRep.init(data:))?.representation(using: .png, properties: [:])
-            ext = "png"
-        }
-        guard let data else { return }
-        let cleaned = displayTitle.replacingOccurrences(of: "/", with: "-")
+        var name = displayTitle.replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-").trimmingCharacters(in: CharacterSet(charactersIn: ". "))
-        let name = cleaned.isEmpty ? "Page" : String(cleaned.prefix(120))
+        // APFS caps a file name at 255 UTF-16 units; this leaves room for " (NN).webarchive"
+        var units = 0
+        name = String(name.prefix { units += $0.utf16.count; return units <= 200 })
+        let ext =
+            switch kind {
+            case .pdf: "pdf"
+            case .webArchive: "webarchive"
+            case .fullPageImage: "png"
+            }
         let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        var file = folder.appendingPathComponent("\(name).\(ext)")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: file.path) {
-            file = folder.appendingPathComponent("\(name) (\(counter)).\(ext)")
-            counter += 1
+        let file = DownloadItem.uniqueURL(for: folder.appendingPathComponent("\(name.isEmpty ? "Page" : name).\(ext)"))
+        // claimed before the awaits below, so an export started meanwhile picks another name
+        FileManager.default.createFile(atPath: file.path, contents: nil)
+        do {
+            switch kind {
+            case .pdf:
+                try await webView.pdf(configuration: WKPDFConfiguration()).write(to: file)
+            case .webArchive:
+                try await withCheckedThrowingContinuation { done in
+                    webView.createWebArchiveData { done.resume(with: $0) }
+                }.write(to: file)
+            case .fullPageImage:
+                guard let image = await fullPageSnapshot()?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                else { throw CocoaError(.fileWriteUnknown) }
+                try await Self.writePNG(image, to: file)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            let alert = NSAlert()
+            alert.messageText = "The page couldn't be exported."
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            if let window = webView.window {
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            } else {
+                alert.runModal()
+            }
+            return
         }
-        guard (try? data.write(to: file)) != nil else { return }
         NSWorkspace.shared.activateFileViewerSelecting([file])
     }
 
-    /// the whole document, not just the viewport, capped at 6000×24000pt and 1600px wide
+    /// PNG-encodes `image` straight into `file`, off the main actor
+    @concurrent
+    private nonisolated static func writePNG(_ image: CGImage, to file: URL) async throws {
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    /// the whole document, not just the viewport, capped at 6000×24000pt and 1600pt wide
     @MainActor
     private func fullPageSnapshot() async -> NSImage? {
         let size = try? await webView.evaluateJavaScript("""
@@ -1015,7 +1088,8 @@ final class BrowserTab: NSObject, Identifiable {
 
     private func observeWebView() {
         observations = [
-            webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
+            // no `.initial`: a swapped-in empty view must not overwrite the page's title
+            webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
                 guard let self else { return }
                 if let title = webView.title, !title.isEmpty {
                     self.title = title
@@ -1104,8 +1178,9 @@ extension BrowserTab: WKNavigationDelegate {
             let trust = space.serverTrust
         {
             let host = space.host
-            CertificateTrust.remember(trust, for: host)
-            if CertificateTrust.applyException(to: trust, host: host) {
+            serverTrusts[host] = trust
+            if CertificateTrust.applyException(to: trust, host: host, ephemeral: isPrivate) {
+                if host == webView.url?.host() { exceptionHost = host }
                 completionHandler(.useCredential, URLCredential(trust: trust))
                 return
             }
@@ -1177,8 +1252,10 @@ extension BrowserTab: WKNavigationDelegate {
 
     /// adopt the new site's zoom here, before the page paints
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        serverTrusts = [:]
         webView.setValue(true, forKey: "drawsBackground")
         webView.underPageBackgroundColor = nil
+        if let exceptionHost, webView.url?.host() != exceptionHost { self.exceptionHost = nil }
         if appBadge != nil, SitePermissionStore.originString(webView.url) != appBadgeOrigin { appBadge = nil }
         syncZoomToSite()
         endPageTranslation()
@@ -1198,8 +1275,9 @@ extension BrowserTab: WKNavigationDelegate {
             onDidNavigate?(url, webView.title?.isEmpty == false ? webView.title! : (url.host() ?? url.absoluteString))
             // focus the loaded page, as Safari does, so `document.hasFocus()` holds;
             // never the hidden tab, or while a field editor holds first responder
-            if manager?.selectedTab === self, let window = webView.window,
-                window.isKeyWindow, !(window.firstResponder is NSText) {
+            if let window = webView.window, window.isKeyWindow,
+                BrowserWindows.shared.manager(for: window)?.selectedTab === self,
+                !(window.firstResponder is NSText) {
                 window.makeFirstResponder(webView)
             }
         }
@@ -1249,6 +1327,8 @@ extension BrowserTab: WKNavigationDelegate {
         guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 102) else { return }
         // "plug-in handled load" (204): a raw media file shown in WebKit's viewer
         guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 204) else { return }
+        // a link, redirect or back/forward fails without passing through `load`
+        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL { lastAttemptedURL = failing }
         loadError = nsError.localizedDescription
         canOverrideCertificate = CertificateTrust.isOverridable(nsError)
         if let host = lastAttemptedURL?.host() {
@@ -1260,8 +1340,8 @@ extension BrowserTab: WKNavigationDelegate {
     /// that one certificate by `SecTrustCopyExceptions`
     @MainActor
     func acceptCertificateAndRetry() {
-        guard let host = lastAttemptedURL?.host(),
-            CertificateTrust.addException(for: host)
+        guard let host = lastAttemptedURL?.host(), let trust = serverTrusts[host],
+            CertificateTrust.addException(for: host, trust: trust, ephemeral: isPrivate)
         else { return }
         canOverrideCertificate = false
         retry()
@@ -1285,8 +1365,12 @@ extension BrowserTab: WKNavigationDelegate {
                 onOpenLink?(url, click)
                 return (.cancel, preferences)
             }
-            // a linked split pane loads plain link clicks in its pair
-            if manager?.routeLinkedNavigation(from: self, to: url) == true {
+            // a linked split pane loads plain link clicks in its pair, except a frame's
+            // own navigation and a jump within the page
+            let toPage = navigationAction.targetFrame?.isMainFrame ?? true
+            let inPage = url.fragment != nil
+                && url.absoluteString.prefix { $0 != "#" } == webView.url?.absoluteString.prefix { $0 != "#" }
+            if toPage, !inPage, manager?.routeLinkedNavigation(from: self, to: url) == true {
                 return (.cancel, preferences)
             }
         }
@@ -1335,8 +1419,7 @@ extension BrowserTab: WKNavigationDelegate {
         didBecome download: WKDownload
     ) {
         debugLog("navigationAction didBecome download")
-        DownloadManager.shared.register(
-            download, sourceTitle: title, sourceHost: url?.host() ?? "")
+        DownloadManager.shared.register(download)
     }
 
     func webView(
@@ -1345,8 +1428,7 @@ extension BrowserTab: WKNavigationDelegate {
         didBecome download: WKDownload
     ) {
         debugLog("navigationResponse didBecome download")
-        DownloadManager.shared.register(
-            download, sourceTitle: title, sourceHost: url?.host() ?? "")
+        DownloadManager.shared.register(download)
     }
 
     /// hand the page's declared icon to the shared store, which fetches and caches it by host
@@ -1360,7 +1442,8 @@ extension BrowserTab: WKNavigationDelegate {
                 declared = URL(string: href, relativeTo: self.webView.url)
             }
             FaviconStore.shared.update(
-                host: host, declaredIconURL: declared, isPrivate: self.isPrivate)
+                host: host, declaredIconURL: declared, profile: ProfileStore.proxyProfile(of: self.dataStore),
+                isPrivate: self.isPrivate)
         }
     }
 }
@@ -1505,7 +1588,7 @@ extension BrowserTab: WKUIDelegate {
         let scheme = url.scheme?.lowercased() ?? ""
         let site = (self.url ?? lastAttemptedURL)?.host() ?? ""
         guard !ExternalSchemes.isAllowed(site: site, scheme: scheme) else {
-            ExternalSchemes.open(url)
+            NSWorkspace.shared.open(url)
             return
         }
         guard pendingDialog == nil else { return }
@@ -1513,12 +1596,12 @@ extension BrowserTab: WKUIDelegate {
         pendingDialog = PageDialogRequest(
             kind: .openExternal(scheme: scheme, appName: appName), message: "",
             host: site,
-            // nothing is offered to remember when nothing would open
-            checkbox: appName == nil ? nil : .rememberChoice
+            // nothing is offered to remember when nothing would open, or from incognito
+            checkbox: appName == nil || isPrivate ? nil : .rememberChoice
         ) { [weak self] answer in
             self?.pendingDialog = nil
             guard answer.confirmed else { return }
-            ExternalSchemes.open(url)
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -1620,12 +1703,12 @@ extension BrowserTab: WKWebExtensionTab {
 
     @MainActor
     func activate(for context: WKWebExtensionContext) async throws {
-        manager?.selectedTabID = id
+        manager?.focus(self)
     }
 
     @MainActor
     func setSelected(_ selected: Bool, for context: WKWebExtensionContext) async throws {
-        if selected { manager?.selectedTabID = id }
+        if selected { try await activate(for: context) }
     }
 
     @MainActor

@@ -199,8 +199,6 @@ struct PasswordsSettings: View {
 
     /// coordinated, so a file iCloud has offloaded is downloaded first; UTF-8, UTF-16 (BOM) or Windows-1252
     private static func readText(_ url: URL) throws -> String {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         var coordinationError: NSError?
         var result: Result<Data, Error> = .failure(CocoaError(.fileReadUnknown))
         NSFileCoordinator().coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinationError) { readable in
@@ -208,7 +206,9 @@ struct PasswordsSettings: View {
         }
         if let coordinationError { throw coordinationError }
         let data = try result.get()
-        for encoding in [String.Encoding.utf8, .utf16, .windowsCP1252] {
+        // without a byte-order mark almost any even-length bytes decode as UTF-16
+        let unicode = data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF])
+        for encoding: String.Encoding in unicode ? [.utf16] : [.utf8, .windowsCP1252] {
             if let text = String(data: data, encoding: encoding) { return text }
         }
         throw CocoaError(.fileReadInapplicableStringEncoding)
@@ -223,13 +223,8 @@ struct PasswordsSettings: View {
         guard alert.runModal() == .alertFirstButtonReturn,
             await OwnerUnlock.authenticate(.passwords, "export your saved passwords")
         else { return }
-        let rows = logins.compactMap { login in
-            store.password(for: login).map {
-                (
-                    name: login.host, url: login.origin, username: login.username, password: $0,
-                    code: store.oneTimeCode(for: login)?.setup ?? ""
-                )
-            }
+        let rows = await store.secrets(of: logins).map {
+            (name: $0.login.host, url: $0.login.origin, username: $0.login.username, password: $0.password, code: $0.code ?? "")
         }
         status = store.writePlaintext(PasswordStore.csv(rows), suggesting: "artemis-passwords.csv", count: rows.count)
     }
@@ -302,7 +297,6 @@ private struct SiteIcon: View {
         }
         .frame(width: size, height: size)
         .overlay(shape.strokeBorder(.primary.opacity(0.08)))
-        .onAppear { FaviconStore.shared.prefetch(host: host, isPrivate: false) }
     }
 
     /// stable per host, so a site keeps its colour between launches
@@ -389,7 +383,7 @@ private struct PasswordSiteDetail: View {
 }
 
 /// keeps the hosting window out of screenshots and screen recordings while it is on screen
-private struct CaptureShield: NSViewRepresentable {
+struct CaptureShield: NSViewRepresentable {
     final class Shield: NSView {
         private weak var shielded: NSWindow?
 
@@ -434,8 +428,10 @@ private struct CopyValue: View {
     var shown: String?
     var monospaced = false
     var hovering: Binding<Bool>?
-    /// asks the device owner first, as the passwords unlock policy says
+    /// asks the device owner first, as the passwords unlock policy says, and copies concealed
     var secret = false
+    /// a code: copied concealed, with no owner check
+    var concealed = false
     /// dots in place of the value while true; nil for a value that is never masked
     var masked: Bool?
     @State private var isHovering = false
@@ -445,8 +441,12 @@ private struct CopyValue: View {
         Button {
             Task {
                 if secret, !(await OwnerUnlock.authenticate(.passwords, "copy this password")) { return }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(value, forType: .string)
+                if secret || concealed {
+                    NSPasteboard.general.copySecret(value)
+                } else {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(value, forType: .string)
+                }
                 withAnimation(Motion.fade) { copied = true }
                 try? await Task.sleep(for: .seconds(1.2))
                 withAnimation(Motion.fade) { copied = false }
@@ -494,7 +494,9 @@ private struct CodeValue: View {
                 Text("\(code.secondsLeft(at: context.date))s")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
-                CopyValue(value: current, shown: "\(current.prefix(half)) \(current.dropFirst(half))", monospaced: true)
+                CopyValue(
+                    value: current, shown: "\(current.prefix(half)) \(current.dropFirst(half))", monospaced: true,
+                    concealed: true)
             }
         }
     }
@@ -567,6 +569,28 @@ enum NativeMenu {
         }
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         withExtendedLifetime(targets) {}
+    }
+}
+
+/// nspasteboard.org markers that clipboard managers read
+extension NSPasteboard.PasteboardType {
+    static let concealed = Self("org.nspasteboard.ConcealedType")
+    static let transient = Self("org.nspasteboard.TransientType")
+}
+
+extension NSPasteboard {
+    /// a password or code for this Mac only, marked so clipboard histories skip it, and cleared after
+    /// 90 seconds unless something else was copied since
+    func copySecret(_ text: String) {
+        prepareForNewContents(with: .currentHostOnly)
+        setString(text, forType: .string)
+        setString("", forType: .concealed)
+        setString("", forType: .transient)
+        let copied = changeCount
+        Task {
+            try? await Task.sleep(for: .seconds(90))
+            if changeCount == copied { clearContents() }
+        }
     }
 }
 

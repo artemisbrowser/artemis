@@ -6,6 +6,7 @@ A Cloudflare Worker behind `POST https://feedback.artemisbrowser.app/v1/reports`
 - **Everything else** goes to a private issue on `PRIVATE_REPO`, linked to the public one: email, page address, screenshots (committed under `attachments/YYYY/MM/`), diagnostics.
 - **Errors and crashes** stay private, one issue per signature. A repeat from a build already filed changes nothing; each new build adds one comment and reopens the issue unless it was closed as not planned.
 - A retried report keeps its id, so it neither files twice nor commits its screenshots again. Report bodies are never logged.
+- An address may send six reports a minute, an IPv6 /64 counting as one address. Past two public issues a minute from one address, feedback is filed privately only.
 - `npm test` runs the tests (Node 22 or later, nothing to install).
 
 ## One-time setup, from this folder

@@ -19,18 +19,8 @@ final class DownloadItem: NSObject, Identifiable {
     private(set) var destination: URL?
     private(set) var errorText: String?
 
-    /// a better name worked out on-device from the source page: offered, and
-    /// applied only by `applySuggestedName`
-    private(set) var suggestedName: String?
-    /// what it was called before you accepted a suggestion, so it can go back
-    private(set) var previousName: String?
-
     /// from an incognito window: shown as "Private download", never by name
     let isPrivate: Bool
-
-    /// the page this came from, which is the only real clue to what the file is
-    @ObservationIgnored let sourceTitle: String
-    @ObservationIgnored let sourceHost: String
 
     @ObservationIgnored private var download: WKDownload?
     @ObservationIgnored private var progressObservation: NSKeyValueObservation?
@@ -40,13 +30,8 @@ final class DownloadItem: NSObject, Identifiable {
     /// Spotlight and launchers never offer a half-written file under its real name
     @ObservationIgnored private var partial: URL?
 
-    init(
-        download: WKDownload, sourceTitle: String = "", sourceHost: String = "",
-        filename: String? = nil
-    ) {
+    init(download: WKDownload, filename: String? = nil) {
         self.download = download
-        self.sourceTitle = sourceTitle
-        self.sourceHost = sourceHost
         preferredFilename = filename
         isPrivate = download.webView.map { !$0.configuration.websiteDataStore.isPersistent } ?? false
         super.init()
@@ -78,8 +63,9 @@ final class DownloadItem: NSObject, Identifiable {
     }
 
     /// marks a finished download as a web download, as Safari does, so Gatekeeper
-    /// checks an app inside it before it first runs
-    private func quarantine(_ file: URL, from source: URL?) {
+    /// checks an app inside it before it first runs. LaunchServices logs `source`
+    /// in a database that outlives the file, so a private download passes none
+    static func quarantine(_ file: URL, from source: URL?) {
         var properties: [String: Any] = [
             kLSQuarantineAgentNameKey as String: "Artemis",
             kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
@@ -99,56 +85,6 @@ final class DownloadItem: NSObject, Identifiable {
     func revealInFinder() {
         guard let destination else { return }
         NSWorkspace.shared.activateFileViewerSelecting([destination])
-    }
-
-    // MARK: - Suggested name
-
-    /// ask the on-device model what this file should be called
-    @MainActor
-    func proposeName() {
-        guard Intelligence.isOn(Intelligence.tidyDownloadsKey), Intelligence.isReady,
-            !sourceTitle.isEmpty, state == .finished
-        else { return }
-        let current = filename
-        Task { [weak self] in
-            guard let name = await Intelligence.shared.filename(
-                for: current, pageTitle: sourceTitle, host: sourceHost)
-            else { return }
-            guard let self, name != current else { return }
-            suggestedName = name
-        }
-    }
-
-    /// the only place a suggestion moves the file
-    func applySuggestedName() {
-        guard let suggestedName, let destination else { return }
-        let target = Self.uniqueURL(for: destination.deletingLastPathComponent()
-            .appendingPathComponent(suggestedName))
-        do {
-            try FileManager.default.moveItem(at: destination, to: target)
-            previousName = filename
-            self.destination = target
-            filename = target.lastPathComponent
-            self.suggestedName = nil
-        } catch {
-            debugLog("download rename failed: \(error)")
-            self.suggestedName = nil
-        }
-    }
-
-    /// move it back to the name it had before `applySuggestedName`
-    func undoRename() {
-        guard let previousName, let destination else { return }
-        let target = Self.uniqueURL(for: destination.deletingLastPathComponent()
-            .appendingPathComponent(previousName))
-        guard (try? FileManager.default.moveItem(at: destination, to: target)) != nil else { return }
-        self.destination = target
-        filename = target.lastPathComponent
-        self.previousName = nil
-    }
-
-    func dismissSuggestion() {
-        suggestedName = nil
     }
 
     /// `url`, or a numbered sibling of it: never a file that's already there
@@ -177,7 +113,11 @@ extension DownloadItem: WKDownloadDelegate {
         suggestedFilename: String,
         completionHandler: @escaping (URL?) -> Void
     ) {
-        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        // WebKit writing to ~/Downloads raises a Downloads folder prompt for a lab copy,
+        // and the download waits on its answer
+        let downloads = SelfTest.isRequested
+            ? FileManager.default.temporaryDirectory
+            : FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let url = Self.uniqueURL(
             for: downloads.appendingPathComponent(preferredFilename ?? suggestedFilename))
         DownloadFlight.launch(filename: url.lastPathComponent, from: download.webView)
@@ -198,7 +138,7 @@ extension DownloadItem: WKDownloadDelegate {
                 try FileManager.default.moveItem(at: partial, to: target)
                 self.destination = target
                 filename = target.lastPathComponent
-                quarantine(target, from: download.originalRequest?.url)
+                Self.quarantine(target, from: isPrivate ? nil : download.originalRequest?.url)
             } catch {
                 self.destination = partial
                 filename = partial.lastPathComponent
@@ -209,7 +149,6 @@ extension DownloadItem: WKDownloadDelegate {
         state = .finished
         DownloadManager.shared.changed(self)
         debugLog("download finished: \(filename)")
-        Task { @MainActor in proposeName() }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
@@ -256,20 +195,18 @@ final class DownloadManager {
         return running.map(\.fractionCompleted).reduce(0, +) / Double(running.count)
     }
 
-    func register(
-        _ download: WKDownload, sourceTitle: String = "", sourceHost: String = "",
-        filename: String? = nil
-    ) {
+    func register(_ download: WKDownload, filename: String? = nil) {
         debugLog("download registered: \(download.originalRequest?.url?.absoluteString ?? "nil")")
-        let item = DownloadItem(
-            download: download, sourceTitle: sourceTitle, sourceHost: sourceHost, filename: filename)
+        let item = DownloadItem(download: download, filename: filename)
         items.insert(item, at: 0)
         shelf.insert(item, at: 0)
         updateDock()
     }
 
+    /// everything but what's still running, from the Library and the sidebar's shelf
     func clearFinished() {
         items.removeAll { $0.state != .downloading }
+        shelf.removeAll { $0.state != .downloading }
     }
 
     func remove(_ item: DownloadItem) {

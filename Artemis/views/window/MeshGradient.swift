@@ -79,17 +79,16 @@ struct MeshGradientView: View {
             }
         }
 
-        let space = CGColorSpaceCreateDeviceRGB()
-        let info = CGImageAlphaInfo.premultipliedLast.rawValue
-        guard
-            let ctx = CGContext(
-                data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                space: space, bitmapInfo: info)
+        guard let provider = CGDataProvider(data: Data(px) as CFData),
+            let image = CGImage(
+                width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { return nil }
-        let image = ctx.makeImage()
         // an editor drag mints a look per tick; the spaces and presets in use are far fewer than 64
         if cache.count >= 64 { cache.removeAll(keepingCapacity: true) }
-        if let image { cache[key] = image }
+        cache[key] = image
         return image
     }
 }

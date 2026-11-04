@@ -47,7 +47,7 @@ extension ExtensionAPIBridge {
 
         case "sessions.recent":
             guard ExtensionData.declares("sessions", context), let manager else { return ["sessions": []] }
-            let limit = message["maxResults"] as? Int ?? 25
+            let limit = max(0, message["maxResults"] as? Int ?? 25)
             return ["sessions": closedTabs.prefix(limit).map { closed in
                 ["lastModified": Int(closed.closedAt.timeIntervalSince1970),
                  "tab": ExtensionData.sessionTab(id: closed.id.uuidString, url: closed.url, title: closed.title,
@@ -67,12 +67,11 @@ extension ExtensionAPIBridge {
 
         case "browsingData.remove":
             guard ExtensionData.declares("browsingData", context), let profile, let manager else { return ["ok": false] }
-            await removeBrowsingData(message, from: profile, manager: manager)
-            return ["ok": true]
+            return ["ok": await removeBrowsingData(message, from: profile, manager: manager)]
 
         case "userScripts.write", "userScripts.delete", "userScripts.registry":
-            guard ExtensionData.declares("userScripts", context) else { return ["ok": false] }
-            return ExtensionData.userScriptFiles(type, message, for: context)
+            guard ExtensionData.declares("userScripts", context), let profileID else { return ["ok": false] }
+            return ExtensionData.userScriptFiles(type, message, for: context, in: profileID)
 
         case "system.display":
             guard ExtensionData.declares("system.display", context) else { return ["displays": []] }
@@ -90,9 +89,11 @@ extension ExtensionAPIBridge {
 
     // MARK: - Browsing data
 
-    private func removeBrowsingData(_ message: [String: Any], from profile: Profile, manager: TabManager) async {
+    /// false, removing nothing, when the website data can't be removed as asked
+    private func removeBrowsingData(_ message: [String: Any], from profile: Profile, manager: TabManager) async -> Bool {
         let requested = (message["types"] as? [String]) ?? []
         let since = Date(timeIntervalSince1970: (message["since"] as? Double ?? 0) / 1000)
+        guard await ExtensionData.removeWebsiteData(requested, message, from: profile.dataStore) else { return false }
         // all of history clears as Settings' Clear Browsing Data does, input history and tab
         // session blobs with it
         if requested.contains("history") {
@@ -103,8 +104,7 @@ extension ExtensionAPIBridge {
                 SpotlightIndex.forget(.profile(profile.id))
             }
         }
-
-        await ExtensionData.removeWebsiteData(requested, message, from: profile.dataStore)
+        return true
     }
 
     // MARK: - Displays

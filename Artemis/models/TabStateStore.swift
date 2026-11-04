@@ -58,10 +58,4 @@ enum TabStateStore {
             try? FileManager.default.removeItem(at: url)
         }
     }
-
-    /// for Clear Browsing Data: these blobs hold form contents and history
-    static func removeAll() {
-        try? FileManager.default.removeItem(at: directory)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    }
 }

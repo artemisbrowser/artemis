@@ -19,6 +19,10 @@ struct DownloadPill: View {
     var body: some View {
         if let item = downloads.shelf.first {
             let many = downloads.shelf.count > 1
+            // with several on the shelf the ✕ only clears what has stopped; running ones
+            // are cancelled from Library › Downloads
+            let cancels = !many && item.state == .downloading
+            let clears = many ? downloads.shelf.contains { $0.state != .downloading } : item.state == .failed
             Button { act(on: item, many: many) } label: {
                 HStack(spacing: 7) {
                     symbol(for: item)
@@ -26,7 +30,7 @@ struct DownloadPill: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    if isHovering, item.state != .finished || many {
+                    if isHovering, cancels || clears {
                         Button { dismiss(item, many: many) } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 9, weight: .bold))
@@ -34,7 +38,7 @@ struct DownloadPill: View {
                                 .contentShape(.circle)
                         }
                         .buttonStyle(.plain)
-                        .tooltip(item.state == .downloading ? "Cancel" : "Dismiss")
+                        .tooltip(cancels ? "Cancel" : "Dismiss")
                     } else {
                         Text(status(for: item, many: many))
                             .monospacedDigit()
@@ -52,8 +56,10 @@ struct DownloadPill: View {
             .buttonStyle(.plain)
             .accessibilityLabel(many ? "\(downloads.shelf.count) downloads" : label(for: item))
             .accessibilityValue(status(for: item, many: many))
-            .accessibilityAction(named: item.state == .downloading ? "Cancel" : "Dismiss") {
-                dismiss(item, many: many)
+            .accessibilityActions {
+                if !many || clears {
+                    Button(cancels ? "Cancel" : "Dismiss") { dismiss(item, many: many) }
+                }
             }
             .background(isLanding || tabManager.kind == .incognito ? DownloadLanding() : nil)
             .onHover { isHovering = $0 }
@@ -103,15 +109,17 @@ struct DownloadPill: View {
             if NSEvent.modifierFlags.contains(.command) { item.revealInFinder() } else { item.open() }
             downloads.dismiss(item)
         } else {
-            UserDefaults.standard.set("Downloads", forKey: "libraryLastMode")
-            tabManager.isLibraryOpen = true
+            tabManager.openLibrary(.downloads)
         }
     }
 
     private func dismiss(_ item: DownloadItem, many: Bool) {
-        let items = many ? downloads.shelf : [item]
-        for item in items {
-            if item.state == .downloading { item.cancel() } else { downloads.dismiss(item) }
+        if many {
+            for stopped in downloads.shelf where stopped.state != .downloading { downloads.dismiss(stopped) }
+        } else if item.state == .downloading {
+            item.cancel()
+        } else {
+            downloads.dismiss(item)
         }
     }
 }

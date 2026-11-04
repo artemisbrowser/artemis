@@ -31,17 +31,20 @@ struct SpaceGlyph: View {
 private struct SpaceRowLayout {
     static let full: CGFloat = 28
     static let dot: CGFloat = 13
-    static let minDot: CGFloat = 9
+    static let minDot: CGFloat = 6
 
     let slot: CGFloat
+    /// the row, one space expanded, is no wider than `width`
+    let fits: Bool
 
     init(count: Int, width: CGFloat) {
-        slot = max(Self.minDot, min(Self.dot, (width - Self.full) / CGFloat(max(1, count - 1))))
+        let room = (width - Self.full) / CGFloat(max(1, count - 1))
+        slot = max(Self.minDot, min(Self.dot, room))
+        fits = room >= Self.minDot
     }
 }
 
-/// the space switcher — a row of space icons at the bottom of the sidebar.
-/// tap to switch, tap the current one (or right-click any) to edit, + to add
+/// a row of space icons at the bottom of the sidebar
 struct SpaceSwitcher: View {
     @Environment(TabManager.self) private var tabManager
     /// which space the cursor is on, held here because the neighbours collapse
@@ -57,11 +60,15 @@ struct SpaceSwitcher: View {
         // and the glass widens around it
         GeometryReader { geo in
             let inset: CGFloat = 7
-            icons(SpaceRowLayout(count: tabManager.spaces.count, width: geo.size.width - 2 * inset))
-                .padding(.horizontal, inset)
-                .chromeGlass(in: .capsule)
-                .animation(Motion.pop, value: hovered)
-                .frame(width: geo.size.width, height: geo.size.height)
+            let layout = SpaceRowLayout(count: tabManager.spaces.count, width: geo.size.width - 2 * inset)
+            let row = icons(layout).padding(.horizontal, inset)
+            // a row too long for its slot scrolls inside it, never under the library or profile
+            Group {
+                if layout.fits { row } else { ScrollView(.horizontal) { row }.scrollIndicators(.hidden) }
+            }
+            .chromeGlass(in: .capsule)
+            .animation(Motion.pop, value: hovered)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .frame(height: SidebarMetrics.glassSide)
         // a slot the cursor leaves diagonally can miss its own exit event
@@ -71,7 +78,7 @@ struct SpaceSwitcher: View {
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
                 [tabManager] event in
                 showsNumbers = BrowserWindows.shared.manager(for: event.window) === tabManager
-                    && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control
+                    && event.modifierFlags.intersection([.shift, .control, .option, .command]) == .control
                 return event
             }
         }
@@ -170,7 +177,11 @@ private struct SpaceIcon: View {
         // publish the icon's frame in the sidebar's drag coordinate space so the
         // drop can be resolved without the gesture needing to know about spaces
         .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named(SidebarDragState.contentSpace))
+            let frame = proxy.frame(in: .named(SidebarDragState.contentSpace))
+            // a dot scrolled out of the row takes no drop
+            guard let port = proxy.bounds(of: .scrollView) else { return frame }
+            let shown = port.intersection(CGRect(origin: .zero, size: proxy.size))
+            return shown.offsetBy(dx: frame.minX, dy: frame.minY)
         } action: { frame in
             drag.spaceDropFrames[space.id] = frame
         }
@@ -200,13 +211,23 @@ private struct SpaceIcon: View {
             }
             if tabManager.spaces.count > 1 {
                 Button(role: .destructive) {
-                    tabManager.deleteSpace(space)
+                    Task { await confirmDeleting(space, in: tabManager) }
                 } label: {
-                    Label("Delete Space", systemImage: "trash").labelStyle(.titleAndIcon)
+                    Label("Delete Space…", systemImage: "trash").labelStyle(.titleAndIcon)
                 }
             }
         }
     }
+}
+
+/// a delete takes every tab, pin and folder with the space for good, so it is confirmed;
+/// a locked space has the owner open it before its tab count shows
+private func confirmDeleting(_ space: Space, in tabManager: TabManager) async {
+    guard await SpaceLock.shared.unlock(space, to: "delete the \u{201C}\(space.name)\u{201D} space") else { return }
+    let tabs = space.tabs.count
+    let detail = tabs == 0 ? "" : tabs == 1 ? "Its 1 tab goes with it. " : "Its \(tabs) tabs go with it. "
+    guard confirmDelete("Delete \u{201C}\(space.name)\u{201D}?", detail + "This can't be undone.") else { return }
+    tabManager.deleteSpace(space)
 }
 
 /// name / icon / appearance editor shown in a popover from the space header
@@ -215,7 +236,6 @@ struct SpaceEditor: View {
     let space: Space
     @State private var name = ""
     @State private var appearance = SpaceAppearance()
-    @State private var showingIconPicker = false
     // theme edits are buffered in `appearance` and reach the space only on the
     // tick (the eye wears them until the preview ends); `original` is what the
     // space shows meanwhile, and what the x reverts to
@@ -243,9 +263,15 @@ struct SpaceEditor: View {
                         "Require Touch ID to open",
                         isOn: Binding(
                             get: { space.requiresUnlock },
-                            set: {
-                                SpaceLock.shared.setRequiresUnlock($0, for: space)
-                                tabManager.scheduleSave()
+                            set: { on in
+                                Task {
+                                    if on {
+                                        SpaceLock.shared.requireUnlock(for: space)
+                                    } else {
+                                        await SpaceLock.shared.stopRequiringUnlock(for: space)
+                                    }
+                                    tabManager.scheduleSave()
+                                }
                             }))
                     .font(.system(size: 12))
                     Text("Locks again whenever Artemis is in the background.")
@@ -256,9 +282,9 @@ struct SpaceEditor: View {
                 if tabManager.spaces.count > 1 {
                     Divider()
                     Button(role: .destructive) {
-                        tabManager.deleteSpace(space)
+                        Task { await confirmDeleting(space, in: tabManager) }
                     } label: {
-                        Label("Delete Space", systemImage: "trash")
+                        Label("Delete Space…", systemImage: "trash")
                     }
                 }
             }
@@ -285,8 +311,7 @@ struct SpaceEditor: View {
         .onChange(of: appearance.grain) { _, v in
             withAnimation(.snappy(duration: 0.25)) { grainPct = Int(v * 100) }
         }
-        // switching to gradient needs ≥2 colours for a mesh; nothing here touches
-        // the real space — edits only land via the tick
+        // switching to gradient needs ≥2 colours for a mesh
         .onChange(of: appearance.fill) { _, fill in
             if fill == .gradient, appearance.colors.count < 2 {
                 let base = appearance.colors.first ?? RGBA(0.2, 0.16, 0.42)
@@ -311,7 +336,6 @@ struct SpaceEditor: View {
         tabManager.gradientPreview = appearance        // flag the overlay + close editor
     }
 
-    /// the tick: the only thing that writes the theme to the real space
     private func confirmEdit() {
         tabManager.updateSpace(space, appearance: appearance)
         original = appearance  // becomes the new revert point
@@ -325,50 +349,9 @@ struct SpaceEditor: View {
 
     // MARK: - Sections
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content)
-        -> some View
-    {
-        VStack(alignment: .leading, spacing: 6) {
-            // section label in the sidebar's muted-ink vocabulary (primary is the
-            // popover analog of the backdrop-adaptive chromeInk)
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.45))
-            content()
-        }
-    }
-
     private var iconSection: some View {
         section("ICON") {
-            // tapping opens a second popover (the icon/emoji browser) rather than
-            // expanding inline — keeps the editor short and gives the grid room
-            Button {
-                showingIconPicker.toggle()
-            } label: {
-                HStack(spacing: 8) {
-                    SpaceGlyph(icon: space.icon, size: 14)
-                        .foregroundStyle(.primary.opacity(0.85))
-                        .frame(width: 20)
-                    Text(space.icon.isEmojiIcon ? "Emoji" : space.icon)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.primary.opacity(0.5)).lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.4))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(.primary.opacity(0.06)))
-                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showingIconPicker, arrowEdge: .trailing) {
-                IconPicker(
-                    icon: Binding(get: { space.icon }, set: { tabManager.updateSpace(space, icon: $0) }))
-            }
+            IconRow(icon: Binding(get: { space.icon }, set: { tabManager.updateSpace(space, icon: $0) }))
         }
     }
 
@@ -484,6 +467,53 @@ struct SpaceEditor: View {
     }
 }
 
+/// a titled block of the space editor or creator
+private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+        // section label in the sidebar's muted-ink vocabulary (primary is the
+        // popover analog of the backdrop-adaptive chromeInk)
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.primary.opacity(0.45))
+        content()
+    }
+}
+
+/// the ICON row: the glyph and its name, opening the icon browser in a second popover
+private struct IconRow: View {
+    @Binding var icon: String
+    @State private var showingPicker = false
+
+    var body: some View {
+        Button {
+            showingPicker.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                SpaceGlyph(icon: icon, size: 14)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(width: 20)
+                Text(icon.isEmojiIcon ? "Emoji" : icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary.opacity(0.5)).lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary.opacity(0.4))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.primary.opacity(0.06)))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingPicker, arrowEdge: .trailing) {
+            IconPicker(icon: $icon)
+        }
+    }
+}
+
 /// text-field chrome matching a sidebar row: 10pt continuous corners over the
 /// sidebar's faint ink fill, so editor fields read like the rest of the app
 /// rather than system rounded-border boxes
@@ -526,6 +556,8 @@ struct GlassSegmented<Value: Hashable>: View {
                     }
                     .contentShape(.capsule)
                     .onTapGesture { withAnimation(Motion.pop) { selection = opt.value } }
+                    .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { withAnimation(Motion.pop) { selection = opt.value } }
             }
         }
         .padding(3)
@@ -581,8 +613,11 @@ struct IconPicker: View {
         _kind = State(initialValue: icon.wrappedValue.isEmojiIcon ? .emoji : .icons)
     }
 
+    /// each symbol once: the generated catalogue files a few under two categories
     private var results: [String] {
-        kind == .emoji ? Emojis.search(query) : SFSymbols.search(query)
+        guard kind == .icons else { return Emojis.search(query) }
+        var seen = Set<String>()
+        return SFSymbols.search(query).filter { seen.insert($0).inserted }
     }
 
     /// both tabs browse as macOS-style categories; a search collapses to a flat
@@ -695,19 +730,15 @@ struct IconPicker: View {
     }
 }
 
-/// the glass slider's end glyphs: a 12.5×14.5 panel rectangle and an equal
-/// capsule offset 2.5 down and right. clear = 1pt outlines; blurred = both
-/// filled, with a 0.5pt gap around the capsule
+/// the glass slider's end glyphs: a panel under a capsule that crosses its lower right
+/// corner. clear = 1pt outlines, the panel's edges breaking where the capsule crosses;
+/// blurred = both filled, the panel grown 0.5pt all round and cut 0.5pt clear of the capsule
 private struct GlassEndIcon: View {
     var blurred: Bool
 
-    private let rectW: CGFloat = 14.5
-    private let rectH: CGFloat = 12.5
-    private let capW: CGFloat = 14.5
-    private let capH: CGFloat = 12.5
-    private let off: CGFloat = 2.5
-    private let lw: CGFloat = 1
-    private let gap: CGFloat = 0.5
+    /// in the glyph's top-left space, pt
+    private static let panel = CGRect(x: 2.25, y: 3, width: 11.5, height: 8.5)
+    private static let capsule = CGRect(x: 4.5, y: 5, width: 13.5, height: 10)
 
     private var tint: Color { Color.primary.opacity(blurred ? 0.8 : 0.6) }
 
@@ -715,71 +746,60 @@ private struct GlassEndIcon: View {
         ZStack(alignment: .topLeading) {
             if blurred { blurredContent } else { clearContent }
         }
-        .frame(width: off + capW, height: off + capH, alignment: .topLeading)
+        // the capsule overhangs this box's right edge by 1pt
+        .frame(width: 17, height: 15, alignment: .topLeading)
     }
 
-    // MARK: Clear — outlines, rectangle bottom bows down inside the capsule
+    // MARK: Clear
 
     @ViewBuilder private var clearContent: some View {
-        // shortened 2.5pt off the top (bottoms stay); rectangle 2pt and capsule
-        // 1pt narrower, both off the left (right edges stay put)
-        let capX = off + 2  // left edge in; right edge unchanged
-        let capWidth = capW - 1
-        let capRadius = (capH - 2.5) / 2
-        let rectX: CGFloat = 2.25  // left edge fixed
-        let rectWidth = rectW - 3  // 0.5pt off the right edge
-
-        // capsule's semicircle centres, in the rectangle's coordinate space, so
-        // the bottom/right edges break exactly where they meet the capsule
-        let capDY = (off + 2.5) - 3
-        let capCenterLeft = CGPoint(x: (capX - rectX) + capRadius, y: capDY + capRadius)
-        let capCenterRight = CGPoint(x: (capX - rectX) + capWidth - capRadius, y: capDY + capRadius)
+        let panel = Self.panel, capsule = Self.capsule
+        let radius = capsule.height / 2
+        // the capsule's semicircle centres in the panel's own space
+        let centreY = capsule.minY - panel.minY + radius
+        let left = CGPoint(x: capsule.minX - panel.minX + radius, y: centreY)
+        let right = CGPoint(x: capsule.maxX - panel.minX - radius, y: centreY)
 
         // capsule first, then the panel on top, so the panel's dipping bottom
         // line shows at the capsule edge instead of hiding under the capsule
         Capsule()
-            .strokeBorder(tint, lineWidth: lw)
-            .frame(width: capWidth, height: capH - 2.5)
-            .offset(x: capX, y: off + 2.5)
+            .strokeBorder(tint, lineWidth: 1)
+            .frame(width: capsule.width, height: capsule.height)
+            .offset(x: capsule.minX, y: capsule.minY)
 
         RefractedPanel(
-            cornerRadius: 1.5, lineWidth: lw,
-            capCenterLeft: capCenterLeft, capCenterRight: capCenterRight, capRadius: capRadius,
-            bottomDrop: 1.5, bottomRunIn: 1.5,  // inside tip drops 3px
-            bottomShift: 1.5,  // inside curve tip sits 3px right of the capsule edge
-            rightDrop: 1, rightRunIn: 1,  // smaller: inside tip curves 2px left
-            rightShift: 1  // inside curve tip sits 2px below the capsule edge
+            cornerRadius: 1.5, capCenterLeft: left, capCenterRight: right, capRadius: radius,
+            bottomDrop: 1.5, bottomRunIn: 1.5, bottomShift: 1.5,
+            rightDrop: 1, rightRunIn: 1, rightShift: 1
         )
-        .stroke(tint, lineWidth: lw)
-        .frame(width: rectWidth, height: rectH - 4)  // 0.5pt off the top, bottom fixed
-        .offset(x: rectX, y: 3)
+        .stroke(tint, lineWidth: 1)
+        .frame(width: panel.width, height: panel.height)
+        .offset(x: panel.minX, y: panel.minY)
     }
 
-    // MARK: Blurred — the clear icon's shapes, filled, with `gap` punched
-    // around the capsule (matches the clear icon's rectangle/capsule geometry)
+    // MARK: Blurred
 
     @ViewBuilder private var blurredContent: some View {
-        let capWidth = capW - 1
-        let capHeight = capH - 2.5
-        let capY = off + 2.5
+        let panel = Self.panel.insetBy(dx: -0.5, dy: -0.5)
+        let cut = Self.capsule.insetBy(dx: -0.5, dy: -0.5)
 
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                 .fill(tint)
-                .frame(width: rectW - 2, height: rectH - 3)  // 0.5pt bigger all round
-                .offset(x: 1.75, y: 2.5)
+                .frame(width: panel.width, height: panel.height)
+                .offset(x: panel.minX, y: panel.minY)
             Capsule()
                 .fill(.black)
-                .frame(width: capWidth + 2 * gap, height: capHeight + 2 * gap)
-                .offset(x: (off + 2) - gap, y: capY - gap)
+                .frame(width: cut.width, height: cut.height)
+                .offset(x: cut.minX, y: cut.minY)
                 .blendMode(.destinationOut)
         }
         .compositingGroup()
 
         Capsule()
             .fill(tint)
-            .frame(width: capWidth, height: capHeight)
-            .offset(x: off + 2, y: capY)
+            .frame(width: Self.capsule.width, height: Self.capsule.height)
+            .offset(x: Self.capsule.minX, y: Self.capsule.minY)
     }
 }
 
@@ -788,7 +808,6 @@ private struct GlassEndIcon: View {
 /// inside corner piece whose two free tips curve away like refracted glass
 private struct RefractedPanel: Shape {
     var cornerRadius: CGFloat
-    var lineWidth: CGFloat
     var capCenterLeft: CGPoint   // centre of the capsule's left semicircle
     var capCenterRight: CGPoint  // centre of the capsule's right semicircle
     var capRadius: CGFloat
@@ -892,7 +911,6 @@ struct SpaceCreator: View {
     @State private var appearance = SpacePreset.all[0].appearance
     @State private var selectedPresetID: Int? = 0
     @State private var profileID = Profile.defaultID
-    @State private var showingIconPicker = false
     @FocusState private var nameFocused: Bool
 
     private var canCreate: Bool {
@@ -911,7 +929,7 @@ struct SpaceCreator: View {
                 .focused($nameFocused)
                 .onSubmit { if canCreate { create() } }
 
-            section("ICON") { iconRow }
+            section("ICON") { IconRow(icon: $icon) }
             section("PALETTE") { presetRow }
             // one profile is no choice at all, so the row waits for a second
             if tabManager.profiles.count > 1 {
@@ -959,46 +977,6 @@ struct SpaceCreator: View {
         }
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content)
-        -> some View
-    {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.primary.opacity(0.45))
-            content()
-        }
-    }
-
-    private var iconRow: some View {
-        Button {
-            showingIconPicker.toggle()
-        } label: {
-            HStack(spacing: 8) {
-                SpaceGlyph(icon: icon, size: 14)
-                    .foregroundStyle(.primary.opacity(0.85))
-                    .frame(width: 20)
-                Text(icon.isEmojiIcon ? "Emoji" : icon)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.primary.opacity(0.5)).lineLimit(1)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.4))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.primary.opacity(0.06)))
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .popover(isPresented: $showingIconPicker, arrowEdge: .trailing) {
-            IconPicker(icon: $icon)
-        }
-    }
-
     /// the preset palettes as one row of swatches; the chosen one wears a ring.
     /// (finer control — custom meshes, grain — lives in the editor afterwards)
     private var presetRow: some View {
@@ -1019,6 +997,7 @@ struct SpaceCreator: View {
                 }
                 .buttonStyle(.plain)
                 .tooltip(preset.name)
+                .accessibilityAddTraits(selectedPresetID == preset.id ? .isSelected : [])
             }
         }
         .padding(.vertical, 3)

@@ -53,7 +53,7 @@ struct ErrorPage: View {
                 if tab.canOverrideCertificate {
                     Button("Show Certificate") {
                         let host = tab.lastAttemptedURL?.host() ?? ""
-                        CertificateTrust.showViewer(trust: CertificateTrust.trust(for: host))
+                        CertificateTrust.showViewer(trust: tab.serverTrusts[host])
                     }
                     .controlSize(.large)
                     .tooltip("Look at what this server presented")

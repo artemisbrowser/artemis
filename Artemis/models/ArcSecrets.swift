@@ -11,7 +11,7 @@ import Foundation
 /// AES key from it; every cookie value and saved password is sealed with that
 /// key. Reading them needs the user's consent at the keychain prompt — that
 /// prompt *is* the permission model here, and nothing is decrypted without it.
-enum ArcSecrets {
+nonisolated enum ArcSecrets {
     /// the keychain item Arc writes — service "Arc Safe Storage", account "Arc" —
     /// and the looser matches to fall back on
     private static let candidates: [(service: String, account: String?)] = [
@@ -48,9 +48,10 @@ enum ArcSecrets {
             ]
             if let account = candidate.account { query[kSecAttrAccount as String] = account }
             var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                let passphrase = item as? Data
-            else { continue }
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            // a refusal at the prompt ends it: the looser candidates match the same item
+            guard status != errSecItemNotFound else { continue }
+            guard status == errSecSuccess, let passphrase = item as? Data else { throw Failure.noKey }
             return try derive(from: passphrase)
         }
         throw Failure.noKey

@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
-import LocalAuthentication
 import SwiftUI
 
 /// which spaces asking for Touch ID are open right now — incognito windows'
@@ -27,6 +26,10 @@ final class SpaceLock {
             MainActor.assumeIsolated {
                 guard !SpaceLock.shared.isAuthenticating else { return }
                 SpaceLock.shared.unlocked.removeAll()
+                let player = BrowserCore.shared.miniPlayer
+                if let tab = player.tab, tab.manager?.space(of: tab).map(SpaceLock.shared.isLocked) == true {
+                    player.exitIfActive(for: tab)
+                }
                 BrowserWindows.shared.current?.offerHandoff()
             }
         }
@@ -34,33 +37,49 @@ final class SpaceLock {
 
     func isLocked(_ space: Space) -> Bool { space.requiresUnlock && !unlocked.contains(space.id) }
 
-    /// turning the lock on is done by the person at the keyboard, so it starts unlocked
-    func setRequiresUnlock(_ on: Bool, for space: Space) {
-        space.requiresUnlock = on
-        if on { unlocked.insert(space.id) }
+    /// done by the person at the keyboard, so the space starts unlocked
+    func requireUnlock(for space: Space) {
+        space.requiresUnlock = true
+        unlocked.insert(space.id)
     }
 
-    /// applies to incognito windows already open as well as new ones
-    func setIncognitoRequiresUnlock(_ on: Bool) {
+    /// a space locked right now keeps its lock unless the owner passes the check
+    func stopRequiringUnlock(for space: Space) async {
+        guard await unlock(space, to: "stop locking the \u{201C}\(space.name)\u{201D} space") else { return }
+        space.requiresUnlock = false
+    }
+
+    /// applies to incognito windows already open as well as new ones. while one is locked,
+    /// turning it off needs the owner, and stays on when they refuse
+    func setIncognitoRequiresUnlock(_ on: Bool) async {
+        if !on, let shut = incognitoSpaces.first(where: isLocked),
+            !(await unlock(shut, to: "stop locking incognito windows"))
+        {
+            return
+        }
         UserDefaults.standard.set(on, forKey: Self.incognitoRequiresUnlockKey)
-        for manager in BrowserWindows.shared.allManagers where manager.kind == .incognito {
-            setRequiresUnlock(on, for: manager.currentSpace)
+        for space in incognitoSpaces {
+            if on { requireUnlock(for: space) } else { space.requiresUnlock = false }
         }
     }
 
-    func unlock(_ space: Space) async {
-        let context = LAContext()
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else { return }
+    /// true once `space` is open, asking the owner only while it is locked
+    @discardableResult
+    func unlock(_ space: Space, to reason: String? = nil) async -> Bool {
+        guard isLocked(space) else { return true }
+        guard !isAuthenticating else { return false }
         isAuthenticating = true
         defer { isAuthenticating = false }
-        let isIncognito = BrowserWindows.shared.allManagers.contains {
-            $0.kind == .incognito && $0.currentSpace === space
-        }
-        let reason = isIncognito ? "open your incognito window" : "open the \u{201C}\(space.name)\u{201D} space"
-        if (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true {
-            unlocked.insert(space.id)
-            BrowserWindows.shared.current?.offerHandoff()
-        }
+        let isIncognito = incognitoSpaces.contains { $0 === space }
+        let reason = reason ?? (isIncognito ? "open your incognito window" : "open the \u{201C}\(space.name)\u{201D} space")
+        guard await OwnerUnlock.check(reason) else { return false }
+        unlocked.insert(space.id)
+        BrowserWindows.shared.current?.offerHandoff()
+        return true
+    }
+
+    private var incognitoSpaces: [Space] {
+        BrowserWindows.shared.allManagers.filter { $0.kind == .incognito }.map(\.currentSpace)
     }
 }
 

@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import Foundation
-import Security
 import WebKit
 
 /// a save or update waiting on the url pill's key, raised only by the person submitting a login
@@ -54,22 +53,20 @@ enum PasswordPage {
     static func strongPassword(_ rules: PasswordRules = PasswordRules(), symbols: Bool = true) -> String {
         let letters = Array("abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789".filter(rules.isAllowed))
         let named = (rules.required.flatMap { $0 } + rules.allowed).filter { $0.hasPrefix("[") }
-        let marks = Array(Set("!#$@" + named.map { $0.dropFirst().dropLast() }.joined()).filter(rules.isAllowed))
+        // a page's classes may name any characters; only the ASCII symbols a keyboard types are drawn
+        let marks = Array(
+            Set("!#$@" + named.map { $0.dropFirst().dropLast() }.joined())
+                .filter { $0.isASCII && ($0.isPunctuation || $0.isSymbol) && rules.isAllowed($0) })
         let unmetByLetters = rules.required.filter { group in
             !letters.contains { c in group.contains { PasswordRules.matches(c, $0) } }
         }
         let symbolCount = marks.isEmpty ? 0 : max(unmetByLetters.count, symbols ? 1 : 0)
         let length = min(max(20, rules.minLength), rules.maxLength)
-        func draw(_ set: [Character]) -> Character {
-            let limit = 256 - 256 % set.count
-            var byte: UInt8 = 0
-            repeat { _ = SecRandomCopyBytes(kSecRandomDefault, 1, &byte) } while Int(byte) >= limit
-            return set[Int(byte) % set.count]
-        }
         var password = ""
+        // the system generator is a CSPRNG on Apple platforms
         for _ in 0..<1000 where !letters.isEmpty && length > 2 {
-            var chars = (0..<length).map { _ in draw(letters) }
-            for _ in 0..<min(symbolCount, length - 2) { chars[1 + Int.random(in: 0..<(length - 2))] = draw(marks) }
+            var chars = (0..<length).map { _ in letters.randomElement()! }
+            for _ in 0..<min(symbolCount, length - 2) { chars[1 + Int.random(in: 0..<(length - 2))] = marks.randomElement()! }
             password = String(chars)
             let mixed = rules.required.isEmpty
                 ? ["lower", "upper", "digit"].allSatisfy { kind in password.contains { PasswordRules.matches($0, kind) } }
@@ -159,7 +156,9 @@ enum PasswordPage {
           : texty(t) && t === user ? "username" : null;
       }
 
+      // `listed` rows are shown under the open field, which ↑ and ↓ walk to `chosen`
       let field = null, open = false, scrolledPosted = false, gesture = 0, filling = false, sentAt = 0, watcher = 0;
+      let listed = 0, chosen = -1;
       function offer(t) {
         if (filling || !(t instanceof HTMLInputElement) || !visible(t)) return;
         const k = kind(t);
@@ -167,6 +166,8 @@ enum PasswordPage {
         field = t;
         open = true;
         scrolledPosted = false;
+        listed = 0;
+        chosen = -1;
         const rules = k === "new"
           ? { min: t.minLength, max: t.maxLength, rules: t.getAttribute("passwordrules") ?? "", pattern: t.pattern } : null;
         post({ type: "focus", kind: k, rect: rect(t), rules });
@@ -177,7 +178,7 @@ enum PasswordPage {
         if (!open) return;
         const scrolled = e?.type === "scroll";
         if (scrolled && scrolledPosted) return;
-        if (scrolled) scrolledPosted = true; else open = false;
+        if (scrolled) scrolledPosted = true; else { open = false; listed = 0; }
         post({ type: "dismiss", scrolled });
       }
       function watch(pw) {
@@ -213,10 +214,30 @@ enum PasswordPage {
         el.dispatchEvent(new Event("change", { bubbles: true }));
       }
 
-      // suggestions answer the person: a click, or keyboard focus straight after a key press
+      // suggestions answer the person: a click, keyboard focus straight after a key press, or ↓ in a field
       addEventListener("keydown", e => {
         if (!e.isTrusted) return;
         gesture = Date.now();
+        if (e.key === "ArrowDown" && !open && e.target instanceof HTMLInputElement && kind(e.target)) {
+          offer(e.target);
+          if (open) e.preventDefault();
+          return;
+        }
+        const stop = () => { e.preventDefault(); e.stopPropagation(); };
+        const listening = e.target === field && open && listed;
+        if (listening && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          stop();
+          chosen = e.key === "ArrowDown" ? Math.min(chosen + 1, listed - 1) : Math.max(chosen - 1, 0);
+          return post({ type: "highlight", index: chosen });
+        }
+        if (listening && e.key === "Enter" && chosen >= 0) {
+          stop();
+          post({ type: "pick", index: chosen });
+          open = false;
+          listed = 0;
+          return;
+        }
+        if (listening && e.key === "Escape") stop();
         if (e.target === field && e.key !== "Tab" && e.key !== "Shift") dismiss();
         if (e.key === "Enter" && e.target instanceof HTMLInputElement) submitted(root(e.target));
       }, true);
@@ -433,11 +454,11 @@ enum PasswordPage {
             filling = false;
           }
         },
-        // `kinds` beyond "new" are the ones this frame's origin has something saved for, and `size` is a
-        // key's side in CSS px; an `optional` call leaves a document with no such field untracked
+        // `kinds` are the field kinds with something to offer in this frame, and `size` is a key's side in
+        // CSS px; an `optional` call leaves a document with no such field untracked
         track(kinds, size, optional) {
           const armed = keyKinds !== null;
-          keyKinds = ["new", ...kinds];
+          keyKinds = kinds;
           if (optional && !armed && !candidates().length) {
             keyKinds = null;
             return false;
@@ -461,6 +482,17 @@ enum PasswordPage {
           keyed.clear();
           keyIDs = new WeakMap();
           shade = new WeakMap();
+        },
+        // what the suggestion list offers in the focused field, as a focus there reports it
+        focusedKind() {
+          const el = document.activeElement;
+          return el instanceof HTMLInputElement ? kind(el) : null;
+        },
+        // the list under the open field shows `count` rows; 0 is closed
+        listing(count) {
+          listed = open ? count : 0;
+          open &&= count > 0;
+          chosen = -1;
         },
         // a key's click: its field takes focus and the list opens under it, or the list `shown` for it
         // closes; a field covered since it was measured loses its key instead

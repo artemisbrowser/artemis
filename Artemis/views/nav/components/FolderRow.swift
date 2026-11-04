@@ -25,11 +25,14 @@ enum FolderTabCount: String, CaseIterable, Identifiable {
 /// tabs filed under it. clicking folds it; its children draw indented beneath
 struct FolderRow: View {
     @Environment(TabManager.self) private var tabManager
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     /// the accent of the space this row is drawn for — the carousel shows two at
     /// once, so the manager's current space is the wrong one to ask
     @Environment(\.spaceAccent) private var accent
+    /// the space whose panel draws this row, and that panel's selected tab
+    let space: Space
+    let selectedID: BrowserTab.ID?
     let folder: TabFolder
     /// a dragged row is hovering the middle of this header — it'll file inside
     var isDropTarget = false
@@ -47,15 +50,14 @@ struct FolderRow: View {
     /// every tab under it, nested folders included — the count the row shows and
     /// the one "Close N Tabs" acts on
     private var tabCount: Int {
-        tabManager.currentSpace.tabIDs(under: .folder(folder.id)).count
+        space.tabIDs(under: .folder(folder.id)).count
     }
 
     /// folded, with the tab you are on filed somewhere inside — the state the
     /// row draws that tab for
     private var holdsCurrentTab: Bool {
-        guard !folder.isExpanded, let active = tabManager.selectedTabID
-        else { return false }
-        return tabManager.currentSpace.tabIDs(under: .folder(folder.id)).contains(active)
+        guard !folder.isExpanded, let selectedID else { return false }
+        return space.tabIDs(under: .folder(folder.id)).contains(selectedID)
     }
 
     /// the folder's name, or the field that is renaming it — the same gesture as
@@ -97,7 +99,7 @@ struct FolderRow: View {
     /// the context menu, which VoiceOver also offers as actions
     private var menuEntries: [MenuEntry] {
         var entries: [MenuEntry] = [.button("Rename Folder…", "pencil") { beginRename() }]
-        if tabManager.currentSpace.canNestFolder(in: .folder(folder.id)) {
+        if space.canNestFolder(in: .folder(folder.id)) {
             entries.append(.button("New Folder Inside", "folder.badge.plus") {
                 tabManager.newFolder(in: .folder(folder.id), at: 0)
                 tabManager.setExpanded(folder, true)
@@ -183,7 +185,7 @@ extension AnyTransition {
 
 /// the folder's row, floating under the cursor while it's dragged
 struct FolderDragGhost: View {
-    @Environment(\.sidebarMetrics) private var metrics
+    private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     let folder: TabFolder
     let rowSize: CGSize

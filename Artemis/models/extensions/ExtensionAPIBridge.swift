@@ -14,6 +14,7 @@ final class ExtensionAPIBridge {
 
     private var offscreenDocuments: [String: OffscreenDocument] = [:]
     private var sidePanels: [String: NSPanel] = [:]
+    private var sidePanelObservers: [String: any NSObjectProtocol] = [:]
     private var pushPorts: [String: [WKWebExtension.MessagePort]] = [:]
     private var liveNotifications: [String: Set<String>] = [:]
     private var panelSettings: [String: PanelSettings] =
@@ -30,9 +31,11 @@ final class ExtensionAPIBridge {
     /// Notification Center identifiers are `extension/<context id>/<notification id>`
     private static let notificationPrefix = "extension/"
 
-    /// one shim message → its reply; nil for the types `ExtensionProxyBridge` owns
+    /// one shim message → its reply; nil for the types `ExtensionProxyBridge` owns. a caller
+    /// without what Chrome would require of it is answered empty, which the shim reads as refused
     func handle(_ message: [String: Any], for context: WKWebExtensionContext) async -> [String: Any]? {
         guard let type = message["artemisCompat"] as? String else { return nil }
+        guard Self.permits(type, message, context) else { return [:] }
         let id = Self.key(of: context)
         switch type {
         case "offscreen.create":
@@ -72,7 +75,8 @@ final class ExtensionAPIBridge {
             else { return ["error": "Authorization page could not be loaded."] }
             let flow = AuthFlow(
                 url: url, redirectHost: host.lowercased(),
-                title: context.webExtension.displayName ?? "Sign In")
+                title: context.webExtension.displayName ?? "Sign In",
+                dataStore: ProfileStore.dataStore(for: Self.profile(of: context)))
             if let redirect = await flow.run(interactive: interactive) {
                 return ["url": redirect.absoluteString]
             }
@@ -124,7 +128,7 @@ final class ExtensionAPIBridge {
             return ["ok": true]
 
         case "downloads.download":
-            return await download(message)
+            return await download(message, for: context)
 
         case "downloads.showFolder":
             NSWorkspace.shared.open(
@@ -135,11 +139,27 @@ final class ExtensionAPIBridge {
             guard let text = message["text"] as? String, !text.isEmpty,
                 let url = URLInput.searchURL(for: text)
             else { return ["ok": false] }
-            let manager = BrowserWindows.shared.current ?? ExtensionManager.shared.tabManager
-            if message["disposition"] as? String == "CURRENT_TAB", let tab = manager?.selectedTab {
-                tab.load(url)
+            // a focused incognito window only for an extension allowed there, and only a space of
+            // the extension's own profile
+            let profile = Self.profile(of: context)
+            let windows = BrowserWindows.shared
+            let incognito = windows.current.flatMap {
+                $0.kind == .incognito && context.hasAccessToPrivateData && $0.currentSpace.profileID == profile
+                    ? $0 : nil
+            }
+            guard let manager = incognito ?? windows.browserScope ?? windows.seed ?? ExtensionManager.shared.tabManager
+            else { return ["ok": false] }
+            if manager.currentSpace.profileID == profile {
+                if message["disposition"] as? String == "CURRENT_TAB", let tab = manager.selectedTab {
+                    tab.load(url)
+                } else {
+                    manager.newTab(url: url)
+                }
+            } else if let space = manager.spaces.first(where: { $0.profileID == profile }) {
+                manager.selectSpace(space)
+                manager.newTab(url: url, in: space)
             } else {
-                manager?.newTab(url: url)
+                return ["ok": false]
             }
             return ["ok": true]
 
@@ -181,11 +201,41 @@ final class ExtensionAPIBridge {
         }
     }
 
+    /// the manifest permission or host access each bridged type needs, as Chrome asks it of the
+    /// caller; the browser-data types gate themselves, and a type not named is open to all
+    private static func permits(
+        _ type: String, _ message: [String: Any], _ context: WKWebExtensionContext
+    ) -> Bool {
+        let namespace = String(type.prefix { $0 != "." })
+        switch namespace {
+        case "downloads", "notifications", "search", "identity", "offscreen", "sidePanel", "idle":
+            return ExtensionData.declares(namespace, context)
+        case "setting":
+            return ExtensionData.declares(message["name"] as? String == "proxy" ? "proxy" : "privacy", context)
+        case "proxy":
+            return ExtensionData.declares("proxy", context)
+        case "fetch":
+            return (message["url"] as? String).flatMap(URL.init(string:)).map { context.hasAccess(to: $0) } ?? false
+        case "dnr":
+            let tab = ExtensionManager.shared.currentTab
+            return context.hasPermission(.declarativeNetRequestFeedback)
+                || tab?.url.map { context.hasAccess(to: $0, in: tab) } == true
+        case "probe":
+            return SelfTest.isRequested
+        default:
+            return true
+        }
+    }
+
     /// one extension instance: its id in the profile it runs in. the id alone
     /// names it in every profile, and their offscreen pages and ports must not mix
     private static func key(of context: WKWebExtensionContext) -> String {
-        let profile = context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:))
-        return key(of: context, in: profile ?? Profile.defaultID)
+        key(of: context, in: profile(of: context))
+    }
+
+    /// the profile an extension instance runs in: each profile has its own controller
+    private static func profile(of context: WKWebExtensionContext) -> UUID {
+        context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:)) ?? Profile.defaultID
     }
 
     static func key(of context: WKWebExtensionContext, in profile: UUID) -> String {
@@ -235,6 +285,14 @@ final class ExtensionAPIBridge {
 
     // MARK: - Side panel
 
+    /// an uninstalled extension's panel settings go with it
+    func forgetPanelSettings(of id: String) {
+        guard panelSettings.removeValue(forKey: id) != nil,
+            let data = try? JSONEncoder().encode(panelSettings)
+        else { return }
+        UserDefaults.standard.set(data, forKey: Self.panelSettingsKey)
+    }
+
     /// an action click for an extension that set `openPanelOnActionClick` and has
     /// no popup toggles its panel; false leaves the click to WebKit
     func handleActionClick(for context: WKWebExtensionContext, presentsPopup: Bool) -> Bool {
@@ -262,8 +320,10 @@ final class ExtensionAPIBridge {
             panel.makeKeyAndOrderFront(nil)
             return true
         }
+        // never the key window: from a popup's button that is the popover's own
         guard let configuration = context.webViewConfiguration,
-            let parent = NSApp.keyWindow ?? NSApp.mainWindow
+            let parent = BrowserWindows.shared.browserScope.flatMap(BrowserWindows.shared.window(of:))
+                ?? NSApp.mainWindow
         else { return false }
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -281,10 +341,13 @@ final class ExtensionAPIBridge {
                 width: width, height: parent.frame.height),
             display: false)
         parent.addChildWindow(panel, ordered: .above)
-        NotificationCenter.default.addObserver(
+        sidePanelObservers[id] = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: panel, queue: .main
         ) { [weak self, weak panel] _ in
             MainActor.assumeIsolated {
+                if let observer = self?.sidePanelObservers.removeValue(forKey: id) {
+                    NotificationCenter.default.removeObserver(observer)
+                }
                 guard let panel else { return }
                 panel.parent?.removeChildWindow(panel)
                 if self?.sidePanels[id] === panel { self?.sidePanels[id] = nil }
@@ -306,20 +369,28 @@ final class ExtensionAPIBridge {
 
     // MARK: - Downloads
 
-    /// a web URL downloads through the current tab, so it shows in Downloads with
-    /// the tab's cookies; page-local bytes are written straight to disk
-    private func download(_ message: [String: Any]) async -> [String: Any] {
+    /// a web URL downloads through a tab of the extension's profile, the current one first, so it
+    /// shows in Downloads with that profile's cookies; page-local bytes are written straight to disk,
+    /// quarantined
+    private func download(_ message: [String: Any], for context: WKWebExtensionContext) async -> [String: Any] {
         let name = (message["filename"] as? String)
             .map { URL(fileURLWithPath: $0).lastPathComponent }
             .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
         guard let encoded = message["bytesBase64"] as? String else {
             guard let url = (message["url"] as? String).flatMap(URL.init(string:)),
-                url.scheme == "https" || url.scheme == "http",
-                let tab = ExtensionManager.shared.currentTab
+                url.scheme == "https" || url.scheme == "http"
             else { return ["error": "Invalid URL."] }
-            let download = await tab.webView.startDownload(using: URLRequest(url: url))
-            DownloadManager.shared.register(
-                download, sourceTitle: tab.title, sourceHost: url.host() ?? "", filename: name)
+            let profile = Self.profile(of: context)
+            let tabs = [ExtensionManager.shared.currentTab].compactMap { $0 }
+                + BrowserWindows.shared.allManagers.flatMap(\.allTabs)
+            guard let tab = tabs.first(where: { !$0.isPrivate && $0.profileID == profile }) else {
+                return ["error": "Download failed."]
+            }
+            // the delegate must be set inside the handler: by the time the async form
+            // resumes, WebKit may have found no delegate and cancelled the download
+            tab.webView.startDownload(using: URLRequest(url: url)) { download in
+                DownloadManager.shared.register(download, filename: name)
+            }
             return ["ok": true]
         }
         guard let data = Data(base64Encoded: encoded) else { return ["error": "Download failed."] }
@@ -334,16 +405,20 @@ final class ExtensionAPIBridge {
             }
             destination = url
         } else {
-            destination = DownloadItem.uniqueURL(
-                for: FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent(name ?? "download"))
+            // ~/Downloads raises a Downloads folder prompt for a lab copy
+            let folder = SelfTest.isRequested
+                ? FileManager.default.temporaryDirectory
+                : FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            destination = DownloadItem.uniqueURL(for: folder.appendingPathComponent(name ?? "download"))
         }
-        return (try? data.write(to: destination)) != nil ? ["ok": true] : ["error": "Download failed."]
+        guard (try? data.write(to: destination)) != nil else { return ["error": "Download failed."] }
+        DownloadItem.quarantine(destination, from: nil)
+        return ["ok": true]
     }
 }
 
-/// `identity.launchWebAuthFlow`: the provider's page in the current tab's session, stopped at
-/// the first navigation to the redirect host. the window appears only once a load finishes
+/// `identity.launchWebAuthFlow`: the provider's page in the calling extension's profile, stopped
+/// at the first navigation to the redirect host. the window appears only once a load finishes
 /// without reaching it
 private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private let url: URL
@@ -354,13 +429,12 @@ private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private var interactive = false
     private var continuation: CheckedContinuation<URL?, Never>?
 
-    init(url: URL, redirectHost: String, title: String) {
+    init(url: URL, redirectHost: String, title: String, dataStore: WKWebsiteDataStore) {
         self.url = url
         self.redirectHost = redirectHost
         self.title = title
-        let store = ExtensionManager.shared.currentTab?.dataStore ?? .default()
         webView = WKWebView(
-            frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: store))
+            frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
         super.init()
         webView.navigationDelegate = self
     }

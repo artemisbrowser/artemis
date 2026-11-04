@@ -123,8 +123,8 @@ function makeEnv() {
         kv.set(key, value);
       },
     },
-    LIMITER: limiter(10),
-    ADDRESS_LIMITER: limiter(30),
+    ADDRESS_LIMITER: limiter(6),
+    PUBLIC_LIMITER: limiter(2),
   };
   return env;
 }
@@ -300,12 +300,10 @@ describe("validation", () => {
       "attachments[0].data",
     );
     const one = { name: "a.png", type: "image/png", data: PNG };
-    await rejects({ ...feedback(), attachments: [one, one] }, "attachments");
-    const five = ["a", "b", "c", "d", "e"].map((n) => ({
-      ...one,
-      name: `${n}.png`,
-    }));
-    await rejects({ ...feedback(), attachments: five }, "attachments");
+    await rejects(
+      { ...feedback(), attachments: [one, { ...one, name: "b.png" }] },
+      "attachments",
+    );
     assert.equal(gh.calls.length, 0);
   });
 
@@ -329,26 +327,54 @@ describe("validation", () => {
     assert.equal(gh.calls.length, 0);
   });
 
-  test("429 past ten reports a minute from one install and address", async () => {
-    for (let i = 0; i < 10; i++)
-      assert.equal((await post(feedback())).status, 201);
-    const res = await post(feedback());
-    assert.equal(res.status, 429);
-    assert.equal(res.headers.get("retry-after"), "60");
-    assert.equal(
-      (await post(feedback(), { "cf-connecting-ip": "198.51.100.1" })).status,
-      201,
-    );
-  });
-
-  test("429 past thirty reports a minute from one address, whatever the install", async () => {
+  test("429 past six reports a minute from one address, whatever the install", async () => {
     const from = (i) => ({
       ...feedback(),
       install: `3F2504E0-4F89-41D3-9A0C-${String(i).padStart(12, "0")}`,
     });
-    for (let i = 0; i < 30; i++)
+    for (let i = 0; i < 6; i++)
       assert.equal((await post(from(i))).status, 201);
-    assert.equal((await post(from(30))).status, 429);
+    const res = await post(from(6));
+    assert.equal(res.status, 429);
+    assert.equal(res.headers.get("retry-after"), "60");
+    assert.equal(
+      (await post(from(7), { "cf-connecting-ip": "198.51.100.1" })).status,
+      201,
+    );
+  });
+
+  test("an IPv6 /64 counts as one address", async () => {
+    const hosts = [
+      "2001:db8:1:2::a",
+      "2001:0DB8:0001:0002:ffff::1",
+      "2001:db8:1:2:3:4:5:6",
+      "2001:db8:1:2::",
+      "2001:db8:1:2:aaaa::bbbb",
+      "2001:db8:1:2:0:0:0:7",
+    ];
+    for (const [i, ip] of hosts.entries())
+      assert.equal(
+        (await post(feedback({ message: `m${i}` }), { "cf-connecting-ip": ip }))
+          .status,
+        201,
+        ip,
+      );
+    const again = { "cf-connecting-ip": "2001:db8:1:2:9::9" };
+    assert.equal((await post(feedback(), again)).status, 429);
+    const next = { "cf-connecting-ip": "2001:db8:1:3::1" };
+    assert.equal((await post(feedback(), next)).status, 201);
+  });
+
+  test("past two public issues a minute from one address, feedback is filed privately", async () => {
+    for (let i = 0; i < 3; i++) {
+      const res = await post(feedback({ message: `report ${i}` }));
+      assert.equal(res.status, 201);
+      assert.equal((await res.json()).issue === undefined, i === 2);
+    }
+    assert.equal(gh.shared.length, 2);
+    assert.equal(gh.issues.length, 3);
+    assert.deepEqual(gh.issues[2].labels, ["feedback", "bug"]);
+    assert.match(gh.issues[2].body, /Public issue \| ` held back by the rate limit `/);
   });
 
   test("502 when GitHub fails", async () => {
@@ -496,25 +522,19 @@ describe("feedback issues", () => {
     assert.match(gh.issues[0].body, /> Reach me at tester@example\.com/);
   });
 
-  test("attachments are committed by month and embedded as raw blob images", async () => {
+  test("an attachment is committed by month and embedded as a raw blob image", async () => {
     const report = {
       ...feedback(),
-      attachments: [
-        { name: "screenshot.jpg", type: "image/jpeg", data: JPEG },
-        { name: "detail.png", type: "image/png", data: PNG },
-      ],
+      attachments: [{ name: "screenshot.jpg", type: "image/jpeg", data: JPEG }],
     };
     const { id } = await (await post(report)).json();
     const month = new Date().toISOString().slice(0, 7).replace("-", "/");
     const shot = `attachments/${month}/${id}-screenshot.jpg`;
-    assert.deepEqual(
-      [...gh.files.keys()],
-      [shot, `attachments/${month}/${id}-detail.png`],
-    );
+    assert.deepEqual([...gh.files.keys()], [shot]);
     assert.equal(gh.files.get(shot).content, JPEG);
     assert.deepEqual(
       gh.calls.filter((c) => !c.public).map((c) => c.method),
-      ["PUT", "PUT", "POST"],
+      ["PUT", "POST"],
       "files land before the issue that embeds them",
     );
     assert.ok(
@@ -544,6 +564,19 @@ describe("feedback issues", () => {
     assert.equal((await again.json()).id, first.id);
     assert.equal(gh.issues.length, 1);
     assert.equal(gh.files.size, 1);
+  });
+
+  test("a retry after the private issue failed files no second public issue", async () => {
+    const report = feedback();
+    gh.refuse = (method, path, isPublic) =>
+      !isPublic && method === "POST" && path === "/issues";
+    assert.equal((await post(report)).status, 502);
+    gh.refuse = () => false;
+    const res = await post(report);
+    assert.equal(res.status, 201);
+    assert.equal(gh.shared.length, 1);
+    assert.equal((await res.json()).issue, gh.shared[0].html_url);
+    assert.ok(gh.issues[0].body.includes(gh.shared[0].html_url));
   });
 
   test("events and diagnostics sit in collapsed details", async () => {

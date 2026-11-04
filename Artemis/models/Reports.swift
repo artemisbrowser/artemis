@@ -4,6 +4,7 @@
 import AppKit
 import MachO
 import MetricKit
+import os
 
 /// Reports to the feedback server: what the user writes in Send Feedback, and,
 /// once error reports are on, the error log hourly and MetricKit's crash
@@ -11,11 +12,16 @@ import MetricKit
 nonisolated enum Reports {
     private static let endpoint = URL(string: "https://feedback.artemisbrowser.app/v1/reports")!
     static let enabledKey = "sendsErrorReports"
+    /// what turning automatic reports on agrees to, wherever it can be turned on
+    static let disclosure =
+        "Sends errors and crash reports with your Mac model, installed extensions and Artemis and macOS versions. Never your pages or browsing."
     static let emailKey = "feedbackEmail"
     fileprivate static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
     private static let outbox = AppStorageLocation.file("Outbox")
     static let outboxCap = 10
+    /// one flush at a time: a second would post the files the first is still sending
+    private static let isFlushing = OSAllocatedUnfairLock(initialState: false)
     /// diagnostics MetricKit delivered while reports were off, until sent or declined
     fileprivate static let pendingCrashes = AppStorageLocation.file("Crashes")
     private static let maxBody = 4_000_000
@@ -163,6 +169,12 @@ nonisolated enum Reports {
     }
 
     @concurrent private static func flushOutbox() async {
+        let claimed = isFlushing.withLock { busy in
+            defer { busy = true }
+            return !busy
+        }
+        guard claimed else { return }
+        defer { isFlushing.withLock { $0 = false } }
         for file in queued(in: outbox) {
             if isExpendable(file), !isEnabled {
                 try? FileManager.default.removeItem(at: file)
@@ -261,7 +273,7 @@ nonisolated enum Reports {
         defer { isAsking = false }
         let alert = NSAlert()
         alert.messageText = "Artemis quit unexpectedly"
-        alert.informativeText = "Send a report to help fix it?"
+        alert.informativeText = "Send a report to help fix it?\n\n\(disclosure)"
         // no default button: Return sends nothing, only a click does
         alert.addButton(withTitle: "Send").keyEquivalent = ""
         alert.addButton(withTitle: "Always Send")

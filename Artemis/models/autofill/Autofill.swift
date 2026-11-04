@@ -119,6 +119,8 @@ final class Autofill: NSObject, WKScriptMessageHandler {
     }
 
     private var suggestions: Shown?
+    /// bumped by every focus and dismiss, so a list still resolving for an older focus never shows
+    private var ticket = 0
 
     static func install(into controller: WKUserContentController) {
         controller.add(shared, contentWorld: AutofillPage.world, name: AutofillPage.messageName)
@@ -141,6 +143,7 @@ final class Autofill: NSObject, WKScriptMessageHandler {
         case "focus":
             suggest(body, into: AutofillTarget(frame: frame, origin: origin), in: tab)
         case "dismiss":
+            ticket += 1
             if shown != nil { closeSuggestions() }
         case "highlight":
             shown?.list.highlighted = body["index"] as? Int
@@ -254,6 +257,8 @@ final class Autofill: NSObject, WKScriptMessageHandler {
     // MARK: - Suggestions
 
     private func suggest(_ body: [String: Any], into target: AutofillTarget, in tab: BrowserTab) {
+        ticket += 1
+        let mine = ticket
         guard let kind = body["kind"] as? String, let box = body["rect"] as? [String: Any], tab.webView.window != nil
         else { return }
         let list = AutofillList(
@@ -268,6 +273,10 @@ final class Autofill: NSObject, WKScriptMessageHandler {
                 field.origin.x += offset.x
                 field.origin.y += offset.y
             }
+            // a login form's email or phone field can be its username too, and then the login list takes it
+            let taken = await PasswordAutofill.shared.servesFocusedField(in: target.frame, origin: target.origin, of: tab)
+            guard ticket == mine else { return }
+            if taken { return closeSuggestions() }
             closeSuggestions(tellingPage: false)
             let view = AutofillSuggestions(
                 list: list,

@@ -84,7 +84,14 @@ struct SpaceQuery: EntityStringQuery, EnumerableEntityQuery {
         try await allEntities().filter { $0.name.localizedStandardContains(string) }
     }
 
-    @MainActor func allEntities() async throws -> [SpaceEntity] { Scripting.spaces(incognito: false).map(SpaceEntity.init) }
+    /// the browser's spaces; a Scout or incognito window's own space is never one to name
+    @MainActor func allEntities() async throws -> [SpaceEntity] { BrowserCore.shared.spaces.map(SpaceEntity.init) }
+
+    /// what Siri's phrases offer: only while spaces show in Spotlight, and never one behind a lock
+    @MainActor func suggestedEntities() async throws -> [SpaceEntity] {
+        guard SpotlightIndex.isEnabled else { return [] }
+        return BrowserCore.shared.spaces.filter { !$0.requiresUnlock }.map(SpaceEntity.init)
+    }
 }
 
 struct TabEntity: IndexedEntity {
@@ -141,13 +148,14 @@ struct PageEntity: TransientAppEntity, Transferable {
 
     init() {}
 
+    /// of a tab already woken; a lazy one reads as a blank page
     @MainActor init(_ tab: BrowserTab) async {
         title = tab.displayTitle
         url = tab.url
         let html = (try? await tab.webView.evaluateJavaScript("document.documentElement.outerHTML")) as? String
         let body =
-            if let url, let html, let article = ReaderMode.extract(html: html, url: url) {
-                ReaderMode.markdown(for: article)
+            if let url, let html, let article = await ReaderMode.extract(html: html, url: url) {
+                await ReaderMode.markdown(for: article)
             } else {
                 await PageText.extract(from: tab.webView, minimum: 0) ?? ""
             }
@@ -208,24 +216,29 @@ enum SpotlightIndex {
     }
 
     private static var pending: Task<Void, Never>?
+    /// the spaces Siri's phrases last learned, as icon and name
+    private static var phraseSpaces: [String]?
     /// what Spotlight holds, by id; nil until this launch has cleared the last one's
     private static var indexed: [UUID: Entry]?
 
+    /// switched off, Spotlight forgets everything at once and Siri's phrases on the next refresh
     static func enabledDidChange() {
-        if isEnabled {
-            scheduleRefresh()
-        } else {
-            pending?.cancel()
-            forget(.everything)
-        }
+        if !isEnabled { forget(.everything) }
+        scheduleRefresh()
     }
 
+    /// also keeps Siri's phrases naming what SpaceQuery suggests
     static func scheduleRefresh() {
-        guard !isLab, isEnabled else { return }
+        guard !isLab else { return }
         pending?.cancel()
         pending = Task {
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
+            let spaces = ((try? await SpaceQuery().suggestedEntities()) ?? []).map { "\($0.icon) \($0.name)" }
+            if spaces != phraseSpaces {
+                phraseSpaces = spaces
+                ArtemisShortcuts.updateAppShortcutParameters()
+            }
             try? await refresh()
         }
     }
@@ -279,10 +292,12 @@ enum SpotlightIndex {
             item.domainIdentifier = entry.domain
             items.append(item)
         }
+        guard isEnabled, !Task.isCancelled else { return }
         try await index.indexSearchableItems(items)
+        // switched off while indexing: the wipe may have landed first
+        guard isEnabled else { return try await index.deleteAllSearchableItems() }
         try await apply(.items(Set(old.keys).subtracting(now.keys)))
         indexed = now
-        ArtemisShortcuts.updateAppShortcutParameters()
     }
 
     private static func apply(_ removal: Removal) async throws {

@@ -3,10 +3,8 @@
 
 import Foundation
 
-/// when you separate an off-pinned tab (⌘-click its favicon while it's away from
-/// its anchored url), it splits into two tabs — one holding the page you
-/// navigated to, one holding the pinned anchor. this picks which of them keeps
-/// the pinned slot.
+/// which half keeps the pinned slot when an off-pin tab (⌘-click its favicon while
+/// it's away from its anchor) separates into the page you navigated to and the anchor
 enum PinnedSeparationKeep: String, CaseIterable, Identifiable {
     /// the pinned tab snaps back to its anchor and stays pinned; the page you
     /// navigated to splits off

@@ -52,12 +52,9 @@ export default {
       });
     }
 
-    // `install` is the sender's to choose; the address is Cloudflare's
-    const ip = request.headers.get("cf-connecting-ip") ?? "";
-    const allowed =
-      (await env.ADDRESS_LIMITER.limit({ key: ip })).success &&
-      (await env.LIMITER.limit({ key: `${report.install}:${ip}` })).success;
-    if (!allowed)
+    // the address is Cloudflare's to set; `install` is the sender's to choose
+    const from = sender(request.headers.get("cf-connecting-ip") ?? "");
+    if (!(await env.ADDRESS_LIMITER.limit({ key: from })).success)
       return reply(429, { error: "rate limited" }, { "retry-after": "60" });
 
     // a retry of the same body files under the same id
@@ -66,7 +63,8 @@ export default {
     );
     let issue;
     try {
-      if (report.kind === "feedback") issue = await fileFeedback(env, report, id);
+      if (report.kind === "feedback")
+        issue = await fileFeedback(env, report, id, from);
       else await fileSignatures(env, report);
     } catch (e) {
       if (e instanceof GitHubError)
@@ -84,6 +82,23 @@ const hex = (buffer) =>
   [...new Uint8Array(buffer, 0, 16)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+
+// an IPv6 host is handed a whole /64, so that counts as one address; one
+// ending in an IPv4 address is kept whole
+function sender(ip) {
+  if (!ip.includes(":") || ip.includes(".")) return ip;
+  const [head, tail] = ip.toLowerCase().split("::");
+  const groups = head ? head.split(":") : [];
+  if (tail !== undefined) {
+    const rest = tail ? tail.split(":") : [];
+    const zeros = Math.max(0, 8 - groups.length - rest.length);
+    groups.push(...Array(zeros).fill("0"), ...rest);
+  }
+  return groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ""))
+    .join(":");
+}
 
 // put throws past KV's daily write quota or one write a second per key; what
 // GitHub already holds stays filed either way
@@ -214,13 +229,8 @@ function validate(r) {
   if (r.events !== undefined || r.kind === "errors")
     list(r.events, "events", r.kind === "errors" ? 1 : 0, 100, event);
   if (r.kind === "crash") list(r.crashes, "crashes", 1, 10, crash);
-  if (r.attachments !== undefined) {
-    list(r.attachments, "attachments", 0, 4, attachment);
-    check(
-      new Set(r.attachments.map((a) => a.name)).size === r.attachments.length,
-      "attachments",
-    );
-  }
+  if (r.attachments !== undefined)
+    list(r.attachments, "attachments", 0, 1, attachment);
 }
 
 // PUBLIC_REPO gets a report's words only; everything else stays in PRIVATE_REPO
@@ -249,28 +259,40 @@ async function github(env, method, path, body, repo = env.PRIVATE_REPO) {
 }
 
 // the public issue's URL, which the sender is shown; none when kept private
-async function fileFeedback(env, r, id) {
+async function fileFeedback(env, r, id, from) {
   const done = `report:${id}`;
   const filed = await env.SIGS.get(done);
   if (filed) return JSON.parse(filed).public ?? undefined;
   const f = r.feedback;
-  const shared =
+  // a retry after a later step failed finds its public issue here; a key of
+  // its own, since `done` is written within KV's one second per key
+  const opened = `public:${id}`;
+  let shared = f.private ? null : await env.SIGS.get(opened);
+  // past its sender's public limit a report is filed privately only
+  const held =
     !f.private &&
-    (await github(
-      env,
-      "POST",
-      "/issues",
-      {
-        title: title(`[${f.category}]`, f.message),
-        body: [
-          quote(f.message),
-          facts({ ...r, publicOnly: true }, []),
-          "_Sent from Artemis with Help › Send Feedback._",
-        ].join("\n\n"),
-        labels: ["from-app", f.category],
-      },
-      env.PUBLIC_REPO,
-    ));
+    !shared &&
+    !(await env.PUBLIC_LIMITER.limit({ key: from })).success;
+  if (!f.private && !shared && !held) {
+    shared = (
+      await github(
+        env,
+        "POST",
+        "/issues",
+        {
+          title: title(`[${f.category}]`, f.message),
+          body: [
+            quote(f.message),
+            facts({ ...r, publicOnly: true }, []),
+            "_Sent from Artemis with Help › Send Feedback._",
+          ].join("\n\n"),
+          labels: ["from-app", f.category],
+        },
+        env.PUBLIC_REPO,
+      )
+    ).html_url;
+    await remember(env, opened, shared);
+  }
   const month = new Date().toISOString().slice(0, 7).replace("-", "/");
   const images = [];
   for (const a of r.attachments ?? []) {
@@ -286,7 +308,8 @@ async function fileFeedback(env, r, id) {
     images.push(`![${a.name}](${file.html_url}?raw=true)`);
   }
   const rows = [["Report", id]];
-  if (shared) rows.push(["Public issue", shared.html_url]);
+  if (shared) rows.push(["Public issue", shared]);
+  else if (held) rows.push(["Public issue", "held back by the rate limit"]);
   if (f.email) rows.push(["Email", f.email]);
   if (f.page) rows.push(["Page", f.page]);
   const issue = await github(env, "POST", "/issues", {
@@ -304,9 +327,9 @@ async function fileFeedback(env, r, id) {
   await remember(
     env,
     done,
-    JSON.stringify({ private: issue.number, public: shared?.html_url ?? null }),
+    JSON.stringify({ private: issue.number, public: shared }),
   );
-  return shared?.html_url;
+  return shared ?? undefined;
 }
 
 async function fileSignatures(env, r) {

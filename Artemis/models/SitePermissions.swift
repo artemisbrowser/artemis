@@ -131,7 +131,8 @@ final class SitePermissionStore {
     func forgetAll() {
         records = [:]
         ephemeral = [:]
-        save()
+        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(Self.fileName))
+        saveNow(keepsBackup: false)
     }
 
     /// every site with a remembered answer, most recently decided first
@@ -146,9 +147,9 @@ final class SitePermissionStore {
 
     /// write synchronously, for app termination, where a queued write dies
     /// with the process
-    func saveNow() {
+    func saveNow(keepsBackup: Bool = true) {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(Self.fileName))
+        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(Self.fileName), keepsBackup: keepsBackup)
     }
 
     /// `scheme://host[:port]`, the key a decision is stored under; a default port
