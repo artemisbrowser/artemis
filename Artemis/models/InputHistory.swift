@@ -1,8 +1,7 @@
 import Foundation
 
-/// what you picked, for what you typed. the command bar's habit memory: two
-/// letters keep landing on the page they landed on last time, whatever the
-/// generic ranking would have said.
+/// the command bar's habit memory: what was picked for what was typed, boosted
+/// above the generic ranking
 @MainActor
 final class InputHistory {
     /// typed query → target key → use count, asymptotic to 10
@@ -11,23 +10,19 @@ final class InputHistory {
     private let fileURL: URL
     private var saveTask: Task<Void, Never>?
 
-    /// beyond this the tail is queries typed once and never again
     private static let maxQueries = 2000
 
-    /// `saved` from `read(_:)` skips the load, so a caller can decode off main
-    init(fileURL: URL, saved: Snapshot? = nil) {
+    init(fileURL: URL) {
         self.fileURL = fileURL
-        if let saved { apply(saved) } else { load() }
+        if let saved = AppStorageLocation.loadDurable(Snapshot.self, from: fileURL) {
+            counts = saved.counts
+            lastDecay = saved.lastDecay
+        }
         decayIfDue()
     }
 
-    nonisolated static func read(_ url: URL) -> Snapshot? {
-        AppStorageLocation.loadDurable(Snapshot.self, from: url)
-    }
-
-    /// the boost every candidate should get for this input, looked up by target
-    /// key. built once per keystroke — a per-candidate scan of every query ever
-    /// typed is the shape that makes a bar feel slow
+    /// boost per target key for this input; scans every query, so call it once per
+    /// keystroke, never per candidate
     func boosts(for input: String) -> [String: Int] {
         let typed = Self.normalize(input)
         guard !typed.isEmpty else { return [:] }
@@ -71,8 +66,7 @@ final class InputHistory {
         input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    /// unused entries fade rather than being kept forever: a habit you dropped
-    /// months ago should stop outranking the page you actually want
+    /// counts lose 2.5% per whole day; a target below 0.1 is dropped
     private func decayIfDue() {
         let days = Int(Date().timeIntervalSince(lastDecay) / 86400)
         guard days >= 1 else { return }
@@ -96,7 +90,7 @@ final class InputHistory {
 
     // MARK: - Persistence
 
-    nonisolated struct Snapshot: Codable {
+    private nonisolated struct Snapshot: Codable {
         var counts: [String: [String: Double]]
         var lastDecay: Date
     }
@@ -104,13 +98,14 @@ final class InputHistory {
     private func scheduleSave() {
         saveTask?.cancel()
         let snapshot = Snapshot(counts: counts, lastDecay: lastDecay)
+        let takenAt = AppStorageLocation.snapshotTime()
         let url = fileURL
         saveTask = Task {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             await Task.detached(priority: .utility) {
                 guard let data = try? JSONEncoder().encode(snapshot) else { return }
-                AppStorageLocation.writeDurable(data, to: url)
+                AppStorageLocation.writeDurable(data, to: url, takenAt: takenAt)
             }.value
         }
     }
@@ -120,14 +115,5 @@ final class InputHistory {
         let snapshot = Snapshot(counts: counts, lastDecay: lastDecay)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         AppStorageLocation.writeDurableNow(data, to: fileURL)
-    }
-
-    private func load() {
-        if let snapshot = Self.read(fileURL) { apply(snapshot) }
-    }
-
-    private func apply(_ snapshot: Snapshot) {
-        counts = snapshot.counts
-        lastDecay = snapshot.lastDecay
     }
 }

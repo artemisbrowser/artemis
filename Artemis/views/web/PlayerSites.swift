@@ -48,8 +48,7 @@ nonisolated enum PlayerSites {
           return {
             list: function () {
               var p = P(); if (!p) return [];
-              // primary: the player response carries the full caption-track list
-              // even before the captions module is loaded
+              // the player response lists every caption track before the captions module loads
               try {
                 if (p.getPlayerResponse) {
                   var r = p.getPlayerResponse();
@@ -62,7 +61,6 @@ nonisolated enum PlayerSites {
                   });
                 }
               } catch (e) {}
-              // fallback: the captions-module tracklist
               try {
                 if (p.loadModule) p.loadModule('captions');
                 var tl = (p.getOption && p.getOption('captions', 'tracklist')) || [];

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// shown in place of the web view before a tab's first navigation
 struct StartPage: View {
-    /// the card's ink, not the system's — see ErrorPage
+    /// the card's ink, not the system's: this is drawn on the space's card base
     @Environment(\.chromeInk) private var ink
     @AppStorage(AppIconChoice.storageKey) private var iconRaw = AppIconChoice.bundled.rawValue
 

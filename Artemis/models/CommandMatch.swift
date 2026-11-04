@@ -8,9 +8,8 @@ nonisolated struct CommandMatch {
     let ranges: [Range<Int>]
 }
 
-/// one scoring scale for every result kind, so open tabs, history, actions and
-/// spaces rank against each other in a single list rather than being
-/// concatenated category by category.
+/// one scoring scale for every result kind, so tabs, history, actions and spaces
+/// rank against each other in a single list
 nonisolated enum CommandMatcher {
     /// quality floors, before length and position penalties
     enum Tier {
@@ -49,28 +48,7 @@ nonisolated enum CommandMatcher {
         return candidate.withUTF8 { score(query, $0) }
     }
 
-    // PROBE-TEMP
-    static func match(_ query: [UInt8], _ candidate: [UInt8]) -> CommandMatch? {
-        guard !query.isEmpty else { return nil }
-        return candidate.withUnsafeBufferPointer { score(query, $0) }
-    }
-
-    // PROBE-TEMP
-    static func contains(_ needle: [UInt8], _ bytes: [UInt8]) -> Bool {
-        guard let first = needle.first else { return true }
-        guard bytes.count >= needle.count else { return false }
-        for start in 0...(bytes.count - needle.count) where bytes[start] == first {
-            var offset = 1
-            while offset < needle.count, bytes[start + offset] == needle[offset] {
-                offset += 1
-            }
-            if offset == needle.count { return true }
-        }
-        return false
-    }
-
-    /// plain substring test over bytes. `String.contains` goes through ICU, which
-    /// costs more than the whole scan on a lowercased ASCII key
+    /// byte-wise substring test; `String.contains` goes through ICU, never use it here
     static func contains(_ needle: [UInt8], _ candidate: String) -> Bool {
         guard let first = needle.first else { return true }
         var candidate = candidate
@@ -140,9 +118,7 @@ nonisolated enum CommandMatcher {
             return CommandMatch(score: base - min(60, hit) - lengthPenalty, ranges: ranges)
         }
 
-        // the fuzzy tiers below are for names: inside a kilobyte of "title url"
-        // an in-order scatter of three letters means nothing, and scanning every
-        // non-matching entry for one is what a keystroke's cost was
+        // fuzzy tiers apply to name-length candidates only, never a long title+url key
         guard n <= 96 else { return nil }
 
         // initials: "sto" finds "Stack Overflow · Tagged Questions"
@@ -150,8 +126,7 @@ nonisolated enum CommandMatcher {
             return CommandMatch(score: Tier.acronym - lengthPenalty, ranges: acronym)
         }
 
-        // last resort, and only for queries long enough that an in-order scatter
-        // of letters means something
+        // in-order scatter, for queries of three bytes or more
         guard m >= 3 else { return nil }
         var ranges: [Range<Int>] = []
         var qi = 0, last = -1, gaps = 0

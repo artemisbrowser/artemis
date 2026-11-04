@@ -94,7 +94,7 @@ struct AddressBar: View {
 
     /// the width of the url ahead of its domain, at the field's size
     private var hostOffset: CGFloat {
-        guard let url = tabManager.selectedTab?.url?.absoluteString,
+        guard let url = tabManager.displayedContentTab?.url?.absoluteString,
             let range = url.range(of: host)
         else { return 0 }
         return NSAttributedString(

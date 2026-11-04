@@ -103,7 +103,7 @@ struct UpdatePill: View {
             }
             .buttonStyle(.plain)
             .tooltip("Artemis \(updates.readyVersion ?? updates.availableVersion ?? "")")
-            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            .transition(Motion.grow(from: 0.95))
         }
     }
 }

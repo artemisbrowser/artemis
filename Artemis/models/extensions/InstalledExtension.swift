@@ -1,8 +1,7 @@
 import AppKit
 import WebKit
 
-/// where an installed extension came from — drives the install pipeline and the
-/// little source badge in the manager UI
+/// where an installed extension came from
 enum ExtensionSource: String, Codable {
     case disk  // sideloaded folder / archive
     case chrome  // chrome web store
@@ -19,10 +18,9 @@ enum ExtensionSource: String, Codable {
     }
 }
 
-/// one installed extension: the package WebKit parsed, the profiles it runs in,
-/// and a context per profile (each profile's controller runs its own instance,
-/// with its own storage). the context id is the stored id in every profile, so
-/// runtime.id and the store's id agree everywhere, as in Chrome
+/// one installed extension: the package WebKit parsed, the profiles it runs in, and a context
+/// per profile, each with its own storage. every context's id is the stored id, so `runtime.id`
+/// matches the store's id in every profile
 @Observable
 final class InstalledExtension: Identifiable {
     let id: String
@@ -38,8 +36,7 @@ final class InstalledExtension: Identifiable {
     var allowsIncognito = false {
         didSet { for context in contexts.values { context.hasAccessToPrivateData = allowsIncognito } }
     }
-    /// installed before profiles had their own extensions: another profile's first
-    /// instance starts as a copy of the default profile's, so nothing logs out
+    /// another profile's first instance starts as a copy of the default profile's storage
     @ObservationIgnored var seedsFromDefault = false
 
     var isEnabled: Bool { !profiles.isEmpty }
@@ -55,13 +52,13 @@ final class InstalledExtension: Identifiable {
         self.isPinned = isPinned
     }
 
-    /// its context in one profile, built the first time that profile needs it
     @MainActor
     func forget(_ profile: UUID) {
         contexts[profile] = nil
         profiles.remove(profile)
     }
 
+    /// its context in one profile, built the first time that profile needs it
     func context(in profile: UUID) -> WKWebExtensionContext {
         if let existing = contexts[profile] { return existing }
         let context = WKWebExtensionContext(for: webExtension)
@@ -147,9 +144,7 @@ final class InstalledExtension: Identifiable {
     }
 }
 
-/// the codable record we persist for each installed extension; the heavy WebKit
-/// objects are rebuilt from disk on launch. a record from before per-profile
-/// extensions has no `profiles` and runs in every profile, as it did
+/// the persisted form of an installed extension; a nil `profiles` runs in every profile
 struct ExtensionRecord: Codable {
     var id: String
     var source: ExtensionSource

@@ -57,10 +57,8 @@ nonisolated struct BrowsingSession: Codable {
     }
 }
 
-/// one persisted tab.
-///
-/// `id` is the point: it is what lets anything — a session blob, a Shortcuts
-/// entity, a sync record — refer to one specific tab across a relaunch.
+/// one persisted tab. `id` is stable across relaunches, so a session blob or a
+/// Shortcuts entity can name the same tab after a restart.
 nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     var id: UUID
     var url: String
@@ -68,7 +66,7 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     /// away from without losing its pin
     var pinnedURL: String?
     var isPinned: Bool
-    /// drives the auto-archive clock, which is why it has to survive a relaunch
+    /// drives the auto-archive clock
     var lastAccessed: Date
     var createdAt: Date
     var modifiedAt: Date
@@ -148,19 +146,15 @@ nonisolated struct SpaceData: Codable {
     /// a pre-profile file's own cookie jar, read only so migration can turn it
     /// into a profile: an isolated space keeps its logins, a burner gets an empty jar
     var legacyIsolatedJar: UUID?
-    /// split views, panes stored as indices into [pinned…, today…]. absent in
-    /// legacy data → no splits
     var splitGroups: [SplitGroupData]
 
-    /// v2: the tabs, in [pinned…, today…] order, each with a stable id. The v1
-    /// parallel arrays above are still written from this so an older build opens
-    /// the file, and still read when this is absent
+    /// v2: the tabs in [pinned…, today…] order. the v1 parallel arrays are still
+    /// written from this for older builds, and read when this is absent
     var tabs: [TabRecord]
-    /// v2 replacement for `selectedIndex`, which meant nothing once a tab could
-    /// be dropped from the middle of the list
+    /// v2: replaces v1's `selectedIndex`
     var selectedTabID: UUID?
-    /// v3: the sidebar tree. absent → a flat list, rebuilt from `tabs`. An empty
-    /// folder persists here; a split below two panes deliberately does not
+    /// v3: the sidebar tree. absent → a flat list, rebuilt from `tabs`. an empty
+    /// folder persists here; a split below two panes does not
     var pinnedEntries: [EntryData]
     var todayEntries: [EntryData]
     var requiresUnlock: Bool
@@ -185,8 +179,7 @@ nonisolated struct SpaceData: Codable {
         self.requiresUnlock = requiresUnlock
     }
 
-    // tolerant decoding: new fields and the legacy `themeIndex` both handled,
-    // so older saved data never fails to load
+    // every field is optional or has a fallback, including the legacy `themeIndex`
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -249,7 +242,7 @@ nonisolated struct SpaceData: Codable {
         try c.encode(appearance, forKey: .appearance)
         try c.encode(tabs, forKey: .tabs)
         try c.encodeIfPresent(selectedTabID, forKey: .selectedTabID)
-        // v1 mirror, derived rather than stored, so the two can't drift
+        // the v1 mirror, derived from `tabs`
         let pinned = tabs.filter(\.isPinned)
         let today = tabs.filter { !$0.isPinned }
         try c.encode(pinned.map(\.url), forKey: .pinnedURLs)
@@ -315,16 +308,6 @@ nonisolated enum SplitOrientation: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// SF Symbol for the orientation toggle in the split's sidebar block
-    var symbol: String {
-        switch self {
-        case .columns: "rectangle.split.2x1"
-        case .rows: "rectangle.split.1x2"
-        }
-    }
-
-    var flipped: SplitOrientation { self == .columns ? .rows : .columns }
-
     // MARK: - Settings
 
     static let defaultKey = "defaultSplitOrientation"
@@ -346,8 +329,7 @@ nonisolated indirect enum SplitNodeData: Codable {
         var ratio: Double
     }
 
-    // hand-written to keep the synthesized shape while every field decodes
-    // tolerantly: a leaf written by an older build carries no `tabID`
+    // the synthesized shape, decoded tolerantly: an older build's leaf has no `tabID`
     private enum CaseKey: String, CodingKey { case leaf, split }
     private enum LeafKey: String, CodingKey { case tabID, tabIndex }
     private enum SplitKey: String, CodingKey { case axis, children }
@@ -387,7 +369,7 @@ nonisolated indirect enum SplitNodeData: Codable {
 nonisolated struct SplitGroupData: Codable {
     var id: UUID
     var tree: SplitNodeData?
-    // legacy flat layout (still written for downgrade safety, read for migration)
+    // the pre-tiling flat layout: still written for older builds, read when `tree` is absent
     var tabIDs: [UUID]
     var tabIndices: [Int]
     var orientation: SplitOrientation
@@ -477,8 +459,10 @@ nonisolated enum SpaceFill: String, Codable, CaseIterable, Identifiable {
 /// a space's full background configuration — fill type, colors, gradient
 /// angle, and film grain. drives both the window backdrop and the accent
 nonisolated struct SpaceAppearance: Codable, Equatable {
+    static let defaultColors = [RGBA(0.18, 0.14, 0.40), RGBA(0.30, 0.18, 0.48)]
+
     var fill: SpaceFill = .gradient
-    var colors: [RGBA] = [RGBA(0.18, 0.14, 0.40), RGBA(0.30, 0.18, 0.48)]
+    var colors: [RGBA] = SpaceAppearance.defaultColors
     var angle: Double = 135  // gradient direction, degrees (legacy linear)
     var grain: Double = 0  // film-grain overlay, 0...1
     var glassBlur: Double = 0.6  // 0 = light frost … 1 = heavy frost
@@ -490,15 +474,12 @@ nonisolated struct SpaceAppearance: Codable, Equatable {
     }
 }
 
-// tolerant decoding (extension keeps the memberwise init) so adding fields
-// never invalidates a saved appearance
+// in an extension so the memberwise init survives; every field has a fallback
 nonisolated extension SpaceAppearance {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         fill = try c.decodeIfPresent(SpaceFill.self, forKey: .fill) ?? .gradient
-        colors =
-            try c.decodeIfPresent([RGBA].self, forKey: .colors)
-            ?? [RGBA(0.18, 0.14, 0.40), RGBA(0.30, 0.18, 0.48)]
+        colors = try c.decodeIfPresent([RGBA].self, forKey: .colors) ?? Self.defaultColors
         angle = try c.decodeIfPresent(Double.self, forKey: .angle) ?? 135
         grain = try c.decodeIfPresent(Double.self, forKey: .grain) ?? 0
         glassBlur = try c.decodeIfPresent(Double.self, forKey: .glassBlur) ?? 0.6
@@ -507,54 +488,45 @@ nonisolated extension SpaceAppearance {
     }
 }
 
-/// quick-pick preset appearances shown as swatches in the editor — a spread of
-/// starting points (mesh gradients, solids, glass; some grainy) for users to
-/// load and then tweak into their own
+/// the preset appearances shown as swatches in the editor. a legacy `themeIndex`
+/// indexes into `all`, so the order is persisted
 nonisolated struct SpacePreset: Identifiable {
     let id: Int
     let name: String
     let appearance: SpaceAppearance
 
     static let all: [SpacePreset] = [
-        // 3-colour soft purple, no grain — the house look
         .init(id: 0, name: "Nebula", appearance: .mesh(
             sharpness: 4, grain: 0,
             (0.25, 0.28, RGBA(0.12, 0.10, 0.32)),
             (0.72, 0.35, RGBA(0.42, 0.20, 0.64)),
             (0.50, 0.82, RGBA(0.50, 0.20, 0.52)))),
-        // 4-colour warm embers, crisp + grainy
         .init(id: 1, name: "Ember", appearance: .mesh(
             sharpness: 5, grain: 0.5,
             (0.22, 0.30, RGBA(0.22, 0.06, 0.07)),
             (0.70, 0.24, RGBA(0.56, 0.16, 0.12)),
             (0.52, 0.80, RGBA(0.80, 0.38, 0.15)),
             (0.16, 0.78, RGBA(0.42, 0.16, 0.08)))),
-        // 2-colour wide ocean blend (very soft), no grain
         .init(id: 2, name: "Tide", appearance: .mesh(
             sharpness: 2.5, grain: 0,
             (0.30, 0.30, RGBA(0.05, 0.13, 0.30)),
             (0.72, 0.72, RGBA(0.12, 0.42, 0.50)))),
-        // 4-colour aurora, distinct bands (high sharpness) + grain
         .init(id: 3, name: "Aurora", appearance: .mesh(
             sharpness: 7, grain: 0.35,
             (0.20, 0.30, RGBA(0.05, 0.18, 0.14)),
             (0.58, 0.24, RGBA(0.10, 0.42, 0.34)),
             (0.82, 0.62, RGBA(0.16, 0.50, 0.44)),
             (0.34, 0.80, RGBA(0.30, 0.20, 0.52)))),
-        // 3-colour sunset, mild grain
         .init(id: 4, name: "Sunset", appearance: .mesh(
             sharpness: 3, grain: 0.25,
             (0.22, 0.28, RGBA(0.18, 0.12, 0.40)),
             (0.70, 0.34, RGBA(0.66, 0.18, 0.46)),
             (0.52, 0.80, RGBA(0.82, 0.42, 0.20)))),
-        // 2-colour rose bloom, light grain
         .init(id: 5, name: "Bloom", appearance: .mesh(
             sharpness: 3.5, grain: 0.2,
             (0.30, 0.32, RGBA(0.30, 0.08, 0.28)),
             (0.74, 0.70, RGBA(0.66, 0.22, 0.44)))),
-        // flat deep navy, no grain
         .init(id: 6, name: "Ink", appearance: .solid(RGBA(0.07, 0.08, 0.16), grain: 0)),
-        // flat charcoal with a heavy grain tooth
         .init(id: 7, name: "Charcoal", appearance: .solid(RGBA(0.13, 0.13, 0.15), grain: 0.7)),
     ]
 
@@ -578,9 +550,8 @@ nonisolated extension SpaceAppearance {
         SpaceAppearance(fill: .solid, colors: [color], grain: grain)
     }
 
-    /// an incognito window's fixed look — a near-black mesh with a cold violet
-    /// undertone, darker and quieter than any preset so the window reads at a
-    /// glance. not in `SpacePreset.all`: it belongs to incognito, not the swatch row
+    /// an incognito window's fixed look; not in `SpacePreset.all`, so it is never
+    /// offered as a swatch
     static let incognito: SpaceAppearance = .mesh(
         sharpness: 3, grain: 0.12,
         (0.28, 0.26, RGBA(0.05, 0.04, 0.09)),
@@ -614,9 +585,8 @@ nonisolated struct BackupArchive: Codable {
     /// the subset of defaults worth carrying — anything the user deliberately set
     var preferences: [String: BackupValue]
 
-    /// preference values, narrowed to what a browser setting can actually be.
-    /// `Any` wouldn't be Codable, and a JSON blob of `AnyCodable` makes the file
-    /// unreadable by hand — which defeats the point of an inspectable backup
+    /// a preference value, narrowed to the types a setting can be so the file
+    /// stays readable by hand
     enum BackupValue: Codable, Equatable {
         case bool(Bool)
         case number(Double)

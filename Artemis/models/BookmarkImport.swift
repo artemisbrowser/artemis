@@ -1,12 +1,7 @@
 import Foundation
 
-/// Reading another browser's bookmarks.
-///
-/// Artemis has no bookmarks — pinned tabs and spaces are the bookmarks — so an
-/// import is a translation, not a copy: a top-level folder becomes a space and
-/// its links become that space's pinned tabs. Nesting deeper than that is
-/// flattened into the folder it came from rather than dropped, because a link
-/// three folders down is still a link the person kept.
+/// another browser's bookmarks as spaces: each top-level folder becomes a space
+/// with its links as pinned tabs, and deeper folders flatten into it
 nonisolated enum BookmarkImport {
     struct Link: Equatable {
         var title: String
@@ -17,14 +12,18 @@ nonisolated enum BookmarkImport {
     struct Folder: Equatable {
         var name: String
         var links: [Link]
+        /// an emoji the source browser showed for it
+        var icon: String? = nil
     }
 
     struct Result: Equatable {
         var folders: [Folder]
         /// links that sat at the top level, belonging to no folder
         var loose: [Link]
+        /// links the source kept above every space, which become the profile's favourites
+        var favourites: [Link] = []
 
-        var linkCount: Int { folders.reduce(loose.count) { $0 + $1.links.count } }
+        var linkCount: Int { folders.reduce(loose.count + favourites.count) { $0 + $1.links.count } }
         var isEmpty: Bool { linkCount == 0 }
     }
 
@@ -33,16 +32,20 @@ nonisolated enum BookmarkImport {
         case html
         /// Chrome and the Chromium family: the `Bookmarks` file in the profile
         case chromeJSON
+        /// Safari's `Bookmarks.plist`
+        case safariPlist
     }
 
     /// Pick a parser by looking at the file rather than trusting its name: a
     /// Chrome profile's bookmark file is called `Bookmarks` with no extension,
     /// and an exported one is `.html` whoever wrote it.
     static func format(of data: Data) -> Format? {
+        if data.starts(with: Data("bplist00".utf8)) { return .safariPlist }
         guard let head = String(data: data.prefix(2048), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         else { return nil }
         if head.hasPrefix("{") { return .chromeJSON }
+        if head.hasPrefix("<?xml"), head.contains("<plist") { return .safariPlist }
         if head.lowercased().contains("<!doctype netscape-bookmark-file")
             || head.lowercased().contains("<dl") || head.lowercased().contains("<a href")
         {
@@ -63,16 +66,15 @@ nonisolated enum BookmarkImport {
         switch format(of: data) {
         case .html: parseHTML(data)
         case .chromeJSON: parseChrome(data)
+        case .safariPlist: parseSafari(data)
         case nil: nil
         }
     }
 
     // MARK: - Netscape HTML
 
-    /// Tolerant by design. The format is thirty years of browsers each writing
-    /// slightly different markup, so this tracks the two things every one of
-    /// them agrees on — `<H3>` names a folder, `<A HREF>` is a link — and uses
-    /// `</DL>` to close a folder. Anything else in the file is ignored.
+    /// reads only `<H3>` (a folder), `<A HREF>` (a link) and `</DL>` (a folder's
+    /// end); everything else in the file is ignored
     private static func parseHTML(_ data: Data) -> Result? {
         guard let text = String(data: data, encoding: .utf8)
             ?? String(data: data, encoding: .isoLatin1)
@@ -175,49 +177,100 @@ nonisolated enum BookmarkImport {
         return out
     }
 
-    // MARK: - Chrome JSON
+    // MARK: - Trees
 
-    /// every Chromium-family browser writes the same `Bookmarks` file: a
-    /// tree of `{type: "url" | "folder"}` nodes under a handful of named roots.
-    private static func parseChrome(_ data: Data) -> Result? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let roots = root["roots"] as? [String: Any]
-        else { return nil }
+    /// a bookmark tree as every format holds it, before the translation
+    indirect enum Node {
+        case folder(String, [Node])
+        case link(Link)
+    }
 
+    /// Each root's folders become spaces and its bare links go loose. Order is
+    /// kept, roots first to last.
+    static func result(_ roots: [[Node]]) -> Result? {
         var folders: [Folder] = []
         var loose: [Link] = []
-        // bookmark_bar first: it is the one people actually keep things in
-        for key in ["bookmark_bar", "other", "synced"] {
-            guard let node = roots[key] as? [String: Any],
-                let children = node["children"] as? [[String: Any]]
-            else { continue }
-            for child in children {
-                if child["type"] as? String == "folder" {
-                    let links = flatten(child)
-                    let name = child["name"] as? String ?? "Imported"
-                    if !links.isEmpty { folders.append(Folder(name: name, links: links)) }
-                } else if let link = link(from: child) {
-                    loose.append(link)
-                }
+        for node in roots.joined() {
+            switch node {
+            case .link(let link): loose.append(link)
+            case .folder(let name, let children):
+                let links = flatten(children)
+                if !links.isEmpty { folders.append(Folder(name: name.isEmpty ? "Imported" : name, links: links)) }
             }
         }
         let result = Result(folders: folders, loose: loose)
         return result.isEmpty ? nil : result
     }
 
-    /// every link at or below this node, in order
-    private static func flatten(_ node: [String: Any]) -> [Link] {
-        guard let children = node["children"] as? [[String: Any]] else { return [] }
-        return children.flatMap { child -> [Link] in
-            child["type"] as? String == "folder" ? flatten(child) : [link(from: child)].compactMap { $0 }
+    private static func flatten(_ nodes: [Node]) -> [Link] {
+        nodes.flatMap { node -> [Link] in
+            switch node {
+            case .link(let link): [link]
+            case .folder(_, let children): flatten(children)
+            }
         }
     }
 
-    private static func link(from node: [String: Any]) -> Link? {
-        guard node["type"] as? String == "url",
-            let raw = node["url"] as? String, let url = URL(string: raw), isWeb(url)
+    /// a page worth pinning, or nil
+    static func link(_ raw: String?, title: String?) -> Link? {
+        guard let raw, let url = URL(string: raw), isWeb(url) else { return nil }
+        let title = title ?? ""
+        return Link(title: title.isEmpty ? (url.host() ?? raw) : title, url: url)
+    }
+
+    // MARK: - Chrome JSON
+
+    /// every Chromium-family browser writes the same `Bookmarks` file: a
+    /// tree of `{type: "url" | "folder"}` nodes under a handful of named roots,
+    /// bookmark_bar first because it is the one people keep things in
+    private static func parseChrome(_ data: Data) -> Result? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let roots = root["roots"] as? [String: Any]
         else { return nil }
-        let name = node["name"] as? String ?? ""
-        return Link(title: name.isEmpty ? (url.host() ?? raw) : name, url: url)
+        return result(["bookmark_bar", "other", "synced"].map { chromeNodes((roots[$0] as? [String: Any])?["children"]) })
+    }
+
+    private static func chromeNodes(_ children: Any?) -> [Node] {
+        (children as? [[String: Any]] ?? []).compactMap { child in
+            switch child["type"] as? String {
+            case "folder": .folder(child["name"] as? String ?? "", chromeNodes(child["children"]))
+            case "url": link(child["url"] as? String, title: child["name"] as? String).map(Node.link)
+            default: nil
+            }
+        }
+    }
+
+    // MARK: - Safari plist
+
+    /// The bar and the menu are roots whose contents rise to the top. Any other
+    /// top-level folder is a folder, and the Reading List is one too.
+    private static func parseSafari(_ data: Data) -> Result? {
+        guard let root = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+            root["WebBookmarkType"] as? String == "WebBookmarkTypeList"
+        else { return nil }
+        var roots: [[Node]] = []
+        var top: [[String: Any]] = []
+        for child in root["Children"] as? [[String: Any]] ?? [] {
+            switch child["Title"] as? String {
+            case "BookmarksBar", "BookmarksMenu": roots.append(safariNodes(child["Children"]))
+            case "com.apple.ReadingList": roots.append([.folder("Reading List", safariNodes(child["Children"]))])
+            default: top.append(child)
+            }
+        }
+        return result(roots + [safariNodes(top)])
+    }
+
+    private static func safariNodes(_ children: Any?) -> [Node] {
+        (children as? [[String: Any]] ?? []).compactMap { child in
+            switch child["WebBookmarkType"] as? String {
+            case "WebBookmarkTypeList": .folder(child["Title"] as? String ?? "", safariNodes(child["Children"]))
+            case "WebBookmarkTypeLeaf":
+                link(
+                    child["URLString"] as? String,
+                    title: (child["URIDictionary"] as? [String: Any])?["title"] as? String
+                ).map(Node.link)
+            default: nil
+            }
+        }
     }
 }

@@ -1,14 +1,8 @@
 import Foundation
 
-/// resolves raw url-field input into a loadable URL
-///
-/// - explicit scheme (`https://…`, `file://…`) → used as-is
-/// - host-like (no spaces, has a dot, or localhost) → `https://` prefixed
-/// - anything else → search engine query
+/// resolves raw url-field input: a URL or local path, then a bang, then a search
 enum URLInput {
-    /// Parameters a site (or whoever linked you) hangs on a URL to record where
-    /// you came from. They aren't the page, so a link you copy to send someone
-    /// shouldn't carry them — this is what Arc calls "Super Copy".
+    /// query items that record where a visit came from rather than what the page is
     private static let trackingParameters: Set<String> = [
         "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id",
         "fbclid", "gclid", "gclsrc", "dclid", "msclkid", "twclid", "igshid", "mkt_tok",
@@ -17,15 +11,14 @@ enum URLInput {
         "si", "pp", "feature", "share_id", "smid", "cmpid", "cid", "at_medium",
     ]
 
-    /// the same link, minus the parameters that describe *you* rather than it.
-    /// a URL that is nothing but tracking (some share links) keeps its query,
-    /// since stripping it would break the link rather than clean it
+    /// the link minus its tracking parameters; a query that is only tracking is
+    /// dropped whole
     static func withoutTrackingParameters(_ url: URL) -> URL {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
             let items = components.queryItems, !items.isEmpty
         else { return url }
         let kept = items.filter { !trackingParameters.contains($0.name.lowercased()) }
-        guard kept.count != items.count else { return url }  // nothing to strip
+        guard kept.count != items.count else { return url }
         components.queryItems = kept.isEmpty ? nil : kept
         return components.url ?? url
     }
@@ -37,7 +30,7 @@ enum URLInput {
     }
 
     /// `!yt orbital mechanics` typed anywhere, not only in the command bar
-    static func bangURL(_ input: String) -> URL? {
+    private static func bangURL(_ input: String) -> URL? {
         guard Bangs.isEnabled, let (trigger, query) = Bangs.split(input) else { return nil }
         return Bangs.lookup(trigger)?.url(for: query)
             ?? Bangs.fallbackURL(trigger: trigger, query: query)
@@ -52,9 +45,7 @@ enum URLInput {
             return URL(string: trimmed)
         }
 
-        // a typed or pasted path is a local file, not a search. a path that
-        // isn't there is neither — falling through would build https:///Users/…,
-        // a url with no host that can only fail to load
+        // a path that doesn't exist is neither a file nor a host
         if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") {
             let path = (trimmed as NSString).expandingTildeInPath
             guard FileManager.default.fileExists(atPath: path) else { return nil }
@@ -68,15 +59,14 @@ enum URLInput {
             let url = URL(string: defaultScheme(for: trimmed) + trimmed),
             let host = url.host(), !host.isEmpty
         else { return nil }
-        // hosts are case-insensitive; carrying the typed case through would make
-        // GitHub.com a different page from github.com everywhere downstream
+        // lowercased so GitHub.com and github.com are the same page downstream
         guard host != host.lowercased() else { return url }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         components?.host = host.lowercased()
         return components?.url ?? url
     }
 
-    /// local dev servers rarely speak TLS — default them to http
+    /// http for loopback and private-network hosts, https otherwise
     private static func defaultScheme(for input: String) -> String {
         let host = input
             .split(separator: "/", maxSplits: 1)[0]
@@ -95,7 +85,7 @@ enum URLInput {
         return "https://"
     }
 
-    /// run the query against the user's chosen engine (DuckDuckGo by default)
+    /// a search on the current window's profile engine
     static func searchURL(for query: String) -> URL? {
         SearchEngine.current.searchURL(for: query)
     }

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// What Send Feedback is about to send: the user's words and the boxes they
+/// what Send Feedback is about to send: the user's words and the boxes they
 /// ticked. A private window offers neither its page nor a screenshot.
 @Observable
 final class FeedbackDraft {

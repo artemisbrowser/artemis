@@ -1,10 +1,9 @@
 import AppKit
 import WebKit
 
-/// presents Artemis's browser to the WebExtensions runtime so `chrome.windows` /
-/// `chrome.tabs` have something to enumerate: one window for the browser, mapped
-/// onto the current space's tab set rather than a window per space, and one per
-/// incognito window, private to its parent profile's controller.
+/// a browser window as `chrome.windows` sees it: one for the browser, mapped onto the current
+/// space's tabs rather than one per space, and one per incognito window, private to its parent
+/// profile's controller
 final class ExtensionWindow: NSObject, WKWebExtensionWindow {
     weak var tabManager: TabManager?
     /// an incognito window's parent profile; nil for the browser

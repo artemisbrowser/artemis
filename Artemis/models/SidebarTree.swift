@@ -32,15 +32,16 @@ final class TabFolder: Identifiable {
     }
 }
 
-/// one row of the sidebar as drawn: a tab, a split's panes merged into one row,
-/// or a folder header. `depth` is the indent level, `container` the folder (or
-/// section) the row is a child of — the pair a drop needs to name a position
+/// what a sidebar row draws: a tab, a split's panes merged into one row, or a
+/// folder header
 enum SidebarRowKind {
     case tab(BrowserTab)
     case group(SplitGroup, [BrowserTab])
     case folder(TabFolder)
 }
 
+/// one row of the sidebar as drawn. `container` and `depth` are what a drop
+/// needs to name a position
 struct SidebarRow: Identifiable {
     let kind: SidebarRowKind
     let container: SidebarContainer
@@ -153,7 +154,7 @@ extension Space {
     }
 
     /// levels of folder nesting under this folder — 0 when it holds no folders
-    func height(of folder: TabFolder) -> Int {
+    private func height(of folder: TabFolder) -> Int {
         var out = 0
         for case .folder(let id) in folder.children {
             guard let child = self.folder(id), out < Space.maxFolderDepth else { continue }

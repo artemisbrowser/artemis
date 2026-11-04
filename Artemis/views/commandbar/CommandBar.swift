@@ -180,7 +180,7 @@ struct CommandBar: View {
 
     private func startOnAddress() {
         scope = nil
-        query = tabManager.selectedTab?.url?.absoluteString ?? ""
+        query = tabManager.displayedContentTab?.url?.absoluteString ?? ""
         // centred, the whole address is selected so typing replaces it
         if !grown { selection = TextSelection(range: query.startIndex..<query.endIndex) }
     }
@@ -203,7 +203,6 @@ struct CommandBar: View {
         items.indices.contains(selectedIndex) ? items[selectedIndex] : nil
     }
 
-    @discardableResult
     private func move(_ delta: Int) -> KeyPress.Result {
         guard !items.isEmpty else { return .handled }
         pointerMoved = false
@@ -404,6 +403,7 @@ struct CommandBar: View {
                         row(item, isSelected: index == selectedIndex)
                             .id(item.id)
                             .onTapGesture { execute(item, launch: launch(for: heldModifiers)) }
+                            .accessibilityAction { execute(item, launch: launch(for: [])) }
                             .onHover { hovering in
                                 if hovering, pointerMoved { selectedIndex = index }
                             }
@@ -485,7 +485,7 @@ struct CommandBar: View {
         // would do — not an icon, a title and a hint read out separately
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.title)
-        .accessibilityValue(verb(item))
+        .accessibilityValue([kindName(item), item.hint, verb(item)].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -595,6 +595,22 @@ struct CommandBar: View {
         case .scout: "⇧↵"
         case .beside: "⌘↵"
         case .current: address ? "↵" : "⌥↵"
+        }
+    }
+
+    /// what a result is, said before what it would do
+    private func kindName(_ item: CommandItem) -> String {
+        switch item.kind {
+        case .tab: "Open tab"
+        case .closed: "Recently closed"
+        case .history, .pageText: "History"
+        case .space: "Space"
+        case .action: "Command"
+        case .bang: "Search shortcut"
+        case .suggestion: "Suggestion"
+        case .openURL: "Address"
+        case .search: "Web search"
+        case .scope: "Scope"
         }
     }
 

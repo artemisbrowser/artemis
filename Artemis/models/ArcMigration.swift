@@ -136,7 +136,7 @@ final class ArcImportModel {
             var added = 0
             for folder in ArcImport.profiles(in: survey.directory) {
                 guard let profile = destination(for: folder.lastPathComponent, in: manager) else { continue }
-                let entries = await Task.detached { ArcImport.history(inProfile: folder) }.value
+                let entries = await Task.detached { BrowserImport.chromiumHistory(folder) }.value
                 added += profile.history.merge(entries)
             }
             landed.append("\(added) pages of history")

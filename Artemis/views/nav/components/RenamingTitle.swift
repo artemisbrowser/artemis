@@ -1,20 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// A tab's name, which turns to dust when the tab is renamed.
-///
-/// Left to right, each letter crumbles into a scatter of dots that float off to
-/// the right and fade, while the new name arrives underneath. The particles are
-/// drawn in a `Canvas` layered over the row rather than laid out in it, so they
-/// can drift outside the row's bounds and nothing reflows.
-///
-/// **Only a rename does this.** A page changing its own title is not a rename,
-/// and pages change titles constantly (YouTube alone goes through four while it
-/// loads). So the trigger is `renameToken` — the *stored* name for this page —
-/// not the text on screen, which follows the page's own title whenever there is
-/// no name to override it.
+/// a tab's name, which crumbles to dust left to right when the tab is renamed.
+/// only a change of `renameToken` animates: a page retitling itself never does.
+/// the dust is an overlay, so it drifts past the row without reflowing it
 struct RenamingTitle: View {
-    /// what to draw
     let title: String
     /// the name this tab has been given, or "" when it's showing the page's own
     /// title. a change here — and only here — is a rename
@@ -30,7 +20,6 @@ struct RenamingTitle: View {
     /// the name currently crumbling, and how far along it is
     @State private var dust: String?
     @State private var progress: CGFloat = 0
-    @State private var arrival: CGFloat = 1
     @State private var lastToken = ""
     @State private var lastIdentity = ""
 
@@ -38,9 +27,8 @@ struct RenamingTitle: View {
     /// dust to settle — the "Click to rename" hint — times off this
     static let duration = 0.85
 
-    /// where the wave has got to, 0…1 across the name. The old name crumbles as
-    /// it passes and the new one is uncovered behind it, so one number drives
-    /// both halves and they can't drift apart.
+    /// where the wave has got to, 0…1 across the name: it crumbles the old name
+    /// and uncovers the new one, so the two halves can't drift apart
     private var wave: CGFloat {
         min(1, progress / DustCloud.spread)
     }
@@ -48,57 +36,53 @@ struct RenamingTitle: View {
     var body: some View {
         Group {
             if dust == nil {
-                // at rest it is plain text — no mask, no opacity, nothing that
-                // could linger and dim the end of every name in the sidebar
+                // at rest: plain text, with no mask left to dim the name's end
                 text(shown)
             } else {
                 text(shown).mask(alignment: .leading) { revealMask }
             }
         }
         .overlay(alignment: .leading) {
-                if let dust {
-                    DustCloud(text: dust, progress: progress, fontSize: fontSize, ink: ink)
-                        // room to fly: an overlay takes no layout space, so the
-                        // canvas can be bigger than the text it came from
-                        .frame(width: 260, height: fontSize * 3, alignment: .leading)
-                        .allowsHitTesting(false)
-                }
+            if let dust {
+                DustCloud(text: dust, progress: progress, fontSize: fontSize, ink: ink)
+                    // room to fly: an overlay takes no layout space, so the
+                    // canvas can be bigger than the text it came from
+                    .frame(width: 260, height: fontSize * 3, alignment: .leading)
+                    .allowsHitTesting(false)
             }
-            .onAppear {
+        }
+        .onAppear {
+            shown = title
+            lastToken = renameToken
+            lastIdentity = identity
+        }
+        .onChange(of: identity) { _, new in
+            // a different page: whatever it's called now isn't a rename
+            lastIdentity = new
+            lastToken = renameToken
+            dust = nil
+            shown = title
+        }
+        .onChange(of: title) { _, new in
+            // a rename changes title and token in one pass, and these
+            // handlers run in declaration order: once the token has moved,
+            // leave the old name for the handler below to animate
+            guard renameToken == lastToken else { return }
+            if dust == nil { shown = new }
+        }
+        .onChange(of: renameToken) { _, new in
+            let previous = shown
+            lastToken = new
+            guard identity == lastIdentity, !previous.isEmpty, previous != title else {
                 shown = title
-                lastToken = renameToken
-                lastIdentity = identity
+                return
             }
-            .onChange(of: identity) { _, new in
-                // a different page: whatever it's called now isn't a rename
-                lastIdentity = new
-                lastToken = renameToken
-                dust = nil
-                arrival = 1
-                shown = title
+            guard !reduceMotion else {
+                withAnimation(Motion.fade) { shown = title }
+                return
             }
-            .onChange(of: title) { _, new in
-                // A rename changes the title AND the token in one pass, and
-                // SwiftUI runs these handlers in declaration order — so this
-                // one fires first and would overwrite the old name before the
-                // rename handler below ever sees it. When the token has moved
-                // on, leave the text alone and let that handler animate it.
-                guard renameToken == lastToken else { return }
-                if dust == nil { shown = new }
-            }
-            .onChange(of: renameToken) { _, new in
-                let previous = shown
-                lastToken = new
-                guard identity == lastIdentity, !previous.isEmpty, previous != title else {
-                    shown = title
-                    return
-                }
-                guard !reduceMotion else {
-                    withAnimation(Motion.fade) { shown = title }
-                    return
-                }
-                blowAway(previous)
-            }
+            blowAway(previous)
+        }
     }
 
     /// the new name, uncovered from the left as the wave passes over it
@@ -115,16 +99,10 @@ struct RenamingTitle: View {
         dust = previous
         progress = 0
         shown = title
-        arrival = 0
-        // Start the flight on the NEXT pass, not this one. Setting progress to
-        // 0 and then to 1 in the same tick coalesces into a single change —
-        // SwiftUI never draws the particles at rest, so there is nothing to
-        // interpolate from and the animation simply doesn't happen.
+        // the flight starts next runloop turn: 0 then 1 in one tick coalesces,
+        // and with no frame drawn at 0 there is nothing to animate from
         DispatchQueue.main.async {
             withAnimation(.linear(duration: Self.duration)) { progress = 1 }
-            // the new name fades up while the old one is still crumbling, so
-            // the row is never blank
-            withAnimation(.easeOut(duration: 0.45).delay(0.2)) { arrival = 1 }
         }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(Self.duration + 0.1))
@@ -141,12 +119,8 @@ struct RenamingTitle: View {
     }
 }
 
-/// The old name mid-crumble: every letter breaks into dots that float right.
-///
-/// One `Canvas` rather than a view per particle — a name is a couple of hundred
-/// dots, and that is a drawing job, not a layout one. `Animatable` on the view
-/// itself, so SwiftUI interpolates `progress` and redraws each frame; every
-/// particle's position is computed from that one number.
+/// the old name mid-crumble: every letter breaks into dots that float right.
+/// every particle is a function of the one animated `progress`
 struct DustCloud: View, Animatable {
     let text: String
     var progress: CGFloat
@@ -178,17 +152,14 @@ struct DustCloud: View, Animatable {
         letters = measured
     }
 
-    /// dots per 10pt of letter, so a wide letter crumbles into more of them.
-    /// fine and many reads as dust; few and fat reads as bubbles
+    /// dots per 10pt of letter, so a wide letter crumbles into more of them
     private static let density: CGFloat = 12
     /// how far a particle can travel before it's spent
     private static let drift: CGFloat = 120
-    /// how much of the flight the wavefront takes to cross the name. The rest
-    /// is the last letter's dust still travelling, so the whole thing finishes
-    /// together even though it started one letter at a time
+    /// the share of the flight the wavefront takes to cross the name; the rest
+    /// is the last letter's dust still travelling
     static let spread: CGFloat = 0.55
-    /// how long a single letter takes to come apart once the wave reaches it.
-    /// short, so the eye reads a moving edge rather than the whole name fading
+    /// how long a single letter takes to come apart once the wave reaches it
     private static let crumble: CGFloat = 0.16
 
     var body: some View {
@@ -204,8 +175,7 @@ struct DustCloud: View, Animatable {
                     continue
                 }
 
-                // it comes apart quickly once its turn comes, handing over to
-                // the dots — a short window is what makes the edge visible
+                // the glyph fades over `crumble` as its dots take over
                 let crumbling = min(1, (progress - reached) / Self.crumble)
                 if crumbling < 1 {
                     draw(
@@ -222,9 +192,8 @@ struct DustCloud: View, Animatable {
                     let delay = random(index, dot, 1) * Self.crumble
                     let elapsed = progress - reached - delay
                     guard elapsed > 0 else { continue }
-                    // measured against this dot's OWN remaining time, so every
-                    // one of them is spent exactly at the end — sharing the
-                    // letter's window left the late starters still lit
+                    // against this dot's own remaining time, so every dot is
+                    // spent exactly at progress 1
                     let travel = min(1, elapsed / max(0.01, 1 - reached - delay))
                     guard travel < 1 else { continue }
 
@@ -278,8 +247,8 @@ struct DustCloud: View, Animatable {
     /// quick off the mark, then coasting — dust doesn't accelerate
     private func eased(_ value: CGFloat) -> CGFloat { 1 - pow(1 - value, 2) }
 
-    /// deterministic per-particle noise: the same name crumbles the same way
-    /// every time, which is what makes it read as an effect rather than a glitch
+    /// deterministic per-particle noise in 0..<1: a name always crumbles the
+    /// same way
     private func random(_ a: Int, _ b: Int, _ salt: Int) -> CGFloat {
         var h = UInt64(bitPattern: Int64(a &* 73_856_093 ^ b &* 19_349_663 ^ salt &* 83_492_791))
         h ^= h >> 33

@@ -2,10 +2,9 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A new download's file icon arcs from the click that started it to the
-/// window's Library button (or download pill), drawn in Core Animation in a
-/// view on the window's frame view, above the content view whose page and
-/// sidebar hosts would otherwise cover it.
+/// a new download's file icon arcs from the click that started it to the window's
+/// Library button or download pill, drawn on the window's frame view, above the
+/// content view whose page and sidebar hosts would otherwise cover it
 enum DownloadFlight {
     /// views marking where downloads land; the one in the download's window is the target
     fileprivate static let targets = NSHashTable<NSView>.weakObjects()
@@ -19,7 +18,6 @@ enum DownloadFlight {
     }
 
     private static func fly(filename: String, from webView: NSView?, press: (point: NSPoint, at: Date)?) {
-        // a tab still on the start page has no page in the window: fly from the window's middle
         guard !Motion.reduceMotion, let window = webView?.window ?? NSApp.keyWindow,
             let content = window.contentView, let frameView = content.superview
         else { return }
@@ -31,6 +29,7 @@ enum DownloadFlight {
         // nothing to land on: the window's bottom-left, where the pill appears
         let end = target.map { $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil) }
             ?? content.convert(NSPoint(x: content.bounds.minX + 40, y: content.isFlipped ? content.bounds.maxY - 26 : 26), to: nil)
+        // a tab still on the start page has no page in the window: fly from the window's middle
         let page = webView.flatMap { $0.window === window ? $0 : nil } ?? content
         let start = press.flatMap { Date.now.timeIntervalSince($0.at) < 2 ? $0.point : nil }
             ?? page.convert(NSPoint(x: page.bounds.midX, y: page.bounds.midY), to: nil)

@@ -1,36 +1,22 @@
 import AppKit
 import Foundation
 
-/// Services the native-messaging endpoint Bitwarden's extension expects from
-/// its Safari app extension (`sendNativeMessage("com.bitwarden.desktop", …)`).
-///
-/// Why this exists: Bitwarden detects its host browser from the user agent, and
-/// a WebKit UA reads as Safari — so clipboard copy/read, vault-export download
-/// and "open the popup" are all routed to this app id instead of the web APIs
-/// the Chrome/Firefox paths use. Safari answers from
-/// `SafariWebExtensionHandler.swift` in the Bitwarden desktop app; Artemis
-/// answers here with the same message shapes (verified against their handler
-/// source, bitwarden/clients `apps/browser/src/safari`).
-///
-/// Biometric unlock is deliberately reported as unavailable: the real flow
-/// hands out a vault key stored in the *Bitwarden desktop app's* keychain
-/// access group, which no other app can (or should) read. Password unlock is
-/// fully self-contained in the extension and unaffected.
+/// the native-messaging endpoint a WebKit user agent sends Bitwarden's clipboard, export and popup
+/// calls to, answered in the shapes of its `SafariWebExtensionHandler`. biometric unlock needs a key
+/// in the Bitwarden desktop app's keychain access group, so it reports unsupported
 @MainActor
 enum PasswordManagerBridge {
     /// the app id Bitwarden's Safari code path messages
     static let bitwardenAppID = "com.bitwarden.desktop"
 
-    /// BiometricsStatus.PlatformUnsupported in bitwarden/clients — hides the
-    /// biometrics option in the UI rather than offering a button that fails
+    /// `BiometricsStatus.PlatformUnsupported` in bitwarden/clients, which hides the biometrics option
     private static let biometricsPlatformUnsupported = 5
 
     static func handle(_ message: [String: Any]) -> Any? {
         guard let command = message["command"] as? String else { return [:] }
         switch command {
         case "readFromClipboard":
-            // reply is the raw string (Safari's handler returns the pasteboard
-            // string as the whole message payload)
+            // the reply is the bare pasteboard string, as Safari's handler sends it
             return NSPasteboard.general.string(forType: .string) ?? ""
 
         case "copyToClipboard":
@@ -40,8 +26,7 @@ enum PasswordManagerBridge {
             return [:]
 
         case "showPopover":
-            // "open my popup": same signal chrome.action.openPopup lands on —
-            // the url bar's settings button observes the pending id and presents
+            // the same signal `action.openPopup` raises: the url bar presents the pending id
             if let ext = ExtensionManager.shared.installed.first(where: {
                 $0.name.localizedCaseInsensitiveContains("bitwarden")
             }) {
@@ -50,8 +35,7 @@ enum PasswordManagerBridge {
             return [:]
 
         case "downloadFile":
-            // vault export: {fileName, blobData, blobOptions:{type}} as JSON in
-            // "data". Safari runs a save panel; so do we
+            // vault export: {fileName, blobData, blobOptions:{type}} as JSON in "data"
             guard let json = message["data"] as? String,
                 let parsed = try? JSONSerialization.jsonObject(with: Data(json.utf8))
                     as? [String: Any],

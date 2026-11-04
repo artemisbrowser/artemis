@@ -166,6 +166,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     func fill(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
         let store = PasswordStore.shared
         guard store.matches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
+            await OwnerUnlock.authenticate(.passwords, "fill your password for \(login.host)"),
             let password = store.password(for: login),
             await fill(username: login.username, password: password, into: target, in: tab)
         else { return false }
@@ -198,6 +199,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     func fillCode(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
         let store = PasswordStore.shared
         guard store.codeMatches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
+            await OwnerUnlock.authenticate(.passwords, "fill your verification code for \(login.host)"),
             let code = store.oneTimeCode(for: login)?.code()
         else { return false }
         if let frame = target.frame, !frame.isMainFrame, await !frameIsShown(target.origin, in: tab) {
@@ -211,7 +213,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     }
 
     /// whether an iframe on `origin` shows in the top document; true when none can be found there
-    private func frameIsShown(_ origin: String, in tab: BrowserTab) async -> Bool {
+    func frameIsShown(_ origin: String, in tab: BrowserTab) async -> Bool {
         let script = """
             const boxes = [...document.querySelectorAll("iframe")].filter(f => {
               try { return new URL(f.src || location.href, location.href).origin === origin; } catch (e) { return false; }
@@ -303,7 +305,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
 
     /// where a cross-origin child frame's content sits in the page, when exactly one iframe has its
     /// origin and the page shows that iframe at each of `points`, `[x, y]` in the frame's CSS px
-    private func frameOffset(of origin: String, at points: [[Double]] = [], in tab: BrowserTab) async -> CGPoint? {
+    func frameOffset(of origin: String, at points: [[Double]] = [], in tab: BrowserTab) async -> CGPoint? {
         let script = """
             const frames = [...document.querySelectorAll("iframe")].filter(f => {
               try { return new URL(f.src, location.href).origin === origin; } catch (e) { return false; }
@@ -321,30 +323,9 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         return CGPoint(x: point[0], y: point[1])
     }
 
-    /// `css` is in the top document's CSS pixels; one CSS pixel is `pageZoom × magnification` points
     private func present(_ list: LoginSuggestions, below css: CGRect, in tab: BrowserTab) {
         closeSuggestions()
-        let webView = tab.webView
-        guard let window = webView.window else { return }
-        let scale = webView.pageZoom * webView.magnification
-        var field = CGRect(
-            x: css.minX * scale, y: css.minY * scale, width: css.width * scale, height: css.height * scale)
-        if !webView.isFlipped { field.origin.y = webView.bounds.height - field.maxY }
-        let screen = window.convertToScreen(webView.convert(field, to: nil))
-        let host = NSHostingView(rootView: list)
-        let size = host.fittingSize
-        let panel = NSPanel(
-            contentRect: NSRect(
-                x: screen.minX, y: screen.minY - size.height - 4, width: size.width, height: size.height),
-            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.animationBehavior = .none
-        panel.contentView = host
-        window.addChildWindow(panel, ordered: .above)
-        suggestions = (panel, tab.id)
+        if let panel = suggestionPanel(list, below: css, in: tab.webView) { suggestions = (panel, tab.id) }
     }
 
     private func closeSuggestions() {
@@ -423,6 +404,29 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     }
 }
 
+/// a borderless child panel holding `content` just under `css`, a field's box in the top document's CSS pixels;
+/// one CSS pixel is `pageZoom × magnification` points
+func suggestionPanel(_ content: some View, below css: CGRect, in webView: WKWebView) -> NSPanel? {
+    guard let window = webView.window else { return nil }
+    let scale = webView.pageZoom * webView.magnification
+    var field = CGRect(x: css.minX * scale, y: css.minY * scale, width: css.width * scale, height: css.height * scale)
+    if !webView.isFlipped { field.origin.y = webView.bounds.height - field.maxY }
+    let screen = window.convertToScreen(webView.convert(field, to: nil))
+    let host = NSHostingView(rootView: content)
+    let size = host.fittingSize
+    let panel = NSPanel(
+        contentRect: NSRect(x: screen.minX, y: screen.minY - size.height - 4, width: size.width, height: size.height),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.hasShadow = true
+    panel.becomesKeyOnlyIfNeeded = true
+    panel.animationBehavior = .none
+    panel.contentView = host
+    window.addChildWindow(panel, ordered: .above)
+    return panel
+}
+
 /// the list under a focused login field
 struct LoginSuggestions: View {
     let logins: [SavedLogin]
@@ -478,7 +482,7 @@ struct LoginSuggestions: View {
         }
         .padding(6)
         .frame(width: 260)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.regularMaterial))
+        .background(VisualEffectView(material: .menu, blending: .behindWindow))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
@@ -488,6 +492,8 @@ struct SuggestionRow: View {
     let icon: String
     let title: String
     let detail: String?
+    /// chosen from the keyboard
+    var isHighlighted = false
     let action: (() -> Void)?
     @State private var isHovering = false
 
@@ -519,7 +525,7 @@ struct SuggestionRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(.primary.opacity(isHovering ? 0.1 : 0)))
+                .fill(.primary.opacity(isHovering || isHighlighted ? 0.1 : 0)))
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .animation(Motion.hover, value: isHovering)
     }

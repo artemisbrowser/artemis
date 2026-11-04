@@ -1,7 +1,7 @@
 #!/bin/bash
 # One bench arm end to end: kill the app, start the outside sampler, run the
-# in-app harness with whatever perf flags you're testing, then print the joined
-# table. Usage: tools/bench-run.sh <label> [ARTEMIS_PERF_OFF value]
+# in-app harness, then print the joined table.
+# Usage: tools/bench-run.sh <label> [ARTEMIS_PERF_OFF value]
 set -u
 cd "$(dirname "$0")/.."
 label="$1"

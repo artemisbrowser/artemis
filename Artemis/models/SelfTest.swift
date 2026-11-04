@@ -1,48 +1,45 @@
+import AppIntents
 import AppKit
 import CommonCrypto
+import Compression
 import CoreLocation
 import CryptoKit
 import JavaScriptCore
+import SQLite3
 import SwiftUI
+import Translation
 import UserNotifications
 import WebKit
 
-/// Dev-only end-to-end test harness.
-///
-/// Launch with `ARTEMIS_SELFTEST=1` and Artemis runs its own suite against the
-/// real, running app — live `WKWebView`s, the real content blocker, the real
-/// on-disk stores — then writes a report to `~/Downloads/artemis-selftest.log`
-/// and quits. The app is sandboxed, so this file is the only channel a terminal
-/// outside the container can actually read; it exists so browser plumbing can be
-/// regression-tested without a human clicking through it.
-///
-/// Not compiled out of release builds (it's tiny and inert), but it never runs
-/// unless the environment variable is set.
+/// end-to-end suite run against the live app: live web views, the real content
+/// blocker, the real stores. inert unless `ARTEMIS_SELFTEST` is set; writes
+/// ~/Downloads/artemis-selftest.log and quits
 @MainActor
 enum SelfTest {
     nonisolated static var isRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_SELFTEST"] != nil
     }
 
-    /// `ARTEMIS_DIAG=ext`: dump every installed extension's true runtime state
-    /// (enabled, pinned, context loaded, parse errors, action/icon availability)
-    /// to ~/Downloads/artemis-ext-diag.log, then keep running normally. for
-    /// "installed it but nothing shows" reports, where the answer is buried in
-    /// state the UI doesn't (yet) surface
+    /// `ARTEMIS_SELFTEST=1` runs every group; `ARTEMIS_SELFTEST=reports,routing` runs only those
+    private static let groups: Set<String> = {
+        let value = ProcessInfo.processInfo.environment["ARTEMIS_SELFTEST"] ?? "1"
+        return value == "1" ? [] : Set(value.lowercased().split(separator: ",").map { String($0) })
+    }()
+    private static func wants(_ group: String) -> Bool { groups.isEmpty || groups.contains(group) }
+
+    /// `ARTEMIS_DIAG=ext`: dump every installed extension's runtime state (enabled, pinned,
+    /// context loaded, parse errors, action/icon) to ~/Downloads/artemis-ext-diag.log
     static var isExtensionsDiagRequested: Bool { AppStorageLocation.isExtensionsDiag }
 
-    /// `ARTEMIS_DIAG=popup`: open the first pinned extension's action popup,
-    /// let it settle, and dump what it actually rendered. The popup is where a
-    /// broken extension shows itself to the user (Surfshark's infinite
-    /// spinner), and reading it is otherwise a human-with-a-mouse job.
+    /// `ARTEMIS_DIAG=popup`: open the first pinned extension's action popup, let it settle,
+    /// and dump what it rendered
     static var isPopupDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "popup"
     }
 
-    /// `ARTEMIS_DIAG=capture`: grant a test page the microphone and see whether a
-    /// real capture stream actually opens. Separate from the suite because the
-    /// first grant raises macOS's own TCC prompt, which no automated run can
-    /// answer — so this reports what happened rather than passing or failing.
+    /// `ARTEMIS_DIAG=capture`: grant a test page the microphone and report whether a
+    /// capture stream opens. outside the suite: the first grant raises a TCC prompt no
+    /// run can answer
     static var isCaptureDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "capture"
     }
@@ -96,10 +93,8 @@ enum SelfTest {
         flush()
     }
 
-    /// `ARTEMIS_DIAG=ai`: does the on-device model work from inside the App
-    /// Sandbox, and how fast? The standalone check ran unsandboxed, which proves
-    /// nothing about the shipping app — the model lives behind an XPC service,
-    /// and XPC is exactly the sort of thing a sandbox refuses.
+    /// `ARTEMIS_DIAG=ai`: whether the on-device model answers from inside the shipping
+    /// app, and how fast
     static var isIntelligenceDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "ai"
     }
@@ -115,16 +110,14 @@ enum SelfTest {
                 atomically: true, encoding: .utf8)
         }
 
-        // the user's real switches, exactly as the tidy pipeline reads them —
-        // this is the first place to look when "renaming does nothing"
+        // the user's real switches, as the tidy pipeline reads them
         out.append("master switch (\(Intelligence.enabledKey)): \(Intelligence.isEnabled)")
         out.append("tidy titles job: \(Intelligence.isOn(Intelligence.tidyTitlesKey))")
         out.append("readiness: \(Intelligence.readiness)")
         flush()
 
-        // live wiring under the user's OWN settings: pin a tab with a long
-        // settled title and watch whether a name arrives — every guard in the
-        // real path gets a verdict in the log
+        // live wiring under the user's own settings: pin a tab with a long settled title
+        // and watch whether a name arrives
         if let manager {
             let tab = manager.newTab(url: nil, select: false)
             let long = "(14) Arc is Dead. So I Tried the Next Best Thing - YouTube"
@@ -146,8 +139,7 @@ enum SelfTest {
             manager.close(tab)
             flush()
 
-            // the reported case, end to end: a real YouTube link dropped into
-            // the pinned section — real network, real title churn, real model
+            // a real YouTube link dropped into the pinned section: real network, real title churn
             let ytURL = URL(string: "https://www.youtube.com/watch?v=v0hg84vhZKE")!
             TabNameStore.shared.setCustom(nil, for: ytURL)
             TabNameStore.shared.setGenerated(nil, for: ytURL)
@@ -223,12 +215,9 @@ enum SelfTest {
         flush()
     }
 
-    /// `ARTEMIS_DIAG=names`: the tab-rename bench. Runs a fixed set of real page
-    /// shapes through the model repeatedly and reports the two things that
-    /// matter — how long a name takes, and whether the same page gets the same
-    /// name every time. Compares prompt wordings, session strategies and how
-    /// much page context is worth paying for, so those are decisions with
-    /// numbers behind them rather than opinions.
+    /// `ARTEMIS_DIAG=names`: the tab-rename bench. runs fixed page shapes through the
+    /// model repeatedly and reports how long a name takes and whether a page gets the
+    /// same name every time
     static var isNameBenchRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "names"
     }
@@ -363,19 +352,9 @@ enum SelfTest {
         flush()
     }
 
-    /// `ARTEMIS_DIAG=corpus`: visit a list of real websites and record what
-    /// each page offers a tab namer — title, heading, the descriptions it
-    /// advertises itself with, and *all* of its prose.
-    ///
-    /// Captured once and replayed offline by `=sweep`, because loading a page
-    /// costs seconds while asking the model costs one: reloading the web for
-    /// every prompt variant would mean one experiment a night instead of
-    /// dozens. Capturing the full text (not the excerpt the browser actually
-    /// uses) is what makes it possible to ask whether a bad name was the
-    /// prompt's fault or simply too little context.
-    ///
-    /// Reads ~/Downloads/artemis-corpus-urls.txt (`category<TAB>url`), writes
-    /// ~/Downloads/artemis-corpus.jsonl.
+    /// `ARTEMIS_DIAG=corpus`: visit the sites in ~/Downloads/artemis-corpus-urls.txt
+    /// (`category<TAB>url`) and write each page's title, heading, descriptions and full
+    /// prose to ~/Downloads/artemis-corpus.jsonl, for `=sweep` to replay offline
     static var isCorpusDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "corpus"
     }
@@ -416,10 +395,7 @@ enum SelfTest {
         })()
         """
 
-    /// `ARTEMIS_DIAG=corpus-clean`: take the corpus back out of the user's
-    /// history. Runs that predate the guard above left a few hundred real
-    /// visits in a trail the user never made, and a measurement harness that
-    /// edits the thing it measures should clean up after itself.
+    /// `ARTEMIS_DIAG=corpus-clean`: take the corpus's visits back out of the user's history
     static var isCorpusCleanRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "corpus-clean"
     }
@@ -482,8 +458,7 @@ enum SelfTest {
         var captured = 0
         var failed = 0
 
-        // four at a time: enough to hide the latency of the slow ones, few
-        // enough that a page's own web process isn't fighting three others
+        // four at a time: hides the slow pages' latency without the web processes fighting
         let lanes = 4
         let tabs = (0..<lanes).map { _ in manager.newTab(url: nil, select: false) }
         defer { tabs.forEach { manager.close($0) } }
@@ -533,10 +508,8 @@ enum SelfTest {
     private static func capture(_ url: URL, in tab: BrowserTab) async -> String? {
         let before = tab.webView.url
         tab.load(url)
-        // Wait for the navigation to actually START. `isLoading` is still false
-        // for a moment after asking, and polling it straight away returns while
-        // the PREVIOUS page is still up — which quietly recorded one page's
-        // words against another page's URL for 4% of a 258-page run.
+        // wait for the navigation to start: `isLoading` stays false for a moment after the
+        // load is asked for, so polling at once returns on the previous page
         for _ in 0..<50 {
             try? await Task.sleep(for: .milliseconds(100))
             if tab.webView.isLoading || tab.webView.url != before { break }
@@ -548,11 +521,8 @@ enum SelfTest {
         guard tab.loadError == nil, let landed = tab.webView.url, landed != before else {
             return nil
         }
-        // Ask the PAGE where it thinks it is. `webView.url` flips to the new
-        // address while the old document is still loaded, so a capture taken on
-        // that signal alone recorded one article's text under another's URL —
-        // Xylophone came back as Permafrost. The document's own location is the
-        // only thing that moves when the document does.
+        // ask the page where it is: `webView.url` changes while the old document is still
+        // loaded, and only the document's own location moves with the document
         var settled = false
         for _ in 0..<30 {
             try? await Task.sleep(for: .milliseconds(200))
@@ -568,8 +538,7 @@ enum SelfTest {
         try? await Task.sleep(for: .milliseconds(1000))
         guard let json = (try? await tab.webView.evaluateJavaScript(corpusScript)) as? String
         else { return nil }
-        // and record where we actually ended up, so redirects are visible
-        // rather than silently attributed to the URL we asked for
+        // record where the page landed, so redirects stay visible
         guard var object = (try? JSONSerialization.jsonObject(with: Data(json.utf8)))
             as? [String: Any]
         else { return nil }
@@ -578,19 +547,9 @@ enum SelfTest {
         return String(data: patched, encoding: .utf8)
     }
 
-    /// `ARTEMIS_DIAG=sweep`: replay the captured corpus against every
-    /// combination of prompt and context depth, and write down what each one
-    /// named every page.
-    ///
-    /// No page is loaded: the corpus already holds each page's own words, so a
-    /// sweep costs one model call per page per variant and nothing else. That
-    /// is what makes it affordable to ask "is this the prompt's fault or is it
-    /// simply not being told enough?", which is the question that actually
-    /// decides whether tab names are any good.
-    ///
-    /// `ARTEMIS_SWEEP_LIMIT` caps the pages, `ARTEMIS_SWEEP_VARIANTS` picks the
-    /// variants by name, so a hunch can be tested in two minutes rather than an
-    /// hour.
+    /// `ARTEMIS_DIAG=sweep`: replay the captured corpus against every prompt and context
+    /// depth and record each page's name, loading nothing. `ARTEMIS_SWEEP_LIMIT` caps the
+    /// pages, `ARTEMIS_SWEEP_VARIANTS` picks variants by name
     static var isSweepDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "sweep"
     }
@@ -608,9 +567,7 @@ enum SelfTest {
             let prose = page["prose"] as? String ?? ""
             let headings = (page["headings"] as? [String] ?? []).prefix(4).joined(separator: " · ")
 
-            // description first: it is what the page says it IS, while an h1 on
-            // a news front page is whichever story is leading today — which the
-            // model duly named the tab after (Le Monde became "Nepal floods")
+            // description first: an h1 on a news front page is the leading story, not the site
             let spine = [description, h1].filter { !$0.isEmpty }.joined(separator: " — ")
             switch self {
             case .none: return nil
@@ -647,8 +604,7 @@ enum SelfTest {
         }
         let environment = ProcessInfo.processInfo.environment
         if let limit = environment["ARTEMIS_SWEEP_LIMIT"].flatMap(Int.init) {
-            // stratified, not the first N: taking the head would test one
-            // category and call it the web
+            // stratified, not the first N, so a capped run covers every category
             pages = stratified(pages, limit: limit)
         }
         let prompts: [Intelligence.NamePrompt] = {
@@ -767,8 +723,7 @@ enum SelfTest {
         out.append("popup web view created")
         flush()
 
-        // let the popup boot, then read it every second — a spinner that never
-        // resolves looks identical to a slow one until you watch it
+        // read the popup on a schedule: a spinner that never resolves looks like a slow one
         for tick in [2, 5, 9, 14, 20] {
             try? await Task.sleep(for: .seconds(tick == 2 ? 2 : 3))
             let js = """
@@ -797,12 +752,9 @@ enum SelfTest {
         flush()
     }
 
-    /// `ARTEMIS_DIAG=pw`: the Bitwarden smoke test. Installs the real extension
-    /// (from ~/Downloads/bitwarden.xpi if present, otherwise straight from AMO),
-    /// enables it, and reports what actually happened: load state, runtime
-    /// errors, what the popup rendered (the unlock/login UI is the pass signal),
-    /// and whether its content scripts injected into a real page. Ends with the
-    /// extension installed and enabled so a human can log in and autofill.
+    /// `ARTEMIS_DIAG=pw`: the Bitwarden smoke test. installs the real extension
+    /// (~/Downloads/bitwarden.xpi, else AMO), reports load state, errors, popup and
+    /// content-script injection, and leaves it installed and enabled
     static var isPasswordDiagRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "pw"
     }
@@ -857,8 +809,7 @@ enum SelfTest {
         }
         flush()
 
-        // what does the popup render? the unlock/login screen is the signal
-        // that the Angular app booted, storage worked, and WASM loaded
+        // the unlock/login screen means the Angular app booted, storage worked and WASM loaded
         if let action = em.action(for: ext) {
             out.append("presentsPopup=\(action.presentsPopup)")
             var popup = action.popupWebView
@@ -918,9 +869,8 @@ enum SelfTest {
             out.append("no action for the current tab")
         }
 
-        // do the content scripts inject? load a real login page and look for
-        // the trigger script's work: Bitwarden adds data attributes / listens
-        // at document_start in every frame
+        // content scripts: Bitwarden's trigger script marks the page at document_start in
+        // every frame
         let tab = manager.newTab(url: URL(string: "https://github.com/login")!)
         try? await Task.sleep(for: .seconds(6))
         let pageProbe = """
@@ -980,8 +930,7 @@ enum SelfTest {
                     out.append("  error: [\(ns.domain) \(ns.code)] \(ns.localizedDescription)")
                 }
             }
-            // the manager loads with try? — retry here so a swallowed load
-            // failure finally shows its face
+            // the manager loads with try?; retrying here surfaces a swallowed load failure
             if ext.isEnabled, em.isMasterEnabled, !ext.context.isLoaded {
                 do {
                     try em.controller.load(ext.context)
@@ -1000,11 +949,8 @@ enum SelfTest {
         }
         flush()
 
-        // then watch the compat bridge for as long as the app runs — a human
-        // login attempt must land inside the capture window, and both previous
-        // windows (5 then 20 minutes) were missed. this is how a real VPN
-        // connect gets verified: the extension's proxy call has to arrive
-        // here and turn into a live ProxyConfiguration on the stores
+        // then watch the compat bridge for as long as the app runs, so a human login or VPN
+        // connect lands inside the capture
         out.append("")
         out.append("— watching the compat bridge (until quit) —")
         flush()
@@ -1026,8 +972,7 @@ enum SelfTest {
                     + "bypass=\($0.excludedDomains.count)"
             } ?? "none"
             let stores = WKWebsiteDataStore.default().proxyConfigurations.count
-            // who is actually blocking on the page in front of you: an
-            // extension's rule list is named by its context's uniqueIdentifier
+            // an extension's rule list is named by its context's uniqueIdentifier
             let tally = manager.selectedTab?.blockedRequestsByList ?? [:]
             let blocking = tally.isEmpty
                 ? "nothing blocked yet"
@@ -1054,12 +999,8 @@ enum SelfTest {
         flush()
     }
 
-    /// the app's real browser window. `NSApp.windows.first` is not good
-    /// enough any more: an extension's background content lives in its own
-    /// hidden window, and whichever lands first in the list wins — which made
-    /// the traffic-light tests fail against a window that never had our mount.
-    /// prefer the window actually hosting the sidebar's traffic-light mount,
-    /// then the largest ordinary window
+    /// the app's real browser window: the one hosting the traffic-light mount, else the
+    /// largest ordinary window. `NSApp.windows.first` can be an extension's hidden window
     static func mainWindow() -> NSWindow? {
         func hostsMount(_ view: NSView) -> Bool {
             if view is TrafficLightMount.MountView { return true }
@@ -1094,24 +1035,29 @@ enum SelfTest {
     private static var reportedCancel = false
     private static var started = ContinuousClock.now
 
-    /// the report, appended a line at a time so a hang or crash still leaves
-    /// everything up to that point on disk. it used to rewrite the whole file
-    /// atomically after every assertion — quadratic in the run, and a write
-    /// failure inside `try?` froze the log while the suite carried on
-    private static func openLog() {
+    /// a file in ~/Downloads for this copy alone: "Artemis <ID>" gets `<stem>-<ID>.<ext>`.
+    /// a file another bundle wrote carries com.apple.macl, and writing it blocks
+    /// on a consent nobody answers; runs in parallel never share one either
+    private static func downloadsFile(_ stem: String, _ ext: String) -> URL? {
         guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)
             .first?.resolvingSymlinksInPath()
-        else { return }
-        let url = downloads.appendingPathComponent("artemis-selftest.log")
+        else { return nil }
+        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Artemis"
+        let lab = bundleName.dropFirst("Artemis".count).trimmingCharacters(in: .whitespaces)
+        return downloads.appendingPathComponent(lab.isEmpty ? "\(stem).\(ext)" : "\(stem)-\(lab).\(ext)")
+    }
+
+    /// the report, appended a line at a time so a hang or crash still leaves
+    /// everything up to that point on disk
+    private static func openLog() {
+        guard let url = downloadsFile("artemis-selftest", "log") else { return }
         started = .now
         FileManager.default.createFile(atPath: url.path, contents: nil)
         log = try? FileHandle(forWritingTo: url)
         if log == nil { FileHandle.standardError.write(Data("selftest: cannot open \(url.path)\n".utf8)) }
     }
 
-    /// wait for `condition`, up to `timeout`. a fixed sleep is too long on a quiet
-    /// machine and too short on a loaded one; polling lands as soon as the thing
-    /// being waited for has happened
+    /// wait for `condition`, up to `timeout`
     private static func settle(
         _ timeout: Duration = .seconds(3), until condition: () async -> Bool
     ) async {
@@ -1150,110 +1096,127 @@ enum SelfTest {
         passed = 0
         failed = 0
 
-        // the suite runs against the live UI, and half of what it checks —
-        // traffic-light rendering, first-responder behaviour, hover-dependent
-        // dismissals — behaves differently in a background app. take the front
+        // the suite checks traffic lights, first responders and hover dismissals, which
+        // behave differently in a background app
         NSApp.activate(ignoringOtherApps: true)
         mainWindow()?.makeKeyAndOrderFront(nil)
         try? await Task.sleep(for: .milliseconds(400))
 
-        // whatever the user has installed must not decide whether the suite
-        // passes: a real extension's content scripts inject into the very
-        // pages these tests build (a VPN's DOM tweaks broke reader extraction
-        // here). run the plumbing tests with extensions off, and switch them
-        // back on for the runtime probe at the end
-        // an interrupted run can leave the probe extension registered; it
-        // shadows this run's install ("already installed") and its background
-        // web view is an extra window that confuses the window-dependent
-        // tests — purge before anything else
+        // an interrupted run can leave a probe extension registered: it shadows this run's
+        // install, and its background web view is an extra window
         for stale in ExtensionManager.shared.installed
         where ["Artemis Runtime Probe", "Artemis MV2 Probe", "Artemis Bridge Probe"]
             .contains(stale.name) {
             ExtensionManager.shared.remove(stale)
         }
 
+        // extensions off for the plumbing tests, so the user's content scripts can't touch
+        // their pages; back on for the runtime probe at the end
         let extensionsWereEnabled = ExtensionManager.shared.isMasterEnabled
         ExtensionManager.shared.isMasterEnabled = false
         defer { ExtensionManager.shared.isMasterEnabled = extensionsWereEnabled }
         try? await Task.sleep(for: .milliseconds(300))
 
-        await testDurableStorage()
-        testDiagnostics()
-        await testReports()
-        testFeedback(manager: manager)
-        await testSession(manager: manager)
-        testZoomStore()
-        await testTabZoomAndMute(manager: manager)
-        await testMediaReporting(manager: manager)
-        await testHiddenPageKeepsPlaying(manager: manager)
-        await testPageResizeSettles(manager: manager)
-        await testSitePermissions(manager: manager)
-        await testWebPlatformPanels(manager: manager)
-        await testWebNotifications(manager: manager)
-        await testReopenClosedTab(manager: manager)
-        await testBulkSelection(manager: manager)
-        await testHTTPAuth(manager: manager)
-        testCertificateTrust()
-        testBookmarkImport(manager: manager)
-        testArcImport(manager: manager)
-        testArcSecrets(manager: manager)
-        await testContinuityAndTranslation(manager: manager)
-        await testScripting(manager: manager)
-        await testFullTextIndex()
-        await testFullTextCapture(manager: manager)
-        // after the full-text tests: this one loads pages, and the indexer's
-        // deliberately-late writes (1.5s after a load settles) land in the
-        // middle of testFullTextIndex's row counting if it runs just before
-        await testPinnedCloseKeep(manager: manager)
-        await testFingerprintNoise(manager: manager)
-        testPasskeyFormat()
-        await testPasswordStore()
-        await testPasswordPages(manager: manager)
-        await testChromeDisguise(manager: manager)
-        await testIntelligence(manager: manager)
-        await testTidyTitleWiring(manager: manager)
-        await testArcCommands(manager: manager)
-        testHistoryAndArchive(manager: manager)
-        testCommandBar(manager: manager)
-        await testConverter()
-        await testLiveBlocking()
-        await testPrivacyCleaner(manager: manager)
-        await testPrinting(manager: manager)
-        await testHibernation(manager: manager)
-        await testTabLifecycleGuards()
-        await testStoreButton()
-        testReader()
-        await testReaderOnLivePage()
-        testBackupArchive(manager: manager)
-        testCrossSpaceMove(manager: manager)
-        testFolders(manager: manager)
-        testRouting(manager: manager)
-        await testIncognitoAndCreator(manager: manager)
-        await testProxyCompat()
-        await testWindowChrome(manager: manager)
-        await testTrafficLightsInSidebar(manager: manager)
-        await testToolbarAddress(manager: manager)
-        await testWindowDrag(manager: manager)
-        await testCommandBarThroughSidebar(manager: manager)
-        await testDownloadShelf(manager: manager)
-        testSettingsPanesRender(manager: manager)
-        testSidebarShowsNames(manager: manager)
-        testChromeTintTracksBackdrop(manager: manager)
-        await testRenameAnimates(manager: manager)
-        await testPageLoadBars(manager: manager)
-        testSidebarMargins()
-        await testSidebarResizeHandle()
-        await testPerformanceBudgets(manager: manager)
-        // last: it installs and removes a live extension, whose background web
-        // view briefly becomes another window in the app — enough to confuse
-        // the traffic-light tests if it ran before them
-        ExtensionManager.shared.isMasterEnabled = true
-        try? await Task.sleep(for: .milliseconds(500))
-        await testExtensionRuntimeProbe()
-        await testExtensionMV2Probe()
-        await testExtensionEscalation()
-        await testExtensionAPIBridgeProbe()
-        await testIncognitoExtensions(manager: manager)
+        // no group may raise a real Touch ID or password sheet; groups that count checks swap in their own
+        OwnerUnlock.check = { _ in true }
+
+        let plumbing: [(String, () async -> Void)] = [
+            ("durablestorage", { await testDurableStorage() }),
+            ("diagnostics", { testDiagnostics() }),
+            ("reports", { await testReports() }),
+            ("feedback", { testFeedback(manager: manager) }),
+            ("session", { await testSession(manager: manager) }),
+            ("zoomstore", { testZoomStore() }),
+            ("tabzoomandmute", { await testTabZoomAndMute(manager: manager) }),
+            ("mediareporting", { await testMediaReporting(manager: manager) }),
+            ("hiddenpagekeepsplaying", { await testHiddenPageKeepsPlaying(manager: manager) }),
+            ("nowebkitpip", { await testNoWebKitPiP(manager: manager) }),
+            ("pageresizesettles", { await testPageResizeSettles(manager: manager) }),
+            ("pagestack", { await testPageStack(manager: manager) }),
+            ("splitresizeholds", { testSplitResizeHolds(manager: manager) }),
+            ("sitepermissions", { await testSitePermissions(manager: manager) }),
+            ("webplatformpanels", { await testWebPlatformPanels(manager: manager) }),
+            ("webnotifications", { await testWebNotifications(manager: manager) }),
+            ("appbadge", { await testAppBadge(manager: manager) }),
+            ("reopenclosedtab", { await testReopenClosedTab(manager: manager) }),
+            ("bulkselection", { await testBulkSelection(manager: manager) }),
+            ("httpauth", { await testHTTPAuth(manager: manager) }),
+            ("certificatetrust", { testCertificateTrust() }),
+            ("bookmarkimport", { testBookmarkImport(manager: manager) }),
+            ("arcimport", { testArcImport(manager: manager) }),
+            ("browserimport", { await testBrowserImport(manager: manager) }),
+            ("arcsecrets", { testArcSecrets(manager: manager) }),
+            ("continuityandtranslation", { await testContinuityAndTranslation(manager: manager) }),
+            ("translatepage", { await testTranslatePage(manager: manager) }),
+            ("scripting", { await testScripting(manager: manager) }),
+            ("appintents", { await testAppIntents(manager: manager) }),
+            ("fulltextindex", { await testFullTextIndex() }),
+            ("fulltextcapture", { await testFullTextCapture(manager: manager) }),
+            // after the full-text tests: this one loads pages, and the indexer's
+            // deliberately-late writes (1.5s after a load settles) land in the
+            // middle of testFullTextIndex's row counting if it runs just before
+            ("pinnedclosekeep", { await testPinnedCloseKeep(manager: manager) }),
+            ("fingerprintnoise", { await testFingerprintNoise(manager: manager) }),
+            ("passkeyformat", { testPasskeyFormat() }),
+            ("passwordstore", { await testPasswordStore() }),
+            ("passwordpages", { await testPasswordPages(manager: manager) }),
+            ("autofillparse", { await testAutofillParse(manager: manager) }),
+            ("autofillfill", { await testAutofillFill(manager: manager) }),
+            ("autofillstore", { await testAutofillStore(manager: manager) }),
+            ("autofillunlock", { await testAutofillUnlock(manager: manager) }),
+            ("chromedisguise", { await testChromeDisguise(manager: manager) }),
+            ("intelligence", { await testIntelligence(manager: manager) }),
+            ("tidytitlewiring", { await testTidyTitleWiring(manager: manager) }),
+            ("arccommands", { await testArcCommands(manager: manager) }),
+            ("historyandarchive", { testHistoryAndArchive(manager: manager) }),
+            ("commandbar", { testCommandBar(manager: manager) }),
+            ("converter", { await testConverter() }),
+            ("liveblocking", { await testLiveBlocking() }),
+            ("privacycleaner", { await testPrivacyCleaner(manager: manager) }),
+            ("printing", { await testPrinting(manager: manager) }),
+            ("hibernation", { await testHibernation(manager: manager) }),
+            ("tablifecycleguards", { await testTabLifecycleGuards() }),
+            ("crashloop", { await testCrashLoop(manager: manager) }),
+            ("storebutton", { await testStoreButton() }),
+            ("reader", { testReader() }),
+            ("readeronlivepage", { await testReaderOnLivePage() }),
+            ("backuparchive", { testBackupArchive(manager: manager) }),
+            ("crossspacemove", { testCrossSpaceMove(manager: manager) }),
+            ("folders", { testFolders(manager: manager) }),
+            ("routing", { testRouting(manager: manager) }),
+            ("incognitoandcreator", { await testIncognitoAndCreator(manager: manager) }),
+            ("proxycompat", { await testProxyCompat() }),
+            ("windowchrome", { await testWindowChrome(manager: manager) }),
+            ("trafficlightsinsidebar", { await testTrafficLightsInSidebar(manager: manager) }),
+            ("toolbaraddress", { await testToolbarAddress(manager: manager) }),
+            ("windowdrag", { await testWindowDrag(manager: manager) }),
+            ("commandbarthroughsidebar", { await testCommandBarThroughSidebar(manager: manager) }),
+            ("downloadshelf", { await testDownloadShelf(manager: manager) }),
+            ("settingspanesrender", { testSettingsPanesRender(manager: manager) }),
+            ("sidebarshowsnames", { testSidebarShowsNames(manager: manager) }),
+            ("accessibility", { await testAccessibility(manager: manager) }),
+            ("chrometinttracksbackdrop", { testChromeTintTracksBackdrop(manager: manager) }),
+            ("renameanimates", { await testRenameAnimates(manager: manager) }),
+            ("pageloadbars", { await testPageLoadBars(manager: manager) }),
+            ("sidebarmargins", { testSidebarMargins() }),
+            ("sidebarresizehandle", { await testSidebarResizeHandle() }),
+            ("performancebudgets", { await testPerformanceBudgets(manager: manager) }),
+        ]
+        // last: its background web view is briefly another window, which confuses the
+        // traffic-light tests
+        let withExtensions: [(String, () async -> Void)] = [
+            ("extensionruntimeprobe", { await testExtensionRuntimeProbe() }),
+            ("extensionmv2probe", { await testExtensionMV2Probe() }),
+            ("extensionescalation", { await testExtensionEscalation() }),
+            ("extensionapibridgeprobe", { await testExtensionAPIBridgeProbe() }),
+            ("incognitoextensions", { await testIncognitoExtensions(manager: manager) }),
+        ]
+        for (name, test) in plumbing where wants(name) { await test() }
+        if withExtensions.contains(where: { wants($0.0) }) {
+            ExtensionManager.shared.isMasterEnabled = true
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        for (name, test) in withExtensions where wants(name) { await test() }
 
         forgetTestTraces(manager)
         emit("")
@@ -1264,12 +1227,12 @@ enum SelfTest {
     }
 
     /// take a run's own visits back out of the user's history and archive: the
-    /// reserved test names (RFC 2606) and the harness's own local hosts
+    /// reserved test names (RFC 2606), which a test host must use; a `.local` name
+    /// resolves over multicast DNS and raises the Local Network prompt
     static func forgetTestTraces(_ manager: TabManager) {
         func isTestHost(_ url: URL) -> Bool {
             guard let host = url.host()?.lowercased() else { return false }
-            let names = ["example", "test", "invalid", "example.com", "example.net", "example.org",
-                "selftest.local", "artemis.local"]
+            let names = ["example", "test", "invalid", "example.com", "example.net", "example.org"]
             return names.contains { host == $0 || host.hasSuffix("." + $0) }
         }
         for profile in manager.profiles {
@@ -1296,7 +1259,7 @@ enum SelfTest {
         let loaded = AppStorageLocation.loadDurable(Payload.self, from: url)
         record("durable: round-trip", loaded == Payload(value: "second"), "got \(loaded?.value ?? "nil")")
 
-        // the rotation is the whole point: a corrupt primary must fall back
+        // a corrupt primary must fall back to the rotated backup
         try? Data("{ not json".utf8).write(to: url)
         let recovered = AppStorageLocation.loadDurable(Payload.self, from: url)
         record(
@@ -1325,12 +1288,9 @@ enum SelfTest {
             "durable: and a readable backup",
             AppStorageLocation.loadDurable(Payload.self, from: backup) != nil)
 
-        // every store holding something a year of browsing can't recreate now
-        // survives a torn primary. Driven against real store instances pointed at
-        // scratch files, so the assertion covers the store's own save and load
-        // rather than the helper it is supposed to be calling. Favicons are
-        // deliberately excluded — that one is a cache, and a second copy of every
-        // icon buys nothing
+        // every store holding something browsing can't recreate survives a torn primary,
+        // driven through real store instances on scratch files. favicons are a cache and
+        // excluded
         await recordStoreRecovery("history") { url in
             let store = HistoryStore(fileURL: url)
             store.record(url: URL(string: "https://durable.selftest.example/one")!, title: "one")
@@ -1367,8 +1327,44 @@ enum SelfTest {
             ZoomStore(fileURL: url).levels.count
         }
 
+        await recordQuitSave("archive", empty: "[]") { url in
+            let store = ArchiveStore(fileURL: url)
+            store.add(url: URL(string: "https://quit.selftest.example/")!, title: "q", spaceName: "s")
+            store.saveNow()
+        } reload: { ArchiveStore(fileURL: $0).entries.count }
+        await recordQuitSave("zoom", empty: "{}") { url in
+            let store = ZoomStore(fileURL: url)
+            store.setZoom(1.5, for: URL(string: "https://quit.selftest.example/")!)
+            store.saveNow()
+        } reload: { ZoomStore(fileURL: $0).levels.count }
+        await recordQuitSave("routing", empty: "[]") { url in
+            let store = RoutingStore(fileURL: url)
+            store.add(pattern: "quit.selftest.example", spaceID: UUID())
+            store.saveNow()
+        } reload: { RoutingStore(fileURL: $0).rules.count }
+
         try? FileManager.default.removeItem(at: url)
         try? FileManager.default.removeItem(at: backup)
+    }
+
+    /// one change written by `saveNow` is on disk when it returns; a debounced write of an
+    /// older snapshot landing afterwards is dropped, and a newer one still lands
+    private static func recordQuitSave(
+        _ name: String, empty: String, change: (URL) -> Void, reload: (URL) -> Int
+    ) async {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quitsave-\(name)-\(UUID().uuidString).json")
+        let stale = AppStorageLocation.snapshotTime()
+        change(url)
+        record("quit save: \(name) is on disk when saveNow returns", reload(url) == 1)
+        AppStorageLocation.writeDurable(Data(empty.utf8), to: url, takenAt: stale)
+        try? await Task.sleep(for: .seconds(1.5))
+        record("quit save: \(name) drops a late, older debounced write", reload(url) == 1)
+        AppStorageLocation.writeDurable(Data(empty.utf8), to: url, takenAt: AppStorageLocation.snapshotTime())
+        await settle { reload(url) == 0 }
+        record("quit save: \(name) still takes a newer debounced write", reload(url) == 0)
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url.appendingPathExtension("bak"))
     }
 
     /// Write two records through a real store, corrupt the primary, and reopen:
@@ -1587,8 +1583,7 @@ enum SelfTest {
 
         record("session: file exists on disk", FileManager.default.fileExists(atPath: SessionStore.fileURL.path))
 
-        // schema v2: tabs are records with ids that survive a round trip. Before
-        // this, a tab could not be referred to across a relaunch at all
+        // schema v2: tabs are records whose ids survive a round trip
         let fixtureSpace = snapshot.spaces.first { space in
             space.tabs.contains { $0.id == fixture.id }
         }
@@ -1657,13 +1652,7 @@ enum SelfTest {
         await testMenuBar(manager: manager)
     }
 
-    /// A Scout window's page is wired like any tab but owned by its window. It
-    /// has to be reachable from `allTabs` — anything that enumerates tabs to act
-    /// on them (a proxy change, mute, a script message) would otherwise skip it,
-    /// silently — while never being a hibernation candidate, because it is on
-    /// screen the whole time its window is open.
-    /// Acting on several tabs at once. ⌘/⇧-click already built a selection;
-    /// these are the verbs that now take it.
+    /// acting on several tabs at once: the verbs that take a ⌘/⇧-click selection
     private static func testBulkSelection(manager: TabManager) async {
         let previousSpace = manager.selectedSpaceID
         let space = manager.currentSpace
@@ -1733,10 +1722,8 @@ enum SelfTest {
         }
     }
 
-    /// A server asking who you are. Driven against the real delegate with a
-    /// hand-built challenge rather than a live server: the thing worth pinning
-    /// down is which disposition each authentication method gets, and that needs
-    /// no network at all.
+    /// a server asking who you are, driven through the real delegate with a hand-built
+    /// challenge: which disposition each authentication method gets
     private static func testHTTPAuth(manager: TabManager) async {
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
@@ -1799,8 +1786,7 @@ enum SelfTest {
             "auth: the credentials are not written to disk",
             credential?.persistence == URLCredential.Persistence.forSession)
 
-        // cancelling has to cancel — falling through to default handling would
-        // answer the server with nothing and look like a broken page
+        // cancelling must cancel: default handling would answer the server with nothing
         async let digest = ask(NSURLAuthenticationMethodHTTPDigest)
         for _ in 0..<40 {
             if tab.pendingDialog != nil { break }
@@ -1823,9 +1809,7 @@ enum SelfTest {
         CertificateTrust.forget(host)
         record("certs: nothing is trusted to start with", !CertificateTrust.hasException(for: host))
 
-        // an exception can't be minted out of nothing: with no certificate seen
-        // for this host there is nothing to scope it to, and the honest answer
-        // is to refuse rather than trust everything
+        // no exception without a certificate seen for this host
         record(
             "certs: no certificate seen means no exception",
             !CertificateTrust.addException(for: host))
@@ -2004,9 +1988,354 @@ enum SelfTest {
                 + real.spaces.map { "\($0.name) \($0.icon)" }.joined(separator: ", "))
     }
 
-    /// What Arc sealed, and the picker that decides how much of it moves.
-    /// The keychain itself is never touched here — the key is supplied, so the
-    /// unsealing is what gets tested, not the user's consent prompt.
+    /// importing from Chromium, Firefox, Zen and Safari profiles this test writes itself,
+    /// into a throwaway profile; detection is pointed at a fixture home, never ~/Library
+    private static func testBrowserImport(manager: TabManager) async {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appending(path: "browserimport-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        func put(_ data: Data, _ path: String) {
+            let url = root.appending(path: path)
+            try? files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url)
+        }
+        func put(_ text: String, _ path: String) { put(Data(text.utf8), path) }
+        /// built with the C API; a WAL database is handed back still open, so its rows sit only in the -wal
+        func database(_ path: String, _ sql: String, wal: Bool = false) -> OpaquePointer? {
+            let url = root.appending(path: path)
+            try? files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var db: OpaquePointer?
+            guard sqlite3_open(url.path, &db) == SQLITE_OK else { return nil }
+            if wal { sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil) }
+            sqlite3_exec(db, sql, nil, nil, nil)
+            if wal { return db }
+            sqlite3_close(db)
+            return nil
+        }
+        func mozLz4(_ text: String) -> Data {
+            let source = [UInt8](text.utf8)
+            var encoded = [UInt8](repeating: 0, count: source.count + 1024)
+            let n = compression_encode_buffer(&encoded, encoded.count, source, source.count, nil, COMPRESSION_LZ4_RAW)
+            var out = Data("mozLz40\0".utf8)
+            withUnsafeBytes(of: UInt32(source.count).littleEndian) { out.append(contentsOf: $0) }
+            return out + encoded[0..<n]
+        }
+        let t0 = 1_790_000_000.0
+        let chromeTime = Int64((t0 + 11_644_473_600) * 1_000_000)
+        let foxTime = Int64(t0 * 1_000_000)
+
+        // Chrome: two named profiles, one with a corrupt Bookmarks file
+        let chrome = "Library/Application Support/Google/Chrome"
+        put(#"{"profile":{"info_cache":{"Default":{"name":"Work"},"Profile 1":{"name":"Home"}}}}"#, "\(chrome)/Local State")
+        let chromeMarks = """
+            {"roots":{"bookmark_bar":{"type":"folder","children":[
+              {"type":"folder","name":"Reading","children":[
+                {"type":"url","name":"Essay","url":"https://essay.example/"},
+                {"type":"folder","name":"Deeper","children":[{"type":"url","name":"Paper","url":"https://paper.example/"}]}]},
+              {"type":"url","name":"Bar","url":"https://chrome-bar.example/"}]},
+             "other":{"type":"folder","children":[{"type":"url","name":"Other","url":"https://chrome-other.example/"}]}}}
+            """
+        put(chromeMarks, "\(chrome)/Default/Bookmarks")
+        put("{ not json", "\(chrome)/Profile 1/Bookmarks")
+        let chromeHistory = database(
+            "\(chrome)/Default/History",
+            """
+            CREATE TABLE urls(id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER,
+              typed_count INTEGER, last_visit_time INTEGER, hidden INTEGER);
+            INSERT INTO urls VALUES (1, 'https://often.example/', 'Often', 42, 5, \(chromeTime), 0),
+              (2, 'https://hidden.example/', 'Hidden', 9, 0, \(chromeTime), 1),
+              (3, 'chrome://settings/', 'Settings', 9, 0, \(chromeTime), 0),
+              (4, 'https://once.example/', '', 1, 0, \(chromeTime - 86_400_000_000), 0);
+            """, wal: true)
+        // Brave with a corrupt Local State still has its Default profile
+        put("garbage", "Library/Application Support/BraveSoftware/Brave-Browser/Local State")
+        put(chromeMarks, "Library/Application Support/BraveSoftware/Brave-Browser/Default/Bookmarks")
+
+        // Firefox whose places.sqlite isn't a database; LibreWolf with a profiles.ini that isn't one
+        put("[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/broken\n", "Library/Application Support/Firefox/profiles.ini")
+        put("not a database", "Library/Application Support/Firefox/Profiles/broken/places.sqlite")
+        put("%%% nonsense", "Library/Application Support/librewolf/profiles.ini")
+
+        // Zen: a current profile with a session file, and an old one keeping workspaces in places.sqlite
+        let zen = "Library/Application Support/zen"
+        put(
+            "[Profile1]\nName=Old\nIsRelative=1\nPath=Profiles/old\n\n[Profile0]\nName=Default (release)\n"
+                + "IsRelative=1\nPath=Profiles/main\nDefault=1\n\n[General]\nStartWithLastProfile=1\n",
+            "\(zen)/profiles.ini")
+        _ = database(
+            "\(zen)/Profiles/main/places.sqlite",
+            """
+            CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER,
+              last_visit_date INTEGER, hidden INTEGER, typed INTEGER);
+            CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER,
+              position INTEGER, title TEXT, guid TEXT);
+            INSERT INTO moz_places VALUES (1, 'https://fox.example/', 'Fox', 7, \(foxTime), 0, 1),
+              (2, 'https://den.example/', 'Den', 0, 0, 0, 0),
+              (3, 'https://fox-menu.example/', 'Menu link', 3, \(foxTime - 60_000_000), 0, 0),
+              (4, 'place:sort=8', 'Recent', 0, 0, 0, 0);
+            INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 0, 0, '', 'root________'),
+              (2, 2, NULL, 1, 0, 'menu', 'menu________'), (3, 2, NULL, 1, 1, 'toolbar', 'toolbar_____'),
+              (4, 2, NULL, 1, 2, 'tags', 'tags________'), (5, 2, NULL, 3, 0, 'Foxes', 'folder000001'),
+              (6, 1, 1, 5, 0, 'Fox', 'bookmark0001'), (7, 2, NULL, 5, 1, 'Deeper', 'folder000002'),
+              (8, 1, 2, 7, 0, 'Den', 'bookmark0002'), (9, 1, 3, 2, 0, 'Menu link', 'bookmark0003'),
+              (10, 1, 4, 3, 1, 'Recent', 'bookmark0004'), (11, 1, 1, 4, 0, 'a tag', 'bookmark0005');
+            """)
+        let session = """
+            {"spaces":[{"uuid":"{w1}","name":"Work","icon":"💼"},
+                       {"uuid":"{w2}","name":"Play","icon":"chrome://browser/skin/zen-icons/selectable/star.svg"}],
+             "windows":[{"tabs":[
+               {"pinned":true,"zenWorkspace":"{w1}","index":2,"entries":[
+                 {"url":"https://docs.example/","title":"Docs"},{"url":"https://docs.example/page","title":"Docs page"}]},
+               {"pinned":true,"zenEssential":true,"index":1,"entries":[{"url":"https://mail.example/","title":"Mail"}]},
+               {"pinned":false,"zenWorkspace":"{w1}","index":1,"entries":[{"url":"https://today.example/","title":"Today"}]},
+               {"pinned":true,"zenWorkspace":"{w2}","index":1,"entries":[{"url":"javascript:void(0)","title":"Bad"}]},
+               {"pinned":true,"zenWorkspace":"{w2}","index":1,"entries":[{"url":"https://game.example/","title":"Game"}]}]}]}
+            """
+        put(mozLz4(session), "\(zen)/Profiles/main/zen-sessions.jsonlz4")
+        _ = database(
+            "\(zen)/Profiles/old/places.sqlite",
+            """
+            CREATE TABLE zen_workspaces(id INTEGER PRIMARY KEY, uuid TEXT, name TEXT, icon TEXT, position INTEGER);
+            INSERT INTO zen_workspaces VALUES (1, '{o1}', 'Studio', '🎨', 0);
+            CREATE TABLE zen_pins(id INTEGER PRIMARY KEY, uuid TEXT, title TEXT, url TEXT, workspace_uuid TEXT,
+              position INTEGER, is_essential INTEGER, is_group INTEGER);
+            INSERT INTO zen_pins VALUES (1, 'p1', 'Canvas', 'https://canvas.example/', '{o1}', 0, 0, 0),
+              (2, 'p2', 'Folder', NULL, '{o1}', 1, 0, 1), (3, 'p3', 'Chat', 'https://chat.example/', NULL, 2, 1, 0);
+            """)
+
+        // Safari
+        func leaf(_ url: String, _ title: String) -> [String: Any] {
+            ["WebBookmarkType": "WebBookmarkTypeLeaf", "URLString": url, "URIDictionary": ["title": title]]
+        }
+        let plist: [String: Any] = [
+            "WebBookmarkType": "WebBookmarkTypeList",
+            "Children": [
+                ["Title": "History", "WebBookmarkType": "WebBookmarkTypeProxy"],
+                [
+                    "Title": "BookmarksBar", "WebBookmarkType": "WebBookmarkTypeList",
+                    "Children": [
+                        [
+                            "Title": "Recipes", "WebBookmarkType": "WebBookmarkTypeList",
+                            "Children": [
+                                leaf("https://soup.example/", "Soup"),
+                                [
+                                    "Title": "Sweet", "WebBookmarkType": "WebBookmarkTypeList",
+                                    "Children": [leaf("https://cake.example/", "Cake")],
+                                ],
+                            ],
+                        ],
+                        leaf("https://safari-bar.example/", "Bar"),
+                    ],
+                ],
+                [
+                    "Title": "BookmarksMenu", "WebBookmarkType": "WebBookmarkTypeList",
+                    "Children": [leaf("https://safari-menu.example/", "Menu")],
+                ],
+                [
+                    "Title": "com.apple.ReadingList", "WebBookmarkType": "WebBookmarkTypeList",
+                    "Children": [leaf("https://later.example/", "Later")],
+                ],
+                [
+                    "Title": "Travel", "WebBookmarkType": "WebBookmarkTypeList",
+                    "Children": [leaf("https://trip.example/", "Trip")],
+                ],
+            ],
+        ]
+        put(
+            (try? PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)) ?? Data(),
+            "Library/Safari/Bookmarks.plist")
+        let safariTime = t0 - Date.timeIntervalBetween1970AndReferenceDate
+        _ = database(
+            "Library/Safari/History.db",
+            """
+            CREATE TABLE history_items(id INTEGER PRIMARY KEY, url TEXT, visit_count INTEGER);
+            CREATE TABLE history_visits(id INTEGER PRIMARY KEY, history_item INTEGER, visit_time REAL, title TEXT);
+            INSERT INTO history_items VALUES (1, 'https://apple.example/', 12);
+            INSERT INTO history_visits VALUES (1, 1, \(safariTime - 100), 'Old title'), (2, 1, \(safariTime), 'Apple');
+            """)
+
+        // mozLz4, both ways and refused when damaged
+        let repeated = String(repeating: #"{"url":"https://example.com/","title":"hello"},"#, count: 50)
+        let packed = mozLz4(repeated)
+        record(
+            "browser import: mozLz4 decodes a block with back-references",
+            BrowserImport.mozLz4(packed) == Data(repeated.utf8) && packed.count < repeated.utf8.count / 4,
+            "\(packed.count) of \(repeated.utf8.count) bytes")
+        var oversized = packed
+        oversized[11] = 0x7F
+        record(
+            "browser import: mozLz4 refuses a wrong magic, a truncated block and a lying size",
+            BrowserImport.mozLz4(Data("mozLz41\0".utf8) + packed.dropFirst(8)) == nil
+                && BrowserImport.mozLz4(packed.dropLast(6)) == nil && BrowserImport.mozLz4(oversized) == nil
+                && BrowserImport.mozLz4(Data("mozLz40\0".utf8)) == nil)
+
+        let sources = BrowserImport.detect(home: root)
+        let expected = [
+            "Chrome · Work", "Chrome · Home", "Brave", "Firefox", "Zen · Old", "Zen · Default (release)", "Safari",
+        ]
+        record(
+            "browser import: finds profiles by Local State and profiles.ini names, in a fixture home",
+            sources.map(\.title) == expected, sources.map(\.title).joined(separator: ", "))
+        func source(_ title: String) -> BrowserImport.Source? { sources.first { $0.title == title } }
+        guard let work = source("Chrome · Work"), let zenMain = source("Zen · Default (release)"),
+            let safari = source("Safari")
+        else {
+            sqlite3_close(chromeHistory)
+            return
+        }
+
+        record(
+            "browser import: malformed files are refused cleanly",
+            source("Chrome · Home").map(BrowserImport.survey).map { $0.bookmarks == nil && $0.history.isEmpty } == true
+                && source("Firefox").map(BrowserImport.survey).map { $0.bookmarks == nil && $0.history.isEmpty } == true
+                && source("Brave").map(BrowserImport.survey)?.bookmarks?.linkCount == 4)
+        let old = source("Zen · Old").map(BrowserImport.survey)?.workspaces
+        record(
+            "browser import: older Zen's workspaces and pins come from places.sqlite",
+            old?.folders == [BookmarkImport.Folder(
+                name: "Studio", links: [BookmarkImport.Link(title: "Canvas", url: URL(string: "https://canvas.example/")!)],
+                icon: "🎨")]
+                && old?.favourites.map(\.url.host) == ["chat.example"],
+            String(describing: old))
+
+        let previous = manager.currentSpace.id
+        let profile = manager.createProfile(name: "Import Self-Test", icon: "person")
+        defer {
+            for space in manager.spaces where space.profileID == profile.id {
+                for tab in space.pinnedTabs { TabNameStore.shared.setCustom(nil, for: tab.pinnedURL) }
+                manager.deleteSpace(space)
+            }
+            manager.deleteProfile(profile)
+            if let space = manager.spaces.first(where: { $0.id == previous }) { manager.selectSpace(space) }
+        }
+        func mine() -> [Space] { manager.spaces.filter { $0.profileID == profile.id } }
+        func pins(_ name: String) -> [String] {
+            mine().first { $0.name == name }?.pinnedTabs.compactMap { $0.pinnedURL?.host() } ?? []
+        }
+        func visits(_ url: String) -> HistoryEntry? { profile.history.entries.first { $0.url.absoluteString == url } }
+        func importing(_ source: BrowserImport.Source, passwords: URL? = nil) async -> BrowserImportModel {
+            let model = BrowserImportModel(sources: sources, offersArc: false, profileID: profile.id)
+            model.choose(source)
+            await settle(.seconds(5)) { model.survey != nil }
+            model.passwordFile = passwords
+            await model.perform(into: manager)
+            return model
+        }
+
+        let csv = root.appending(path: "Chrome Passwords.csv")
+        try? Data(
+            "name,url,username,password,note\nA,https://a.example/login,ann,pw1,\nB,https://b.example/,bob,pw2,\n".utf8
+        ).write(to: csv)
+        let chromeRun = await importing(work, passwords: csv)
+        record(
+            "browser import: Chrome's history includes rows still in its write-ahead log",
+            chromeRun.survey?.history.count == 2, "\(chromeRun.survey?.history.count ?? -1) pages")
+        record(
+            "browser import: Chrome folders become spaces, nesting flattens, loose links share one",
+            Set(mine().map(\.name)) == ["Reading", "Imported"]
+                && pins("Reading") == ["essay.example", "paper.example"]
+                && pins("Imported") == ["chrome-bar.example", "chrome-other.example"],
+            mine().map { "\($0.name): \(pins($0.name))" }.joined(separator: "; "))
+        let often = visits("https://often.example/")
+        record(
+            "browser import: history keeps visit and typed counts and the real visit time",
+            often?.visitCount == 42 && often?.typedCount == 5
+                && abs((often?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1
+                && visits("https://hidden.example/") == nil,
+            "\(often?.visitCount ?? -1) visits, \(often?.typedCount ?? -1) typed")
+        // a lab copy fences the keychain, so there only the CSV's recognition can be checked
+        let keychain = !AppStorageLocation.isExtensionLab
+        if !keychain { note("the keychain is fenced in this build: passwords are checked by header only") }
+        let logins = PasswordStore.shared.logins(in: profile.id).count
+        record(
+            "browser import: a password CSV lands in the chosen profile",
+            keychain ? logins == 2 : "\(chromeRun.phase)".contains("No new passwords"),
+            "\(logins) logins, \(chromeRun.phase)")
+
+        let pinsBefore = mine().reduce(0) { $0 + $1.pinnedTabs.count }
+        let historyBefore = profile.history.entries.count
+        let again = await importing(work, passwords: csv)
+        record(
+            "browser import: importing again adds no space, pin, history row or password",
+            mine().count == 2 && mine().reduce(0) { $0 + $1.pinnedTabs.count } == pinsBefore
+                && profile.history.entries.count == historyBefore && visits("https://often.example/")?.visitCount == 42
+                && (!keychain || PasswordStore.shared.logins(in: profile.id).count == 2),
+            "\(again.phase)")
+
+        _ = await importing(zenMain)
+        let workSpace = mine().first { $0.name == "Work" }
+        record(
+            "browser import: Zen workspaces become spaces with their emoji and current pinned page",
+            workSpace?.icon == "💼" && pins("Work") == ["docs.example"]
+                && workSpace?.pinnedTabs.first?.pinnedURL?.path() == "/page"
+                && mine().first { $0.name == "Play" }?.icon == "square.stack" && pins("Play") == ["game.example"],
+            mine().map { "\($0.name) \($0.icon): \(pins($0.name))" }.joined(separator: "; "))
+        record(
+            "browser import: Zen essentials become favourites, and unpinned tabs stay behind",
+            profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.host() } == ["mail.example"]
+                && !mine().contains { $0.tabs.contains { $0.pinnedURL?.host() == "today.example" } })
+        record(
+            "browser import: Firefox bookmarks skip tags and place: queries",
+            pins("Foxes") == ["fox.example", "den.example"] && pins("Imported").contains("fox-menu.example")
+                && !mine().contains { $0.name == "tags" })
+        let fox = visits("https://fox.example/")
+        record(
+            "browser import: Firefox history keeps its counts and times",
+            fox?.visitCount == 7 && fox?.typedCount == 1 && abs((fox?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1
+                && visits("https://den.example/") == nil)
+
+        let safariRun = await importing(safari)
+        record(
+            "browser import: Safari's bar and menu rise to the top, the Reading List is a space",
+            pins("Recipes") == ["soup.example", "cake.example"] && pins("Reading List") == ["later.example"]
+                && pins("Travel") == ["trip.example"]
+                && pins("Imported").contains("safari-bar.example") && pins("Imported").contains("safari-menu.example"),
+            "\(safariRun.phase)")
+        let apple = visits("https://apple.example/")
+        record(
+            "browser import: Safari history takes the newest visit's title and time",
+            apple?.visitCount == 12 && apple?.title == "Apple"
+                && abs((apple?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1)
+
+        let plistPath = safari.directory.appending(path: "Bookmarks.plist").path
+        try? files.setAttributes([.posixPermissions: 0], ofItemAtPath: plistPath)
+        let blocked = BrowserImport.survey(safari)
+        try? files.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plistPath)
+        record(
+            "browser import: an unreadable Safari is reported as needing access",
+            blocked.blocked && blocked.bookmarks == nil && blocked.history.isEmpty)
+
+        // the other exports people bring, each by its own header
+        let store = PasswordStore.shared
+        let exports = [
+            "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\"\n"
+                + "\"https://fox.example\",\"fern\",\"pw3\",,\"https://fox.example\",\"{x}\",\"1\"\n",
+            "Title,URL,Username,Password,Notes,OTPAuth\nS,https://safari.example/,sam,pw4,,\n",
+            "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes\nO,https://one.example/,olive,pw5,,false,false,,\n",
+            "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n"
+                + ",,login,W,,,0,https://warden.example/,wes,pw6,\n",
+        ]
+        var first: [PasswordStore.ImportSummary?] = []
+        for text in exports { first.append(await store.importCSV(text, into: profile.id)) }
+        var repeats: [Int] = []
+        for text in exports { repeats.append(await store.importCSV(text, into: profile.id)?.added ?? -1) }
+        record(
+            "browser import: Firefox, Safari, 1Password and Bitwarden CSVs are each read by header",
+            first.allSatisfy { $0.map { $0.added + $0.skipped } == 1 },
+            first.map { $0.map { "+\($0.added) skip \($0.skipped)" } ?? "refused" }.joined(separator: ", "))
+        if keychain {
+            record(
+                "browser import: and each imports once",
+                first.map { $0?.added } == [1, 1, 1, 1] && repeats == [0, 0, 0, 0], "then \(repeats)")
+        }
+        record(
+            "browser import: a CSV with no url or password column is refused",
+            await store.importCSV("a,b\n1,2\n", into: profile.id) == nil)
+        sqlite3_close(chromeHistory)
+    }
+
+    /// what Arc sealed, and the picker that decides how much of it moves. the key is
+    /// supplied, so the unsealing is tested without touching the keychain
     private static func testArcSecrets(manager: TabManager) {
         // Chromium's shape: PBKDF2("saltysalt", 1003) of a keychain passphrase,
         // AES-128-CBC under an all-spaces IV, behind a "v10" marker
@@ -2176,8 +2505,7 @@ enum SelfTest {
             "import: something that is neither format is refused",
             BookmarkImport.parse(Data("just some text".utf8)) == nil)
 
-        // and the translation into spaces: folders in, pinned tabs out, nothing
-        // loaded — importing four hundred links must not start four hundred pages
+        // and the translation into spaces: folders in, pinned tabs out, nothing loaded
         let spacesBefore = manager.spaces.count
         let landed = manager.importBookmarks(parsed)
         defer {
@@ -2193,8 +2521,7 @@ enum SelfTest {
         let imported = manager.spaces.first { $0.name == "Work & Things" }
         record(
             "import: every link is pinned", imported?.tabs.allSatisfy(\.isPinned) == true)
-        // everything except the page you land on stays lazy — importing four
-        // hundred links must not start four hundred web processes
+        // everything except the page you land on stays lazy
         let unopened: [BrowserTab] = (imported?.tabs ?? []).filter { $0.id != imported?.selectedTabID }
         record(
             "import: everything but the page you land on stays lazy",
@@ -2211,10 +2538,8 @@ enum SelfTest {
         }
     }
 
-    /// Handoff, and the on-device translation of a selection or a page. All are small
-    /// surfaces where the interesting assertion is what is *not* offered.
-    /// AppleScript through a child `osascript`, so each line is a real Apple
-    /// Event round trip. An app scripting itself is never put to a TCC prompt.
+    /// AppleScript through a child `osascript`, so each line is a real Apple Event round
+    /// trip. an app scripting itself is never put to a TCC prompt
     private static func testScripting(manager: TabManager) async {
         let defaults = UserDefaults.standard
         let allowedBefore = defaults.bool(forKey: Scripting.allowsJavaScriptKey)
@@ -2278,6 +2603,366 @@ enum SelfTest {
         record("scripting: close removes the tab", !manager.currentSpace.tabs.contains { $0.id.uuidString == made })
     }
 
+    /// Every intent and entity query, performed in-process against live spaces and
+    /// tabs. Incognito must never surface in any of them.
+    private static func testAppIntents(manager: TabManager) async {
+        func value<V: _IntentValue>(_ result: some IntentResult, _: V.Type) -> V? {
+            (result as Any as? IntentResultContainer<V, Never, Never, Never>)?.value
+        }
+        func fails(_ body: () async throws -> Void) async -> Bool {
+            do { try await body() } catch { return true }
+            return false
+        }
+        func load(_ tab: BrowserTab, _ html: String, at url: String) async {
+            tab.webView.loadHTMLString(html, baseURL: URL(string: url)!)
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if !tab.webView.isLoading, tab.url != nil { break }
+            }
+        }
+        let windows = BrowserWindows.shared
+        let defaults = UserDefaults.standard
+        let wasLocking = defaults.bool(forKey: SpaceLock.incognitoRequiresUnlockKey)
+        defaults.set(false, forKey: SpaceLock.incognitoRequiresUnlockKey)
+        let home = manager.currentSpace
+        let profile = manager.currentProfile
+        let work = manager.createSpace(
+            name: "Intents SelfTest", icon: "star.fill", appearance: SpacePreset.all[1].appearance,
+            profileID: profile.id)
+        let focus = manager.createSpace(
+            name: "Intents Focus", icon: "moon.fill", appearance: SpacePreset.all[2].appearance,
+            profileID: profile.id)
+        var opened: [NSWindow] = []
+        defer {
+            for window in opened { window.close() }
+            defaults.set(wasLocking, forKey: SpaceLock.incognitoRequiresUnlockKey)
+            manager.selectSpace(home)
+            manager.deleteSpace(work)
+            manager.deleteSpace(focus)
+            if let main = mainWindow() { becomeKey(main) }
+        }
+
+        manager.selectSpace(work)
+        let article = work.tabs[0]
+        let filler = String(repeating: "Shortcuts reads this page as plain prose, sentence after sentence. ", count: 20)
+        await load(
+            article, """
+            <html><head><title>qqintentsfixture page</title></head><body><nav><a href="/x">Menu</a></nav>
+            <article><h1>Intents Fixture</h1><p>Some <strong>bold words</strong> and <a href="/linked">a link</a>.</p>
+            <h2>Second Section</h2><ul><li>first</li><li>second</li></ul><p>\(filler)</p></article></body></html>
+            """, at: "https://intents.selftest.example/article")
+
+        // incognito: opened by its intent, then looked for everywhere
+        let before = Set(windows.allManagers.map(ObjectIdentifier.init))
+        let openedIncognito = await !fails { _ = try await OpenIncognitoWindowIntent().perform() }
+        let incognito = windows.allManagers.first { $0.kind == .incognito && !before.contains(ObjectIdentifier($0)) }
+        record("intents: Open Incognito Window opens one", openedIncognito && incognito != nil)
+        if let incognito, let secret = incognito.currentSpace.tabs.first {
+            windows.window(of: incognito).map { opened.append($0) }
+            await load(
+                secret, "<html><head><title>zzsecretintents</title></head><body>private</body></html>",
+                at: "https://secret-intents.selftest.example/")
+            let space = incognito.currentSpace
+            let tabsSeen =
+                ((try? await TabQuery().entities(matching: "zzsecretintents")) ?? [])
+                + ((try? await TabQuery().entities(matching: "secret-intents")) ?? [])
+                + ((try? await TabQuery().entities(for: [secret.id])) ?? [])
+                + ((try? await TabQuery().suggestedEntities()) ?? [])
+            record(
+                "intents: no tab query finds an incognito tab",
+                !tabsSeen.contains { $0.id == secret.id }, secret.displayTitle)
+            let spacesSeen =
+                ((try? await SpaceQuery().entities(for: [space.id])) ?? [])
+                + ((try? await SpaceQuery().allEntities()) ?? [])
+                + ((try? await SpaceQuery().entities(matching: space.name)) ?? [])
+            record(
+                "intents: no space query finds the incognito space", !spacesSeen.contains { $0.id == space.id })
+            record(
+                "intents: Spotlight's copy leaves incognito out",
+                !SpotlightIndex.entries.contains { $0.id == secret.id || $0.id == space.id })
+            let find = FindTabIntent()
+            find.text = "zzsecretintents"
+            let close = CloseTabIntent()
+            close.target = TabEntity(secret)
+            let show = ShowTabIntent()
+            show.target = TabEntity(secret)
+            let read = GetCurrentPageIntent()
+            read.tab = TabEntity(secret)
+            let refused = await (
+                fails { _ = try await find.perform() }, fails { _ = try await close.perform() },
+                fails { _ = try await show.perform() }, fails { _ = try await read.perform() })
+            record(
+                "intents: Find, Close, Show and Get Page refuse an incognito tab",
+                refused == (true, true, true, true) && space.tabs.contains { $0 === secret }, "\(refused)")
+            if let window = windows.window(of: incognito) { becomeKey(window) }
+            let front = try? await GetCurrentPageIntent().perform()
+            let frontURL = front.flatMap { value($0, PageEntity.self) }?.url
+            record(
+                "intents: Get Current Page reads a browser window, never the incognito one in front",
+                frontURL != nil && frontURL?.host() != "secret-intents.selftest.example",
+                frontURL?.absoluteString ?? "nothing")
+            let history = SearchHistoryIntent()
+            history.text = "secret-intents"
+            let leaked = (try? await history.perform()).flatMap { value($0, [HistoryEntryEntity].self) } ?? []
+            record("intents: history holds nothing incognito", leaked.isEmpty)
+            record(
+                "intents: AppleScript still sees incognito by default",
+                Scripting.tabs(incognito: true).contains { $0 === secret })
+            windows.window(of: incognito)?.close()
+            opened.removeAll()
+        }
+        if let main = mainWindow() { becomeKey(main) }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // entities
+        let spaceEntity = ((try? await SpaceQuery().entities(matching: "intents selftest")) ?? []).first
+        record(
+            "intents: a space by name, with its colour and profile",
+            spaceEntity?.id == work.id && spaceEntity?.colour.count == 7 && spaceEntity?.colour.hasPrefix("#") == true
+                && spaceEntity?.profile.id == profile.id && spaceEntity?.icon == "star.fill",
+            "\(spaceEntity?.name ?? "nil") \(spaceEntity?.colour ?? "")")
+        let allProfiles = (try? await ProfileQuery().allEntities()) ?? []
+        let namedProfiles = (try? await ProfileQuery().entities(matching: profile.name)) ?? []
+        record(
+            "intents: profiles enumerate and search",
+            allProfiles.count == manager.profiles.count && namedProfiles.contains { $0.id == profile.id })
+        let tabEntity = ((try? await TabQuery().entities(for: [article.id])) ?? []).first
+        record(
+            "intents: a tab by its stable id, with title, url and space",
+            tabEntity?.title == article.displayTitle && tabEntity?.url?.host() == "intents.selftest.example"
+                && tabEntity?.space?.id == work.id, tabEntity?.title ?? "nil")
+        let domains = Dictionary(SpotlightIndex.entries.map { ($0.id, $0.entry.domain) }) { first, _ in first }
+        record(
+            "intents: Spotlight's copy holds the space and its tab, under their profile's domain",
+            domains[work.id] == profile.id.uuidString && domains[article.id] == profile.id.uuidString)
+        await testSpotlightCleanup(manager: manager, space: work)
+
+        // Open URL
+        let workCount = work.tabs.count
+        let open = OpenURLIntent()
+        open.space = SpaceEntity(work)
+        open.newWindow = false
+        var rejected: [String] = []
+        for bad in ["javascript:alert(1)", "data:text/html,<b>x</b>", "about:blank"] {
+            open.url = URL(string: bad)!
+            if await fails({ _ = try await open.perform() }) { rejected.append(bad) }
+        }
+        record(
+            "intents: Open URL refuses javascript:, data: and about: addresses",
+            rejected.count == 3 && work.tabs.count == workCount, rejected.joined(separator: " "))
+        manager.selectSpace(home)
+        open.url = URL(string: "https://open.intents.selftest.example/")!
+        let openedTab = (try? await open.perform()).flatMap { value($0, TabEntity.self) }
+        let live = work.tabs.first { $0.id == openedTab?.id }
+        record(
+            "intents: Open URL opens a tab in the chosen space and shows it",
+            live?.lastAttemptedURL?.host() == "open.intents.selftest.example" && manager.currentSpace === work
+                && manager.selectedTab === live)
+        if let live { manager.close(live) }
+        open.space = nil
+        open.profile = ProfileEntity(profile)
+        open.url = URL(string: "https://profile.intents.selftest.example/")!
+        let byProfile = (try? await open.perform()).flatMap { value($0, TabEntity.self) }
+        let profileSpace = manager.spaces.first { $0.profileID == profile.id }
+        let profileTab = profileSpace?.tabs.first { $0.id == byProfile?.id }
+        record("intents: Open URL with a profile lands in its first space", profileTab != nil)
+        if let profileTab { manager.close(profileTab) }
+        open.profile = nil
+        open.space = SpaceEntity(work)
+        open.newWindow = true
+        open.url = URL(string: "https://window.intents.selftest.example/")!
+        let mainsBefore = Set(windows.mainManagers.map(ObjectIdentifier.init))
+        let windowTab = (try? await open.perform()).flatMap { value($0, TabEntity.self) }
+        let newWindow = windows.mainManagers.first { !mainsBefore.contains(ObjectIdentifier($0)) }
+        record(
+            "intents: Open URL in a new window opens it on the space",
+            newWindow?.currentSpace === work && newWindow?.selectedTab?.id == windowTab?.id && windowTab != nil)
+        if let newWindow, let window = windows.window(of: newWindow) {
+            if let tab = work.tabs.first(where: { $0.id == windowTab?.id }) { newWindow.close(tab) }
+            window.close()
+        }
+        if let main = mainWindow() { becomeKey(main) }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // New Tab, Switch, Find, Show, Close
+        manager.selectSpace(home)
+        let newTab = NewTabIntent()
+        newTab.space = SpaceEntity(work)
+        let blank = (try? await newTab.perform()).flatMap { value($0, TabEntity.self) }
+        let blankTab = work.tabs.first { $0.id == blank?.id }
+        record(
+            "intents: New Tab in Space opens a tab there and switches to it",
+            blankTab != nil && manager.currentSpace === work && manager.selectedTab === blankTab)
+        newTab.url = URL(string: "javascript:alert(1)")
+        record("intents: New Tab refuses a javascript: address", await fails { _ = try await newTab.perform() })
+
+        let switchTo = SwitchSpaceIntent()
+        switchTo.target = SpaceEntity(home)
+        _ = try? await switchTo.perform()
+        record("intents: Switch to Space", manager.selectedSpaceID == home.id)
+        work.requiresUnlock = true
+        switchTo.target = SpaceEntity(work)
+        let lockedRefused = await fails { _ = try await switchTo.perform() }
+        let lockedHidden = ((try? await TabQuery().entities(matching: "qqintentsfixture")) ?? []).isEmpty
+        work.requiresUnlock = false
+        record(
+            "intents: a locked space can't be switched to and shows no tabs",
+            lockedRefused && lockedHidden && manager.selectedSpaceID == home.id)
+
+        let find = FindTabIntent()
+        find.text = "QQIntentsFixture"
+        let found = (try? await find.perform()).flatMap { value($0, TabEntity.self) }
+        find.space = SpaceEntity(home)
+        record(
+            "intents: Find Tab matches a title, within a space if given",
+            found?.id == article.id, found?.title ?? "nothing")
+        record("intents: and finds nothing in another space", await fails { _ = try await find.perform() })
+
+        let show = ShowTabIntent()
+        show.target = TabEntity(article)
+        _ = try? await show.perform()
+        record("intents: Show Tab switches to its space and selects it", manager.selectedTab === article)
+
+        let page = (try? await GetCurrentPageIntent().perform()).flatMap { value($0, PageEntity.self) }
+        let markdown = page?.markdown ?? ""
+        record(
+            "intents: Get Current Page returns the front page as Markdown",
+            page?.url?.absoluteString == "https://intents.selftest.example/article"
+                && page?.title == article.displayTitle
+                && markdown.hasPrefix("# Intents Fixture") && markdown.contains("## Second Section")
+                && markdown.contains("**bold words**")
+                && markdown.contains("[a link](https://intents.selftest.example/linked)")
+                && markdown.contains("- first\n- second") && !markdown.contains("Menu"),
+            String(markdown.prefix(240)).replacingOccurrences(of: "\n", with: "⏎"))
+        let nested = ReaderMode.markdown(
+            for: .init(
+                title: "t", html: "<ol><li>one<ul><li>inner</li></ul></li></ol><blockquote><p>said</p></blockquote>"
+                    + "<pre><code>let x = 1</code></pre><p><img src=\"/i.png\" alt=\"pic\" /></p>",
+                url: URL(string: "https://intents.selftest.example/a/")!, wordCount: 0))
+        record(
+            "intents: Markdown nests lists and keeps quotes, code and images",
+            nested == "1. one\n  - inner\n\n> said\n\n```\nlet x = 1\n```\n\n![pic](https://intents.selftest.example/i.png)",
+            nested.replacingOccurrences(of: "\n", with: "⏎"))
+
+        if let blankTab {
+            let close = CloseTabIntent()
+            close.target = TabEntity(blankTab)
+            _ = try? await close.perform()
+            record("intents: Close Tab closes it", !work.tabs.contains { $0 === blankTab })
+        }
+
+        // Search History
+        let visit = URL(string: "https://intents-history.selftest.example/page")!
+        profile.history.record(url: visit, title: "Intents History Page")
+        let history = SearchHistoryIntent()
+        history.text = "intents-history"
+        history.limit = 5
+        let hits = (try? await history.perform()).flatMap { value($0, [HistoryEntryEntity].self) } ?? []
+        record(
+            "intents: Search History returns urls and titles",
+            hits.contains { $0.url == visit && $0.title == "Intents History Page" }, "\(hits.count) hits")
+        profile.history.forget { $0.url == visit }
+
+        // Focus filter
+        manager.selectSpace(home)
+        let on = SpaceFocusFilter()
+        on.space = SpaceEntity(focus)
+        let off = SpaceFocusFilter()
+        _ = try? await on.perform()
+        let switched = manager.selectedSpaceID == focus.id
+        _ = try? await off.perform()
+        record(
+            "focus: the Focus switches the front window to its space, and back when it ends",
+            switched && manager.selectedSpaceID == home.id)
+        _ = try? await on.perform()
+        manager.selectSpace(work)
+        _ = try? await off.perform()
+        record("focus: a space you moved to yourself stays when the Focus ends", manager.selectedSpaceID == work.id)
+        let byProfile2 = SpaceFocusFilter()
+        byProfile2.profile = ProfileEntity(profile)
+        _ = try? await byProfile2.perform()
+        let profileFirst = manager.spaces.first { $0.profileID == profile.id }
+        let wentToProfile = manager.selectedSpaceID == profileFirst?.id
+        _ = try? await off.perform()
+        record(
+            "focus: a profile picks its first space, and the Focus ending goes back",
+            wentToProfile && manager.selectedSpaceID == work.id)
+
+        // the build's App Intents metadata lists them
+        let metadata = Bundle.main.url(forResource: "Metadata", withExtension: "appintents")
+            .flatMap { try? Data(contentsOf: $0.appendingPathComponent("extract.actionsdata")) }
+            .map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let listed = [
+            "OpenURLIntent", "NewTabIntent", "SwitchSpaceIntent", "FindTabIntent", "ShowTabIntent",
+            "CloseTabIntent", "GetCurrentPageIntent", "SearchHistoryIntent", "OpenIncognitoWindowIntent",
+            "SpaceFocusFilter",
+        ]
+        let missing = listed.filter { !metadata.contains($0) }
+        record("intents: the bundle's App Intents metadata lists every intent", missing.isEmpty, missing.joined(separator: " "))
+    }
+
+    /// What Spotlight is told to forget on each deletion, read at the index's own
+    /// sink. Self-test runs never index, so nothing reaches the real Spotlight.
+    private static func testSpotlightCleanup(manager: TabManager, space: Space) async {
+        var removals: [SpotlightIndex.Removal] = []
+        let liveSink = SpotlightIndex.sink
+        SpotlightIndex.sink = { removals.append($0) }
+        let defaults = UserDefaults.standard
+        let setting = defaults.object(forKey: SpotlightIndex.enabledKey)
+        defer {
+            SpotlightIndex.sink = liveSink
+            defaults.set(setting, forKey: SpotlightIndex.enabledKey)
+        }
+
+        let closing = manager.newTab(select: false, in: space)
+        manager.close(closing)
+        record("spotlight: closing a tab forgets it", removals.last == .items([closing.id]), "\(removals)")
+
+        let scratch = manager.createProfile(name: "Spotlight SelfTest", icon: "magnifyingglass")
+        let scratchSpace = manager.createSpace(
+            name: "Spotlight Scratch", icon: "star", appearance: SpacePreset.all[1].appearance, profileID: scratch.id)
+        manager.selectSpace(space)
+        scratch.archiveAfterHours = 1
+        let stale = BrowserTab(
+            restoring: URL(string: "https://stale.intents.selftest.example/")!, pinned: false, lastAccessed: .distantPast)
+        scratchSpace.tabs.append(stale)
+        scratchSpace.normalizeTree()
+        removals = []
+        manager.archiveStaleTabs()
+        record(
+            "spotlight: archiving a stale tab forgets it",
+            removals.contains(.items([stale.id])) && !scratchSpace.tabs.contains { $0 === stale }, "\(removals)")
+
+        let doomedTabs = Set(scratchSpace.tabs.map(\.id))
+        manager.deleteSpace(scratchSpace)
+        record(
+            "spotlight: deleting a space forgets it and its tabs",
+            removals.last == .items(doomedTabs.union([scratchSpace.id])), "\(removals)")
+
+        await PrivacyCleaner.clear(.history, range: .hour, in: scratch, manager: manager)
+        record("spotlight: clearing history forgets the profile's domain", removals.last == .profile(scratch.id))
+        removals = []
+        await PrivacyCleaner.clear(.cache, range: .all, in: scratch, manager: manager)
+        record("spotlight: Clear Browsing Data forgets the profile's domain", removals == [.profile(scratch.id)])
+        manager.deleteProfile(scratch)
+        record("spotlight: deleting a profile forgets its domain", removals.last == .profile(scratch.id))
+
+        let favourite = manager.newTab(select: false, in: space)
+        manager.toggleEssential(favourite)
+        manager.removeEssential(favourite)
+        record("spotlight: removing a favourite forgets it", removals.last == .items([favourite.id]))
+
+        removals = []
+        defaults.set(false, forKey: SpotlightIndex.enabledKey)
+        SpotlightIndex.enabledDidChange()
+        record(
+            "spotlight: switching the setting off forgets everything",
+            removals == [.everything] && !SpotlightIndex.isEnabled)
+        defaults.set(true, forKey: SpotlightIndex.enabledKey)
+        SpotlightIndex.enabledDidChange()
+        record("spotlight: switching it back on forgets nothing", removals == [.everything])
+    }
+
     @concurrent
     private nonisolated static func osascript(_ source: String) async -> String {
         let process = Process()
@@ -2318,12 +3003,14 @@ enum SelfTest {
 
         // translation reads the page's own selection
         let previous = manager.selectedTabID
-        let tab = manager.newTab(url: nil, select: true)
+        // selected only once it has a page: a blank selected tab opens the ⌘T bar
+        let tab = manager.newTab(select: false)
         defer {
             manager.close(tab)
             manager.selectedTabID = previous
         }
         await load(tab, html: "<html><body><p id=p>Guten Tag, wie geht es Ihnen?</p></body></html>")
+        manager.selectedTabID = tab.id
         await tab.translateSelection()
         record("translate: nothing selected translates nothing", tab.pendingTranslation == nil)
 
@@ -2340,23 +3027,28 @@ enum SelfTest {
         // whole-page translation's page side; the strings stand in for the framework's output
         await load(tab, html: """
             <html><body><p id=a>Guten Tag</p><code>let x = 1</code><p translate=no>Marke</p>
-            <p hidden>Versteckt</p><p id=b>  Wie geht es?  </p><p id=c>Tschüss</p></body></html>
+            <div class=notranslate><p>Name</p></div><p id=b>  Wie geht es?  </p><p id=c>Tschüss</p></body></html>
             """)
         let world = PageTranslation.world
-        let captured = try? await tab.webView.callAsyncJavaScript(
-            PageTranslation.capture, contentWorld: world) as? [String: Any]
-        let texts = captured?["texts"] as? [String] ?? []
+        let token = try? await tab.webView.callAsyncJavaScript(PageTranslation.start, contentWorld: world) as? String
+        let batch = try? await tab.webView.callAsyncJavaScript(PageTranslation.next, contentWorld: world) as? [String: Any]
+        let units = batch?["units"] as? [[Any]] ?? []
+        let texts = units.compactMap { $0.last as? String }
         record(
-            "translate page: captures the prose, not code, translate=no or hidden text",
+            "translate page: finds the prose, not code or what opts out",
             texts == ["Guten Tag", "Wie geht es?", "Tschüss"], texts.joined(separator: "|"))
         let hidden = (try? await tab.webView.evaluateJavaScript("typeof window.artemisTranslation")) as? String
         record("translate page: the page can't see the translator", hidden == "undefined", hidden ?? "nil")
 
         let shown = "['a','b','c'].map(id => document.getElementById(id).textContent).join('|')"
         _ = try? await tab.webView.evaluateJavaScript("document.getElementById('c').firstChild.data = 'Bis bald'; true")
-        let pairs: [[Any]] = [[0, "Good day"], [1, "How are you?"], [2, "Bye"]]
+        let english = ["Guten Tag": "Good day", "Wie geht es?": "How are you?", "Tschüss": "Bye"]
+        let pairs: [[Any]] = units.compactMap { unit in
+            guard let index = unit.first as? Int, let text = unit.last as? String, let out = english[text] else { return nil }
+            return [index, out]
+        }
         _ = try? await tab.webView.callAsyncJavaScript(
-            PageTranslation.apply, arguments: ["id": captured?["id"] ?? 0, "pairs": pairs], contentWorld: world)
+            PageTranslation.apply, arguments: ["token": token ?? "", "pairs": pairs], contentWorld: world)
         let translated = (try? await tab.webView.evaluateJavaScript(shown)) as? String
         record(
             "translate page: keeps each node's spacing and spares what the site rewrote",
@@ -2374,6 +3066,259 @@ enum SelfTest {
             { if case .failed = tab.pageTranslation { true } else { false } }(), "\(tab.pageTranslation)")
         await load(tab, html: "<html><body><p>Hallo</p></body></html>")
         record("translate page: navigating clears it", tab.pageTranslation == .idle, "\(tab.pageTranslation)")
+    }
+
+    /// whole-page translation through the framework itself, on a pair already installed so
+    /// nothing can offer a download
+    private static func testTranslatePage(manager: TabManager) async {
+        let rules = manager.currentProfile.translationRules
+        let german = Locale.Language(identifier: "de")
+        guard await LanguageAvailability().status(from: german, to: rules.target) == .installed else {
+            return note(
+                "translate page: German to \(PageTranslation.name(of: rules.target)) isn't installed on this Mac, so the live checks were skipped")
+        }
+        let savedLanguages = rules.languages
+        let savedSites = rules.sites
+        for code in savedLanguages { rules.setAlways(code, false) }
+        for site in savedSites { rules.setNever(site, false) }
+        let previous = manager.selectedTabID
+        // selected only once it has a page: a blank selected tab opens the ⌘T bar
+        let tab = manager.newTab(select: false)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+            for code in rules.languages { rules.setAlways(code, false) }
+            for site in rules.sites { rules.setNever(site, false) }
+            for code in savedLanguages { rules.setAlways(code, true) }
+            for site in savedSites { rules.setNever(site, true) }
+        }
+
+        let site = URL(string: "https://translate.selftest.example/")!
+        func open(_ html: String, in tab: BrowserTab = tab, at url: URL = site) async {
+            tab.webView.loadHTMLString(html, baseURL: url)
+            try? await Task.sleep(for: .milliseconds(100))
+            await settle(.seconds(6)) { !tab.webView.isLoading }
+        }
+        func text(_ script: String, in tab: BrowserTab = tab) async -> String {
+            (try? await tab.webView.evaluateJavaScript(script)) as? String ?? "nil"
+        }
+        func translated(_ tab: BrowserTab = tab) async -> Bool {
+            await settle(.seconds(20)) { if case .translated = tab.pageTranslation { true } else { false } }
+            if case .translated = tab.pageTranslation { return true }
+            return false
+        }
+        /// a page that translates itself would have started by now
+        func staysIdle(_ tab: BrowserTab = tab) async -> Bool {
+            try? await Task.sleep(for: .milliseconds(1500))
+            return tab.pageTranslation == .idle
+        }
+        func inFrame(_ id: String) async -> String {
+            for case let frame? in await PageTranslation.frames(in: tab.webView) where !frame.isMainFrame {
+                let found = try? await tab.webView.callAsyncJavaScript(
+                    "return document.getElementById(id)?.textContent ?? null", arguments: ["id": id],
+                    in: frame, contentWorld: .page)
+                if let found = found as? String { return found }
+            }
+            return "nil"
+        }
+
+        let page = """
+            <html lang=de><head><title>Willkommen auf unserer Seite</title></head><body>
+            <h1 id=h>Das Wetter ist heute sehr schön.</h1>
+            <p id=p>Wir gehen morgen zusammen in den Park.</p>
+            <input id=i placeholder="Suchen Sie hier nach Büchern">
+            <img id=g alt="Ein großer roter Apfel" src="data:,">
+            <button id=b title="Klicken Sie hier, um fortzufahren">Weiter</button>
+            <input id=s type=submit value="Absenden">
+            <p id=n translate=no>Das bleibt so, wie es ist.</p>
+            <iframe srcdoc="<p id=q>Der Hund schläft unter dem Tisch.</p>"></iframe>
+            <iframe src="data:text/html;charset=utf-8,<p id=r>Die Katze trinkt gerne Milch.</p>"></iframe>
+            </body></html>
+            """
+        await open(page)
+        manager.selectedTabID = tab.id
+        record("translate page: without a rule, a page in another language is left alone", await staysIdle())
+
+        await tab.toggleTranslation()
+        let done = await translated()
+        record("translate page: the page translates on device", done, "\(tab.pageTranslation)")
+        let to = tab.pageTranslation.languages?.to ?? rules.target
+        let listed = await PageTranslation.targetLanguages().first { PageTranslation.sameTarget($0, to) }
+        record(
+            "translate page: the panel names the target as the picker lists it",
+            listed.map(PageTranslation.name(of:)) == PageTranslation.name(of: to),
+            "status \(PageTranslation.name(of: to)), picker \(listed.map(PageTranslation.name(of:)) ?? "unlisted")")
+        let h = await text("document.getElementById('h').textContent").lowercased()
+        record("translate page: text is translated", h.contains("weather"), h)
+        let attributes = await text("""
+            ['i:placeholder','g:alt','b:title','s:value'].map(k => { const [id, a] = k.split(':');
+              return document.getElementById(id).getAttribute(a) }).join('|')
+            """)
+        let parts = attributes.lowercased().split(separator: "|").map(String.init)
+        record(
+            "translate page: placeholder, alt, title and button values are translated",
+            parts.count == 4 && parts[0].contains("book") && parts[1].contains("apple")
+                && parts[2].contains("click") && parts[3] != "absenden", attributes)
+        await settle { tab.title.lowercased().contains("welcome") }
+        record("translate page: the document title and the tab's title follow", tab.title.lowercased().contains("welcome"), tab.title)
+        let kept = await text("document.getElementById('n').textContent")
+        record("translate page: translate=no is respected", kept == "Das bleibt so, wie es ist.", kept)
+        let sameOrigin = await inFrame("q").lowercased()
+        record("translate page: a same-origin frame is translated", sameOrigin.contains("dog"), sameOrigin)
+        let crossOrigin = await inFrame("r").lowercased()
+        record("translate page: a cross-origin frame is translated", crossOrigin.contains("cat"), crossOrigin)
+
+        // what the site adds or changes afterwards
+        _ = await text("""
+            (() => {
+              const p = document.createElement('p'); p.id = 'm'; p.textContent = 'Der Zug kommt um acht Uhr an.';
+              document.body.append(p);
+              document.getElementById('h').textContent = 'Ich habe einen kleinen Garten.';
+              document.getElementById('i').placeholder = 'Geben Sie Ihren Namen ein';
+              return 'ok';
+            })()
+            """)
+        await settle(.seconds(10)) { await text("document.getElementById('m').textContent").lowercased().contains("train") }
+        let late = await text("document.getElementById('m').textContent")
+        record("translate page: text added after translating is translated too", late.lowercased().contains("train"), late)
+        let rewritten = "document.getElementById('h').textContent + '|' + document.getElementById('i').placeholder"
+        await settle(.seconds(10)) {
+            let now = await text(rewritten)
+            return !now.contains("Garten") && !now.contains("Namen")
+        }
+        let changed = await text(rewritten)
+        record(
+            "translate page: so is text and an attribute the site rewrites",
+            changed.lowercased().contains("garden") && changed.lowercased().contains("name")
+                && !changed.contains("Namen"), changed)
+
+        tab.showOriginal()
+        let original = """
+            ['h','p','m','n'].map(id => document.getElementById(id).textContent)
+              .concat([document.getElementById('i').placeholder, document.getElementById('g').alt,
+                document.getElementById('b').title, document.getElementById('s').value, document.title]).join('|')
+            """
+        let expected = [
+            "Ich habe einen kleinen Garten.", "Wir gehen morgen zusammen in den Park.", "Der Zug kommt um acht Uhr an.",
+            "Das bleibt so, wie es ist.", "Geben Sie Ihren Namen ein", "Ein großer roter Apfel",
+            "Klicken Sie hier, um fortzufahren", "Absenden", "Willkommen auf unserer Seite",
+        ].joined(separator: "|")
+        await settle { await text(original) == expected }
+        let restored = await text(original)
+        record("translate page: Show Original restores everything, late text included", restored == expected, restored)
+        let frames = await inFrame("q") + "|" + inFrame("r")
+        record(
+            "translate page: and every frame",
+            frames == "Der Hund schläft unter dem Tisch.|Die Katze trinkt gerne Milch.", frames)
+        _ = await text("""
+            (() => {
+              const p = document.createElement('p'); p.id = 'z'; p.textContent = 'Das Brot ist frisch.';
+              document.body.append(p); return 'ok';
+            })()
+            """)
+        try? await Task.sleep(for: .milliseconds(1200))
+        let after = await text("document.getElementById('z').textContent")
+        record("translate page: nothing is translated once the original is back", after == "Das Brot ist frisch.", after)
+
+        // rules exist only once made, and only a page load in their language obeys them
+        await tab.toggleTranslation()
+        _ = await translated()
+        tab.setAlwaysTranslates(german, true)
+        record("translate page: Always translate German is saved for the profile", rules.alwaysTranslates(german))
+        let other = """
+            <html lang=de><body><p id=o>Meine Großmutter backt jeden Sonntag einen Kuchen.</p></body></html>
+            """
+        await open(other)
+        let auto = await translated()
+        let cake = await text("document.getElementById('o').textContent")
+        record(
+            "translate page: under the rule, the next German page translates itself",
+            auto && cake.lowercased().contains("cake"), "\(tab.pageTranslation) \(cake)")
+        await open("""
+            <html lang=es><body><p>Mi abuela hace un pastel todos los domingos por la tarde.</p></body></html>
+            """)
+        record("translate page: a page in another language is not touched by it", await staysIdle())
+        tab.setNeverTranslatesSite(true)
+        await open(other)
+        record("translate page: Never translate this site wins over the language rule", await staysIdle())
+        tab.setNeverTranslatesSite(false)
+
+        // incognito obeys the profile's rules and never adds to them
+        let incognito = makeIncognito(from: manager)
+        if let ghost = incognito.currentSpace.tabs.first {
+            await open(other, in: ghost)
+            let obeyed = await translated(ghost)
+            record("translate page: an incognito page obeys the rules", obeyed, "\(ghost.pageTranslation)")
+            ghost.setAlwaysTranslates(Locale.Language(identifier: "es"), true)
+            ghost.setNeverTranslatesSite(true)
+            await ghost.translatePage(to: Locale.Language(identifier: "fr"))
+            record(
+                "translate page: and saves none",
+                rules.languages == ["de"] && rules.sites.isEmpty
+                    && PageTranslation.sameTarget(rules.target, PageTranslation.systemTarget),
+                "languages=\(rules.languages) sites=\(rules.sites) target=\(rules.target.minimalIdentifier)")
+            ghost.showOriginal()
+        } else {
+            record("translate page: an incognito page obeys the rules", false, "no incognito tab")
+        }
+        incognito.windowWillClose()
+        rules.setAlways("de", false)
+
+        // a long page: 20,000 paragraphs over a few sentences, so the work is the page's, not the model's.
+        // the page's stall is how long a script waits for its turn, which timer throttling can't hide.
+        // the same wait is taken before translating, so a stall of the page's own shows as its own
+        final class Stalls { var app = Duration.zero, page = Duration.zero, pageAt = Duration.zero, from = ContinuousClock.now }
+        let stalls = Stalls()
+        await open("""
+            <html lang=de><body><script>
+            const s = ['Der Himmel ist blau.', 'Die Kinder spielen im Garten.', 'Ich trinke gern Kaffee.',
+              'Das Buch liegt auf dem Tisch.', 'Wir fahren morgen nach Berlin.', 'Es regnet seit drei Tagen.',
+              'Mein Bruder arbeitet in einer Bank.', 'Die Blumen riechen sehr gut.'];
+            for (let i = 0; i < 20000; i++) {
+              const p = document.createElement('p'); p.textContent = s[i % s.length]; document.body.append(p);
+            }
+            </script></body></html>
+            """)
+        let appMeter = Task {
+            var last = ContinuousClock.now
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(5))
+                let now = ContinuousClock.now
+                stalls.app = max(stalls.app, now - last - .milliseconds(5))
+                last = now
+            }
+        }
+        let pageMeter = Task {
+            while !Task.isCancelled {
+                let asked = ContinuousClock.now
+                _ = try? await tab.webView.evaluateJavaScript("0")
+                if ContinuousClock.now - asked > stalls.page {
+                    stalls.page = ContinuousClock.now - asked
+                    stalls.pageAt = asked - stalls.from
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        try? await Task.sleep(for: .seconds(2))
+        let quiet = stalls.page
+        stalls.page = .zero
+        stalls.app = .zero
+        stalls.from = ContinuousClock.now
+        await tab.toggleTranslation()
+        await settle(.seconds(60)) { if case .translated = tab.pageTranslation { true } else { false } }
+        let took = ContinuousClock.now - stalls.from
+        appMeter.cancel()
+        pageMeter.cancel()
+        let last = await text("document.body.lastElementChild.textContent").lowercased()
+        let visibility = await text("document.visibilityState")
+        func ms(_ d: Duration) -> Double { Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15 }
+        record(
+            "translate page: a 20,000-paragraph page translates to its end without stalling",
+            last.contains("flowers") && ms(stalls.app) < 100 && ms(stalls.page) < 100,
+            String(
+                format: "%.2fs, app main worst %.0fms, page worst %.0fms at +%.2fs (%.0fms before translating), last \"%@\", %@",
+                ms(took) / 1000, ms(stalls.app), ms(stalls.page), ms(stalls.pageAt) / 1000, ms(quiet), last, visibility))
+        tab.showOriginal()
     }
 
     /// Several windows over one model: they share the spaces and the tabs, and
@@ -2724,9 +3669,6 @@ enum SelfTest {
         UserDefaults.standard.set(shown, forKey: BrowserToolbar.shownKey)
     }
 
-    /// the ⌘T and ⌘L bars keep the keyboard, text and caret through the sidebar
-    /// hiding, pinning, peeking and timing out, and through a press on the bar
-    /// where it covers the sidebar; a field in the sidebar gives it up
     /// a real download through the shelf: it shows while running, settles finished
     /// under its real name with no .download left, and the Dock badge clears
     private static func testDownloadShelf(manager: TabManager) async {
@@ -2755,6 +3697,9 @@ enum SelfTest {
         if let file { try? FileManager.default.removeItem(at: file) }
     }
 
+    /// the ⌘T and ⌘L bars keep the keyboard, text and caret through the sidebar
+    /// hiding, pinning, peeking and timing out, and through a press on the bar
+    /// where it covers the sidebar; a field in the sidebar gives it up
     private static func testCommandBarThroughSidebar(manager: TabManager) async {
         func sidebarHost(in view: NSView) -> NSView? {
             view is PassthroughHostingView<AnyView>
@@ -3055,16 +4000,14 @@ enum SelfTest {
         try? await Task.sleep(for: .milliseconds(300))
         record("tabstate: a blob round-trips", TabStateStore.load(id) == Data("blob".utf8))
 
-        // the terminate path can't wait: a detached write is killed with the
-        // process, so `immediately` has to be on disk before it returns
+        // the terminate path can't wait: `immediately` must be on disk before it returns
         TabStateStore.remove(id)
         TabStateStore.save(Data("now".utf8), for: id, immediately: true)
         record(
             "tabstate: an immediate save lands before it returns",
             TabStateStore.load(id) == Data("now".utf8))
 
-        // an oversized blob is dropped rather than written — the tab still comes
-        // back at its url, which is the whole reason the blob is optional
+        // an oversized blob is dropped rather than written; the tab still comes back at its url
         TabStateStore.save(Data(repeating: 0x41, count: 600 * 1024), for: id)
         try? await Task.sleep(for: .milliseconds(300))
         record("tabstate: an oversized blob is dropped", TabStateStore.load(id) == nil)
@@ -3114,8 +4057,7 @@ enum SelfTest {
     }
 
     private static func testZoomStore() {
-        // the terminate flush has to beat the 400ms debounce *and* the detached
-        // write, so it must be on disk the moment it returns
+        // the terminate flush must be on disk the moment it returns, ahead of the 400ms debounce
         let scratch = AppStorageLocation.file("zoom-selftest.json")
         try? FileManager.default.removeItem(at: scratch)
         let flushed = ZoomStore(fileURL: scratch)
@@ -3168,7 +4110,7 @@ enum SelfTest {
         record("tab: mute survives a container rebuild", tab.isMuted)
         tab.setMuted(false)
         // the rebuilt tab is ephemeral, so its reset isn't remembered: the site's 150% is forgotten here
-        ZoomStore.shared.setZoom(ZoomStore.defaultZoom, for: URL(string: "https://selftest.local/"))
+        ZoomStore.shared.setZoom(ZoomStore.defaultZoom, for: URL(string: "https://selftest.example/"))
     }
 
     private static func testMediaReporting(manager: TabManager) async {
@@ -3176,8 +4118,8 @@ enum SelfTest {
         let tab = manager.newTab(url: nil, select: false)
         defer { manager.close(tab) }
 
-        // a silent generated tone: autoplays without user gesture because it's
-        // muted, which is exactly the case the SPI would miss
+        // a silent generated tone: muted, so it autoplays without a gesture, the case the
+        // SPI would miss
         let html = """
             <html><body><video id=v autoplay muted loop playsinline
               src="data:video/mp4;base64,"></video>
@@ -3214,12 +4156,18 @@ enum SelfTest {
         record("media: clears when the last frame stops", !tab.isPlayingMediaContent)
     }
 
-    /// Pages that aren't on screen are *hidden*, not merely transparent, so
-    /// WebKit stops giving them frames (see `WebViewContainer.isVisible`). That
-    /// is the right trade for a page nobody is looking at — but a hidden page
-    /// must still be allowed to make noise, or backgrounding the tab playing
-    /// your music would silence it. WebKit's rule (and Safari's) is that page
-    /// visibility stops rendering, never playback; this pins that down.
+    /// pages can't open WebKit's own Picture in Picture; the mini-player is the only one
+    private static func testNoWebKitPiP(manager: TabManager) async {
+        let tab = manager.newTab(url: nil, select: false)
+        defer { manager.close(tab) }
+        await load(tab, html: "<html><body><video controls></video></body></html>")
+        let js = "document.querySelector('video').webkitSupportsPresentationMode('picture-in-picture')"
+        let supported = (try? await tab.webView.evaluateJavaScript(js)) as? Bool
+        record("no webkit pip: a video can't enter WebKit's PiP", supported == false, "\(String(describing: supported))")
+    }
+
+    /// a hidden page (see `WebViewContainer.isVisible`) stops rendering but keeps playing:
+    /// backgrounding the tab playing your music must not silence it
     private static func testHiddenPageKeepsPlaying(manager: TabManager) async {
         // it has to be the *selected* tab: only a mounted page has a host view,
         // and the host view is what the visibility trick acts on
@@ -3271,11 +4219,74 @@ enum SelfTest {
         record("hidden page: audio graph still running", audio)
     }
 
-    /// The hosted page is left oversized while its card is being animated and
-    /// only reflowed once the resizing stops, because handing Core Animation a
-    /// fresh IOSurface per frame is the most expensive thing in a sidebar
-    /// animation. The half of that which can silently break is the settle: if it
-    /// never fires, the page is permanently the wrong size.
+    /// The card's pages share one AppKit stack: the shown page is unhidden and
+    /// takes the pointer, and the page it replaced is hidden or let go once the
+    /// fade has landed.
+    private static func testPageStack(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        let first = manager.newTab(url: nil, select: true)
+        await load(first, html: "<html><body>first</body></html>")
+        let second = manager.newTab(url: nil, select: true)
+        await load(second, html: "<html><body>second</body></html>")
+        defer {
+            manager.close(first)
+            manager.close(second)
+            manager.selectedTabID = previous
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard let stack = second.webHost?.superview as? PageStackView else {
+            record("page stack: hosts the shown page", false, "no stack")
+            return
+        }
+        record("page stack: hosts the shown page", second.webHost?.isHidden == false)
+        record(
+            "page stack: the window renders in named Display P3",
+            stack.window?.colorSpace == .displayP3, stack.window?.colorSpace?.localizedName ?? "none")
+
+        manager.selectedTabID = first.id
+        try? await Task.sleep(for: .milliseconds(500))
+        let host = first.webHost
+        record(
+            "page stack: the switched-to page is shown in the same stack",
+            host?.superview === stack && host?.isHidden == false && first.webView.superview === host)
+        record(
+            "page stack: the page switched from is hidden or let go",
+            second.webHost.map { $0.isHidden || $0.superview == nil } ?? true)
+        let centre = stack.convert(NSPoint(x: stack.bounds.midX, y: stack.bounds.midY), to: stack.superview)
+        record(
+            "page stack: only the shown page takes the pointer",
+            host.map { stack.hitTest(centre)?.isDescendant(of: $0) == true } ?? false)
+    }
+
+    /// A divider drag moves the panes without rewriting the tree that says which
+    /// panes a split has, and its ratios land on that tree when it ends.
+    private static func testSplitResizeHolds(manager: TabManager) {
+        let previous = manager.selectedTabID
+        let panes = (0..<2).map { _ in manager.newTab(url: nil, select: false) }
+        defer {
+            for pane in panes { manager.close(pane) }
+            manager.selectedTabID = previous
+        }
+        guard let group = manager.createSplit(panes) else {
+            record("split resize: split created", false)
+            return
+        }
+        let area = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let widths = { (root: SplitNode) in root.paneFrames(in: area, gap: splitPaneGap).map(\.rect.width) }
+        let before = widths(group.root)
+        let divider = group.root.dividers(in: area, gap: splitPaneGap)[0]
+        group.resize(path: divider.path, boundary: divider.boundary, by: 0.1)
+        record("split resize: the drag moves the panes", widths(group.layoutRoot) != before)
+        record("split resize: the tree holds still mid-drag", widths(group.root) == before)
+        manager.commitSplitLayout(group)
+        record(
+            "split resize: the drag's ratios land when it ends",
+            group.resizingRoot == nil && widths(group.root) != before,
+            "\(widths(group.root))")
+    }
+
+    /// the hosted page stays oversized while its card animates and reflows once resizing
+    /// stops; if that settle never fires, the page is left the wrong size
     private static func testPageResizeSettles(manager: TabManager) async {
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
@@ -3323,20 +4334,15 @@ enum SelfTest {
         try? await Task.sleep(for: .milliseconds(300))
     }
 
-    /// Artemis had no capture delegate at all, which WebKit reads as a refusal —
-    /// so `getUserMedia` failed on every site and video calls could not work.
-    /// These tests are about the wiring rather than the hardware: they prove
-    /// that a real page's request reaches the app, that a refusal reaches the
-    /// page, and that an answer is remembered so the site isn't asked twice.
-    /// Actually opening the camera would raise the system's own TCC prompt,
-    /// which no automated run can answer.
+    /// the capture wiring, not the hardware: a real page's request reaches the app, a
+    /// refusal reaches the page, and an answer is remembered. opening the camera itself
+    /// would raise a TCC prompt no run can answer
     private static func testSitePermissions(manager: TabManager) async {
         let store = SitePermissionStore.shared
         let origin = "https://permissions.selftest.example"
         store.forget(origin)
 
-        // an answer given moments before a quit has to survive it: the ordinary
-        // save is detached, and a detached write dies with the process
+        // an answer given just before a quit must survive it
         store.set(.allow, for: origin, .microphone, ephemeral: false)
         store.saveNow()
         let onDisk = AppStorageLocation.loadDurable(
@@ -3396,15 +4402,8 @@ enum SelfTest {
         await testLiveCapturePermission(manager: manager)
     }
 
-    /// the half that can only be proven against WebKit: does a real page's
-    /// request actually arrive at our delegate, and does our answer actually
-    /// come back out of the page's promise?
-
-    /// The four things a page can put on screen that WebKit refuses on your
-    /// behalf if the delegate is silent: a file picker, `alert`, `confirm`,
-    /// `prompt`. Each absence fails silently in the page, so the assertions here
-    /// are the only thing standing between a working browser and one that
-    /// answers "Delete this repository?" by itself.
+    /// file pickers, `alert`, `confirm` and `prompt`: WebKit refuses each on the page's
+    /// behalf when the delegate is silent, and the page fails silently
     private static func testWebPlatformPanels(manager: TabManager) async {
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
@@ -3520,10 +4519,8 @@ enum SelfTest {
                 : "checkbox=\(String(describing: second?.checkbox)), "
                     + "dialogs this page=\(tab.dialogsRaisedThisPage)")
         tab.answerDialog(true, checked: true)
-        // Drain whatever the page still has queued before reading anything out of
-        // it. A page blocked inside `alert()` has its JS suspended, and
-        // `evaluateJavaScript` queues behind it — so a missed dialog here doesn't
-        // fail the assertion, it hangs the whole run.
+        // drain the page's queue before reading: a page blocked in `alert()` has its JS
+        // suspended and `evaluateJavaScript` queues behind it, so a missed dialog hangs the run
         for _ in 0..<6 {
             try? await Task.sleep(for: .milliseconds(200))
             guard tab.pendingDialog != nil else { break }
@@ -3613,7 +4610,7 @@ enum SelfTest {
         record(
             "schemes: the offer says which site asked",
             external?.host == "dialogs.selftest.example", external?.host ?? "?")
-        // answering no, always — a yes here would launch Mail on the dev's machine
+        // always no: a yes would launch Mail
         tab.answerDialog(false)
         record("schemes: declining clears the panel", tab.pendingDialog == nil)
         record(
@@ -3650,8 +4647,7 @@ enum SelfTest {
     /// The Notification web API: Artemis' own page shim and its permission path.
     /// Nothing here allows a site, so macOS is never asked for authorization.
     private static func testWebNotifications(manager: TabManager) async {
-        // one line on the shared configuration, and nothing in the app reads it
-        // back — so this assertion is the only thing holding it in place
+        // set once on the shared configuration and never read back, so only this holds it
         record(
             "config: Writing Tools rewrites in place",
             BrowserTab.defaultConfiguration().writingToolsBehavior == .complete)
@@ -3722,6 +4718,20 @@ enum SelfTest {
         record(
             "notifications: a remembered allow reaches the page",
             remembered == "granted", remembered)
+        let renotify = await settle(
+            tab.webView,
+            "(() => { try { new Notification('x', { renotify: true }); return 'made'; } catch (e) { return e.name; } })()",
+            to: "TypeError")
+        record("notifications: renotify without a tag throws", renotify == "TypeError", renotify)
+
+        let other = manager.newTab(url: nil, select: true)
+        tab.hibernate()
+        let slept = tab.isHibernated
+        WebNotifications.shared.respond(to: "\(tab.id.uuidString)/selftest", clicked: true)
+        record(
+            "notifications: a click shows and wakes a sleeping tab",
+            slept && manager.selectedTabID == tab.id && !tab.isHibernated, "slept \(slept)")
+        manager.close(other)
         manager.close(tab)
         manager.selectedTabID = previous
 
@@ -3737,6 +4747,94 @@ enum SelfTest {
         SitePermissionStore.shared.forget(site)
     }
 
+    /// The Badging API and the sidebar's unread mark. Allowing a site here is only a
+    /// stored answer, so macOS is never asked for notification authorization
+    private static func testAppBadge(manager: TabManager) async {
+        let site = "https://badge.selftest.example"
+        SitePermissionStore.shared.forget(site)
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+            SitePermissionStore.shared.forget(site)
+        }
+        func load(_ page: WKWebView, _ base: String, title: String = "Badge") async {
+            page.loadHTMLString("<html><head><title>\(title)</title></head><body></body></html>", baseURL: URL(string: base))
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if !page.isLoading { break }
+            }
+        }
+        func call(_ page: WKWebView, _ js: String) async -> String {
+            let body = "try { await \(js); return 'ok'; } catch (e) { return e.name; }"
+            return ((try? await page.callAsyncJavaScript(body, contentWorld: .page)) as? String) ?? "?"
+        }
+
+        record(
+            "appbadge: a title's leading count is read as unread",
+            TabManager.unreadCount(in: " (12) Inbox") == 12 && TabManager.unreadCount(in: "(3) (7) Inbox") == 3
+                && TabManager.unreadCount(in: "(0) Inbox") == nil && TabManager.unreadCount(in: "Inbox (3)") == nil)
+
+        await load(tab.webView, "http://badge.selftest.example/")
+        let insecure = (try? await tab.webView.evaluateJavaScript("typeof navigator.setAppBadge")) as? String
+        record("appbadge: no API in an insecure page", insecure == "undefined", insecure ?? "?")
+
+        await load(tab.webView, site + "/")
+        let shape = (try? await tab.webView.evaluateJavaScript(
+            "String(navigator.setAppBadge.length === 0 && navigator.clearAppBadge.length === 0)")) as? String
+        record("appbadge: both methods take no required argument", shape == "true", shape ?? "?")
+        let unallowed = await call(tab.webView, "navigator.setAppBadge(3)")
+        record(
+            "appbadge: a site without the notifications permission is refused",
+            unallowed == "NotAllowedError" && tab.appBadge == nil, unallowed)
+
+        SitePermissionStore.shared.set(.allow, for: site, .notifications, ephemeral: false)
+        let set = await call(tab.webView, "navigator.setAppBadge(3)")
+        record("appbadge: an allowed site sets a count", set == "ok" && tab.appBadge == .count(3), set)
+        _ = await call(tab.webView, "navigator.setAppBadge(2.7)")
+        record("appbadge: a fraction is truncated", tab.appBadge == .count(2))
+        let negative = await call(tab.webView, "navigator.setAppBadge(-1)")
+        let nan = await call(tab.webView, "navigator.setAppBadge(NaN)")
+        record(
+            "appbadge: out-of-range counts throw and change nothing",
+            negative == "TypeError" && nan == "TypeError" && tab.appBadge == .count(2), "\(negative) \(nan)")
+        _ = await call(tab.webView, "navigator.setAppBadge()")
+        record("appbadge: no argument sets a flag", tab.appBadge == .flag)
+        _ = await call(tab.webView, "navigator.setAppBadge(0)")
+        record("appbadge: zero clears it", tab.appBadge == nil)
+        _ = await call(tab.webView, "navigator.setAppBadge(5)")
+        _ = await call(tab.webView, "navigator.clearAppBadge()")
+        record("appbadge: clearAppBadge clears it", tab.appBadge == nil)
+
+        await load(tab.webView, site + "/inbox", title: "(7) Inbox")
+        for _ in 0..<20 where tab.title != "(7) Inbox" { try? await Task.sleep(for: .milliseconds(100)) }
+        record("appbadge: with no badge the title's count shows", tab.unread == .count(7), tab.title)
+        record("appbadge: the name beside the badge drops its count", tab.badgedTitle == "Inbox", tab.badgedTitle)
+        _ = await call(tab.webView, "navigator.setAppBadge(2)")
+        record("appbadge: the page's badge wins over its title", tab.unread == .count(2))
+        await load(tab.webView, site + "/elsewhere")
+        record("appbadge: it survives a navigation within the origin", tab.appBadge == .count(2))
+        await load(tab.webView, "https://other.selftest.example/")
+        record("appbadge: navigating to another origin clears it", tab.appBadge == nil && tab.unread == nil)
+        record("appbadge: with no badge the name is left alone", tab.badgedTitle == tab.displayTitle, tab.badgedTitle)
+
+        let burner = makeIncognito(from: manager)
+        if let page = burner.currentSpace.tabs.first {
+            await load(page.webView, site + "/")
+            let incognito = await call(page.webView, "navigator.setAppBadge(4)")
+            record(
+                "appbadge: an allowed site is refused in incognito",
+                incognito == "NotAllowedError" && page.appBadge == nil, incognito)
+        }
+        burner.windowWillClose()
+
+        SitePermissionStore.shared.forget(site)
+        await load(tab.webView, site + "/")
+        let revoked = await call(tab.webView, "navigator.setAppBadge(1)")
+        record("appbadge: a forgotten permission refuses again", revoked == "NotAllowedError", revoked)
+    }
+
     /// macOS' own answer for the whole app, which sits underneath the per-site
     /// one. WebKit never asks the page's question when the app itself is refused
     private static func locationAuthorizationName() -> String {
@@ -3750,10 +4848,10 @@ enum SelfTest {
         }
     }
 
+    /// the half only WebKit can prove: a real page's request reaches the delegate, and
+    /// the answer comes back out of the page's promise
     private static func testLiveCapturePermission(manager: TabManager) async {
-        // a decision left behind by an earlier run would be answered from
-        // memory, and nothing would reach the prompt — which looks exactly like
-        // the delegate being broken
+        // a decision left by an earlier run would answer from memory and never reach the prompt
         SitePermissionStore.shared.forget("https://capture.selftest.example")
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
@@ -3761,13 +4859,9 @@ enum SelfTest {
             manager.close(tab)
             manager.selectedTabID = previous
         }
-        // geolocation rather than capture: it travels the same delegate → queue →
-        // page path, but reaches it without touching a device. `getUserMedia`
-        // was tried first and turned out to depend on the state of the machine's
-        // audio hardware — on a box where something else was holding the
-        // microphone the promise simply never settled, which looks identical to
-        // the delegate being broken. `ARTEMIS_DIAG=capture` covers the hardware
-        // half, where a human can see the result.
+        // geolocation, not capture: the same delegate → queue → page path without a device;
+        // `getUserMedia` never settles while another app holds the microphone.
+        // `ARTEMIS_DIAG=capture` covers the hardware
         let html = """
             <html><body><script>
               window.__result = "pending";
@@ -3780,9 +4874,8 @@ enum SelfTest {
         // the page's origin comes from the base url, and getUserMedia is only
         // offered to a secure context
         tab.webView.loadHTMLString(html, baseURL: URL(string: "https://capture.selftest.example/"))
-        // wait for the load first, then for the request: on a loaded machine the
-        // page can take several seconds to get as far as calling getUserMedia,
-        // and a short poll here made this assertion flaky rather than wrong
+        // wait for the load, then the request: a loaded machine can take seconds to reach
+        // getUserMedia
         for _ in 0..<60 {
             try? await Task.sleep(for: .milliseconds(100))
             if !tab.webView.isLoading { break }
@@ -3797,10 +4890,8 @@ enum SelfTest {
         let pageState =
             ((try? await tab.webView.evaluateJavaScript("window.__result")) as? String) ?? "?"
 
-        // macOS' own answer for the whole app sits underneath the per-site one.
-        // While it is undecided WebKit waits on the system prompt and never puts
-        // the page's question to us — so on a machine that has never granted
-        // Artemis location there is nothing here to assert about the code
+        // while the app's own location authorization is undecided, WebKit waits on the
+        // system prompt and never asks us, so there is nothing to assert
         let system = CLLocationManager().authorizationStatus
         guard system == .authorized || system == .authorizedAlways else {
             note(
@@ -3831,10 +4922,8 @@ enum SelfTest {
             result.hasPrefix("error:1"), result)
     }
 
-    /// ⇧⌘T. The archive covers tabs Artemis closed *for* you once they went
-    /// stale; this covers the ones you closed yourself and immediately regretted,
-    /// which is a different feature with a different lifetime — and it has to
-    /// bring the page back where it was, not just its url.
+    /// ⇧⌘T: tabs you closed yourself, apart from the archive's auto-closed ones, back
+    /// where they were rather than just at their url
     private static func testReopenClosedTab(manager: TabManager) async {
         let space = manager.currentSpace
         let before = manager.closedTabs.count
@@ -3871,13 +4960,8 @@ enum SelfTest {
         record("reopen: an empty stack does nothing", manager.reopenLastClosedTab() == nil)
     }
 
-    /// The local page-text index: "I read something last week that said…",
-    /// answered from a SQLite FTS5 table that never leaves the machine.
-    ///
-    /// Tested against the real index file rather than a fixture, because the
-    /// parts that break are the ones between Swift and SQLite — query escaping,
-    /// re-visits duplicating rows, ranged clears — and none of those show up in
-    /// a mock.
+    /// the local page-text index (SQLite FTS5), against the real index file: what breaks
+    /// lies between Swift and SQLite (escaping, re-visit duplicates, ranged clears)
     private static func testFullTextIndex() async {
         let index = BrowserCore.shared.defaultProfile.pageIndex
         let before = await index.count()
@@ -3886,10 +4970,8 @@ enum SelfTest {
         let beta = URL(string: "https://fulltext.selftest.example/beta")!
         await index.record(
             url: alpha, title: "Sourdough Notes",
-            // invented words, not real ones: the index under test is the
-            // user's own, with whatever they have actually read in it, and
-            // "hydration" finding somebody's real bread post instead of this
-            // fixture is a flaky test rather than a bug
+            // invented words: the index under test is the user's own, and a real word could
+            // match something they have read
             body: "The starter wants a warm quillbright and a hydration of about seventy "
                 + "percent. Rye flour makes it lively; a cold kitchen makes it sulk.")
         await index.record(
@@ -3930,10 +5012,8 @@ enum SelfTest {
             "fulltext: and the old text is gone",
             await index.search("quillbright").isEmpty)
 
-        // a ranged clear takes the recent rows and leaves the older ones.
-        // by the entry, not by the count: earlier tests' page loads write into
-        // this index too (the capture pipeline is deliberately 1.5s late), so
-        // under load a straggler lands mid-test and a count comparison flaps
+        // a ranged clear takes the recent rows and leaves the older ones; checked by entry,
+        // not count, since other tests' late index writes (1.5s) can land mid-test
         await index.clear(since: Date(timeIntervalSinceNow: -60))
         let citric = await index.search("zalcitrine")
         let rewritten = await index.search("zalquill")
@@ -3966,7 +5046,7 @@ enum SelfTest {
             is the sort of thing that would otherwise fill it with nothing.</p></body></html>
             """
         tab.webView.loadHTMLString(html, baseURL: URL(string: "https://capture.fulltext.example/"))
-        // the indexer waits 1.5s after the page settles, on purpose
+        // the indexer waits 1.5s after the page settles
         var hits: [PageTextHit] = []
         for _ in 0..<20 {
             try? await Task.sleep(for: .milliseconds(400))
@@ -3981,11 +5061,6 @@ enum SelfTest {
         await manager.currentProfile.pageIndex.clear(since: Date(timeIntervalSinceNow: -300))
     }
 
-    /// Fingerprint defence. The properties that matter are contradictory on
-    /// purpose — the noise has to be *stable* within one site in one session
-    /// (or a tracker detects the randomisation by measuring twice, and ordinary
-    /// pages break) and *different* between sites (or it isn't defending
-    /// anything). Both are checked here against live pages.
     // MARK: - Passwords and passkeys
 
     private static func testPasskeyFormat() {
@@ -3998,7 +5073,7 @@ enum SelfTest {
         let key = P256.Signing.PrivateKey()
         let id = Data((0..<16).map { UInt8($0) })
         let raw = key.publicKey.rawRepresentation
-        let made = Passkeys.authenticatorData(rpID: "example.com", credential: (id, raw))
+        let made = Passkeys.authenticatorData(rpID: "example.com", verified: true, credential: (id, raw))
         let cose = Passkeys.coseKey(raw)
         record(
             "passkeys: the COSE key is EC2 / ES256 / P-256 with x and y",
@@ -4024,8 +5099,10 @@ enum SelfTest {
         record("passkeys: clientDataJSON keeps the spec's field order", String(decoding: clientData, as: UTF8.self) == expected,
                String(decoding: clientData, as: UTF8.self))
 
-        let assertion = Passkeys.authenticatorData(rpID: "example.com")
+        let assertion = Passkeys.authenticatorData(rpID: "example.com", verified: true)
         record("passkeys: assertion authData is 37 bytes with UP|UV", assertion.count == 37 && assertion[32] == 0x05)
+        let unverified = Passkeys.authenticatorData(rpID: "example.com", verified: false)
+        record("passkeys: with no owner check the assertion claims UP alone", unverified[32] == 0x01)
         let message = assertion + Data(SHA256.hash(data: clientData))
         let software = (try? Passkeys.sign(authData: assertion, clientData: clientData, blob: key.rawRepresentation, enclave: false))
             .flatMap { try? P256.Signing.ECDSASignature(derRepresentation: $0) }
@@ -4133,7 +5210,7 @@ enum SelfTest {
 
         let store = PasswordStore.shared
         record("passwords: the Keychain index opens", !store.isUnreadable)
-        let origin = "https://store.selftest.local"
+        let origin = "https://store.selftest.example"
         let name = "selftest-\(UUID().uuidString.prefix(8))"
         let saved = store.save(origin: origin, username: name, password: "first", in: Profile.defaultID)
         record(
@@ -4145,8 +5222,8 @@ enum SelfTest {
             "passwords: saving the same account replaces its password",
             store.logins.filter { $0.origin == origin && $0.username == name }.count == 1
                 && store.password(for: saved) == "second")
-        let sibling = store.save(origin: "https://other.selftest.local", username: name, password: "x", in: Profile.defaultID)
-        let twin = store.save(origin: "https://www.store.selftest.local", username: name, password: "y", in: Profile.defaultID)
+        let sibling = store.save(origin: "https://other.selftest.example", username: name, password: "x", in: Profile.defaultID)
+        let twin = store.save(origin: "https://www.store.selftest.example", username: name, password: "y", in: Profile.defaultID)
         let ranked = store.matches(for: origin, in: Profile.defaultID)
         record(
             "passwords: exact origin first, then its www. twin, never a sibling subdomain",
@@ -4159,11 +5236,11 @@ enum SelfTest {
                 && Keychain.secret(Keychain.passwords, Keychain.index).flatMap {
                     try? JSONDecoder().decode([SavedLogin].self, from: $0)
                 }?.contains { $0.id == twin.id } == true)
-        record("passwords: another scheme isn't offered", !store.matches(for: "http://store.selftest.local", in: Profile.defaultID).contains { $0.id == saved.id })
+        record("passwords: another scheme isn't offered", !store.matches(for: "http://store.selftest.example", in: Profile.defaultID).contains { $0.id == saved.id })
 
         let csv = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n"
-            + ",,login,Import,,,0,https://import.selftest.local/login,\(name),secret,\n"
-            + ",,login,Empty,,,0,https://import.selftest.local/,nobody,,\n"
+            + ",,login,Import,,,0,https://import.selftest.example/login,\(name),secret,\n"
+            + ",,login,Empty,,,0,https://import.selftest.example/,nobody,,\n"
         let first = await store.importCSV(csv, into: Profile.defaultID)
         let again = await store.importCSV(csv, into: Profile.defaultID)
         record(
@@ -4192,12 +5269,12 @@ enum SelfTest {
         if let login = store.logins.first(where: { $0.username == name && $0.origin.hasPrefix("https://import.") }) {
             store.setOneTimeCode(OneTimeCode(rfc), for: login)
             store.edit(login, username: name, password: nil, notes: "kept")
-            let offered = store.codeMatches(for: "https://auth.selftest.local", in: Profile.defaultID).contains { $0.id == login.id }
+            let offered = store.codeMatches(for: "https://auth.selftest.example", in: Profile.defaultID).contains { $0.id == login.id }
             record(
                 "codes: kept beside the password, survive an edit, offered across the site's subdomains",
                 store.oneTimeCode(for: login)?.setup == rfc && offered
-                    && store.codeMatches(for: "https://selftest.example", in: Profile.defaultID).isEmpty
-                    && store.codeMatches(for: "http://auth.selftest.local", in: Profile.defaultID).isEmpty)
+                    && store.codeMatches(for: "https://elsewhere.example", in: Profile.defaultID).isEmpty
+                    && store.codeMatches(for: "http://auth.selftest.example", in: Profile.defaultID).isEmpty)
             store.setOneTimeCode(nil, for: login)
             record(
                 "codes: removing one deletes its item",
@@ -4206,9 +5283,9 @@ enum SelfTest {
             record("codes: kept beside the password, survive an edit, offered across the site's subdomains", false, "no imported login")
         }
         let apple = "Title,URL,Username,Password,Notes,OTPAuth\n"
-            + "Codes,https://codes.selftest.local/,\(name),pw,,otpauth://totp/Codes:\(name)?secret=\(rfc)&issuer=Codes\n"
+            + "Codes,https://codes.selftest.example/,\(name),pw,,otpauth://totp/Codes:\(name)?secret=\(rfc)&issuer=Codes\n"
         let fromApple = await store.importCSV(apple, into: Profile.defaultID)
-        let coded = store.logins.first { $0.origin == "https://codes.selftest.local" && $0.username == name }
+        let coded = store.logins.first { $0.origin == "https://codes.selftest.example" && $0.username == name }
         record(
             "codes: an Apple Passwords export brings its verification codes",
             fromApple?.added == 1 && coded.flatMap(store.oneTimeCode(for:))?.code(at: at59) == "287082",
@@ -4224,7 +5301,7 @@ enum SelfTest {
             "passwords: deleting removes the item",
             !store.logins.contains { $0.username == name } && store.password(for: saved) == nil)
 
-        let rp = "passkey.selftest.local"
+        let rp = "passkey.selftest.example"
         let handle = Data(name.utf8).base64URL
         func passkey(_ id: String) -> SavedPasskey {
             SavedPasskey(
@@ -4267,6 +5344,731 @@ enum SelfTest {
                 && store.passkeys(in: elsewhere).isEmpty && store.passkeyKey(tagged) == nil)
     }
 
+    // MARK: - Autofill
+
+    /// a store on a scratch file whose card numbers live in memory, standing in for the shared one and its
+    /// owner check until `restore`
+    private static func scratchAutofill() -> (store: AutofillStore, restore: () -> Void) {
+        final class Numbers: @unchecked Sendable { var items: [String: Data] = [:] }
+        let numbers = Numbers()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("autofill-selftest-\(UUID().uuidString).json")
+        let store = AutofillStore(
+            file: file,
+            vault: CardVault(
+                put: { numbers.items[$0] = $1; return true }, read: { numbers.items[$0] },
+                delete: { numbers.items[$0] = nil }))
+        let (real, check, unlockedAt) = (AutofillStore.shared, OwnerUnlock.check, OwnerUnlock.unlockedAt)
+        let keys = [AutofillStore.fillAddressesKey, AutofillStore.fillCardsKey, AutofillStore.offerToSaveKey]
+        let policies = [OwnerUnlock.Kind.cards.key, OwnerUnlock.Kind.addresses.key]
+        let flags = (keys + policies).map { UserDefaults.standard.object(forKey: $0) }
+        for key in keys { UserDefaults.standard.set(true, forKey: key) }
+        UserDefaults.standard.set(UnlockPolicy.everyTime.rawValue, forKey: OwnerUnlock.Kind.cards.key)
+        UserDefaults.standard.set(UnlockPolicy.never.rawValue, forKey: OwnerUnlock.Kind.addresses.key)
+        AutofillStore.shared = store
+        return (store, {
+            AutofillStore.shared = real
+            (OwnerUnlock.check, OwnerUnlock.unlockedAt) = (check, unlockedAt)
+            for (key, flag) in zip(keys + policies, flags) { UserDefaults.standard.set(flag, forKey: key) }
+            for suffix in ["", ".bak"] { try? FileManager.default.removeItem(atPath: file.path + suffix) }
+        })
+    }
+
+    private static func loadAutofill(_ tab: BrowserTab, _ html: String, at base: String = "https://shop.autofill.example/") async {
+        tab.webView.loadHTMLString(html, baseURL: URL(string: base))
+        for _ in 0..<60 {
+            try? await Task.sleep(for: .milliseconds(100))
+            if !tab.webView.isLoading { break }
+        }
+    }
+
+    /// each classified field by id: its type, section and whether the section is offered
+    private static func autofillFields(_ tab: BrowserTab, in frame: WKFrameInfo? = nil) async
+        -> [String: (type: String, section: Int, live: Bool)]
+    {
+        let list = try? await tab.webView.callAsyncJavaScript(
+            "return __artemisAutofill.fields()", in: frame, contentWorld: AutofillPage.world) as? [[String: Any]]
+        var out: [String: (type: String, section: Int, live: Bool)] = [:]
+        for f in list ?? [] {
+            guard let key = f["key"] as? String, let type = f["type"] as? String else { continue }
+            out[key] = (type, f["section"] as? Int ?? -1, f["live"] as? Bool == true)
+        }
+        return out
+    }
+
+    private static let autofillCardForm: String = {
+        let months = (1...12).map { String(format: "<option value=%02d>%d</option>", $0, $0) }.joined()
+        let years = (2026...2040).map { "<option>\($0)</option>" }.joined()
+        return """
+            <html><body><form onsubmit="event.preventDefault()">
+            <label>Name on card <input id=cn></label>
+            <label for=p1>Card number</label><input id=p1 maxlength=4><input id=p2 maxlength=4><input id=p3 type=tel maxlength=4><input id=p4 maxlength=4>
+            <label for=em>Expiry</label><select id=em><option value="">Month</option>\(months)</select><select id=ey><option value="">Year</option>\(years)</select>
+            <label for=cvc>CVC</label><input id=cvc maxlength=4>
+            </form>
+            <form><input id=num2 autocomplete=cc-number><input id=exp placeholder="MM / YY"></form>
+            </body></html>
+            """
+    }()
+
+    private static let autofillAddressForm = """
+        <html><body><form onsubmit="event.preventDefault()">
+        <input id=given autocomplete=given-name><input id=family autocomplete=family-name>
+        <input id=line1 autocomplete=address-line1><input id=line2 autocomplete=address-line2>
+        <input id=city autocomplete=address-level2>
+        <select id=region autocomplete=address-level1><option value="">State</option><option value=CA>California</option><option value=NY>New York</option></select>
+        <input id=postal autocomplete=postal-code>
+        <select id=country autocomplete=country><option value="">Country</option><option value=DE>Germany</option><option value=US>United States</option></select>
+        <input id=tel autocomplete=tel><input id=email autocomplete=email>
+        <input id=trap autocomplete=email style="position:absolute;left:-9999px">
+        <button id=send>Send</button></form><script>window.seen = [];
+        window.changes = 0;
+        new MutationObserver(m => changes += m.length)
+          .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        for (const t of ["input", "change"]) document.addEventListener(t, e =>
+          seen.push(t + ":" + e.target.id + "=" + e.target.value + (e.inputType ? "/" + e.inputType : "")), true);
+        </script></body></html>
+        """
+
+    /// serves `html` for every request on 127.0.0.1, which needs no Local Network access, until its socket closes
+    nonisolated private static func serveLoopback(_ html: String) -> (socket: Int32, port: UInt16)? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, length) == 0 && getsockname(fd, $0, &length) == 0 }
+        }
+        guard bound, listen(fd, 8) == 0 else {
+            close(fd)
+            return nil
+        }
+        let reply = Data(
+            ("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\n"
+                + "Connection: close\r\n\r\n" + html).utf8)
+        Thread.detachNewThread {
+            while true {
+                let client = accept(fd, nil, nil)
+                guard client >= 0 else { return }
+                var request = [UInt8](repeating: 0, count: 4096)
+                _ = read(client, &request, request.count)
+                _ = reply.withUnsafeBytes { write(client, $0.baseAddress, reply.count) }
+                close(client)
+            }
+        }
+        return (fd, UInt16(bigEndian: address.sin_port))
+    }
+
+    private static func testAutofillParse(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+        }
+        func describe(_ f: [String: (type: String, section: Int, live: Bool)]) -> String {
+            f.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.type)#\($0.value.section)" }.joined(separator: " ")
+        }
+
+        await loadAutofill(tab, """
+            <html><body><form>
+            <input id=n autocomplete="shipping name"><input id=a1 autocomplete="shipping address-line1">
+            <input id=a2 autocomplete="shipping address-line2"><input id=c autocomplete="shipping address-level2">
+            <input id=z autocomplete="shipping postal-code">
+            <select id=co autocomplete="shipping country"><option value="">-</option><option value=US>United States</option></select>
+            <input id=e type=email autocomplete=email>
+            <input id=bn autocomplete="billing name"><input id=bz autocomplete="billing postal-code">
+            <input id=u autocomplete=username><input id=x name=city autocomplete=nickname>
+            </form></body></html>
+            """)
+        var f = await autofillFields(tab)
+        record(
+            "autofill: autocomplete tokens classify fields, and other tokens are left alone",
+            f["n"]?.type == "name" && f["a1"]?.type == "address-line1" && f["a2"]?.type == "address-line2"
+                && f["c"]?.type == "address-level2" && f["z"]?.type == "postal-code" && f["co"]?.type == "country"
+                && f["e"]?.type == "email" && f["u"] == nil && f["x"] == nil,
+            describe(f))
+        record(
+            "autofill: shipping and billing tokens make separate sections",
+            f["n"]?.section == f["z"]?.section && f["e"]?.section == f["n"]?.section && f["bn"]?.section != f["n"]?.section
+                && f["bn"]?.section == f["bz"]?.section,
+            describe(f))
+        await settle { tab.autofillFrames.values.contains { $0.frame.isMainFrame } }
+        record(
+            "autofill: a page's address fields are reported to native",
+            tab.autofillFrames.values.contains { $0.frame.isMainFrame && $0.kinds["address"]?.contains("postal-code") == true })
+
+        await loadAutofill(tab, """
+            <html><body><form>
+            <label for=f>First name</label><input id=f name=fname>
+            <label for=l>Last name</label><input id=l name=lname>
+            <label>Street address <input id=s name=street></label>
+            <input id=city name="billing_city" placeholder="City"><input id=zip name=zip>
+            <label for=st>State</label><select id=st><option>--</option><option value=CA>California</option></select>
+            <input id=ph type=tel name=phone><input id=q name=search placeholder="Search">
+            </form><form>
+            <label for=vn>Vorname</label><input id=vn><label for=nn>Nachname</label><input id=nn>
+            <label for=str>Straße und Hausnummer</label><input id=str>
+            <label for=plz>PLZ</label><input id=plz><label for=ort>Ort</label><input id=ort>
+            </form><form>
+            <label for=pr>Prénom</label><input id=pr><label for=cp>Code postal</label><input id=cp>
+            <label for=vi>Ville</label><input id=vi><label for=ad>Adresse</label><input id=ad>
+            </form></body></html>
+            """)
+        f = await autofillFields(tab)
+        record(
+            "autofill: English labels, names and placeholders classify fields without autocomplete",
+            f["f"]?.type == "given-name" && f["l"]?.type == "family-name" && f["s"]?.type == "address-line1"
+                && f["city"]?.type == "address-level2" && f["zip"]?.type == "postal-code" && f["st"]?.type == "address-level1"
+                && f["ph"]?.type == "tel" && f["q"] == nil && f["f"]?.live == true,
+            describe(f))
+        record(
+            "autofill: German and French labels classify fields",
+            f["vn"]?.type == "given-name" && f["nn"]?.type == "family-name" && f["str"]?.type == "address-line1"
+                && f["plz"]?.type == "postal-code" && f["ort"]?.type == "address-level2" && f["pr"]?.type == "given-name"
+                && f["cp"]?.type == "postal-code" && f["vi"]?.type == "address-level2" && f["ad"]?.type == "address-line1",
+            describe(f))
+        record("autofill: each form is its own section", f["f"]?.section != f["vn"]?.section && f["vn"]?.section != f["pr"]?.section)
+
+        await loadAutofill(tab, autofillCardForm)
+        f = await autofillFields(tab)
+        let boxes = ["p1", "p2", "p3", "p4"].compactMap { f[$0] }
+        record(
+            "autofill: a card number split over four boxes is one number",
+            boxes.count == 4 && boxes.allSatisfy { $0.type == "cc-number" && $0.section == boxes[0].section && $0.live },
+            describe(f))
+        record(
+            "autofill: expiry selects, the cardholder and the security code are recognised",
+            f["em"]?.type == "cc-exp-month" && f["ey"]?.type == "cc-exp-year" && f["cn"]?.type == "cc-name"
+                && f["cvc"]?.type == "cc-csc" && f["em"]?.section == f["p1"]?.section,
+            describe(f))
+        record("autofill: MM / YY in one box is a combined expiry", f["exp"]?.type == "cc-exp", describe(f))
+
+        await loadAutofill(tab, """
+            <html><body><p>loading</p><script>setTimeout(() => document.body.insertAdjacentHTML("beforeend",
+              '<form><input id=late autocomplete="cc-number"><input id=late2 autocomplete="cc-exp"></form>'), 400);</script></body></html>
+            """)
+        let early = tab.autofillFrames.isEmpty
+        await settle { tab.autofillFrames.values.contains { $0.kinds["card"] != nil } }
+        f = await autofillFields(tab)
+        record(
+            "autofill: a form inserted after load is found and reported",
+            early && f["late"]?.type == "cc-number" && tab.autofillFrames.values.contains { $0.kinds["card"] != nil },
+            describe(f))
+
+        await loadAutofill(tab, """
+            <html><body><form><input id=holder autocomplete=cc-name></form>
+            <iframe srcdoc='<form><input id=fnum autocomplete="cc-number"><input id=fexp autocomplete="cc-exp"></form>'></iframe>
+            </body></html>
+            """)
+        await settle { tab.autofillFrames.values.contains { !$0.frame.isMainFrame } }
+        let sub = tab.autofillFrames.values.first { !$0.frame.isMainFrame }
+        let inner = sub == nil ? [:] : await autofillFields(tab, in: sub!.frame)
+        record(
+            "autofill: a form inside an iframe is classified and reported by its own frame",
+            inner["fnum"]?.type == "cc-number" && sub?.kinds["card"]?.contains("cc-number") == true, describe(inner))
+    }
+
+    /// the unlock policies through the real gate, with the owner check stubbed
+    private static func testAutofillUnlock(manager: TabManager) async {
+        let defaults = UserDefaults.standard
+        let kinds = OwnerUnlock.Kind.allCases
+        let legacy = "autofillCardsNeedAuth"
+        let saved = (kinds.map(\.key) + [legacy]).map { ($0, defaults.object(forKey: $0)) }
+        let (check, unlockedAt) = (OwnerUnlock.check, OwnerUnlock.unlockedAt)
+        let tab = manager.newTab(url: nil, select: false)
+        defer {
+            manager.close(tab)
+            for (key, value) in saved { defaults.set(value, forKey: key) }
+            (OwnerUnlock.check, OwnerUnlock.unlockedAt) = (check, unlockedAt)
+        }
+        var asked = 0
+        var answer = true
+        OwnerUnlock.check = { _ in
+            asked += 1
+            return answer
+        }
+        func use(_ kind: OwnerUnlock.Kind, _ policy: UnlockPolicy) { defaults.set(policy.rawValue, forKey: kind.key) }
+        /// checks `kind` asks for, from a forgotten unlock: twice in a row, then after `ago` seconds
+        func asks(_ kind: OwnerUnlock.Kind, after ago: TimeInterval) async -> [Int] {
+            OwnerUnlock.unlockedAt = nil
+            asked = 0
+            var counts: [Int] = []
+            for _ in 0..<2 {
+                _ = await OwnerUnlock.authenticate(kind, "selftest")
+                counts.append(asked)
+            }
+            OwnerUnlock.unlockedAt = OwnerUnlock.unlockedAt?.addingTimeInterval(-ago)
+            _ = await OwnerUnlock.authenticate(kind, "selftest")
+            return counts + [asked]
+        }
+
+        for key in kinds.map(\.key) + [legacy] { defaults.removeObject(forKey: key) }
+        record(
+            "unlock: defaults are passwords after 5 minutes, cards every time, addresses never",
+            kinds.map(\.policy) == [.fiveMinutes, .everyTime, .never], "\(kinds.map(\.policy))")
+        defaults.set(false, forKey: legacy)
+        record("unlock: a card toggle turned off before the policy existed reads as never", OwnerUnlock.Kind.cards.policy == .never)
+        defaults.removeObject(forKey: legacy)
+
+        for kind in kinds {
+            var wrong: [String] = []
+            for policy in UnlockPolicy.allCases {
+                use(kind, policy)
+                let window = policy.window
+                // [after the first, after the second at once, after aging past the window]
+                let expected: [Int] =
+                    switch window {
+                    case nil: [0, 0, 0]
+                    case 0: [1, 2, 3]
+                    case .infinity: [1, 1, 1]
+                    default: [1, 1, 2]
+                    }
+                let got = await asks(kind, after: window.map { $0.isFinite ? $0 + 1 : 86_400 * 30 } ?? 0)
+                if got != expected { wrong.append("\(policy.rawValue) \(got)") }
+                if let window, window.isFinite, window > 0 {
+                    OwnerUnlock.unlockedAt = Date().addingTimeInterval(-(window - 5))
+                    if !OwnerUnlock.isUnlocked(kind) { wrong.append("\(policy.rawValue) lapsed early") }
+                }
+            }
+            record(
+                "unlock: every \(kind.rawValue) option asks when it should, and windows lapse once they've passed",
+                wrong.isEmpty, wrong.joined(separator: ", "))
+        }
+
+        answer = false
+        use(.cards, .fiveMinutes)
+        OwnerUnlock.unlockedAt = nil
+        let refused = await OwnerUnlock.authenticate(.cards, "selftest")
+        record("unlock: a refused check unlocks nothing", !refused && OwnerUnlock.unlockedAt == nil)
+        answer = true
+
+        use(.passwords, .untilQuit)
+        var gone: [String] = []
+        // each followed by its wake, so WebKit doesn't stay prepared for a sleep that never came
+        let wakes = [
+            NSWorkspace.willSleepNotification: NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidSleepNotification: NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidResignActiveNotification: NSWorkspace.sessionDidBecomeActiveNotification,
+        ]
+        for (center, name) in OwnerUnlock.forgetOn {
+            guard let wake = wakes[name] else { continue }
+            _ = await OwnerUnlock.authenticate(.passwords, "selftest")
+            center.post(name: name, object: NSWorkspace.shared)
+            if OwnerUnlock.isUnlocked(.passwords) { gone.append(name.rawValue) }
+            center.post(name: wake, object: NSWorkspace.shared)
+        }
+        record("unlock: sleep, display sleep and switching user end even an until-quit unlock", gone.isEmpty, gone.joined(separator: ", "))
+        // posting the lock signal would reach every app on the Mac, so only its registration is checked
+        record(
+            "unlock: screen lock ends unlocks",
+            OwnerUnlock.forgetOn.contains { $0.0 is DistributedNotificationCenter && $0.1.rawValue == "com.apple.screenIsLocked" })
+
+        use(.passwords, .fiveMinutes)
+        use(.cards, .everyTime)
+        use(.addresses, .never)
+        OwnerUnlock.unlockedAt = nil
+        asked = 0
+        _ = await OwnerUnlock.authenticate(.passwords, "selftest")
+        _ = await OwnerUnlock.authenticate(.cards, "selftest")
+        _ = await OwnerUnlock.authenticate(.addresses, "selftest")
+        record("unlock: a passwords unlock never covers cards that ask every time", asked == 2, "\(asked)")
+        use(.cards, .minute)
+        OwnerUnlock.unlockedAt = Date().addingTimeInterval(-120)
+        asked = 0
+        let passwords = OwnerUnlock.isUnlocked(.passwords)
+        _ = await OwnerUnlock.authenticate(.cards, "selftest")
+        record("unlock: an unlock older than a stricter kind's window asks again there", passwords && asked == 1, "\(asked)")
+
+        use(.passwords, .everyTime)
+        let origin = "https://unlock.selftest.example"
+        let login = PasswordStore.shared.save(origin: origin, username: "selftest-unlock", password: "x", in: tab.loginProfile)
+        defer { PasswordStore.shared.delete(login) }
+        let target = LoginTarget(frame: nil, origin: origin, focused: true)
+        answer = false
+        asked = 0
+        let filled = await PasswordAutofill.shared.fill(login, into: target, in: tab)
+        record("unlock: a password fill asks first and stops when refused", !filled && asked == 1, "\(asked)")
+        answer = true
+        use(.passwords, .never)
+        asked = 0
+        _ = await PasswordAutofill.shared.fill(login, into: target, in: tab)
+        record("unlock: passwords set to never fill without asking", asked == 0, "\(asked)")
+    }
+
+    private static func testAutofillFill(manager: TabManager) async {
+        let (store, restore) = scratchAutofill()
+        defer { restore() }
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+        }
+        func read(_ js: String, in frame: WKFrameInfo? = nil) async -> String {
+            let value = try? await tab.webView.callAsyncJavaScript(js, in: frame, contentWorld: .page)
+            return value.map { "\($0)" } ?? "nil"
+        }
+        func target() -> AutofillTarget? {
+            tab.autofillFrames.values.first { $0.frame.isMainFrame }.map { AutofillTarget(frame: $0.frame, origin: $0.origin) }
+        }
+        func show(_ html: String, at base: String = "https://shop.autofill.example/") async {
+            await loadAutofill(tab, html, at: base)
+            await settle { target() != nil }
+        }
+        let profile = PasswordStore.stored(tab.loginProfile)
+        let address = SavedAddress(
+            givenName: "Ada", familyName: "Lovelace", street: "12 Byron Road\nFlat 3", city: "Cupertino", region: "CA",
+            postalCode: "95014", country: "US", phone: "+1 408 555 0100", email: "ada@autofill.example", profileID: profile)
+        store.save(address)
+        let card = SavedCard(holder: "Ada Lovelace", expiryMonth: 4, expiryYear: 2029, brand: .other, last4: "", profileID: profile)
+        store.save(card, number: "4242 4242 4242 4242")
+
+        await show(autofillAddressForm)
+        _ = await read("city.value = 'Kept'")
+        var filled = false
+        UserDefaults.standard.set(UnlockPolicy.everyTime.rawValue, forKey: OwnerUnlock.Kind.addresses.key)
+        OwnerUnlock.check = { _ in false }
+        if let target = target() { filled = await Autofill.shared.fill(.address(address), into: target, in: tab) }
+        let locked = await read("return given.value")
+        record("autofill: an address set to ask fills nothing when the owner check is refused", !filled && locked == "", locked)
+        UserDefaults.standard.set(UnlockPolicy.never.rawValue, forKey: OwnerUnlock.Kind.addresses.key)
+        if let target = target() { filled = await Autofill.shared.fill(.address(address), into: target, in: tab) }
+        let values = await read(
+            "return [given, family, line1, line2, city, region, postal, country, tel, email, trap].map(e => e.value).join('|')")
+        record(
+            "autofill: an address fills its section, selects included, and skips hidden and typed fields",
+            filled && values == "Ada|Lovelace|12 Byron Road|Flat 3|Kept|CA|95014|US|+1 408 555 0100|ada@autofill.example|",
+            values)
+        let seen = await read("return seen.join(' ')")
+        record(
+            "autofill: filling fires input and change the way frameworks listen for them",
+            seen.contains("input:given=Ada/insertReplacementText") && seen.contains("change:given=Ada")
+                && seen.contains("change:region=CA") && !seen.contains("city="),
+            seen)
+        record("autofill: the page world can't see the fill hook", await read("return typeof __artemisAutofill") == "undefined")
+
+        await show("""
+            <html><body><form>
+            <input id=hg autocomplete=given-name><input id=hl autocomplete=address-line1>
+            <input id=hc autocomplete=address-level2><input id=hz autocomplete=postal-code><input id=hlate autocomplete=name>
+            <div style="opacity:0.01"><input id=hn autocomplete=family-name></div>
+            <input id=ht autocomplete=tel style="position:absolute;left:-9999px">
+            <div aria-hidden=true><input id=he autocomplete=email></div>
+            <input id=ho autocomplete=organization style="clip-path:inset(50%)">
+            <div style="overflow:hidden;height:0"><input id=hcn autocomplete=country></div>
+            <input id=hh autocomplete=address-line2 hidden><div inert><input id=hi autocomplete=address-level1></div>
+            </form></body></html>
+            """)
+        _ = await read("hlate.style.opacity = '0'")
+        if let target = target() { filled = await Autofill.shared.fill(.address(address), into: target, in: tab) }
+        let shown = await read("return [hg, hl, hc, hz].map(e => e.value).join('|')")
+        let hidden = await read("return [hlate, hn, ht, he, ho, hcn, hh, hi].map(e => e.value).join('')")
+        record(
+            "autofill: only visible fields fill, never one hidden by opacity, position, aria-hidden, clip, overflow, hidden, inert or just before the fill",
+            filled && shown == "Ada|12 Byron Road, Flat 3|Cupertino|95014" && hidden.isEmpty, "\(shown) / \(hidden)")
+
+
+        await show(autofillCardForm)
+        var asked = 0
+        OwnerUnlock.check = { _ in
+            asked += 1
+            return false
+        }
+        if let target = target() { filled = await Autofill.shared.fill(.card(card), into: target, in: tab) }
+        let refused = await read("return [p1.value, cn.value].join('|')")
+        record("autofill: a refused owner check fills no card", !filled && asked == 1 && refused == "|", refused)
+
+        OwnerUnlock.check = { _ in
+            asked += 1
+            return true
+        }
+        if let target = target() { filled = await Autofill.shared.fill(.card(card), into: target, in: tab) }
+        let cardValues = await read("return [cn, p1, p2, p3, p4, em, ey, cvc].map(e => e.value).join('|')")
+        record(
+            "autofill: a card fills split number boxes and expiry selects, never the security code",
+            filled && cardValues == "Ada Lovelace|4242|4242|4242|4242|04|2029|", cardValues)
+        let combined = await read("return [num2.value, exp.value].join('|')")
+        record("autofill: other card sections are left for their own pick", combined == "|", combined)
+        if let target = target() { filled = await Autofill.shared.fill(.card(card), into: target, in: tab) && filled }
+        record("autofill: cards set to ask every time ask on every fill", filled && asked == 3, "\(asked)")
+
+        await show(autofillCardForm, at: "http://shop.autofill.example/")
+        if let target = target() {
+            let offered = Autofill.shared.choices("card", for: target, in: tab)
+            filled = await Autofill.shared.fill(.card(card), into: target, in: tab)
+            let plain = await read("return p1.value")
+            record("autofill: an http page is never offered or filled a card", offered.isEmpty && !filled && plain == "", plain)
+        } else {
+            record("autofill: an http page is never offered or filled a card", false, "no fields reported")
+        }
+
+        await loadAutofill(tab, """
+            <html><body><form><input id=holder autocomplete=cc-name></form>
+            <iframe srcdoc='<form><input id=fnum autocomplete="cc-number"><input id=fexp autocomplete="cc-exp" placeholder="MM/YY"></form>'></iframe>
+            </body></html>
+            """)
+        await settle { tab.autofillFrames.count == 2 }
+        let frame = tab.autofillFrames.values.first { !$0.frame.isMainFrame }?.frame
+        if let target = target() { filled = await Autofill.shared.fill(.card(card), into: target, in: tab) }
+        let inner = frame == nil ? "no frame" : await read("return [fnum.value, fexp.value].join('|')", in: frame)
+        let holder = await read("return holder.value")
+        record(
+            "autofill: one pick fills the card's fields in each frame of the page",
+            filled && holder == "Ada Lovelace" && inner == "4242424242424242|04/29", "\(holder) / \(inner)")
+        let paying = """
+            <html><body><form><input id=fnum autocomplete="cc-number"><input id=fexp autocomplete="cc-exp" placeholder="MM/YY"></form></body></html>
+            """
+        if let served = serveLoopback(paying) {
+            defer {
+                shutdown(served.socket, SHUT_RDWR)
+                close(served.socket)
+            }
+            let shop = """
+                <html><body><form><input id=holder autocomplete=cc-name><input id=topnum autocomplete=cc-number></form>
+                <iframe src="http://127.0.0.1:\(served.port)/pay" width=420 height=160></iframe></body></html>
+                """
+            func payFrame() -> AutofillFrame? { tab.autofillFrames.values.first { !$0.frame.isMainFrame } }
+            await loadAutofill(tab, shop, at: "http://127.0.0.1:1/")
+            await settle(.seconds(5)) { payFrame() != nil && target() != nil }
+            var outside = "no frame"
+            if let target = target(), let pay = payFrame() {
+                filled = await Autofill.shared.fill(.card(card), into: target, in: tab)
+                outside = await read("return [fnum.value, fexp.value].join('|')", in: pay.frame)
+            }
+            let topValues = await read("return [holder.value, topnum.value].join('|')")
+            record(
+                "autofill: a card picked in the top page never fills a cross-origin frame",
+                filled && topValues == "Ada Lovelace|4242424242424242" && outside == "|", "\(topValues) / \(outside)")
+
+            await loadAutofill(tab, shop, at: "http://127.0.0.1:1/")
+            await settle(.seconds(5)) { payFrame() != nil && target() != nil }
+            var inside = "no frame"
+            if let pay = payFrame() {
+                filled = await Autofill.shared.fill(.card(card), into: AutofillTarget(frame: pay.frame, origin: pay.origin), in: tab)
+                inside = await read("return [fnum.value, fexp.value].join('|')", in: pay.frame)
+            }
+            let topAfter = await read("return [holder.value, topnum.value].join('|')")
+            record(
+                "autofill: a card picked inside a cross-origin frame fills only that frame",
+                filled && inside == "4242424242424242|04/29" && topAfter == "|", "\(inside) / \(topAfter)")
+        } else {
+            record("autofill: a loopback page serves the cross-origin frame", false)
+        }
+
+        // the list and its keys, as the person drives them
+        guard let window = mainWindow() else { return note("autofill: skipped the keyboard checks, no main window") }
+        manager.focus(tab)
+        becomeKey(window)
+        await show(autofillAddressForm)
+        await settle { tab.webView.window === window }
+        guard tab.webView.window === window else { return note("autofill: skipped the keyboard checks, the tab isn't shown") }
+        window.makeFirstResponder(tab.webView)
+        // straight to the web view, which WebKit treats as the person's keys whether or not the window is key
+        func press(_ code: UInt16, _ key: Int) {
+            let characters = String(Character(UnicodeScalar(key)!))
+            let arrow: NSEvent.ModifierFlags = key > 0xF000 ? [.function, .numericPad] : []
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                guard let event = NSEvent.keyEvent(
+                    with: type, location: .zero, modifierFlags: arrow, timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: characters,
+                    charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+                else { continue }
+                if type == .keyDown { tab.webView.keyDown(with: event) } else { tab.webView.keyUp(with: event) }
+            }
+        }
+        func panel() -> NSWindow? { window.childWindows?.first { $0.contentView is NSHostingView<AutofillSuggestions> } }
+        store.save(
+            SavedAddress(
+                givenName: "Grace", familyName: "Hopper", street: "1 Navy Way", city: "Arlington", postalCode: "22201",
+                country: "US", profileID: profile))
+        _ = await read("given.focus()")
+        press(125, NSDownArrowFunctionKey)
+        var list: AutofillSuggestions?
+        await settle {
+            list = (panel()?.contentView as? NSHostingView<AutofillSuggestions>)?.rootView
+            return list != nil
+        }
+        record("autofill: ↓ in an address field opens the native list", list?.list.choices.count == 2)
+        let tall = panel()?.frame.height ?? 0
+        press(0, Int(("a" as Character).asciiValue!))
+        await settle { list?.list.choices.count == 1 && (panel()?.frame.height ?? 0) < tall }
+        record(
+            "autofill: typing narrows the list by the field's own value, and the panel shrinks to fit",
+            list?.list.choices.count == 1 && (panel()?.frame.height ?? 0) < tall, "\(tall) → \(panel()?.frame.height ?? 0)")
+        press(125, NSDownArrowFunctionKey)
+        await settle { list?.list.highlighted == 0 }
+        press(36, 0x0D)
+        var given = ""
+        await settle {
+            given = await read("return [given.value, city.value].join('|')")
+            return given == "Ada|Cupertino"
+        }
+        record(
+            "autofill: ↓ then Return picks a row and fills its section over what was typed to find it",
+            list?.list.highlighted == 0 && given == "Ada|Cupertino" && panel() == nil, given)
+        let changes = await read("return changes")
+        record("autofill: the list and its fill leave the page's DOM untouched", changes == "0", changes)
+
+        _ = await read("city.focus()")
+        press(125, NSDownArrowFunctionKey)
+        await settle { panel() != nil }
+        let narrowed = (panel()?.contentView as? NSHostingView<AutofillSuggestions>)?.rootView.list.choices.count
+        press(7, Int(("x" as Character).asciiValue!))
+        await settle { panel() == nil }
+        record("autofill: a field's value opens the list narrowed, and a query nothing matches closes it", narrowed == 1 && panel() == nil)
+
+        _ = await read("city.value = 'Palo Alto'")
+        tab.autofillOffer = nil
+        press(36, 0x0D)
+        await settle { tab.autofillOffer != nil }
+        let offer = tab.autofillOffer
+        record(
+            "autofill: submitting a changed address offers to update it",
+            offer?.updatesAddress == true && offer?.address?.city == "Palo Alto" && offer?.address?.id == address.id
+                && offer?.card == nil)
+        Autofill.shared.accept(in: tab)
+        record(
+            "autofill: accepting the offer saves it",
+            store.addresses(in: tab.loginProfile).count == 2
+                && store.addresses(in: tab.loginProfile).first { $0.id == address.id }?.city == "Palo Alto")
+
+        // only a real submission offers: never a type=button control, always a submit, and an SPA's removal
+        let fields = """
+            <input id=g autocomplete=given-name value=Alan><input id=a autocomplete=address-line1 value="2 Bletchley Park">
+            <input id=c autocomplete=address-level2 value="Milton Keynes"><input id=z autocomplete=postal-code value="MK3 6EB">
+            """
+        await show("""
+            <html><body><form onsubmit="event.preventDefault()">\(fields)
+            <button type=button id=coupon>Apply coupon</button><button id=pay>Pay</button></form></body></html>
+            """)
+        tab.autofillOffer = nil
+        _ = await read("coupon.focus()")
+        press(36, 0x0D)
+        try? await Task.sleep(for: .milliseconds(2500))
+        let couponClicked = await read("return document.activeElement?.id")
+        record("autofill: a type=button control never offers to save", tab.autofillOffer == nil && couponClicked == "coupon")
+        _ = await read("pay.focus()")
+        press(36, 0x0D)
+        await settle { tab.autofillOffer != nil }
+        record(
+            "autofill: a submit button's submit offers to save",
+            tab.autofillOffer?.address?.givenName == "Alan" && tab.autofillOffer?.updatesAddress == false)
+
+        await show("""
+            <html><body><form id=spa>\(fields.replacingOccurrences(of: "Alan", with: "Joan"))<button id=go>Continue</button></form>
+            <script>go.addEventListener("click", e => {
+              e.preventDefault(); spa.remove(); history.pushState({}, "", "/thanks"); });</script></body></html>
+            """)
+        tab.autofillOffer = nil
+        _ = await read("go.focus()")
+        press(36, 0x0D)
+        await settle { tab.autofillOffer != nil }
+        let gone = await read("return String(!!document.getElementById('spa'))")
+        record(
+            "autofill: an SPA that removes its form after a submit click offers what the form held",
+            tab.autofillOffer?.address?.givenName == "Joan" && gone == "false", gone)
+        tab.autofillOffer = nil
+    }
+
+    private static func testAutofillStore(manager: TabManager) async {
+        let (store, restore) = scratchAutofill()
+        defer { restore() }
+        record(
+            "autofill: card numbers pass Luhn and name their brand",
+            CardBrand.isValid("4242 4242 4242 4242") && !CardBrand.isValid("4242424242424241") && !CardBrand.isValid("4242")
+                && CardBrand(number: "4242424242424242") == .visa && CardBrand(number: "2223003122003222") == .mastercard
+                && CardBrand(number: "378282246310005") == .amex)
+        record(
+            "autofill: a card number must be a length its network issues",
+            !CardBrand.isValid("555555555555442") && !CardBrand.isValid("3782822463100052")
+                && !CardBrand.isValid("42424242424242") && CardBrand.isValid("378282246310005"))
+        record(
+            "autofill: card numbers are spaced as printed",
+            CardBrand.grouped("4242424242424242") == "4242 4242 4242 4242"
+                && CardBrand.grouped("3782-822463-10005") == "3782 822463 10005"
+                && CardBrand.grouped("36227206271667") == "3622 720627 1667"
+                && CardBrand.grouped("42424242424242424242") == "4242 4242 4242 4242 424")
+        let year = Calendar.current.component(.year, from: Date())
+        record(
+            "autofill: a card past its expiry month reads as expired",
+            SavedCard(expiryMonth: 12, expiryYear: year - 1, brand: .visa, last4: "4242").isExpired
+                && !SavedCard(expiryMonth: 1, expiryYear: year + 1, brand: .visa, last4: "4242").isExpired)
+        record(
+            "autofill: countries resolve from codes and names",
+            AutofillStore.countryCode("de") == "DE" && AutofillStore.countryCode("Germany") == "DE"
+                && AutofillStore.countryCode("United Kingdom") == "GB" && AutofillStore.countryCode("Nowhere") == nil)
+
+        let elsewhere = UUID()
+        let address = SavedAddress(givenName: "Ada", street: "12 Byron Road", city: "London", postalCode: "N1 1AA", country: "GB")
+        store.save(address)
+        let card = SavedCard(holder: "Ada", expiryMonth: 4, expiryYear: 2029, brand: .other, last4: "", profileID: elsewhere)
+        let kept = store.save(card, number: "4242424242424242")
+        let saved = store.cards(in: elsewhere).first
+        record(
+            "autofill: a saved card keeps its brand and last four, its number in the vault",
+            kept && saved?.brand == .visa && saved?.last4 == "4242" && saved.flatMap { store.number(for: $0) } == "4242424242424242")
+        record("autofill: a card is found again by its number", store.card(numbered: "4242 4242 4242 4242", in: elsewhere)?.id == card.id)
+        store.save(SavedAddress(givenName: "Other", street: "1 Elsewhere", profileID: elsewhere))
+        record(
+            "autofill: each profile keeps its own addresses and cards",
+            store.addresses(in: Profile.defaultID).map(\.id) == [address.id] && store.cards(in: Profile.defaultID).isEmpty
+                && store.addresses(in: elsewhere).count == 1)
+        record(
+            "autofill: the same street and postcode is the same place, and a resubmit merges into it",
+            address.isSamePlace(as: SavedAddress(street: "12 byron road", postalCode: "n11aa"))
+                && address.merging(SavedAddress(city: "Islington")).city == "Islington"
+                && address.merging(SavedAddress(city: "Islington")).givenName == "Ada")
+
+        let quitFile = FileManager.default.temporaryDirectory.appendingPathComponent("autofill-quit-\(UUID().uuidString).json")
+        let noNumbers = CardVault(put: { _, _ in true }, read: { _ in nil }, delete: { _ in })
+        let quitting = AutofillStore(file: quitFile, vault: noNumbers)
+        let late = SavedAddress(givenName: "Late", street: "9 Quit Street")
+        quitting.save(late)
+        quitting.saveNow()
+        record(
+            "autofill: a change flushed by the quit save is on disk when it returns",
+            AutofillStore(file: quitFile, vault: noNumbers).addresses.contains { $0.id == late.id })
+        for suffix in ["", ".bak"] { try? FileManager.default.removeItem(atPath: quitFile.path + suffix) }
+
+        try? await Task.sleep(for: .milliseconds(300))
+        let file = FileManager.default.temporaryDirectory
+        let written = (try? FileManager.default.contentsOfDirectory(at: file, includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix("autofill-selftest-") && $0.pathExtension == "json" }
+            .compactMap { try? Data(contentsOf: $0) }.compactMap { String(data: $0, encoding: .utf8) } ?? []
+        record(
+            "autofill: the saved file names the card's last four but never its number",
+            written.contains { $0.contains("\"last4\":\"4242\"") } && !written.contains { $0.contains("4242424242424242") })
+
+        store.deleteAll(in: elsewhere)
+        record(
+            "autofill: deleting a profile deletes its addresses, cards and card numbers",
+            store.cards(in: elsewhere).isEmpty && store.addresses(in: elsewhere).isEmpty && store.number(for: card) == nil)
+
+        let body: [String: Any] = [
+            "type": "submit",
+            "address": ["given": "Grace", "family": "Hopper", "street": "1 Navy Way", "city": "Arlington", "postal": "22201", "country": ["US", "United States"]],
+            "card": ["number": "5555555555554444", "name": "Grace Hopper", "month": 7, "year": 2030],
+        ]
+        let burner = makeIncognito(from: manager)
+        if let page = burner.currentSpace.tabs.first {
+            Autofill.shared.learn(body, origin: "https://shop.autofill.example", in: page)
+            record("autofill: an incognito submit never offers to save", page.autofillOffer == nil && page.isPrivate)
+        }
+        burner.windowWillClose()
+        let tab = manager.newTab(url: nil, select: false)
+        Autofill.shared.learn(body, origin: "https://shop.autofill.example", in: tab)
+        let offer = tab.autofillOffer
+        record(
+            "autofill: a normal submit offers the new address and card, holding no security code",
+            offer?.address?.name == "Grace Hopper" && offer?.address?.country == "US" && offer?.card?.brand == .mastercard
+                && offer?.card?.last4 == "4444" && offer?.number == "5555555555554444" && offer?.updatesCard == false)
+        Autofill.shared.learn(body, origin: "http://shop.autofill.example", in: tab)
+        record("autofill: an http submit never offers its card", tab.autofillOffer?.card == nil)
+        manager.close(tab)
+    }
+
     private static func testPasswordPages(manager: TabManager) async {
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
@@ -4295,7 +6097,7 @@ enum SelfTest {
         record("passwords: a login form is reported from the page", tab.loginTarget?.frame?.isMainFrame == true)
         guard let target = PasswordAutofill.shared.target(in: tab) else { return }
         let other = PasswordStore.shared.save(
-            origin: "https://other.selftest.local", username: "selftest-other", password: "nope", in: Profile.defaultID)
+            origin: "https://other.selftest.example", username: "selftest-other", password: "nope", in: Profile.defaultID)
         let crossed = await PasswordAutofill.shared.fill(other, into: target, in: tab)
         PasswordStore.shared.delete(other)
         let untouched = await read("return seen.length")
@@ -4357,7 +6159,7 @@ enum SelfTest {
               .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
             </script></body></html>
             """
-        let site = "https://selftest.local"
+        let site = "https://selftest.example"
         if PasswordStore.shared.matches(for: site, in: tab.loginProfile).isEmpty {
             await load(tab, html: keyed)
             await settle(.seconds(1.5)) { !keys().isEmpty }
@@ -4449,10 +6251,10 @@ enum SelfTest {
                     .contains("incognito-only.example"))
         ChromeDisguise.set(false, for: "incognito-only.example", ephemeral: true)
 
-        // the self-test pages load as https://selftest.local/
+        // the self-test pages load as https://selftest.example/
         let tab = manager.newTab(url: nil, select: false)
         defer {
-            ChromeDisguise.set(false, for: "selftest.local", ephemeral: false)
+            ChromeDisguise.set(false, for: "selftest.example", ephemeral: false)
             manager.close(tab)
         }
         let read = """
@@ -4462,20 +6264,22 @@ enum SelfTest {
                 data ? data.brands.map((b) => b.brand).join(",") : "none",
                 high ? high.platform + " " + high.fullVersionList.length : "none"].join("|");
             """
-        ChromeDisguise.set(true, for: "selftest.local", ephemeral: false)
+        ChromeDisguise.set(true, for: "selftest.example", ephemeral: false)
         await load(tab, html: "<html><body>disguised</body></html>")
         let on = (try? await tab.webView.callAsyncJavaScript(read, contentWorld: .page)) as? String ?? ""
         record("chrome disguise: an opted-in host sees Chrome's UA, vendor and brands",
             on.contains("Chrome/\(major).0.0.0") && on.contains("|Google Inc.|")
                 && on.contains("Google Chrome") && on.contains("Chromium") && on.hasSuffix("macOS 3"),
             on)
-        ChromeDisguise.set(false, for: "selftest.local", ephemeral: false)
+        ChromeDisguise.set(false, for: "selftest.example", ephemeral: false)
         await load(tab, html: "<html><body>plain</body></html>")
         let off = (try? await tab.webView.callAsyncJavaScript(read, contentWorld: .page)) as? String ?? ""
         record("chrome disguise: turning it off restores Safari with no userAgentData",
             !off.contains("Chrome/") && off.contains("Safari/") && off.contains("|none|"), off)
     }
 
+    /// fingerprint noise is stable within one site in a session and differs between
+    /// sites; both checked against live pages
     private static func testFingerprintNoise(manager: TabManager) async {
         guard FingerprintNoise.isEnabled else {
             note("fingerprint noise: switched off, skipping")
@@ -4575,9 +6379,7 @@ enum SelfTest {
         let wasEnabled = defaults.bool(forKey: Intelligence.enabledKey)
         defer { defaults.set(wasEnabled, forKey: Intelligence.enabledKey) }
 
-        // off by default is the whole posture of this feature — an AI layer you
-        // discover by having your tabs renamed is the thing everybody complains
-        // about. this asserts the default, not the current value.
+        // off by default; this asserts the default, not the current value
         defaults.removeObject(forKey: Intelligence.enabledKey)
         record("intelligence: off unless switched on", !Intelligence.isEnabled)
         record(
@@ -4624,9 +6426,8 @@ enum SelfTest {
         record("names: an empty name goes back to the page title", store.name(for: url) == nil)
         store.setCustom(nil, for: url)
 
-        // clearing the field means "call it what the page calls itself" — so it
-        // has to drop the model's name too, or deleting your own name would
-        // just reveal the model's underneath and read as nothing happening
+        // clearing the field means "call it what the page calls itself", so it drops the
+        // model's name too
         let renameTab = manager.newTab(url: nil, select: false)
         await load(renameTab, html: "<html><title>Page Title</title><body>x</body></html>")
         let renameURL = renameTab.url
@@ -4641,8 +6442,7 @@ enum SelfTest {
             renameTab.displayTitle)
         manager.close(renameTab)
 
-        // a meaningful query IS the page: two YouTube videos must not share one
-        // name (dropping the whole query gave every video the first one's name)
+        // a meaningful query is part of the page: two YouTube videos must not share a name
         let videoA = URL(string: "https://www.youtube.com/watch?v=aaaaaaaaaaa")!
         let videoB = URL(string: "https://www.youtube.com/watch?v=bbbbbbbbbbb")!
         store.setGenerated(nil, for: videoA)
@@ -4661,8 +6461,7 @@ enum SelfTest {
                 == "Arc is dead")
         store.setGenerated(nil, for: videoA)
 
-        // a name is written off the main thread, so one made moments before
-        // quitting has to be flushed at terminate or it dies with the process
+        // a name made moments before quitting is flushed at terminate
         let persisted = URL(string: "https://persist.selftest.example/page")!
         store.setCustom("Survives Quitting", for: persisted)
         store.saveNow()
@@ -4708,10 +6507,7 @@ enum SelfTest {
             "intelligence: page context leaves out the navigation furniture",
             context?.contains("Home About") != true)
 
-        // Which pages get asked about at all, and which answers survive. A
-        // sweep over 258 real sites showed this was where naming was actually
-        // failing: a quarter of pages were refused before the model saw them,
-        // and good answers were thrown away afterwards on a length ratio.
+        // which pages get asked about at all, and which answers survive
         record(
             "names: a site's own name is trimmed off the title",
             Intelligence.titleCore("Pricing – Linear") == "Pricing"
@@ -4750,10 +6546,8 @@ enum SelfTest {
             Intelligence.nameRejection(
                 "OpenStreetMap", title: "OpenStreetMap", host: "www.openstreetmap.org",
                 isFrontPage: true) == nil)
-        // an unread badge is not a new page. YouTube, Gmail and Slack all
-        // rewrite their title to "(14) Real Title" and back as notifications
-        // arrive, and each rewrite looked like a page wanting a fresh name —
-        // which is how one tab ended up flipping between two of them
+        // an unread badge is not a new page: YouTube, Gmail and Slack rewrite their title to
+        // "(14) Real Title" and back as notifications arrive
         record(
             "names: an unread count isn't a different page",
             TabManager.normalisedTitle("(14) AFTER 15 YEARS, MOJANG HAS GIVEN US MATH.")
@@ -4783,10 +6577,7 @@ enum SelfTest {
             Intelligence.clean("CSS grid guide") == "CSS grid guide"
                 && Intelligence.clean("BBC News at Ten") == "BBC News at Ten"
                 && Intelligence.clean("JSON parsing") == "JSON parsing")
-        // a video "description" is mostly an advert. Naming a page from it is
-        // how "Arc is Dead. So I Tried the Next Best Thing" became "Arc
-        // templates": the sponsor sold templates, and the model faithfully
-        // combined the title's subject with the sponsor's
+        // a video description is mostly a sponsor's advert, so it doesn't name the page
         record(
             "names: a description that is an advert is not used to name a page",
             Intelligence.usefulContext(
@@ -4854,10 +6645,8 @@ enum SelfTest {
             vagueWithContext ?? "nil")
         manager.close(contextTab)
 
-        // punctuation that carries meaning survives — a price without its
-        // currency symbol is a different fact. what the model chooses to
-        // mention is its own business; what our tidying does to the answer
-        // isn't, so that's what's pinned down here
+        // punctuation that carries meaning survives our tidying: a price without its
+        // currency symbol is a different fact
         record(
             "intelligence: tidying keeps currency, percentages and versions",
             Intelligence.clean("£40 Off Aurora Pro") == "£40 Off Aurora Pro"
@@ -4875,11 +6664,8 @@ enum SelfTest {
             host: "aurora.example")
         note("intelligence: priced title → \(priced ?? "nil")")
 
-        // the same page must get the same name every time. it didn't: chores
-        // shared one session, and greedy sampling only promises repeatability
-        // for the same prompt in the same session STATE — so the answer
-        // depended on whatever had been named before it (measured: three of six
-        // pages gave five different names in five runs)
+        // the same page gets the same name every time: greedy sampling repeats only for the
+        // same prompt in the same session state
         let repeatTitle =
             "Arc is Dead. So I Tried the Next Best Thing - YouTube"
         var answers: Set<String> = []
@@ -4909,9 +6695,8 @@ enum SelfTest {
         record(
             "intelligence: an injected instruction can't take over the name",
             injected == nil, injected ?? "nil")
-        // the refusal is deterministic, not a matter of the model's mood: the
-        // instructions telling it to treat page text as data hold most of the
-        // time, and most of the time is not a security property
+        // the refusal is deterministic: instructions to treat page text as data hold most
+        // of the time, and most of the time is not a security property
         record(
             "intelligence: a page addressing the model is spotted before it is asked",
             Intelligence.looksLikeInjection(
@@ -4977,10 +6762,8 @@ enum SelfTest {
         record("intelligence: and a huge page still answers", reply != nil, reply ?? "nil")
     }
 
-    /// The wiring, not the model: does loading a page in a pinned tab actually
-    /// end with that tab showing a shorter name? Everything between the two —
-    /// the navigation callback, the pinned-only rule, the store, `displayTitle` —
-    /// can break without any of the unit-level assertions noticing.
+    /// the wiring, not the model: loading a page in a pinned tab ends with that tab
+    /// showing a shorter name
     private static func testTidyTitleWiring(manager: TabManager) async {
         guard Intelligence.isReady else {
             note("tidy wiring: no on-device model here, skipping")
@@ -4999,9 +6782,9 @@ enum SelfTest {
 
         // an ordinary Today tab is deliberately left alone
         let long = "Fix: WKWebView doesn't fire didFinish when loading local HTML - Stack Overflow"
-        // the shared load() helper serves from selftest.local — that's the URL
+        // the shared load() helper serves from selftest.example — that's the URL
         // the tab actually carries, so it's the URL names key off
-        let url = URL(string: "https://selftest.local/")!
+        let url = URL(string: "https://selftest.example/")!
         TabNameStore.shared.setCustom(nil, for: url)
         TabNameStore.shared.setGenerated(nil, for: url)
         await load(tab, html: "<html><title>\(long)</title><body>hello</body></html>")
@@ -5010,10 +6793,8 @@ enum SelfTest {
             "tidy wiring: an ordinary tab keeps its page title",
             !TabNameStore.shared.hasGenerated(for: tab.url))
 
-        // pinned, and it earns a short name — WITHOUT reloading: the page's
-        // title settled before the pin, so this proves the pin itself asks for
-        // the name (dragging a loaded tab into the pinned section did nothing
-        // before, because no further title event was ever coming)
+        // pinned, it earns a short name without reloading: the title settled before the
+        // pin, so the pin itself must ask for the name
         manager.togglePin(tab)
         var named: String?
         for _ in 0..<40 {
@@ -5075,12 +6856,8 @@ enum SelfTest {
             "tidy wiring: a pinned tab is still named when a title settles",
             namedOnSettle != nil, namedOnSettle ?? "never renamed")
 
-        // The real-world failure, reproduced: a page whose title churns while
-        // it loads and which then rewrites its own URL (YouTube does both —
-        // four titles in two seconds, then the player appends parameters).
-        // The churn used to fire a model call per title until the model
-        // started declining, and the URL rewrite made an exact-URL check throw
-        // away whatever answer did arrive.
+        // a page whose title churns while it loads and which then rewrites its own URL, as
+        // YouTube does: four titles in two seconds, then the player appends parameters
         let churnBase = "https://churn.selftest.example/watch?v=abc123"
         let churn = URL(string: churnBase)!
         TabNameStore.shared.setCustom(nil, for: churn)
@@ -5110,12 +6887,9 @@ enum SelfTest {
             churnName ?? "never renamed (url=\(churnTab.url?.absoluteString ?? "nil")) — "
                 + manager.tidyTrail.suffix(4).joined(separator: " / "))
 
-        // a page already named from this exact title is never asked about
-        // again: re-pinning is instant instead of costing a second of the
-        // model's time to reach the same answer
+        // a page already named from this exact title is never asked about again
         if churnName != nil {
-            // let any rename still in flight land first — measuring while the
-            // churn test's own work is finishing counts its answer as ours
+            // let any rename still in flight land first, or the churn test's answer counts as ours
             try? await Task.sleep(for: .seconds(2))
             let asksBefore = manager.tidyTrail.filter { $0.hasPrefix("asking for:") }.count
             manager.requestTidyName(for: churnTab)
@@ -5162,9 +6936,8 @@ enum SelfTest {
             manager.selectedTabID != tab.id)
         record("pinned: – releases the page", tab.webView.url == nil)
 
-        // ⌘W on an open pinned tab is "close and keep pinned", not delete.
-        // (the anchor is selftest.local, which never resolves — dormancy
-        // clearing and a load being attempted is the provable part)
+        // ⌘W on an open pinned tab is "close and keep pinned", not delete. selftest.example
+        // never resolves, so dormancy clearing and a load being attempted is what's provable
         _ = url
         manager.selectedTabID = tab.id
         tab.activateIfNeeded()
@@ -5175,8 +6948,7 @@ enum SelfTest {
             && manager.currentSpace.tabs.contains { $0.id == tab.id })
         record("pinned: ⌘W leaves the tab dormant", tab.pendingURL != nil)
 
-        // ✕ (close) actually removes the pin — and files it in the archive,
-        // because deleting a deliberate pin should leave a trail
+        // ✕ removes the pin and files it in the archive
         manager.close(tab)
         record("pinned: ✕ removes the pinned tab",
             !manager.currentSpace.tabs.contains { $0.id == tab.id })
@@ -5221,9 +6993,8 @@ enum SelfTest {
         }
         panes.forEach { manager.close($0) }
 
-        // a link dropped into the pinned section becomes a pinned tab at the
-        // drop position, loading in the background (the sidebar's
-        // dropDestination routes here)
+        // a link dropped into the pinned section becomes a pinned tab at the drop position,
+        // loading in the background (the sidebar's dropDestination routes here)
         let droppedURL = URL(string: "https://drop.selftest.example/article")!
         let dropped = manager.addTab(from: droppedURL, to: .section(.pinned), at: 0)
         record("pinned: a dropped link lands pinned at the top",
@@ -5346,9 +7117,8 @@ enum SelfTest {
         archive.add(url: URL(string: "https://selftest.example.com/old")!, title: "Old", spaceName: "Test")
         record("archive: adds an entry", archive.entries.count == archiveBefore + 1)
         archive.clear(since: Date(timeIntervalSinceNow: -60))
-        // by the entry, not by the count: the auto-archive sweep runs every five
-        // minutes and files stale tabs of its own, so on a slow run the count is
-        // legitimately not what it was a moment ago
+        // by the entry, not by the count: the five-minute auto-archive sweep can file tabs
+        // of its own mid-run
         record(
             "archive: ranged clear removes it",
             !archive.entries.contains { $0.url.absoluteString == "https://selftest.example.com/old" })
@@ -5425,12 +7195,9 @@ enum SelfTest {
         }
     }
 
-    /// end-to-end: a blocked request must actually fail inside a live page.
-    ///
-    /// split in two deliberately — first a bespoke one-rule list (does WebKit
-    /// blocking reach our web views at all?), then the real EasyList set (does
-    /// the converted ruleset actually catch a known ad host?). when this fails,
-    /// the pair says which half broke.
+    /// end-to-end: a blocked request must fail inside a live page. first a one-rule list
+    /// (does WebKit blocking reach our web views?), then the real EasyList set (does the
+    /// converted ruleset catch a known ad host?)
     private static func testLiveBlocking() async {
         let blocker = ContentBlocker.shared
         let wasEnabled = blocker.isEnabled
@@ -5444,10 +7211,8 @@ enum SelfTest {
         }
 
         // --- half one: a hand-made rule
-        // built through the same Codable types the converter emits, so the test
-        // can't pass on a JSON string that only looks right. the blocked host
-        // must genuinely resolve — a made-up domain would "pass" purely because
-        // DNS failed, which proves nothing
+        // built through the converter's own Codable types; the blocked host must resolve, or
+        // a DNS failure would pass as a block
         let probeRule = ContentRule(
             trigger: .init(urlFilter: "^https?://([^/]+\\.)?example\\.org"),
             action: .init(type: "block"))
@@ -5488,8 +7253,7 @@ enum SelfTest {
         record("blocker: rules installed", blocker.ruleCount > 0, "\(blocker.ruleCount) rules")
         note(blocker.statusLine)
         _ = await loadRemote(tab, "https://example.com/?real=1")
-        // EasyList targets the ad subdomains, not the doubleclick.net apex —
-        // probing the apex proves nothing and quietly "fails" forever
+        // EasyList targets the ad subdomains, not the doubleclick.net apex
         let real = await probe(tab, urls: [
             "doubleclick": "https://ad.doubleclick.net/ad.js",
             "googlesyndication": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
@@ -5518,8 +7282,7 @@ enum SelfTest {
             "probe said \(tracked["tracker"] ?? "?"), "
                 + "\(tab.blockedRequests.filter(\.isTracker).count) tracker entries")
 
-        // launch must not re-convert 3.5MB of filter text to reach rules WebKit
-        // already holds — the reuse path is what keeps startup cheap
+        // launch must reuse the rules WebKit already holds, not re-convert 3.5MB of filters
         let start = Date()
         let reused = await blocker.installPreviouslyCompiled()
         let elapsed = Date().timeIntervalSince(start)
@@ -5528,15 +7291,9 @@ enum SelfTest {
             "perf: reinstalling compiled rules under 500ms", elapsed < 0.5, ms(elapsed))
     }
 
-    /// ask a live page to request each url and report whether it was blocked.
-    ///
-    /// the outcome of `fetch` alone can't answer this: a cross-origin request
-    /// either fails CORS (looks blocked but wasn't) or resolves opaquely under
-    /// `no-cors` (looks fine even when nothing arrived). Resource Timing is the
-    /// honest signal — a request the content blocker stopped never reaches the
-    /// network stack, so it produces no timing entry at all. and the entry is
-    /// written when the response *completes* (after `fetch` resolves), so the
-    /// probe waits on a PerformanceObserver instead of reading the buffer
+    /// ask a live page to request each url and report whether it was blocked. a blocked
+    /// request leaves no Resource Timing entry, which `fetch` alone can't tell; entries
+    /// land when the response completes, so the probe waits on a PerformanceObserver
     private static func probe(_ tab: BrowserTab, urls: [String: String]) async -> [String: String] {
         let script = """
             const probe = async (url) => {
@@ -5587,7 +7344,21 @@ enum SelfTest {
             other.history.search("clear-theirs").isEmpty
                 && !manager.currentProfile.history.search("clear-mine").isEmpty)
         manager.currentProfile.history.forget { $0.url == mine }
+
+        let (autofill, restore) = scratchAutofill()
+        autofill.save(SavedAddress(givenName: "Mine", street: "1 Mine Street", profileID: PasswordStore.stored(manager.currentProfile.id)))
+        autofill.save(SavedAddress(givenName: "Theirs", street: "2 Their Street", profileID: other.id))
+        let card = SavedCard(holder: "Theirs", expiryMonth: 1, expiryYear: 2030, brand: .other, last4: "", profileID: other.id)
+        autofill.save(card, number: "4242424242424242")
+        await PrivacyCleaner.clear([.history, .cache], range: .all, in: other, manager: manager)
+        let kept = autofill.cards(in: other.id).count == 1 && autofill.addresses(in: other.id).count == 1
+        await PrivacyCleaner.clear([.autofill], range: .all, in: other, manager: manager)
+        record(
+            "privacy: autofill goes only when chosen, taking that profile's addresses, cards and card numbers",
+            kept && autofill.cards(in: other.id).isEmpty && autofill.addresses(in: other.id).isEmpty
+                && autofill.number(for: card) == nil && autofill.addresses(in: manager.currentProfile.id).count == 1)
         manager.deleteProfile(other)
+        restore()
     }
 
     private static func testPrinting(manager: TabManager) async {
@@ -5666,6 +7437,43 @@ enum SelfTest {
         record(
             "lifecycle: a crashed page off screen waits, then reloads when shown",
             !reloadedEarly && crashed.webView.isLoading)
+    }
+
+    /// a page whose process keeps dying stops at the error page instead of reloading forever
+    private static func testCrashLoop(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+        }
+        func settle() async {
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if !tab.webView.isLoading { break }
+            }
+        }
+        tab.webView.loadHTMLString(
+            "<html><head><title>Crashy</title></head><body>page</body></html>",
+            baseURL: URL(string: "https://crash.selftest.example/"))
+        await settle()
+        // the delegate is called directly: the `_killWebContentProcess` SPI takes the app down with it
+        tab.webViewWebContentProcessDidTerminate(tab.webView)
+        record(
+            "crashloop: a page on screen reloads after one crash",
+            tab.webView.isLoading && tab.loadError == nil)
+        await settle()
+        tab.webViewWebContentProcessDidTerminate(tab.webView)
+        record(
+            "crashloop: a second crash within a minute stops at the error page",
+            tab.loadError == BrowserTab.crashLoopError && tab.lastAttemptedURL?.host() == "crash.selftest.example",
+            tab.loadError ?? "nil")
+        let page = NSHostingView(rootView: ErrorPage(tab: tab))
+        page.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        page.layoutSubtreeIfNeeded()
+        record("crashloop: the error page builds", page.fittingSize.height > 0)
+        tab.retry()
+        record("crashloop: Reload leaves the crash state", tab.loadError == nil)
     }
 
     // MARK: - Reader
@@ -6039,8 +7847,8 @@ enum SelfTest {
             "routing: a host-only pattern takes any path",
             RoutingRule(pattern: "example.com", spaceID: UUID()).matches(url("https://example.com/deep/page")))
 
-        // reading a sentence without the model — the path that runs when Apple
-        // Intelligence is unavailable, which is an OS asset the app cannot fix
+        // reading a sentence without the model, the path taken when Apple Intelligence is
+        // unavailable
         let names = ["Personal", "Work"]
         let plain = RoutingRule.suggest(from: "All youtube links in my personal space", spaces: names)
         record("routing: a sentence names its space", plain?.spaceName == "Personal")
@@ -6675,7 +8483,7 @@ enum SelfTest {
             calls.contains("\"artemisCompat\":\"proxy.credentials\"")
                 && calls.contains("\"username\":\"user\""))
 
-        // --- the password-manager surfaces (v18) ---------------------------
+        // --- the password-manager surfaces ------------------------------
         record("compat: shim fills chrome.idle",
             js.evaluateScript("typeof chrome.idle.queryState").toString() == "function"
                 && js.evaluateScript("typeof chrome.idle.setDetectionInterval").toString()
@@ -6700,11 +8508,8 @@ enum SelfTest {
                 "typeof chrome.privacy.services.passwordSavingEnabled.get").toString()
                 == "function")
 
-        // The real system idle clock behind the shim. What matters is that it is
-        // *live*, not that it is small — an unattended run can legitimately be an
-        // hour idle, and asserting on a low number tested the operator rather
-        // than the bridge. So: read it twice and watch it move, allowing for the
-        // reading resetting to nothing if someone touches the machine mid-test.
+        // the real system idle clock behind the shim: read it twice and watch it move, allowing
+        // for a reset if someone touches the machine. an unattended run can be an hour idle
         let firstIdle = await bridge.handle(["artemisCompat": "idle.query"], from: "selftest", in: Profile.defaultID)
         try? await Task.sleep(for: .milliseconds(1100))
         let secondIdle = await bridge.handle(["artemisCompat": "idle.query"], from: "selftest", in: Profile.defaultID)
@@ -6738,7 +8543,7 @@ enum SelfTest {
         await testAPIBridgeShim()
     }
 
-    /// v25 fills, in a bare JS engine with a manifest-bearing stub, plus the
+    /// the shim's API fills, in a bare JS engine with a manifest-bearing stub, plus the
     /// install-time pieces they rest on: the Web Store id and the redirect host
     private static func testAPIBridgeShim() async {
         let js = JSContext()!
@@ -6862,9 +8667,9 @@ enum SelfTest {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let manifest: [String: Any] = [
             "manifest_version": 3, "name": "Artemis Incognito Probe", "version": "1.0",
-            "permissions": ["history"], "host_permissions": ["https://selftest.local/*"],
+            "permissions": ["history"], "host_permissions": ["https://selftest.example/*"],
             "content_scripts": [[
-                "matches": ["https://selftest.local/*"], "js": ["mark.js"], "run_at": "document_start",
+                "matches": ["https://selftest.example/*"], "js": ["mark.js"], "run_at": "document_start",
             ]],
         ]
         try? JSONSerialization.data(withJSONObject: manifest).write(to: root.appendingPathComponent("manifest.json"))
@@ -6923,7 +8728,7 @@ enum SelfTest {
             .first { $0.id == ext.id }
         record("incognito extensions: the choice is remembered", stored?.allowsIncognito == true)
 
-        let visited = tab.url ?? URL(string: "https://selftest.local/")!
+        let visited = tab.url ?? URL(string: "https://selftest.example/")!
         let reply = await ExtensionAPIBridge.shared.handleBrowserData(
             "history.add", ["url": visited.absoluteString], for: context)
         record(
@@ -6945,10 +8750,8 @@ enum SelfTest {
         }
     }
 
-    /// Installs a tiny throwaway extension and asks it what the runtime really
-    /// does — `tabs.query` shapes, `i18n.detectLanguage`, `contextMenus` — the
-    /// exact calls real extensions crash on. Written because guessing from
-    /// minified stack offsets is guesswork; this asks the runtime directly.
+    /// installs a throwaway extension and asks the runtime what it does for the calls
+    /// real extensions crash on: `tabs.query` shapes, `i18n.detectLanguage`, `contextMenus`
     private static func testExtensionRuntimeProbe() async {
         let manager = ExtensionManager.shared
         let root = FileManager.default.temporaryDirectory
@@ -6963,7 +8766,7 @@ enum SelfTest {
             "permissions": ["tabs", "contextMenus", "nativeMessaging", "storage", "scripting"],
             "host_permissions": ["<all_urls>"],
             "content_scripts": [[
-                "matches": ["https://selftest.local/*", "http://*/*", "https://*/*"],
+                "matches": ["https://selftest.example/*", "http://*/*", "https://*/*"],
                 "js": ["content.js"], "run_at": "document_start", "all_frames": false,
             ]],
         ]
@@ -6992,9 +8795,8 @@ enum SelfTest {
           await attempt("queryCallbackForm", () => new Promise((resolve) => {
             api.tabs.query({}, (t) => resolve(Array.isArray(t) ? `array:${t.length}` : typeof t));
           }));
-          // THE hypothesis: promisify wrappers (webextension-polyfill, and
-          // Surfshark's own retry wrapper) capture the method detached from
-          // its namespace object — `const q = browser.tabs.query; q({})`
+          // promisify wrappers (webextension-polyfill) capture the method detached from its
+          // namespace object: `const q = browser.tabs.query; q({})`
           await attempt("queryDetached", async () => {
             const q = api.tabs.query;
             const t = await q({});
@@ -7028,11 +8830,8 @@ enum SelfTest {
             try { api.tabs.__probe = marker; } catch (e) { return "THREW: " + e.message; }
             return String(api.tabs.__probe === marker);
           });
-          // which chrome.action / i18n methods actually exist? a missing one
-          // throws inside an extension's reactive chain and takes startup with
-          // it (Surfshark's badge code does exactly this)
-          // does the runtime think our tabs/windows are private? an extension
-          // that believes it is in a private window refuses to log you in
+          // does the runtime think our tabs/windows are private? an extension that believes
+          // it is in a private window refuses to log you in
           await attempt("incognitoFlags", async () => {
             const tabs = await api.tabs.query({});
             const wins = await api.windows.getAll({});
@@ -7085,18 +8884,15 @@ enum SelfTest {
             (w) => `array:${w.length}`, (e) => "THREW: " + e.message);
           api.runtime.sendNativeMessage("app.artemis.compat", report);
 
-          // slow follow-up, its own report: does a background fetch to a
-          // host-permitted URL carry that site's cookies? (Chrome
-          // special-cases this; Surfshark's token exchange 401s on it.)
+          // slow follow-up, its own report: does a background fetch to a host-permitted URL
+          // carry that site's cookies? Chrome special-cases this
           const cookies = { artemisCompat: "probe.report", where: "cookies" };
           try {
             const jar = "https://httpbin.org";
             const tab = await api.tabs.create({ url: jar + "/cookies/set?artemis=probe", active: false });
             await new Promise((r) => setTimeout(r, 3500));
-            // a SameSite=Lax cookie — the class WebKit withholds from
-            // extension fetches and the compat bridge must carry (Surfshark's
-            // session cookie is exactly this). planted natively: page-side
-            // document.cookie proved unreliable from executeScript here
+            // a SameSite=Lax cookie, the class WebKit withholds from extension fetches and the
+            // compat bridge must carry. planted natively: document.cookie via executeScript is unreliable
             try {
               await api.runtime.sendNativeMessage("app.artemis.compat",
                 { artemisCompat: "probe.setLaxCookie", url: jar + "/cookies" });
@@ -7137,9 +8933,7 @@ enum SelfTest {
             }
             // sync response: listener responds before returning
             if (msg && msg.ping) { respond({ pong: 1 }); }
-            // async response: the Chrome protocol — return true, respond later.
-            // this is what every RPC-style extension does (Surfshark's
-            // "shark:query" transport included)
+            // async response, the Chrome protocol: return true, respond later
             if (msg && msg.pingAsync) {
               setTimeout(() => { try { respond({ pong: 2 }); } catch (e) {} }, 50);
               return true;
@@ -7149,10 +8943,8 @@ enum SelfTest {
         try? probe.write(
             to: root.appendingPathComponent("probe.js"), atomically: true, encoding: .utf8)
 
-        // the content-script world is where extension/page handshakes live
-        // (Surfshark's login is one) and it has a different API surface from
-        // the background — so it gets its own probe, reported via runtime
-        // messaging to the background, which forwards it to native
+        // the content-script world has its own API surface, so it gets its own probe,
+        // reported via runtime messaging to the background, which forwards it to native
         let contentProbe = #"""
         (async () => {
           const api = globalThis.browser ?? globalThis.chrome;
@@ -7174,9 +8966,8 @@ enum SelfTest {
               api.runtime.lastError ? rej(new Error(api.runtime.lastError.message)) : res()));
             return "ok";
           });
-          // is the namespace object itself stable? if `api.runtime` hands back
-          // a fresh wrapper on every access, binding onto it is a no-op by the
-          // next read — which would explain the inconsistent fix
+          // is the namespace object stable? if `api.runtime` hands back a fresh wrapper on
+          // every access, binding onto it is a no-op by the next read
           await attempt("namespaceStability", () => {
             const marker = () => {};
             let assignSticks = "n/a";
@@ -7205,9 +8996,8 @@ enum SelfTest {
               setTimeout(() => resolve("TIMEOUT"), 1500);
             });
           });
-          // THE decisive one: does WebKit honour the async-response protocol
-          // (listener returns true, responds later)? every RPC-shaped
-          // extension depends on it
+          // does WebKit honour the async-response protocol (listener returns true, responds
+          // later)? every RPC-shaped extension depends on it
           await attempt("sendMessageAsyncReply", async () => {
             const reply = await Promise.race([
               api.runtime.sendMessage({ pingAsync: 1 }),
@@ -7240,9 +9030,8 @@ enum SelfTest {
             for _ in 0..<40 where ExtensionProxyBridge.shared.probeReports.isEmpty {
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            // drive a page load so the content script injects and reports
-            // content-script registration lands a beat after the context loads,
-            // so give it room and reload once rather than racing it
+            // drive a page load so the content script injects and reports; registration lands a
+            // beat after the context loads, so reload once rather than racing it
             let probeTab = BrowserTab()
             probeTab.manager = manager.tabManager
             try? await Task.sleep(for: .milliseconds(600))
@@ -7319,8 +9108,7 @@ enum SelfTest {
             ] {
                 note("runtime: \(key) → \(report[key].map { "\($0)" } ?? "nil")")
             }
-            // the load-bearing ones: an extension that gets a non-array from
-            // tabs.query dies on `.filter` — exactly Surfshark's crash
+            // an extension that gets a non-array from tabs.query dies on `.filter`
             record(
                 "runtime: tabs.query returns an array (promise form)",
                 (report["queryAll"] as? String)?.hasPrefix("array:") == true)
@@ -7330,9 +9118,8 @@ enum SelfTest {
             record(
                 "runtime: tabs.query callback form returns an array",
                 (report["queryCallbackForm"] as? String)?.hasPrefix("array:") == true)
-            // the compat shim is injected into every extension, including this
-            // probe — so a detached call must now behave like an attached one.
-            // this is the live proof of the webextension-polyfill fix
+            // the compat shim is injected into every extension, this probe included, so a
+            // detached call must behave like an attached one
             record(
                 "runtime: detached tabs.query works (compat shim)",
                 (report["queryDetached"] as? String)?.hasPrefix("array:") == true,
@@ -7470,16 +9257,8 @@ enum SelfTest {
         }
     }
 
-    /// Installs a second throwaway extension shaped exactly like Bitwarden's
-    /// Firefox build — MV2, persistent background *page*, browser_action,
-    /// `wasm-unsafe-eval` CSP, commands, and the permission set password
-    /// managers request — and proves the runtime carries every surface their
-    /// autofill path leans on: idle, notifications, commands (incl. matching a
-    /// real ⌘⇧L key event), storage.session, IndexedDB, WASM, and the
-    /// Safari-flavoured clipboard bridge.
-    /// `permissions.request()` at runtime. Anything the manifest declared was
-    /// consented to on the install sheet; anything else is an escalation the user
-    /// has never seen.
+    /// `permissions.request()` at runtime: what the manifest declared was consented to on
+    /// the install sheet; anything else is an escalation the user has never seen
     private static func testExtensionEscalation() async {
         let manager = ExtensionManager.shared
         let root = FileManager.default.temporaryDirectory
@@ -7562,6 +9341,9 @@ enum SelfTest {
         record("escalation: an unknown context is granted nothing", nothing.0.isEmpty)
     }
 
+    /// a throwaway extension shaped like Bitwarden's Firefox build (MV2, persistent background
+    /// page, `wasm-unsafe-eval`, commands), proving the surfaces its autofill leans on: idle,
+    /// notifications, ⌘⇧L commands, storage.session, IndexedDB, WASM and the clipboard bridge
     private static func testExtensionMV2Probe() async {
         let manager = ExtensionManager.shared
         let root = FileManager.default.temporaryDirectory
@@ -7787,11 +9569,8 @@ enum SelfTest {
         UserDefaults.standard.set(0.0, forKey: WindowChrome.edgeInsetKey)
         record("chrome: full-bleed setting reads back", WindowChrome.edgeInset == 0)
 
-        // and the geometry it promises: at rim 0 the page must TOUCH the window
-        // edges. measured off the live WKWebView, not the SwiftUI frame, because
-        // whatever insets the page is what the user sees as "background peeking".
-        // the restored session's tab may be lazily hydrated (no mounted web
-        // view) — open a real page so there is something to measure
+        // at rim 0 the page must touch the window edges, measured off the live WKWebView, not
+        // the SwiftUI frame. a restored tab may have no mounted web view, so open a real page
         let probeTab = manager.newTab(url: URL(string: "https://example.com/"), select: true)
         _ = await loadRemote(probeTab, "https://example.com/")
         try? await Task.sleep(for: .milliseconds(400))
@@ -7825,14 +9604,9 @@ enum SelfTest {
 
     // MARK: - Traffic lights
 
-    /// The traffic lights, planted in the sidebar for real.
-    ///
-    /// The real `standardWindowButton` NSButtons live inside `TrafficLightMount`
-    /// in the sidebar's top row, and the sidebar hides via animated *layout*
-    /// (width), which moves hosted AppKit views every frame. So the decisive
-    /// assertion here is one no previous design could pass: the REAL buttons'
-    /// window position, sampled mid-animation, actually sweeps — the same frames
-    /// as the sidebar, because they are laid out *by* the sidebar.
+    /// the traffic lights, planted in the sidebar: the real buttons live in
+    /// `TrafficLightMount`, so their window position sampled mid-animation must sweep on
+    /// the same frames as the sidebar
     private static func testTrafficLightsInSidebar(manager: TabManager) async {
         // park the pointer: the peeking sidebar refuses to dismiss while
         // hovered, and hover state changes the mount's behaviour
@@ -7868,11 +9642,8 @@ enum SelfTest {
                 abs(gap - 9) < 0.5, "gap=\(String(format: "%.1f", gap))pt")
         }
 
-        // Everything below reads rendered pixels and animated positions, and
-        // macOS gives neither to a window that isn't key: an inactive traffic
-        // light draws no glyph and stays grey, and a background app is not asked
-        // to draw at all. Anything that takes focus mid-run would otherwise read
-        // as the feature being broken.
+        // everything below reads rendered pixels and animated positions, which macOS gives
+        // only to a key window
         guard window.isKeyWindow else {
             note(
                 "lights: skipped the hover and sweep checks — the browser window "
@@ -7925,9 +9696,8 @@ enum SelfTest {
         }
 
         func closeWindowX() -> CGFloat { close.convert(NSPoint.zero, to: nil).x }
-        // wait for the expanded rest position to actually establish: the app may
-        // have been left collapsed by whoever used it last, and the pin-in
-        // animation can lag behind a busy main thread — a fixed sleep races both
+        // wait for the expanded rest position: the app may have been left collapsed, and the
+        // pin-in animation can lag a busy main thread
         var restX = closeWindowX()
         var lastSample = CGFloat.greatestFiniteMagnitude
         for _ in 0..<80 {
@@ -7978,16 +9748,8 @@ enum SelfTest {
 
     // MARK: - Views
 
-    /// force each settings pane through a real layout pass.
-    ///
-    /// the rest of the suite is model-level, and a pane that crashes on
-    /// construction (a missing environment object, a malformed Form) would sail
-    /// through it and only show up when a human opened Settings
-    /// The sidebar's ink and accent have to move *with* the backdrop, not land
-    /// after it. Reading `currentSpace` held the old space's ink for the whole
-    /// slide and flipped it on settle, which reads as the chrome lagging the
-    /// background — so this pins the blend to `backdropPosition` at the ends and
-    /// in the middle, and pins the ink ramp itself to being continuous.
+    /// the sidebar's ink and accent move with the backdrop, not after it: the blend is
+    /// pinned to `backdropPosition` at the ends and the middle, and the ink ramp is continuous
     private static func testChromeTintTracksBackdrop(manager: TabManager) {
         let dark = SpaceAppearance(fill: .solid, colors: [RGBA(0.05, 0.05, 0.10)])
         let light = SpaceAppearance(fill: .solid, colors: [RGBA(0.94, 0.94, 0.96)])
@@ -7996,9 +9758,8 @@ enum SelfTest {
             RGBA(dark.chromeInk).brightness > 0.9 && RGBA(light.chromeInk).brightness < 0.2,
             "dark \(RGBA(dark.chromeInk).brightness) light \(RGBA(light.chromeInk).brightness)")
 
-        // a space parked at the crossover must still be decisive — a half-mixed
-        // grey on a mid-luminance backdrop is ~1.2:1 and unreadable. Arc's
-        // pastel themes import straight into this band, so it is reachable
+        // a space parked at the crossover must still be decisive: a half-mixed grey on a
+        // mid-luminance backdrop is ~1.2:1. Arc's pastel themes import into this band
         let atCrossover = SpaceAppearance(fill: .solid, colors: [RGBA(0.60, 0.60, 0.60)]).chromeInk
         record(
             "ink: a backdrop at the crossover luminance still inks decisively",
@@ -8061,11 +9822,8 @@ enum SelfTest {
             "ends \(same(atA, a.accent))/\(same(atB, b.accent)) mid \(same(between, expected))")
     }
 
-    /// The sidebar is where a rename is supposed to show up, and for a while it
-    /// was the one place that didn't: the row drew the page's raw title while
-    /// every other surface (drag ghost, command bar, archive) drew the display
-    /// name. Nothing that tested the model could catch that, so this renders
-    /// the real sidebar and reads what it actually put on screen.
+    /// the sidebar row draws a tab's display name, not the page's raw title, read off
+    /// the real rendered sidebar
     private static func testSidebarShowsNames(manager: TabManager) {
         let url = URL(string: "https://render.selftest.example/page")!
         let pageTitle = "A very long raw page title that nobody wants to read - Example"
@@ -8079,11 +9837,8 @@ enum SelfTest {
         manager.togglePin(tab)
         TabNameStore.shared.setCustom("Renamed In Sidebar", for: url)
 
-        // A SwiftUI hierarchy only builds an accessibility tree for a live
-        // assistive client, so read the pixels instead: render the real row
-        // named and unnamed. If the row draws the name, the two differ; if it
-        // draws the page title regardless — the bug this exists to catch —
-        // they're identical.
+        // SwiftUI builds an accessibility tree only for a live assistive client, so compare
+        // pixels: a row drawing the name differs from the unnamed one
         let named = renderRow(tab: tab, manager: manager)
         TabNameStore.shared.setCustom(nil, for: url)
         let unnamed = renderRow(tab: tab, manager: manager)
@@ -8096,10 +9851,7 @@ enum SelfTest {
             named != unnamed,
             "named \(named.count)B vs unnamed \(unnamed.count)B")
 
-        // A name at rest must be plain text. The first rename animation masked
-        // the title with a gradient that stayed applied once it settled, so the
-        // last fifth of every tab name in the sidebar was faded out — the kind
-        // of thing that is obvious on screen and invisible to every other test.
+        // a name at rest is plain text, with no gradient mask left over from the animation
         let settled = render(
             RenamingTitle(
                 title: "A tab name long enough to reach the end",
@@ -8115,10 +9867,8 @@ enum SelfTest {
             settled != nil && settled == plain,
             settled == plain ? "identical" : "differs from plain text")
 
-        // The rename animation, measured rather than eyeballed: the name has to
-        // break into particles that travel RIGHT and thin out. Comparing frames
-        // for inequality only proved something changed — letters merely
-        // rotating in place passed that, which is exactly what shipped.
+        // the rename animation breaks the name into particles that travel right and thin
+        // out; inequality alone would pass letters merely rotating in place
         let early = dustStats(progress: 0.25)
         let late = dustStats(progress: 0.75)
         let spent = dustStats(progress: 1.0)
@@ -8134,6 +9884,177 @@ enum SelfTest {
             "lit \(early.lit) → \(late.lit)")
         record(
             "dust: nothing is left behind at the end", spent.lit == 0, "\(spent.lit) lit")
+    }
+
+    /// The main window's accessibility tree, read in-process the way VoiceOver
+    /// reads it. The full dump goes to ~/Downloads/artemis-ax-dump.txt (a lab copy's has its ID).
+    private static func testAccessibility(manager: TabManager) async {
+        manager.isSidebarCollapsed = false
+        // a run cut short leaves its rows in the lab's session, so this run's names are its own
+        let run = UUID().uuidString.prefix(4)
+        func open(_ title: String, select: Bool) async -> BrowserTab {
+            let tab = manager.newTab(url: nil, select: select)
+            tab.webView.loadHTMLString(
+                "<html><title>\(title)</title><body>x</body></html>",
+                baseURL: URL(string: "https://a11y.selftest.example/"))
+            await settle { tab.title == title }
+            return tab
+        }
+        let favourite = await open("(3) AX Favourite \(run)", select: false)
+        manager.toggleEssential(favourite)
+        let title = "AX Throwaway Tab \(run)"
+        let tab = await open(title, select: true)
+        let filed = await open("AX Filed Tab \(run)", select: false)
+        let folder = manager.newFolder(with: [filed])
+        if let folder { manager.rename(folder, to: "AX Folder \(run)") }
+        // a blank new tab raises the command bar, and SwiftUI leaves the pill it hides out of the tree
+        manager.isCommandBarVisible = false
+        defer {
+            if manager.essentials.contains(where: { $0.id == favourite.id }) { manager.removeEssential(favourite) }
+            if let folder { manager.closeFolder(folder) }
+            if manager.currentSpace.tabs.contains(where: { $0.id == tab.id }) { manager.close(tab) }
+        }
+        try? await Task.sleep(for: .milliseconds(800))
+        guard let window = mainWindow() else { return record("a11y: the browser window is up", false) }
+
+        // SwiftUI builds its tree only once an assistive client sets this, as VoiceOver does
+        let enhanced = Selector(("accessibilitySetEnhancedUserInterfaceAttribute:"))
+        NSApp.perform(enhanced, with: NSNumber(value: true))
+        defer { NSApp.perform(enhanced, with: NSNumber(value: false)) }
+        try? await Task.sleep(for: .milliseconds(800))
+
+        // SwiftUI's nodes answer the accessibility selectors without conforming to the protocol
+        func ax(_ element: NSObject, _ key: String) -> Any? {
+            element.responds(to: Selector(key)) ? element.value(forKey: key) : nil
+        }
+        struct Node {
+            let element: NSObject
+            let role: String
+            let name: String
+            let value: String
+            let subrole: String
+            let actions: [NSAccessibilityCustomAction]
+        }
+        func walk() -> (nodes: [Node], dump: String) {
+            var nodes: [Node] = []
+            var dump = ""
+            var seen = Set<ObjectIdentifier>()
+            func visit(_ element: NSObject, _ depth: Int) {
+                guard depth < 80, seen.insert(ObjectIdentifier(element)).inserted else { return }
+                if (ax(element, "isAccessibilityElement") as? Bool) == true {
+                    let subrole = ax(element, "accessibilitySubrole") as? String ?? ""
+                    // the window buttons are named by their role description, as VoiceOver reads them
+                    let keys = ["accessibilityLabel", "accessibilityTitle"]
+                        + (subrole.isEmpty ? [] : ["accessibilityRoleDescription"])
+                    let name = keys.compactMap { ax(element, $0) as? String }.first { !$0.isEmpty } ?? ""
+                    let node = Node(
+                        element: element, role: ax(element, "accessibilityRole") as? String ?? "", name: name,
+                        value: ax(element, "accessibilityValue").map { "\($0)" } ?? "",
+                        subrole: subrole,
+                        actions: ax(element, "accessibilityCustomActions") as? [NSAccessibilityCustomAction] ?? [])
+                    nodes.append(node)
+                    dump += String(repeating: "  ", count: depth) + "\(node.role)/\(node.subrole) \"\(name)\""
+                        + (node.value.isEmpty ? "" : " = \(node.value)")
+                        + (node.actions.isEmpty ? "" : " actions=\(node.actions.map(\.name))") + "\n"
+                }
+                guard !(element is WKWebView) else { return }
+                for case let child as NSObject in ax(element, "accessibilityChildren") as? [Any] ?? [] {
+                    visit(child, depth + 1)
+                }
+            }
+            visit(window, 0)
+            return (nodes, dump)
+        }
+        func perform(_ name: String, on node: Node) -> Bool {
+            guard let action = node.actions.first(where: { $0.name == name }) else { return false }
+            if let handler = action.handler { return handler() }
+            return action.target?.perform(action.selector) != nil
+        }
+
+        let (nodes, dump) = walk()
+        if let url = downloadsFile("artemis-ax-dump", "txt") {
+            try? dump.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let interactive: Set<String> = [
+            "AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXDisclosureTriangle",
+        ]
+        let controls = nodes.filter { interactive.contains($0.role) }
+        let bad = controls.filter { $0.name.isEmpty || NSImage(systemSymbolName: $0.name, accessibilityDescription: nil) != nil }
+        note("a11y: \(nodes.count) elements, \(controls.count) controls, \(controls.count - bad.count) labelled")
+        record("a11y: the window exposes a tree", controls.count > 10, "\(controls.count) controls")
+        record(
+            "a11y: every control has a real name", bad.isEmpty,
+            bad.map { "\($0.role) \"\($0.name)\"" }.joined(separator: ", "))
+
+        let names = Set(nodes.map(\.name))
+        for expected in [
+            "Back", "Reload", "Library", "New Tab", "Address", "Site settings", manager.currentSpace.name,
+        ] {
+            record("a11y: \"\(expected)\" is labelled", names.contains(expected))
+        }
+        record(
+            "a11y: the window buttons stay reachable from the sidebar",
+            Set(nodes.map(\.subrole)).isSuperset(of: ["AXCloseButton", "AXMinimizeButton", "AXFullScreenButton"]))
+        record("a11y: the space header is a heading", nodes.contains { $0.role == "AXHeading" })
+
+        if let folder, let header = nodes.first(where: { $0.name == folder.name }) {
+            record(
+                "a11y: a folder says whether it is open",
+                header.value.contains("expanded"), header.value)
+            record(
+                "a11y: a filed tab names its folder",
+                nodes.first { $0.name == filed.displayTitle }?.value.contains("in folder \(folder.name)") == true)
+            let collapsed = perform("Collapse", on: header)
+            await settle { !folder.isExpanded }
+            record("a11y: Collapse through accessibility folds the folder", collapsed && !folder.isExpanded)
+        } else {
+            record("a11y: the folder header is an element", false)
+        }
+
+        if let tile = nodes.first(where: { $0.name.hasSuffix("AX Favourite \(run)") }) {
+            record("a11y: a favourite says it is one", tile.value.contains("favourite"), tile.value)
+            record(
+                "a11y: a badged favourite drops the (n) from its name and says the count",
+                !tile.name.contains("(3)") && tile.value.contains("3 unread"), "\(tile.name) = \(tile.value)")
+            _ = perform("Remove from Favourites", on: tile)
+            record(
+                "a11y: a favourite's menu works through accessibility",
+                !manager.essentials.contains { $0.id == favourite.id }, "\(tile.actions.map(\.name))")
+        } else {
+            record("a11y: the favourite tile is an element", false)
+        }
+
+        guard let row = nodes.first(where: { $0.name == title }) else {
+            return record("a11y: the tab row is one element named after its page", false)
+        }
+        record("a11y: the tab row is one element named after its page", true)
+        let actionNames = row.actions.map(\.name)
+        record(
+            "a11y: the tab row offers its menu as actions",
+            ["Close Tab", "Pin Tab", "Duplicate Tab", "Copy Link", "Mute Tab"].allSatisfy(actionNames.contains),
+            "\(actionNames)")
+        record("a11y: the selected row says so", row.value.contains("selected"), row.value)
+        _ = perform("Close Tab", on: row)
+        await settle { !manager.currentSpace.tabs.contains { $0.id == tab.id } }
+        record(
+            "a11y: Close through accessibility closes the tab",
+            !manager.currentSpace.tabs.contains { $0.id == tab.id })
+
+        // last: a split takes the focus, which the selected-row check above reads
+        let left = await open("AX Left \(run)", select: false)
+        let right = await open("AX Right \(run)", select: false)
+        defer { [left, right].forEach { manager.close($0) } }
+        guard let group = manager.createSplit([left, right], anchor: left) else {
+            return record("a11y: a throwaway split forms", false)
+        }
+        try? await Task.sleep(for: .milliseconds(800))
+        let expected = MenuEntryActions.actions(Sidebar.splitRowMenuEntries(group, in: manager)).map(\.title)
+        let splitRow = walk().nodes.first { $0.name == "\(left.displayTitle), \(right.displayTitle)" }
+        record(
+            "a11y: a split row offers exactly its menu as actions",
+            splitRow.map { $0.actions.map(\.name).sorted() == expected.sorted() } == true,
+            "\(splitRow?.actions.map(\.name) ?? []) vs \(expected)")
+        manager.dissolveSplit(group)
     }
 
     /// how much ink the dust is drawing, and where its centre of mass sits.
@@ -8161,18 +10082,8 @@ enum SelfTest {
         return (lit, lit == 0 ? 0 : CGFloat(sumX / Double(lit)))
     }
 
-    /// Does renaming a tab actually animate the row?
-    ///
-    /// Rendering the dust in isolation only proves the drawing works. Twice now
-    /// the drawing was fine and the *trigger* wasn't — first a guard that read
-    /// the new title as the old one (SwiftUI runs onChange handlers in
-    /// declaration order, and the title's fires before the name's), then a
-    /// progress value set to 0 and 1 in the same pass, which coalesces into one
-    /// change with nothing to interpolate from. Both are invisible to any test
-    /// that doesn't run the real view against the real store.
-    ///
-    /// So: host a live row, rename the tab underneath it, and watch what it
-    /// draws. A still row means the animation never started.
+    /// renaming a tab animates the row: host a live row, rename the tab under it, and
+    /// watch what it draws. a still row means the animation never started
     private static func testRenameAnimates(manager: TabManager) async {
         let url = URL(string: "https://dust.selftest.example/page")!
         let tab = manager.newTab(url: nil, select: true)
@@ -8210,7 +10121,6 @@ enum SelfTest {
         for _ in 0..<10 { try? await Task.sleep(for: .milliseconds(50)) }
         let before = frame()
 
-        // rename it, then watch
         TabNameStore.shared.setCustom("Second Name", for: tab.url)
         var frames: [Data] = []
         for _ in 0..<12 {
@@ -8248,7 +10158,7 @@ enum SelfTest {
         await load(done, html: "<html><body>done</body></html>")
         stalled.webView.loadHTMLString(
             "<html><body><img src='artemis-stall://x.png'></body></html>",
-            baseURL: URL(string: "https://selftest.local/"))
+            baseURL: URL(string: "https://selftest.example/"))
         for _ in 0..<20 where !stalled.isLoading { try? await Task.sleep(for: .milliseconds(50)) }
 
         let width: CGFloat = 200
@@ -8320,16 +10230,8 @@ enum SelfTest {
         return renderer.nsImage?.tiffRepresentation
     }
 
-    /// The sidebar's content must sit the same distance from both of its edges,
-    /// at every window-rim thickness. It didn't: the trailing margin was a fixed
-    /// 2pt that assumed the rim would supply the other 10, so at rim 0 — a flush
-    /// card — rows sat 2pt from the right edge against 12pt on the left.
-    /// The sidebar is resized by dragging an AppKit strip between it and the
-    /// page. With a thin or zero rim there is no gap for that strip to live in,
-    /// so it moves onto the card's leading edge as an overlay — which means at
-    /// rim 0 the ONLY grab handle is that fallback. This checks a real,
-    /// grabbable handle exists in the live window and sits where the sidebar
-    /// ends, whatever the rim is set to.
+    /// a real, grabbable resize handle exists in the live window where the sidebar ends,
+    /// at every rim; at rim 0 it is the overlay on the card's leading edge
     private static func testSidebarResizeHandle() async {
         guard let window = mainWindow() else {
             record("resize: browser window found", false)
@@ -8358,10 +10260,8 @@ enum SelfTest {
         // and it has to be at the sidebar's edge, not stranded somewhere else
         let sidebarWidth = UserDefaults.standard.object(forKey: "sidebarWidth") as? Double ?? 250
         guard let handle = grabbable.first else { return }
-        // it has to cover the seam itself, not just the page side of it: with a
-        // flush card the strip sat entirely to the right of the boundary, so
-        // grabbing the sidebar's own edge — where the hand goes — did nothing,
-        // and resizing felt broken in static mode while working collapsed
+        // it covers the seam itself, not just the page side: the sidebar's own edge is where
+        // the hand goes
         record(
             "resize: the handle covers the seam from both sides",
             handle.minX < sidebarWidth && handle.maxX > sidebarWidth,
@@ -8370,10 +10270,8 @@ enum SelfTest {
             "resize: the target is big enough to find",
             handle.width >= 12, "\(Int(handle.width))pt wide")
 
-        // Existing isn't enough: with a flush card the strip lies on top of the
-        // web view, and whichever view answers a click there is the one that
-        // gets the drag. Ask the window who that is — on the seam itself, and a
-        // few points either side of it
+        // with a flush card the strip lies over the web view, and whichever view answers a
+        // click there gets the drag: ask the window, on the seam and a few points either side
         for offset in [-4.0, 0, 4] {
             let probe = NSPoint(x: sidebarWidth + offset, y: handle.midY)
             let hit = root.hitTest(root.convert(probe, from: nil))
@@ -8580,6 +10478,8 @@ enum SelfTest {
         await settle { collapsed || lightsX() > 0 }
     }
 
+    /// the sidebar's content sits the same distance from both of its edges, at every
+    /// window-rim thickness
     private static func testSidebarMargins() {
         for rim in [0.0, 3, 6, 10, 16] {
             for collapsed in [false, true] {
@@ -8596,10 +10496,8 @@ enum SelfTest {
                     abs(right - expected) < 0.001,
                     "left \(Sidebar.contentInset) vs right \(right)")
 
-                // and the panel laid out inside those margins must actually fit:
-                // the content width is fixed (so rows don't re-truncate mid
-                // animation) and the sidebar clips, so a panel even a point too
-                // wide loses the url pill's and every row's right edge
+                // and the panel laid out inside those margins must fit: the content width is fixed
+                // and the sidebar clips, so a panel a point too wide loses every row's right edge
                 for sidebarWidth in [160.0, 250, 450] {
                     let content = Sidebar.contentWidth(
                         sidebarWidth: sidebarWidth, rim: rim, collapsed: collapsed)
@@ -8628,12 +10526,15 @@ enum SelfTest {
         return renderer.nsImage?.tiffRepresentation
     }
 
+    /// force each settings pane through a real layout pass: a pane that crashes on
+    /// construction would otherwise show up only when Settings is opened
     private static func testSettingsPanesRender(manager: TabManager) {
         let panes: [(String, AnyView)] = [
             ("General", AnyView(GeneralSettings())),
             ("Appearance", AnyView(AppearanceSettings())),
             ("Profiles", AnyView(ProfilesSettings())),
             ("Passwords", AnyView(PasswordsSettings(profileID: manager.currentProfile.id))),
+            ("Autofill", AnyView(AutofillSettings(profileID: manager.currentProfile.id))),
             ("Clear Browsing Data", AnyView(ClearBrowsingDataSettings(profile: manager.currentProfile))),
             ("Privacy & Security", AnyView(PrivacySettings())),
             ("Sidebar", AnyView(SidebarSettings())),
@@ -8664,8 +10565,7 @@ enum SelfTest {
     /// and the numbers are loose enough not to flake but tight enough that a
     /// regression (an accidental O(n²), a lost cache) trips them
     private static func testPerformanceBudgets(manager: TabManager) async {
-        // the blocker compiles on a background task; measuring while it's chewing
-        // through 130k rules times the machine, not the code
+        // wait out the blocker's background compile, or the timings measure the machine
         await ContentBlocker.shared.waitForIdle()
         for _ in 0..<40 where ContentBlocker.shared.isUpdating {
             try? await Task.sleep(for: .milliseconds(250))
@@ -8685,7 +10585,7 @@ enum SelfTest {
         let snapshotTime = measure(iterations: 10) { _ = manager.sessionSnapshot() }
         record("perf: session snapshot under 10ms", snapshotTime < 0.010, ms(snapshotTime))
 
-        // sidebar rows ask for their favicon every render; a miss used to hit disk
+        // sidebar rows ask for their favicon every render, so a miss must not hit disk
         let missTime = measure(iterations: 500) {
             _ = FaviconStore.shared.icon(for: "no-such-host.selftest.example")
         }
@@ -8693,21 +10593,15 @@ enum SelfTest {
             "perf: missing favicon lookup is memory-only",
             missTime < 0.0002, "\(ms(missTime)) per lookup")
 
-        // every sidebar row asks its tab what it's called, on every pass of the
-        // sidebar's body — which during an animation is sixty times a second,
-        // times the number of rows. it has to be a read, not a computation
-        // measured against a query-bearing URL — the expensive shape, since the
-        // name key has to strip tracking parameters out of it
-        // against a tab this test owns, not whatever happens to be first in the
-        // developer's session: the cost depends entirely on the url's shape, and
-        // a budget that moves with the profile measures the profile
+        // every sidebar row reads its tab's name on every body pass, sixty times a second in
+        // an animation, so it must be a read; measured on a tab this test owns with a
+        // query-bearing url, the expensive shape
         let named = BrowserTab(
             restoring: URL(string: "https://www.youtube.com/watch?v=abc&pp=x&utm_source=y")!,
             pinned: false)
         let titleTime = measure(iterations: 5000) { _ = named.displayTitle }
-        // two string-keyed dictionary lookups against a long url; the budget is
-        // set to catch the regressions that matter — re-parsing the url on every
-        // read, or going anywhere near disk — not to pin the current number
+        // two dictionary lookups against a long url; the budget catches re-parsing the url
+        // or touching disk, not the current number
         record(
             "perf: a tab's display name is a cheap read",
             titleTime < 0.00001, "\(ms(titleTime)) per read")
@@ -8730,11 +10624,8 @@ enum SelfTest {
             convertTime < 1.0, ms(convertTime))
     }
 
-    /// average seconds per iteration, best of three passes.
-    ///
-    /// best-of, not mean-of: the budgets assert what the code is *capable* of,
-    /// and this runs on a live machine — a Spotlight index or a busy browser tab
-    /// elsewhere would otherwise fail a budget the code comfortably meets
+    /// average seconds per iteration, best of three passes: the budgets assert what the
+    /// code can do on a live, busy machine
     private static func measure(iterations: Int, _ body: () -> Void) -> Double {
         var best = Double.infinity
         for _ in 0..<3 {
@@ -8993,8 +10884,7 @@ enum SelfTest {
         }
         record("bar: a bang takes the top row", bangLanded, banged.first?.title ?? "none")
 
-        // a bare trigger: what you typed leads, its completions follow. this is
-        // the one branch that used to return without deduping
+        // a bare trigger: what you typed leads, its completions follow, deduped
         Bangs.setCustom([Bang(trigger: "yt", name: "Mine", template: "https://mine.test/?q={q}")])
         let bare = engine.items(input: "!y", scope: nil, textHits: [], suggestions: [])
         var literalLeads = false
@@ -9158,14 +11048,13 @@ enum SelfTest {
     // MARK: - Helpers
 
     private static func load(_ tab: BrowserTab, html: String) async {
-        tab.webView.loadHTMLString(html, baseURL: URL(string: "https://selftest.local/"))
+        tab.webView.loadHTMLString(html, baseURL: URL(string: "https://selftest.example/"))
         for _ in 0..<60 {
             try? await Task.sleep(for: .milliseconds(100))
             if !tab.webView.isLoading { break }
         }
-        // `isLoading` going false is not the title arriving: the tab mirrors it
-        // from KVO, which lands a beat later. A test that reads `title` right
-        // after this would be racing the observer rather than testing anything
+        // `isLoading` going false is not the title arriving: the tab mirrors it from KVO a
+        // beat later
         guard html.contains("<title>") else { return }
         for _ in 0..<20 where tab.title == "New Tab" {
             try? await Task.sleep(for: .milliseconds(100))

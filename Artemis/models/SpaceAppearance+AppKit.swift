@@ -23,8 +23,7 @@ extension SpaceAppearance {
         return Color(hue: Double(h), saturation: Double(min(s, 0.75)), brightness: 0.92)
     }
 
-    /// linearly blend two colours in sRGB, for cross-fading accents as the
-    /// space carousel slides between spaces
+    /// linear blend in sRGB; `t` is clamped to 0…1
     static func blend(_ a: Color, _ b: Color, _ t: Double) -> Color {
         let t = min(max(t, 0), 1)
         if t == 0 || a == b { return a }
@@ -40,8 +39,7 @@ extension SpaceAppearance {
             opacity: Double(na.alphaComponent + (nb.alphaComponent - na.alphaComponent) * t))
     }
 
-    /// ink for text drawn *on the card* — a different surface from the sidebar's
-    /// backdrop, and usually darker, since `cardBase` is the palette's darkest tone
+    /// ink for text drawn on the card, over `cardBase` rather than the backdrop
     var cardInk: Color { Self.ink(over: RGBA(cardBase).luminance) }
 
     private func saturation(_ rgba: RGBA) -> Double {

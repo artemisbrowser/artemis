@@ -15,7 +15,7 @@ enum Tab: String, CaseIterable, Identifiable {
     case intelligence = "Intelligence"
     case agents = "Agents"
 
-    static let groups: [[Tab]] = [
+    fileprivate static let groups: [[Tab]] = [
         [.general, .appearance, .profiles, .privacy],
         [.sidebar, .tabs, .links, .search],
         [.extensions, .intelligence, .agents],
@@ -38,7 +38,7 @@ enum Tab: String, CaseIterable, Identifiable {
     }
 
     /// what the sidebar search matches besides the title: the page's section names
-    var keywords: [String] {
+    private var keywords: [String] {
         switch self {
         case .general: ["Default Browser", "Memory", "Sleep", "Picture in Picture", "Mini-Player"]
         case .appearance: [
@@ -62,7 +62,7 @@ enum Tab: String, CaseIterable, Identifiable {
         }
     }
 
-    func matches(_ query: String) -> Bool {
+    fileprivate func matches(_ query: String) -> Bool {
         ([rawValue] + keywords).contains { $0.localizedCaseInsensitiveContains(query) }
     }
 }
@@ -105,8 +105,10 @@ struct SettingsView: View {
                         Button(action: goBack) { Image(systemName: "chevron.left") }
                             .disabled(back.isEmpty && subpage == nil)
                             .help(subpage == nil ? "Back" : "Back to \(profiles.profile.name)")
+                            .accessibilityLabel("Back")
                         Button(action: goForward) { Image(systemName: "chevron.right") }
                             .disabled(forward.isEmpty)
+                            .accessibilityLabel("Forward")
                     }
                 }
         }
@@ -200,7 +202,7 @@ private struct SettingsSidebar: View {
                     }
                 } else {
                     let found = Tab.allCases.filter { $0.matches(query) }
-                    let pages = [ProfilesNavigator.Page.passwords, .clearData].filter {
+                    let pages = [ProfilesNavigator.Page.passwords, .autofill, .clearData].filter {
                         $0.title.localizedCaseInsensitiveContains(query)
                     }
                     if found.isEmpty && pages.isEmpty {

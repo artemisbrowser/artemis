@@ -1,22 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// a custom, styled replacement for the native `.help()` tooltip — which macOS
-/// renders as an unstyleable system bubble. over its own window the bubble draws
-/// in `TooltipLayer`; anywhere else (a popover, a sheet) it moves to a borderless
-/// panel above every window. drive it with the `.tooltip(_:style:)` modifier; only a
-/// control in an app with no browser window open falls back to `.help`.
-
 /// how a tooltip is anchored and shaped
 enum TooltipStyle {
     /// attached to the cursor: top-left corner sharpened, the bubble's top-left
     /// sitting just below-right of the pointer, and following it. the default.
     case cursor
-    /// a full even pill centred above the control — for tiles/items where a
-    /// cursor-hugging bubble would sit awkwardly (e.g. the space switcher)
+    /// an even pill centred above the control
     case centered
 }
 
+/// one window's tooltip. over that window the bubble draws in `TooltipLayer`;
+/// anywhere else (a popover, a sheet) it moves to a panel above every window
 @Observable
 final class TooltipState {
     struct Active: Equatable, Identifiable {
@@ -85,9 +80,8 @@ final class TooltipState {
     private var cooldown: Task<Void, Never>?
     private var clear: Task<Void, Never>?
     private static let warmGraceMS = 1200
-    /// grace after leaving a control before its bubble actually clears — long enough
-    /// that moving straight onto a neighbour swaps the bubble in place rather than
-    /// fading this one out and the next one in (the "phasing" between tooltips)
+    /// grace after leaving a control before its bubble clears, so moving straight
+    /// onto a neighbour swaps the bubble in place rather than fading it out and in
     private static let clearGraceMS = 70
 
     /// show a tooltip and (re)enter the warm period
@@ -100,11 +94,8 @@ final class TooltipState {
         cooldown = nil
     }
 
-    /// clear the tooltip if `id` still owns it, and start the warm cooldown — so a
-    /// jump to the next control within the grace window shows instantly
-    /// a control whose view is going away takes the bubble with it immediately:
-    /// the debounce below runs on a task, and a task owned by a window being
-    /// closed may never get to run at all
+    /// clears at once, for a control whose view is going away: `hide` debounces
+    /// on a task, and a task owned by a closing window may never run
     func hideNow(id: UUID) {
         guard active?.id == id else { return }
         clear?.cancel()
@@ -112,6 +103,8 @@ final class TooltipState {
         active = nil
     }
 
+    /// clear the tooltip if `id` still owns it, and start the warm cooldown, so a
+    /// jump to the next control within the grace window shows instantly
     func hide(id: UUID) {
         guard active?.id == id else { return }
         // debounce the clear: a show() from a neighbour lands first and cancels it,
@@ -161,9 +154,7 @@ private struct TooltipModifier: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        // The tooltip's words are also the control's name. Supplying the label
-        // here rather than at every call site is what keeps the two from drifting,
-        // and what makes a control added later labelled by construction.
+        // the tooltip's words are also the control's accessibility label
         labelled(decorated(content))
     }
 
@@ -228,9 +219,9 @@ private final class AnchorBox {
     var cursor: CGPoint = .zero
 }
 
-/// the styled bubble itself, drawn at its natural size — `TooltipPresenter` or
-/// `TooltipLayer` owns where it goes. The panel's shadow needs room, hence the padding.
-struct TooltipBubble: View {
+/// the bubble itself, at its natural size plus room for its shadow in the panel;
+/// `TooltipPresenter` or `TooltipLayer` owns where it goes
+private struct TooltipBubble: View {
     let active: TooltipState.Active
     /// the current space's accent, tinting the shortcut keycaps to match the theme
     var accent: Color = .white
@@ -259,8 +250,7 @@ struct TooltipBubble: View {
 
     private func bubble(flipped: Bool) -> some View {
         let shape = shape(flipped: flipped)
-        return
-        HStack(spacing: 7) {
+        return HStack(spacing: 7) {
             Text(active.text)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(light ? SpaceAppearance.darkInk : .white)
@@ -299,12 +289,9 @@ struct TooltipBubble: View {
     /// a darker accent for the keycap outline + its 3D bottom lip
     private var capEdge: Color { accent.tuned(brightness: -0.45, saturation: 1.0) }
 
-    /// one shortcut keycap, built to exact dims: a 19×19pt cap whose darker base
-    /// shows through the inset face as a 1pt outline top + sides plus a 2.5pt bottom
-    /// lip. the face is 17pt wide (wider glyphs expand it) and 15.5pt tall. while its
-    /// real key is held the bottom lip collapses to 1pt and the whole cap drops to
-    /// the bottom of its 19pt slot — so the key sinks while the 1pt top outline holds
-    /// its width, like a physical key bottoming out.
+    /// one shortcut keycap in a 19pt slot: a face at least 17×15.5pt over a darker
+    /// base showing as a 1pt rim and a 2.5pt bottom lip. while its key is held the
+    /// lip shrinks to 1pt and the cap sinks to the slot's bottom
     private func keycap(_ key: String) -> some View {
         let down = press.pressed.contains(key)
         let bottomLip: CGFloat = down ? 1 : 2.5
@@ -314,7 +301,7 @@ struct TooltipBubble: View {
         let outer = RoundedRectangle(cornerRadius: 5, style: .continuous)
         return Text(key)
             .font(.system(size: bracket ? 10.5 : 12, weight: .semibold))
-            .foregroundStyle(capEdge)  // glyph matches the cap's darker outline
+            .foregroundStyle(capEdge)
             .offset(x: bracket ? -0.5 : 0)
             .padding(.horizontal, 3)  // breathing room so wider glyphs don't touch
             .frame(minWidth: 17, minHeight: 15.5, maxHeight: 15.5)
@@ -329,11 +316,9 @@ struct TooltipBubble: View {
             .animation(Motion.pop, value: down)
     }
 
-    /// the bubble outline: a pill with one sharpened top corner for the cursor style
-    /// (it points back at the pointer — top-left normally, top-right when flipped),
-    /// an even pill for the centred style. the round corners use an explicit pill
-    /// radius (half the measured height) so the sharpened corner's neighbours don't
-    /// over-curve — `UnevenRoundedRectangle` would otherwise grab the whole edge.
+    /// a `.cursor` bubble sharpens the top corner nearest the pointer, its others
+    /// rounded to half the measured height: `UnevenRoundedRectangle` would otherwise
+    /// curve the whole edge. a `.centered` bubble is a plain capsule
     private func shape(flipped: Bool) -> AnyShape {
         switch active.style {
         case .cursor:
@@ -347,7 +332,6 @@ struct TooltipBubble: View {
             return AnyShape(Capsule(style: .continuous))
         }
     }
-
 }
 
 /// draws the bubble inside its window while the pointer is over it
@@ -403,7 +387,7 @@ private struct TooltipPlacement: Layout {
 /// pointer's own screen position — which is what lets it follow the cursor out
 /// over a popover, a sheet, or the page.
 @MainActor
-final class TooltipPresenter {
+private final class TooltipPresenter {
     /// `nonisolated(unsafe)` only so `deinit` can reach it: a presenter dies
     /// with the window whose state owned it, and a panel left on screen then has
     /// nothing left alive to take it down
@@ -500,7 +484,6 @@ final class TooltipPresenter {
         min(max(v, low), max(low, high))
     }
 
-    /// re-root the bubble and size the panel to it
     /// what a cached measurement was taken for
     private struct BubbleKey: Equatable {
         var text: String
@@ -512,10 +495,8 @@ final class TooltipPresenter {
     private var measuredKey: BubbleKey?
     private var measuredSize: CGSize = .zero
 
-    /// the bubble's size, measured once per distinct bubble. a `.cursor` tooltip
-    /// rewrites `active` on every mouse-moved event and only the cursor changes —
-    /// laying out the hosting view again each time measured a size that could not
-    /// have moved, on the busiest event in the app
+    /// the bubble's size, measured once per distinct bubble: a `.cursor` tooltip
+    /// rewrites `active` on every mouse move, changing only the cursor
     private func size(
         of active: TooltipState.Active, accent: Color, light: Bool, flipped: Bool, in panel: NSPanel
     ) -> CGSize {
@@ -528,6 +509,7 @@ final class TooltipPresenter {
         return measuredSize
     }
 
+    /// re-root the bubble and size the panel to it
     private func fit(_ bubble: TooltipBubble, in panel: NSPanel) -> CGSize {
         let view: NSHostingView<TooltipBubble>
         if let host {
@@ -558,7 +540,7 @@ final class TooltipPresenter {
         panel.backgroundColor = .clear
         panel.hasShadow = false  // the bubble draws its own
         panel.ignoresMouseEvents = true
-        panel.level = .popUpMenu  // above popovers, which is the whole point
+        panel.level = .popUpMenu  // above popovers
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         panel.hidesOnDeactivate = true
         panel.animationBehavior = .none
@@ -566,14 +548,12 @@ final class TooltipPresenter {
     }
 }
 
-/// while a tooltip with a shortcut is on screen, this watches the keyboard and
-/// tracks which of its keycaps are currently held — so each cap can flatten as its
-/// real key goes down. modifier caps follow the live flags (reliable); letter /
-/// symbol caps flash on key-down and auto-release shortly after, since macOS drops
-/// key-up events while ⌘ is held.
+/// which of a shown tooltip's keycaps are held. modifier caps follow the live
+/// flags; other caps release on their own shortly after key-down, since macOS
+/// drops key-up events while ⌘ is held
 @MainActor
 @Observable
-final class KeycapPressTracker {
+private final class KeycapPressTracker {
     /// the keycaps currently shown as pressed
     private(set) var pressed: Set<String> = []
 
@@ -669,9 +649,8 @@ final class KeycapPressTracker {
 }
 
 private extension Color {
-    /// shift this colour in HSB — `brightness` adds toward white (＋) or black (−),
-    /// `saturation` scales the existing saturation. used to derive a light keycap
-    /// face and a dark edge from a single space accent.
+    /// this colour shifted in HSB: `brightness` is added (toward white or black),
+    /// `saturation` scales the existing saturation
     func tuned(brightness db: Double, saturation ss: Double) -> Color {
         let ns = NSColor(self).usingColorSpace(.sRGB) ?? .gray
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0

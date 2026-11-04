@@ -2,14 +2,13 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// `ARTEMIS_DIAG=extlab`: the extension compatibility sweep. Installs each
-/// package listed in `/private/tmp/artemis-extlab/queue.txt` alone, exercises
-/// background, content scripts, popup and options page, then removes it and
-/// appends one JSON verdict to `results.jsonl`. Resumable: finished keys are skipped.
 @objc private protocol WKPreferencesPeerConnectionSPI {
     func _setPeerConnectionEnabled(_ enabled: Bool)
 }
 
+/// `ARTEMIS_DIAG=extlab`: installs each package in `queue.txt` alone, exercises its background,
+/// content scripts, popup and options page, removes it and appends one JSON verdict to
+/// `results.jsonl`. finished keys are skipped, so a run resumes
 @MainActor
 enum ExtensionLab {
     /// the lab and the perf bundle (`ARTEMIS_DIAG=perf`, tools/perflab.sh) both run fenced:
@@ -94,8 +93,8 @@ enum ExtensionLab {
         let queue = ((try? String(contentsOf: root.appendingPathComponent(queueFile), encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init).filter { !$0.isEmpty && !done.contains($0) }
 
-        // `ARTEMIS_EXTLAB_BATCH=n` relaunches every n packages: one long session drifts
-        // (content scripts start sending from pages no tab owns) while fresh ones never do
+        // `ARTEMIS_EXTLAB_BATCH=n` relaunches every n packages: a long session drifts, its
+        // content scripts sending from pages no tab owns
         let batch = Int(ProcessInfo.processInfo.environment["ARTEMIS_EXTLAB_BATCH"] ?? "") ?? .max
         for (index, key) in queue.enumerated() {
             if index == batch {
@@ -275,9 +274,8 @@ enum ExtensionLab {
         em.remove(ext)
     }
 
-    /// `ARTEMIS_EXTLAB_PAGES=key` (empty: no package) with `ARTEMIS_EXTLAB_URLS=a,b,…`:
-    /// each page loaded with the package in place and given time to settle, recording
-    /// its title, text, `ARTEMIS_EXTLAB_PROBE` (a JS expression) and a snapshot.
+    /// `ARTEMIS_EXTLAB_PAGES=key` (empty: no package) with `ARTEMIS_EXTLAB_URLS=a,b,…`: each page's
+    /// title, text, `ARTEMIS_EXTLAB_PROBE` (a JS expression) and snapshot with the package in place.
     /// `ARTEMIS_EXTLAB_NATIVE=off` runs without Artemis's own blocker
     private static func pages(key: String, manager: TabManager) async {
         let env = ProcessInfo.processInfo.environment
@@ -378,6 +376,7 @@ enum ExtensionLab {
             .prefix(200).map { "[\($0.level)] \($0.text)" }
 
         weak var closedProbe = tab
+        // scoped so `opened` lets go of its tabs before the leak check
         do {
             let opened = manager.allTabs.filter { !tabsBefore.contains($0.id) && $0.id != tab.id }
             verdict["openedTabs"] = opened.compactMap { $0.url?.absoluteString }
@@ -527,8 +526,8 @@ enum ExtensionLab {
         return "shots/" + file
     }
 
-    /// a hung page never answers evaluateJavaScript or takeSnapshot, and a
-    /// task group would wait for it anyway: whichever of work and timer ends first wins
+    /// whichever of `work` and the timer ends first; a hung page never answers
+    /// evaluateJavaScript or takeSnapshot
     private static func bounded<T>(_ seconds: Double, _ work: @escaping () async -> T) async -> T? {
         let once = Flag()
         return await withCheckedContinuation { (finish: CheckedContinuation<T?, Never>) in

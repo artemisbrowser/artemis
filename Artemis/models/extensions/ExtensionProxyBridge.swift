@@ -4,30 +4,17 @@ import Network
 import Security
 import WebKit
 
-/// Native half of the chrome.proxy compat layer (`ExtensionCompat` is the JS
-/// half): receives the shim's `sendNativeMessage` traffic and drives real
-/// WebKit proxying via `WKWebsiteDataStore.proxyConfigurations` (macOS 14+).
-///
-/// What the API gives us (verified): per-datastore proxies, runtime-swappable
-/// on live stores (new connections adopt them; kept-alive connections migrate
-/// as they close), covering subresources, fetch/XHR and WebSockets. What it
-/// can't do: route per-scheme (DTS: impossible — `singleProxy` semantics only),
-/// proxy WebRTC/UDP, or stop DNS-prefetch/WebTransport leaks — those are
-/// WebKit-wide and hit iCloud Private Relay too.
-///
-/// Credentials arrive separately ("proxy.credentials"): WebKit's
-/// `webRequest.onAuthRequired` ignores extension return values, so the shim
-/// invokes the extension's own auth handler itself and forwards what it
-/// returns; `ProxyConfiguration.applyCredential` answers the 407 natively.
+/// native half of the shim's chrome.proxy and kin, driving each profile's
+/// `WKWebsiteDataStore.proxyConfigurations`: one proxy per store, never per scheme, and
+/// WebRTC/UDP, DNS prefetch and WebTransport bypass it
 @MainActor
 final class ExtensionProxyBridge {
     static let shared = ExtensionProxyBridge()
 
     /// one profile's proxy: a VPN applies only to the profiles it is enabled in
     private struct Slot {
-        /// the chrome-side `ProxyConfig` value as last set. **Persisted**: a VPN
-        /// restores "connected" from its own storage on launch and may not re-assert
-        /// the proxy, so the browser must come back up proxied (fail-closed)
+        /// the chrome-side `ProxyConfig` as last set, persisted: a VPN restores "connected" from
+        /// its own storage on launch and may never set the proxy again
         var value: [String: Any]?
         /// the context that set it; Chrome reverts the setting when it goes
         var owner: String?
@@ -38,12 +25,10 @@ final class ExtensionProxyBridge {
     }
     private var slots: [UUID: Slot] = [:]
     private static let ownerKey = "artemisOwner"
-    /// non-proxy ChromeSettings (webRTCIPHandlingPolicy etc.) — stored and
-    /// echoed back so extension UIs stay coherent; not yet enforced natively
+    /// non-proxy ChromeSettings (webRTCIPHandlingPolicy etc.), echoed back but not enforced
     private var settingValues: [String: Any] = [:]
 
-    /// what the current chrome value compiled down to — for the self-test and
-    /// the Settings diagnostics row
+    /// what the current chrome value compiled down to
     struct BuiltProxy {
         var kind: String  // "https-connect" | "http-connect" | "socks5"
         var host: String
@@ -56,21 +41,18 @@ final class ExtensionProxyBridge {
 
     func chromeProxyValue(in profile: UUID) -> [String: Any]? { slots[profile]?.value }
 
-    /// the proxy credentials as a URLCredential, for answering 407 challenges
-    /// in the navigation delegate (backstop to `applyCredential`, and what
-    /// suppresses macOS's own proxy-password dialog)
+    /// the proxy credentials for the navigation delegate's 407 challenges, which otherwise
+    /// raise macOS's own proxy-password dialog
     func proxyURLCredential(in profile: UUID) -> URLCredential? {
         guard let credentials = slots[profile]?.credentials else { return nil }
         return URLCredential(
             user: credentials.username, password: credentials.password, persistence: .forSession)
     }
 
-    /// whether the screen is currently locked — feeds the chrome.idle shim's
-    /// "locked" state, which vault-timeout code treats as "lock now". the
-    /// distributed notifications are the only public signal for this
-    private(set) var screenIsLocked = false
+    /// chrome.idle's "locked" state; the distributed notifications are the only public signal
+    private var screenIsLocked = false
 
-    init() {
+    private init() {
         let center = DistributedNotificationCenter.default()
         let locked = "com.apple.screenIsLocked", unlocked = "com.apple.screenIsUnlocked"
         center.addObserver(
@@ -159,10 +141,7 @@ final class ExtensionProxyBridge {
             return ["enabled": AppStorageLocation.isExtensionsDiag]
 
         case "idle.query":
-            // the chrome.idle shim asks for the real system idle clock: seconds
-            // since the last keyboard/mouse/scroll event, plus whether the
-            // screen is locked. this is what lets a password manager's
-            // "lock the vault when the machine idles" actually mean something
+            // seconds since the last input event
             let seconds = CGEventSource.secondsSinceLastEventType(
                 .hidSystemState, eventType: CGEventType(rawValue: ~0)!)
             return ["seconds": Int(seconds), "locked": screenIsLocked]
@@ -184,10 +163,7 @@ final class ExtensionProxyBridge {
             return ["bridge": await Self.hasSameSiteRestrictedCookies(for: url, in: profile)]
 
         case "probe.setLaxCookie":
-            // self-test only: plant a SameSite=Lax cookie in the shared jar so
-            // the bridge's discrimination + carry can be proven end-to-end
-            // without depending on page-side cookie writes. limited to the
-            // suite's echo host so it can't be abused as a cookie写 primitive
+            // self-test only: plants a SameSite=Lax cookie, and only on the suite's echo host
             guard let raw = message["url"] as? String, let url = URL(string: raw),
                 url.host() == "httpbin.org",
                 let cookie = HTTPCookie(properties: [
@@ -199,8 +175,7 @@ final class ExtensionProxyBridge {
             return ["ok": true]
 
         case "cookies.dump":
-            // diag: what does the jar hold for this URL, and how is each
-            // cookie's SameSite recorded? (probe-only introspection)
+            // diag: the jar's cookies for this URL, with their SameSite policy
             guard let raw = message["url"] as? String, let url = URL(string: raw),
                 let host = url.host()
             else { return [:] }
@@ -223,6 +198,7 @@ final class ExtensionProxyBridge {
             return ["ok": true]
 
         case "proxy.credentials":
+            // WebKit ignores onAuthRequired's return value, so the shim forwards what it returned
             guard let username = message["username"] as? String else { return [:] }
             slots[profile, default: Slot()].credentials = (username, message["password"] as? String ?? "")
             // rebuild so applyCredential lands on the active config
@@ -238,7 +214,6 @@ final class ExtensionProxyBridge {
 
     // MARK: - Persistence
 
-    /// the default profile keeps the file and keychain item it always had
     private static func stateFile(_ profile: UUID) -> String {
         profile == Profile.defaultID ? "proxy-state.json" : "proxy-state-\(profile.uuidString).json"
     }
@@ -249,9 +224,7 @@ final class ExtensionProxyBridge {
         return profile == Profile.defaultID ? base : "\(base).\(profile.uuidString)"
     }
 
-    /// restore every profile's proxy across launches so protection resumes with the
-    /// browser rather than after the user notices it is missing. called before any
-    /// tab loads (from `ExtensionManager.attach`)
+    /// restore every profile's saved proxy; call before any tab loads
     func restorePersisted() {
         let folder = AppStorageLocation.file(Self.stateFile(Profile.defaultID)).deletingLastPathComponent()
         let saved = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
@@ -289,8 +262,6 @@ final class ExtensionProxyBridge {
         Self.saveCredentials(slot?.credentials, profile)
     }
 
-    /// proxy credentials belong in the keychain, not a plist — they are a
-    /// living service credential for the user's VPN account
     private static func saveCredentials(_ credentials: (username: String, password: String)?, _ profile: UUID) {
         guard !AppStorageLocation.isExtensionLab else { return }
         let query: [String: Any] = [
@@ -323,8 +294,7 @@ final class ExtensionProxyBridge {
         return (String(parts[0]), String(parts[1]))
     }
 
-    /// run a held clear immediately instead of waiting out the grace period,
-    /// so the suite can assert the disconnect path without a 25s pause
+    /// run a held clear now instead of after `clearGrace`, for the self-test
     func finishPendingClearForTesting(in profile: UUID) {
         guard slots[profile]?.pendingClear != nil else { return }
         slots[profile]?.pendingClear?.cancel()
@@ -334,8 +304,7 @@ final class ExtensionProxyBridge {
         clearProxy(in: profile)
     }
 
-    /// drop in-memory proxy state without touching what's on disk — lets the
-    /// self-test prove a real restore rather than reading back its own memory
+    /// drop in-memory proxy state without touching what's on disk, for the self-test's restore
     func forgetForTesting(in profile: UUID) {
         slots[profile] = nil
         ProfileStore.setProxyConfigurations([], for: profile)
@@ -376,12 +345,8 @@ final class ExtensionProxyBridge {
 
     // MARK: - Proxy application
 
-    /// how long a clear is held before it is believed. A switch (disconnect →
-    /// pick server → reconnect) can take ~20s, and dropping to direct in that
-    /// window leaks the real IP with the VPN's UI still saying "connected" —
-    /// which is exactly what a VPN must never do. A genuine disconnect is
-    /// simply protected for a few seconds longer, which is the safe direction
-    /// to be wrong in.
+    /// how long a clear is held before it is believed: a server switch can take ~20s, and going
+    /// direct meanwhile leaks the real IP while the VPN still says "connected"
     private static let clearGrace: Duration = .seconds(25)
 
     private func setProxy(_ value: [String: Any]?, in profile: UUID) {
@@ -400,12 +365,8 @@ final class ExtensionProxyBridge {
                 try? await Task.sleep(for: Self.clearGrace)
                 guard !Task.isCancelled, let self else { return }
                 self.slots[profile]?.value = nil
-                // credentials survive a disconnect on purpose: they are
-                // account-level (any server accepts them) and already in the
-                // keychain, so the next connect authenticates instantly
-                // instead of opening a window where the proxy is applied
-                // without them — which is when the system prompts for a
-                // password the user doesn't have
+                // credentials survive a disconnect: they are account-level, and a proxy applied
+                // without them makes the system prompt for a password
                 self.persist(profile)
                 self.clearProxy(in: profile)
                 debugLog("compat: no new proxy arrived — really disconnected now")
@@ -427,10 +388,8 @@ final class ExtensionProxyBridge {
             }
             slots[profile, default: Slot()].active = built
             ProfileStore.setProxyConfigurations([built.config], for: profile)
-            // only reload once we can actually authenticate: reloading into a
-            // credential-less proxy races the auth handshake, every request
-            // 407s, and macOS puts up its own password dialog. When creds
-            // arrive they re-apply and the reload happens then.
+            // a reload without credentials 407s every request and macOS prompts for a password;
+            // their arrival re-applies and reloads
             if reloadTabs && built.hasCredentials {
                 Self.reloadLiveTabs(reason: "proxy on", in: profile)
             }
@@ -438,8 +397,7 @@ final class ExtensionProxyBridge {
                 "compat: proxy ON — \(built.kind) \(built.host):\(built.port), "
                     + "\(built.excludedDomains.count) bypassed, creds=\(built.hasCredentials)")
         case "pac_script":
-            // no PAC on this stack (would need app-side JSC evaluation with
-            // host-suffix fidelity only) — treat as direct rather than lie
+            // no PAC evaluation on this stack
             debugLog("compat: pac_script unsupported, treating as direct")
             clearProxy(in: profile)
         default:  // direct / system / auto_detect / unknown
@@ -455,12 +413,6 @@ final class ExtensionProxyBridge {
         debugLog("compat: proxy OFF")
     }
 
-    /// A proxy change only affects *new* connections — anything already
-    /// keep-alive keeps using the old path, so a page loaded a moment ago
-    /// still shows the old exit until something forces it to reconnect. That
-    /// is why toggling the VPN appeared to do nothing until a manual reload.
-    /// Reload the profile's live pages (its incognito ones included) so the
-    /// switch takes effect immediately.
     private static func reloadLiveTabs(reason: String, in profile: UUID) {
         let reloaded = ExtensionManager.shared.reloadLiveTabs(proxyProfile: profile)
         debugLog("compat: \(reason) — reloaded \(reloaded) live tab(s)")
@@ -501,18 +453,14 @@ final class ExtensionProxyBridge {
             return nil
         }
 
-        // fail closed: a dead proxy must never silently fall back to direct —
-        // that's the difference between a VPN and a decoration
+        // fail closed: a dead proxy never falls back to direct
         config.allowFailover = false
 
         let excluded = excludedDomains(fromBypassList: rules["bypassList"] as? [Any] ?? [])
         config.excludedDomains = excluded
 
-        // A proxy applied with no credential at all makes the network stack ask
-        // the *user* for a proxy password — for a server they never chose and
-        // whose password they don't know. Applying a placeholder keeps that
-        // prompt away: connections fail closed until the extension's real
-        // credentials arrive (moments later), which re-applies and reloads.
+        // with no credential the network stack asks the user for a proxy password; a placeholder
+        // fails closed until the real one arrives and re-applies
         config.applyCredential(
             username: credentials?.username ?? "artemis-pending",
             password: credentials?.password ?? "")
@@ -524,11 +472,9 @@ final class ExtensionProxyBridge {
 
     // MARK: - SameSite fetch bridge
 
-    /// does the shared jar hold cookies for this URL that WebKit would
-    /// withhold from a cross-site (extension-origin) request? those are the
-    /// SameSite Lax/Strict ones — the exact class Chrome exempts extensions
-    /// from and WebKit doesn't (Surfshark's `_sstk` session cookie is Lax)
-    static func hasSameSiteRestrictedCookies(for url: URL, in profile: UUID) async -> Bool {
+    /// does the jar hold cookies for this URL that WebKit withholds from an extension-origin
+    /// request? those are SameSite Lax/Strict, which Chrome exempts extensions from
+    private static func hasSameSiteRestrictedCookies(for url: URL, in profile: UUID) async -> Bool {
         guard let host = url.host() else { return false }
         let cookies = await ProfileStore.dataStore(for: profile).httpCookieStore.allCookies()
         return cookies.contains { cookie in
@@ -542,11 +488,9 @@ final class ExtensionProxyBridge {
         }
     }
 
-    /// perform the request natively with the jar's cookies attached — the
-    /// SameSite exemption Chrome gives host-permitted extension requests.
-    /// Set-Cookie responses are written back into the shared jar so a login
-    /// flow's session survives the detour
-    static func performBridgedFetch(_ message: [String: Any], in profile: UUID) async -> [String: Any] {
+    /// perform the request natively with the jar's cookies attached, as Chrome's SameSite exemption
+    /// for extensions would; Set-Cookie responses go back into the jar
+    private static func performBridgedFetch(_ message: [String: Any], in profile: UUID) async -> [String: Any] {
         guard let raw = message["url"] as? String, let url = URL(string: raw),
             let scheme = url.scheme, scheme == "https" || scheme == "http"
         else { return [:] }
@@ -608,14 +552,10 @@ final class ExtensionProxyBridge {
         }
     }
 
-    /// cookie-blind session: the jar of record is the WebKit store; letting
-    /// URLSession keep its own copy would fork the session state. rebuilt
-    /// whenever the profile's proxy changes so bridged fetches ride the same
-    /// proxy as its web views — without this they'd bypass the VPN entirely
-    /// (a leak, and the extension would keep seeing the real IP)
+    /// cookie-blind sessions keyed by proxy, so bridged fetches leave through the profile's proxy
+    /// and the WebKit store stays the only jar
     private static var bridgedSessions: [String: URLSession] = [:]
 
-    @MainActor
     private static func bridgedSession(for profile: UUID) -> URLSession {
         let active = ExtensionProxyBridge.shared.activeProxy(in: profile)
         let signature = active.map { "\($0.kind):\($0.host):\($0.port):\($0.hasCredentials)" }
@@ -630,11 +570,9 @@ final class ExtensionProxyBridge {
         return session
     }
 
-    /// chrome bypassList → `excludedDomains`, which matches host *suffixes*
-    /// only. entries the platform can't express (CIDR blocks, scheme/port
-    /// patterns, `<local>`) are dropped — a too-narrow bypass just means that
-    /// traffic also goes through the proxy, which errs on the safe side
-    static func excludedDomains(fromBypassList list: [Any]) -> [String] {
+    /// chrome bypassList → `excludedDomains`, which matches host suffixes only. entries it can't
+    /// express (CIDR blocks, scheme/port patterns, `<local>`) are dropped, proxying that traffic
+    private static func excludedDomains(fromBypassList list: [Any]) -> [String] {
         list.compactMap { raw in
             guard var entry = raw as? String else { return nil }
             if entry.contains("://") { entry = String(entry.split(separator: "/").dropFirst().first ?? "") }

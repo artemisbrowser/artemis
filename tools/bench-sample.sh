@@ -1,15 +1,7 @@
 #!/bin/bash
-# Sample what Artemis costs the machine from *outside* the sandbox, because the
-# app process can't see its own WebKit children (launchd owns them) or the
-# WindowServer time its rendering causes.
-#
-# Rows are per *process*, not per category: WebKit content processes come and go
-# during a run, and summing a category's CPU across a sample where a process
-# exited produces a negative delta — which is how a fix once appeared to make
-# the web processes burn -1.8 seconds. `bench-report.py` diffs each pid on its
-# own and adds the results up.
-#
-#   tools/bench-sample.sh out.csv 300 &
+# Sample Artemis, its WebKit processes (launchd's children, not the app's) and
+# WindowServer once a second, one row per process: bench-report.py diffs each pid.
+#   tools/bench-sample.sh [out.csv] [seconds] &
 out="${1:-/tmp/artemis-sample.csv}"
 seconds="${2:-300}"
 

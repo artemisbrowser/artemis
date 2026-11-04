@@ -1,87 +1,43 @@
 import AppKit
-import NaturalLanguage
 import SwiftUI
 import Translation
 import UniformTypeIdentifiers
 import WebKit
 
-/// the `accept` attribute of the file input that opened the panel. Public
-/// `WKOpenPanelParameters` carries only the multiple/directories flags, so
-/// filtering the picker at all needs this. Both are guarded by `responds(to:)`.
+/// the `accept` attribute of the file input that opened the panel, which public
+/// `WKOpenPanelParameters` lacks; guarded by `responds(to:)`
 @objc private protocol WKOpenPanelParametersSPI {
     var _acceptedMIMETypes: [String] { get }
     var _acceptedFileExtensions: [String] { get }
 }
 
-/// private WKWebView SPI for native Picture in Picture. macOS WKWebView ships the
-/// full native PiP stack but only exposes it through these underscored methods —
-/// the JS `video.webkitSetPresentationMode` path silently no-ops in a non-Safari
-/// host. This is the surface Safari and WebKit's MiniBrowser drive. Reached
-/// via `unsafeBitCast` (WKWebView responds to these selectors without declaring
-/// conformance); every call site guards with `responds(to:)` so a future WebKit
-/// that drops them degrades gracefully instead of crashing.
-@objc private protocol WKWebViewPiPSPI {
-    func _togglePictureInPicture()
-    /// lazily creates the AVKit controls manager that backs PiP. macOS only spins
-    /// it up through the Touch Bar path (a key-window hook a third-party WKWebView
-    /// never trips), so `_canTogglePictureInPicture` stays false until this is
-    /// called — even with a playing, tracked video. MiniBrowser calls it right
-    /// before reading canToggle; we do the same.
-    func _updateMediaPlaybackControlsManager()
-    var _canTogglePictureInPicture: Bool { get }
-    var _isPictureInPictureActive: Bool { get }
-    // macOS 26 "Viewer" — an in-window floating video that auto-falls-back to PiP
-    // when occluded/tab-switched. WebKit ENABLES this for WKWebView (it greys out
-    // classic PiP), so it's the supported floating-video path on macOS.
-    func _toggleInWindow()
-    func _enterInWindow()
-    func _exitInWindow()
-    var _canToggleInWindow: Bool { get }
-    var _isInWindowActive: Bool { get }
-    /// true while the web view is actively producing audio — a synchronous proxy
-    /// for "media is really playing" (false when paused), used to gate auto-PiP
+/// private WKWebView media SPI, reached via `unsafeBitCast` and guarded by `responds(to:)`
+@objc private protocol WKWebViewMediaSPI {
     var _isPlayingAudio: Bool { get }
-    /// mute the whole page at the engine level (`_WKMediaMutedState` bitmask —
-    /// bit 0 is audio). the public API has no per-web-view mute, and muting each
-    /// `<video>` from JS misses Web Audio and any element created later; this is
-    /// the switch Safari's own tab-mute flips.
+    /// mute the whole page, Web Audio included (`_WKMediaMutedState`: bit 0 is audio)
     func _setPageMuted(_ state: UInt)
 }
 
-/// private WKPreferences SPI — `allowsPictureInPictureMediaPlayback` is public on
-/// iOS but macOS only exposes this underscored setter. Without it WebKit greys out
-/// PiP for a WKWebView. Called via a typed `unsafeBitCast` (NOT KVC — the KVC key
-/// can't reach an underscored setter and throws).
+/// private WKPreferences SPI: off keeps WebKit's own PiP out of pages, so only the mini-player floats video.
+/// called via `unsafeBitCast`; KVC can't reach an underscored setter
 @objc private protocol WKPreferencesPiPSPI {
     func _setAllowsPictureInPictureMediaPlayback(_ enabled: Bool)
 }
 
-/// private WKPreferences SPI gating the MediaStream / MediaDevices web APIs.
-/// WKWebView leaves `navigator.mediaDevices` **undefined** unless these are on —
-/// Safari turns them on, so a third-party WKWebView host has to as well. Prime
-/// Video's player calls `navigator.mediaDevices.enumerateDevices()` during init;
-/// against `undefined` it throws (`undefined is not an object … e.groupId`) and
-/// the whole content load aborts with "Video Unavailable". Typed `unsafeBitCast`,
-/// each call guarded with `responds(to:)`. We only expose the API surface (enable
-/// device enumeration); getUserMedia capture still needs the permission delegate
-/// + Info.plist usage strings, which a video player never invokes.
+/// private WKPreferences SPI: `navigator.mediaDevices` is undefined unless these
+/// are on. capture still goes through the permission delegate
 @objc private protocol WKPreferencesMediaDevicesSPI {
     func _setMediaDevicesEnabled(_ enabled: Bool)
     func _setMediaStreamEnabled(_ enabled: Bool)
 }
 
-/// private WKWebView SPI exposing the live Web Inspector. `isInspectable = true`
-/// lets Safari attach remotely, but driving devtools *in-app* needs the
-/// underscored `_inspector` accessor — the same `_WKInspector` object Safari and
-/// MiniBrowser open. Fetched via a typed `unsafeBitCast` (KVC on an underscored
-/// getter throws); the call site guards with `responds(to:)`.
+/// private WKWebView SPI for the in-app Web Inspector, via `unsafeBitCast` and
+/// guarded by `responds(to:)`
 @objc private protocol WKWebViewInspectorSPI {
     var _inspector: AnyObject? { get }
 }
 
-/// `_WKInspector` — the inspector controller. `show` docks it to the web view's
-/// window (Safari's attached devtools); `close` tears it down. `toggleElementSelection`
-/// arms click-to-inspect. `isVisible` getter backs `visible` on the Obj-C side.
+/// `_WKInspector`, the inspector controller
 @objc private protocol WKInspectorSPI {
     func show()
     func close()
@@ -89,24 +45,17 @@ import WebKit
     var isVisible: Bool { get }
 }
 
-/// a single browser tab
-///
-/// owns its `WKWebView` and mirrors the web view's state (title, url,
-/// loading progress, history availability) into observable properties
-/// so SwiftUI views can react to them
+/// a browser tab: owns its `WKWebView` and mirrors the page's state into
+/// observable properties
 @Observable
 final class BrowserTab: NSObject, Identifiable {
-    /// stable across relaunches for a restored tab — a `TabRecord` carries it,
-    /// and per-tab state on disk (interaction state, and later anything keyed to
-    /// a specific tab) is filed under it
+    /// stable across relaunches via `TabRecord`; per-tab state on disk is keyed by it
     let id: UUID
 
-    // mirrored web view state
     private(set) var title = "New Tab"
 
-    /// what the sidebar actually shows: the name you gave this tab, else the
-    /// short name the on-device model suggested for an unwieldy page title, else
-    /// the page's own title. See `TabNameStore`.
+    /// the sidebar's title: the user's name for the tab, else the model's short
+    /// name for the page title, else the page title. see `TabNameStore`
     @MainActor
     var displayTitle: String {
         TabNameStore.shared.name(for: url ?? pendingURL) ?? title
@@ -123,16 +72,14 @@ final class BrowserTab: NSObject, Identifiable {
     private(set) var lastAttemptedURL: URL?
     /// human-readable load failure, nil when fine; drives the error page
     private(set) var loadError: String?
+    static let crashLoopError = "Artemis stopped reloading it after it crashed twice in a minute."
     private(set) var canGoBack = false
     private(set) var canGoForward = false
 
-    /// the page's declared theme-color (`<meta name="theme-color">`), if any;
-    /// drives chrome that adapts to the site's own colour
+    /// the page's `<meta name="theme-color">`, if any
     private(set) var themeColor: NSColor?
 
-    /// a colour standing in for the page's content — its theme-color when the
-    /// site declares one, else the favicon's dominant accent. nil when neither
-    /// is known yet (so chrome can fall back to glass)
+    /// the page's theme-color, else the favicon's accent; nil when neither is known
     var pageTint: Color? {
         if let themeColor { return Color(nsColor: themeColor) }
         return faviconAccent
@@ -141,20 +88,16 @@ final class BrowserTab: NSObject, Identifiable {
     /// the host whose favicon represents this tab
     private var faviconHost: String? { (url ?? lastAttemptedURL ?? pendingURL)?.host() }
 
-    /// resolved through the shared, persistent store keyed by host — so it
-    /// survives relaunches, is shared across tabs on the same site, and shows
-    /// before a lazily-restored tab ever loads, instead of falling back to a globe
+    /// from the persistent per-host store, so it shows before a restored tab loads
     var favicon: NSImage? { FaviconStore.shared.icon(for: faviconHost) }
 
-    /// a vivid colour sampled from this tab's favicon — used to tint the
-    /// favourites selection ring to match the icon. nil until the icon resolves
+    /// a vivid colour sampled from the favicon; nil until the icon resolves
     var faviconAccent: Color? { FaviconStore.shared.accent(for: faviconHost) }
 
     /// pinned tabs live in their own sidebar section and persist across launches
     var isPinned = false
 
-    /// favourites ("essentials") live in the global grid at the top of the
-    /// sidebar, shared across every space rather than owned by one
+    /// a favourite: shown in the grid shared by every space
     var isEssential = false
 
     /// the url a pinned tab is anchored to; when the tab navigates away from it
@@ -164,22 +107,37 @@ final class BrowserTab: NSObject, Identifiable {
     /// the connected coding agent that has driven this tab; nil once it disconnects
     var agentName: String?
 
-    /// a restored pinned tab defers loading until first selected, so launch
-    /// with many pins stays fast (lazy hydration)
+    /// set through `navigator.setAppBadge`, and dropped once the tab leaves `appBadgeOrigin`
+    private(set) var appBadge: AppBadge?
+    @ObservationIgnored private var appBadgeOrigin: String?
+
+    func setAppBadge(_ badge: AppBadge?, origin: String) {
+        appBadge = badge
+        appBadgeOrigin = origin
+    }
+
+    /// the sidebar's unread mark: the page's app badge, else a leading "(n)" in its title
+    var unread: AppBadge? {
+        appBadge ?? TabManager.unreadCount(in: title).map(AppBadge.count)
+    }
+
+    /// `displayTitle` beside an unread badge, without the "(n)" the badge already shows
+    var badgedTitle: String {
+        unread == nil ? displayTitle : TabManager.normalisedTitle(displayTitle)
+    }
+
+    /// the url an unloaded tab (restored, asleep, or closed to its pin) loads when next selected
     private(set) var pendingURL: URL?
 
-    /// when the tab was last viewed or navigated; drives auto-archive of stale
-    /// Today tabs. persisted so a tab's age survives relaunches
+    /// when the tab was last viewed or navigated; persisted, and drives auto-archive
     var lastAccessed = Date()
 
     /// live text in the url field; user edits happen here until submit,
     /// and committed navigations write the new url back into it
     var addressText = ""
 
-    /// called when the page requests a new window (`target="_blank"`,
-    /// `window.open`); must synchronously return a web view created with
-    /// the given configuration, or nil to refuse. The features say whether the
-    /// page asked for a sized popup (a sign-in flow) or just another page
+    /// the page asked for a new window; must synchronously return a web view built
+    /// from the given configuration, or nil to refuse
     @ObservationIgnored var onRequestNewTab:
         ((WKWebViewConfiguration, WKWindowFeatures) -> WKWebView?)?
 
@@ -192,15 +150,13 @@ final class BrowserTab: NSObject, Identifiable {
     /// a link clicked with modifiers held (or force clicked), to open elsewhere
     @ObservationIgnored var onOpenLink: ((URL, LinkClick) -> Void)?
 
-    /// called when a page finishes loading — feeds the history store
+    /// a page finished loading
     @ObservationIgnored var onDidNavigate: ((URL, String) -> Void)?
 
-    /// called whenever the page settles on a real title, which can be well after
-    /// it finished loading
+    /// the page settled on a real title, possibly well after it finished loading
     @ObservationIgnored var onDidSettleTitle: ((URL, String) -> Void)?
 
-    /// back-reference to the owning model, set in `TabManager.wire`. lets the
-    /// WebExtensions runtime drive selection/close/pin through this tab.
+    /// the owning model, set in `TabManager.wire`
     @ObservationIgnored weak var manager: TabManager?
 
     /// rebuilt (not mutated) when the tab changes profile — WebKit fixes a web
@@ -209,29 +165,23 @@ final class BrowserTab: NSObject, Identifiable {
     /// the cookie jar this tab's web view is bound to. `ProfileStore` caches one
     /// store per profile, so `===` tells a real profile move from a no-op
     @ObservationIgnored private(set) var dataStore: WKWebsiteDataStore
-    /// bumps each time `webView` is rebuilt, so the SwiftUI host's `.id` changes
-    /// and it re-mounts the fresh view. observed (not @ObservationIgnored) so the
-    /// content stack actually re-reads it
+    /// bumps each time `webView` is rebuilt; the SwiftUI host's `.id`, so must stay observed
     private(set) var webViewGeneration = 0
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
-    /// the main-window slot currently hosting this tab's web view. the mini-player
-    /// borrows the live web view out of here into a floating panel and hands it
-    /// back, so the slot is kept weak and re-set whenever it (re)mounts.
+    /// the main-window slot hosting this tab's web view; re-set on every mount
     @ObservationIgnored weak var webHost: WebHostView?
 
     /// the page's last frame, for a second window showing the same tab: only one
     /// window can hold the live web view, and the other stands this in
     var stillFrame: NSImage?
-    /// true while this tab's video is popped out into the floating mini-player.
-    /// the web-view slot reads it so it leaves itself empty while the panel owns
-    /// the view (and re-hosts the view when it flips back to false).
+    /// the mini-player owns the web view; the slot stays empty while this holds
     var isMiniPlayerActive = false
 
     // MARK: - JavaScript dialogs
 
     /// the `alert()` / `confirm()` / `prompt()` / leave-page question this page
-    /// is currently blocked on. Rendered by whichever surface hosts the tab
+    /// is blocked on
     private(set) var pendingDialog: PageDialogRequest?
     /// the user asked this page to stop putting up dialogs; cleared on navigation
     private var suppressesDialogs = false
@@ -243,17 +193,10 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Translation
 
-    /// text the user asked to have translated, or nil when nothing is being
-    /// translated. Drives the system's on-device translation popover
+    /// the selection in the system's on-device translation popover, or nil
     private(set) var pendingTranslation: String?
 
-    /// Translate what's selected on the page, on this machine.
-    ///
-    /// Worth stating plainly because it is the differentiator: Apple's own
-    /// privacy documentation says Safari sends a page's full text to Apple's
-    /// servers to translate it, and every Chromium browser ships it to a server
-    /// too. The system translation popover runs against locally-installed
-    /// language packs, so the selection never leaves the Mac.
+    /// translate the page's selection on this Mac
     @MainActor
     func translateSelection() async {
         let selected =
@@ -270,20 +213,14 @@ final class BrowserTab: NSObject, Identifiable {
     // MARK: - Page translation
 
     private(set) var pageTranslation = PageTranslation.State.idle
-    /// non-nil while a page translation runs; the web view's `.translationTask` turns it into a session
+    /// set while a language pair has to be downloaded first; the web view's `.translationTask` offers it
     private(set) var pageTranslationRequest: TranslationSession.Configuration?
-    /// waiting for a session; a session claims it, and hands it back if it is cancelled
-    @ObservationIgnored private var pageCapture: PageCapture?
+    @ObservationIgnored private var pageTranslator: PageTranslator?
     /// bumped whenever a page translation ends, so in-flight work for an older one stops
     @ObservationIgnored private var pageTranslationGeneration = 0
 
-    /// a page's captured text nodes, as numbered by the capture script
-    private struct PageCapture {
-        let id: Int
-        let texts: [String]
-        let source: Locale.Language
-        let target: Locale.Language
-    }
+    /// the profile's rules; an incognito page obeys its window's and never writes them
+    var translationRules: TranslationRules? { BrowserCore.shared.profile(loginProfile)?.translationRules }
 
     /// ⌥⌘T — translate the whole page on this machine, or put the original back
     func toggleTranslation() async {
@@ -295,111 +232,103 @@ final class BrowserTab: NSObject, Identifiable {
     }
 
     func showOriginal() {
+        pageTranslator?.stop(restoring: true)
         endPageTranslation()
-        webView.callAsyncJavaScript(PageTranslation.restore, in: nil, in: PageTranslation.world)
     }
 
-    /// runs inside the web view's `.translationTask` once `pageTranslationRequest` is set
-    func translatePage(with session: TranslationSession) async {
-        guard let capture = pageCapture else { return }
-        pageCapture = nil
+    /// translate again into `language`, which becomes the profile's choice unless this page is incognito
+    func translatePage(to language: Locale.Language) async {
+        if !isPrivate { translationRules?.setTarget(language) }
+        showOriginal()
+        await beginPageTranslation(to: language)
+    }
+
+    func setAlwaysTranslates(_ language: Locale.Language, _ on: Bool) {
+        guard !isPrivate, let code = language.languageCode?.identifier else { return }
+        translationRules?.setAlways(code, on)
+    }
+
+    func setNeverTranslatesSite(_ on: Bool) {
+        guard !isPrivate, let site = ZoomStore.key(for: url) else { return }
+        translationRules?.setNever(site, on)
+    }
+
+    /// runs inside the web view's `.translationTask` once `pageTranslationRequest` is set,
+    /// and may show the system's download sheet
+    func downloadLanguages(with session: TranslationSession) async {
+        guard let request = pageTranslationRequest, let source = request.source, let target = request.target
+        else { return }
         let generation = pageTranslationGeneration
         do {
             try await session.prepareTranslation()
-            // one request per unique string; members[n] are the node indices sharing request n
-            var requestFor: [String: Int] = [:]
-            var members: [[Int]] = []
-            var requests: [TranslationSession.Request] = []
-            for (index, text) in capture.texts.enumerated() {
-                if let request = requestFor[text] {
-                    members[request].append(index)
-                    continue
-                }
-                requestFor[text] = members.count
-                requests.append(.init(sourceText: text, clientIdentifier: String(members.count)))
-                members.append([index])
-            }
-
-            var pending: [[Any]] = []
-            var done = 0
-            var lastFlush = ContinuousClock.now
-            func flush() async throws {
-                guard !pending.isEmpty else { return }
-                _ = try await webView.callAsyncJavaScript(
-                    PageTranslation.apply, arguments: ["id": capture.id, "pairs": pending],
-                    contentWorld: PageTranslation.world)
-                guard generation == pageTranslationGeneration else { throw CancellationError() }
-                pending = []
-                lastFlush = .now
-                pageTranslation = .translating(progress: Double(done) / Double(requests.count))
-            }
-            for try await response in session.translate(batch: requests) {
-                guard generation == pageTranslationGeneration else { return session.cancel() }
-                if let request = response.clientIdentifier.flatMap(Int.init) {
-                    pending += members[request].map { [$0, response.targetText] }
-                }
-                done += 1
-                if pending.count >= 8 || ContinuousClock.now - lastFlush > .milliseconds(60) {
-                    try await flush()
-                }
-            }
-            try Task.checkCancellation()
-            guard generation == pageTranslationGeneration else { return }
-            try await flush()
-            endPageTranslation(.translated(from: capture.source, to: capture.target))
         } catch {
-            guard generation == pageTranslationGeneration else { return }
-            if Task.isCancelled {
-                pageCapture = capture
-                return
-            }
-            showOriginal()
-            pageTranslation = .failed(error.localizedDescription)
+            guard generation == pageTranslationGeneration, !Task.isCancelled else { return }
+            return endPageTranslation(.failed(error.localizedDescription))
         }
+        guard generation == pageTranslationGeneration else { return }
+        pageTranslationRequest = nil
+        startTranslator(from: source, to: target)
     }
 
-    private func beginPageTranslation() async {
-        endPageTranslation(.translating(progress: 0))
+    /// a page load translates itself only under an always-rule the person made
+    private func translateIfRuled() async {
+        guard !pageTranslation.isActive, let rules = translationRules, !rules.languages.isEmpty,
+            !rules.neverTranslates(url)
+        else { return }
+        await beginPageTranslation(automatic: true)
+    }
+
+    /// `automatic` translates only what a rule covers, and says nothing when it doesn't
+    private func beginPageTranslation(to chosen: Locale.Language? = nil, automatic: Bool = false) async {
+        endPageTranslation(automatic ? .idle : .detecting)
         let generation = pageTranslationGeneration
-        do {
-            let result = try await webView.callAsyncJavaScript(
-                PageTranslation.capture, contentWorld: PageTranslation.world) as? [String: Any]
-            guard generation == pageTranslationGeneration else { return }
-            let texts = result?["texts"] as? [String] ?? []
-            guard let id = result?["id"] as? Int, !texts.isEmpty else {
-                return endPageTranslation(.failed("There's no text on this page to translate."))
-            }
+        func fail(_ message: String) {
+            if !automatic { endPageTranslation(.failed(message)) }
+        }
+        let sample = try? await webView.callAsyncJavaScript(
+            PageTranslation.sample, contentWorld: PageTranslation.world) as? [String: Any]
+        guard generation == pageTranslationGeneration else { return }
+        let texts = sample?["texts"] as? [String] ?? []
+        guard !texts.isEmpty else { return fail("There's no text on this page to translate.") }
+        guard let source = PageTranslation.language(of: texts, declared: sample?["lang"] as? String) else {
+            return fail("Couldn't tell what language this page is in.")
+        }
+        let rules = translationRules
+        if automatic, rules?.translatesAutomatically(source, on: url) != true { return }
+        let target = chosen ?? rules?.target ?? PageTranslation.systemTarget
+        guard source.languageCode != target.languageCode else {
+            return fail("This page is already in \(PageTranslation.name(of: target)).")
+        }
 
-            // detection samples at most 400 nodes / 3000 chars; the declared lang is the fallback
-            let recognizer = NLLanguageRecognizer()
-            recognizer.processString(String(texts.prefix(400).joined(separator: "\n").prefix(3000)))
-            let declared = result?["lang"] as? String ?? ""
-            let source: Locale.Language
-            if let best = recognizer.languageHypotheses(withMaximum: 1).first, best.value >= 0.5 {
-                source = Locale.Language(identifier: best.key.rawValue)
-            } else if !declared.isEmpty {
-                source = Locale.Language(identifier: declared)
-            } else {
-                return endPageTranslation(.failed("Couldn't tell what language this page is in."))
-            }
-            let target = Locale.Language(identifier: Locale.preferredLanguages.first ?? "en")
-            guard source.languageCode != target.languageCode else {
-                return endPageTranslation(
-                    .failed("This page is already in \(PageTranslation.name(of: target))."))
-            }
-
-            pageCapture = PageCapture(id: id, texts: texts, source: source, target: target)
+        let status = await LanguageAvailability().status(from: source, to: target)
+        guard generation == pageTranslationGeneration else { return }
+        switch status {
+        case .installed:
+            startTranslator(from: source, to: target)
+        case .supported where !automatic:
             pageTranslationRequest = TranslationSession.Configuration(source: source, target: target)
-        } catch {
-            guard generation == pageTranslationGeneration else { return }
-            endPageTranslation(.failed(error.localizedDescription))
+        default:
+            fail("This Mac can't translate \(PageTranslation.name(of: source)) to \(PageTranslation.name(of: target)).")
         }
     }
 
-    /// the page keeps whatever text it holds; callers restore it when they need to
+    private func startTranslator(from source: Locale.Language, to target: Locale.Language) {
+        let translator = PageTranslator(webView: webView, from: source, to: target)
+        translator.report = { [weak self, weak translator] state in
+            guard let self, let translator, pageTranslator === translator else { return }
+            if case .failed = state { showOriginal() }
+            pageTranslation = state
+        }
+        pageTranslator = translator
+        pageTranslation = .translating(from: source, to: target, progress: 0)
+        translator.start()
+    }
+
+    /// stops any translation; the page keeps whatever text it holds
     private func endPageTranslation(_ state: PageTranslation.State = .idle) {
         pageTranslationGeneration += 1
-        pageCapture = nil
+        pageTranslator?.stop(restoring: false)
+        pageTranslator = nil
         pageTranslationRequest = nil
         pageTranslation = state
     }
@@ -409,19 +338,13 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Media state
 
-    /// frames of this page currently playing media, keyed by frame url (a video
-    /// usually lives in an iframe, and several can play at once). fed by
-    /// `MediaStateReporter`; the tab counts as playing while it's non-empty
+    /// frames playing media, keyed by frame url; fed by `MediaStateReporter`
     @ObservationIgnored private var playingFrames: Set<String> = []
 
-    /// true while any frame in this tab is playing audio or video. drives the
-    /// sidebar's speaker indicator. unlike the engine's `_isPlayingAudio` this
-    /// stays true for a *muted* playing video, so the row keeps its unmute button
+    /// any frame is playing audio or video; unlike `_isPlayingAudio`, true while muted
     private(set) var isPlayingMediaContent = false
 
-    /// engine-level mute for this tab (⌥ the speaker, or the row's button).
-    /// survives navigation within the tab — like Safari, muting a tab mutes the
-    /// tab, not just the page that happened to be open
+    /// engine-level mute for the tab; survives navigation
     private(set) var isMuted = false
 
     /// record a frame's playback state; recomputes the tab-level flag
@@ -481,12 +404,16 @@ final class BrowserTab: NSObject, Identifiable {
         media = nil
     }
 
-    /// push `isMuted` down to the engine. re-applied after a web-view rebuild so
-    /// a profile move doesn't silently unmute the tab
+    /// push `isMuted` down to the engine
     private func applyMuteState() {
         guard webView.responds(to: Selector(("_setPageMuted:"))) else { return }
-        // _WKMediaMutedState: bit 0 = audio muted
-        unsafeBitCast(webView, to: WKWebViewPiPSPI.self)._setPageMuted(isMuted ? 1 : 0)
+        unsafeBitCast(webView, to: WKWebViewMediaSPI.self)._setPageMuted(isMuted ? 1 : 0)
+    }
+
+    /// true while the tab is producing audio
+    var isPlayingMedia: Bool {
+        guard webView.responds(to: Selector(("_isPlayingAudio"))) else { return false }
+        return unsafeBitCast(webView, to: WKWebViewMediaSPI.self)._isPlayingAudio
     }
 
     // MARK: - Passwords
@@ -498,29 +425,31 @@ final class BrowserTab: NSObject, Identifiable {
     /// the username a two-step sign-in entered on its first page
     @ObservationIgnored var loginUsernameHint: (origin: String, name: String, at: Date)?
 
+    // MARK: - Autofill
+
+    var autofillOffer: AutofillOffer?
+    /// each frame's address and card fields, by `LoginKeys.key`
+    @ObservationIgnored var autofillFrames: [AnyHashable: AutofillFrame] = [:]
+
     // MARK: - Zoom
 
-    /// this tab's current page-zoom factor. seeded from `ZoomStore` for the site
-    /// being shown, so a site you zoomed once opens zoomed everywhere
+    /// the page-zoom factor, seeded from `ZoomStore` for the site shown
     private(set) var zoomLevel: Double = ZoomStore.defaultZoom
 
-    /// set the zoom for the site this tab is showing, and remember it for that
-    /// site. `remember: false` is for applying a stored value back (no re-save)
+    /// set the zoom for the site shown; `remember: false` applies a stored value
     @MainActor
     func setZoom(_ zoom: Double, remember: Bool = true) {
         let clamped = min(max(zoom, ZoomStore.steps.first!), ZoomStore.steps.last!)
         zoomLevel = clamped
         webView.pageZoom = clamped
         LoginKeys.on(webView)?.settle()
-        // an incognito tab's zoom works but isn't remembered — the per-site zoom
-        // file is on disk, and incognito writes nothing to disk
+        // incognito writes nothing to disk
         if remember, !isPrivate {
             ZoomStore.shared.setZoom(clamped, for: url ?? lastAttemptedURL ?? pendingURL)
         }
     }
 
-    /// an incognito page — its jar is non-persistent, whatever opened it. drives
-    /// every no-disk rule: history, zoom, favicons, passwords, the undo stack
+    /// an incognito page: its jar is non-persistent. every no-disk rule keys off this
     var isPrivate: Bool { !dataStore.isPersistent }
 
     /// the profile this page browses as; nil for an incognito page
@@ -534,8 +463,7 @@ final class BrowserTab: NSObject, Identifiable {
     @MainActor func zoomOut() { setZoom(ZoomStore.step(from: zoomLevel, by: -1)) }
     @MainActor func resetZoom() { setZoom(ZoomStore.defaultZoom) }
 
-    /// re-read the stored zoom for the page now showing. called on every committed
-    /// navigation, so following a link to another site adopts that site's zoom
+    /// adopt the stored zoom for the page now showing; runs on every commit
     @MainActor
     func syncZoomToSite() {
         let stored = ZoomStore.shared.zoom(for: url ?? lastAttemptedURL ?? pendingURL)
@@ -547,25 +475,19 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// true while this tab is showing the stripped-down reader instead of the page
     private(set) var isReaderMode = false
-    /// the page looks like an article, so the reader button is worth offering.
-    /// set by a cheap probe on load — the real extraction only runs on toggle
+    /// the page looks like an article, by `probeReaderAvailability`
     private(set) var isReaderAvailable = false
     /// where to go back to when the reader is dismissed
     @ObservationIgnored private var preReaderURL: URL?
-    /// set for the one navigation that *is* the reader document. without it the
-    /// "navigating away leaves the reader" rule fires on the reader's own load and
-    /// switches itself straight back off
+    /// set for the one navigation that loads the reader document, which shares
+    /// the page's url and must not leave the reader
     @ObservationIgnored private var isLoadingReaderDocument = false
 
-    /// cheap "is there an article here" probe, run once per load. counting text in
-    /// the page beats running the extractor on every navigation
-    /// also called when a tab becomes visible, since a background tab skips the
-    /// probe on load and would otherwise never offer the reader
+    /// a cheap "is there an article here" probe, on load and when a tab becomes
+    /// visible, since a background tab skips it on load
     func probeReaderAvailability() {
-        // `innerText` forces a layout pass, so this only runs for the page you're
-        // actually looking at — a background tab finishing a load shouldn't make
-        // the engine reflow it for a button nobody can see
-        // a script into a web view with no page launches its web process on main
+        // `innerText` forces layout: only the displayed page. a script into a web
+        // view with no page launches its web process on main
         guard webView.url != nil, manager == nil || manager?.displayedContentTab === self else {
             isReaderAvailable = false
             return
@@ -599,7 +521,6 @@ final class BrowserTab: NSObject, Identifiable {
         guard let html,
             let article = ReaderMode.extract(html: html, url: current)
         else {
-            // nothing article-shaped here after all; don't leave a dead button
             isReaderAvailable = false
             return
         }
@@ -612,9 +533,7 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Printing
 
-    /// ⌘P — hand the page to the standard macOS print panel. WebKit paginates the
-    /// rendered content itself, so this prints what you see (headers, backgrounds
-    /// and all) rather than a re-layout
+    /// ⌘P: the standard print panel over the page as rendered
     @MainActor
     func printPage() {
         let info = NSPrintInfo.shared.copy() as! NSPrintInfo
@@ -654,28 +573,23 @@ final class BrowserTab: NSObject, Identifiable {
         // extension context menus need to know which tab the menu is for
         (webView as? ArtemisWebView)?.owningTab = self
 
-        // swipe-to-navigate hijacks horizontal scrolling on wide pages — off
+        // swipe-to-navigate would take horizontal scrolling on wide pages
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = true
         webView.isInspectable = true
         webView.uiDelegate = self
         webView.navigationDelegate = self
-        // carry per-tab state across a rebuild (profile move) — a muted tab must
-        // not come back audible, and a zoomed one must not come back at 100%
+        // carries zoom and mute across a rebuild
         webView.pageZoom = zoomLevel
         applyMuteState()
         resetMediaState()
     }
 
-    /// move this tab into a different profile. because the data store can't be
-    /// swapped on a live web view, we build a fresh one bound to `newStore` and
-    /// reload where we were. back/forward history and scroll are lost — changing
-    /// identity is a deliberate clean break. no-op when the store is unchanged,
-    /// so same-profile moves (the common case) never reload
+    /// move the tab to another profile's jar: a fresh web view reloads the page,
+    /// losing back/forward history and scroll. a no-op for the same store
     func rebuildWebView(with newStore: WKWebsiteDataStore) {
         guard newStore !== dataStore else { return }
-        // the old web view is about to be dropped; its unanswered question would
-        // otherwise hold a handler nothing can ever call
+        // the old view's unanswered question holds a handler nothing could call
         abandonDialog()
         let wasPending = pendingURL
         let resume = url ?? lastAttemptedURL ?? pendingURL
@@ -690,8 +604,7 @@ final class BrowserTab: NSObject, Identifiable {
         observeWebView()
         webViewGeneration += 1
 
-        // a tab that hadn't loaded yet stays lazy under the new store (pendingURL
-        // is untouched); a live one reloads its current page in the new jar
+        // a tab that hadn't loaded stays lazy
         if wasPending == nil, let resume { load(resume) }
     }
 
@@ -712,8 +625,7 @@ final class BrowserTab: NSObject, Identifiable {
         addressText = url.absoluteString
     }
 
-    /// name a restored tab before it loads, when the import knew the title the
-    /// page had. the real title replaces it on first navigation
+    /// a restored tab's title until its first navigation
     func adopt(restoredTitle: String) {
         guard !restoredTitle.isEmpty, url == nil else { return }
         title = restoredTitle
@@ -735,8 +647,7 @@ final class BrowserTab: NSObject, Identifiable {
         return s.lowercased()
     }
 
-    /// fetch just the site's favicon without loading the page, so a restored
-    /// favourite shows its real icon in the grid before it's ever selected
+    /// fetch the site's favicon without loading the page
     func prefetchFavicon() {
         FaviconStore.shared.prefetch(host: faviconHost, isPrivate: isPrivate)
     }
@@ -744,10 +655,8 @@ final class BrowserTab: NSObject, Identifiable {
     /// mark the tab as just-used, resetting its auto-archive clock
     func touch() { lastAccessed = Date() }
 
-    /// load the page if this tab was restored lazily and hasn't loaded yet, or
-    /// was hibernated. a hibernated tab comes back through its saved interaction
-    /// state, which restores scroll position, form contents and the back/forward
-    /// list — not just the url
+    /// load a lazily restored or hibernated tab, through its saved interaction
+    /// state when it has one
     func activateIfNeeded() {
         if needsReloadAfterCrash {
             needsReloadAfterCrash = false
@@ -761,11 +670,9 @@ final class BrowserTab: NSObject, Identifiable {
             lastAttemptedURL = pendingURL
             loadError = nil
             lastAccessed = Date()
-            // assigning interaction state *is* the navigation — WebKit replays the
-            // session entry rather than starting a fresh load
+            // assigning interaction state is the navigation
             webView.interactionState = state
-            // …unless WebKit declines it (a stale or cross-version blob), in which
-            // case fall back to an ordinary load so the tab never comes back blank
+            // WebKit can decline a stale blob; then load the url
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 guard let self, self.webView.url == nil, !self.webView.isLoading else { return }
                 self.load(pendingURL)
@@ -777,14 +684,10 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Hibernation
 
-    /// true while this tab is asleep: its web view (and the web content process
-    /// behind it) has been released, and the page is stored as a url plus an
-    /// interaction-state blob until the tab is next selected
+    /// asleep: the web view and its process are released until next selected
     private(set) var isHibernated = false
 
-    /// WebKit's opaque session blob — scroll offset, form state, back/forward
-    /// list — kept while asleep so waking restores the page rather than reloading
-    /// it from scratch
+    /// WebKit's opaque session blob (scroll, forms, back/forward list), kept while asleep
     @ObservationIgnored private var savedInteractionState: Any?
 
     /// never put to sleep by the idle timer or memory pressure
@@ -805,8 +708,7 @@ final class BrowserTab: NSObject, Identifiable {
         webView.setMicrophoneCaptureState(.none)
     }
 
-    /// one request this page had blocked, and whether the privacy list is what
-    /// recognised it — the ledger a blocker extension's panel reads back
+    /// one request this page had blocked, as a blocker extension's panel reads it back
     struct BlockedRequest {
         let url: URL
         let at: Date
@@ -831,8 +733,7 @@ final class BrowserTab: NSObject, Identifiable {
                 url: url, at: now, isTracker: ContentBlocker.shared.isTracker(url), list: list))
     }
 
-    /// how many requests each rule list blocked on this page, for diagnostics:
-    /// this is what separates an extension's own blocking from Artemis's
+    /// requests blocked on this page per rule list, for diagnostics
     var blockedRequestsByList: [String: Int] {
         blockedRequests.reduce(into: [:]) { $0[$1.list, default: 0] += 1 }
     }
@@ -846,9 +747,7 @@ final class BrowserTab: NSObject, Identifiable {
     /// set by navigation; a debounced save writes only tabs that have it
     @ObservationIgnored var hasUnsavedState = true
 
-    /// hand a restored tab the state it had last launch. It is replayed by
-    /// `activateIfNeeded` on first selection — the same path a waking hibernated
-    /// tab takes, including its fallback to a plain load if WebKit declines it
+    /// a restored tab's state from last launch, replayed by `activateIfNeeded`
     func adopt(interactionState state: Any?) {
         guard pendingURL != nil else { return }
         savedInteractionState = state
@@ -864,11 +763,8 @@ final class BrowserTab: NSObject, Identifiable {
             && !isLoading && agentName == nil
     }
 
-    /// release this tab's web view and its web content process, remembering
-    /// enough to restore the page exactly. this is the difference between 40 open
-    /// tabs costing 4GB and costing a few hundred megabytes — WebKit keeps a
-    /// process per live view, and a background tab you haven't looked at since
-    /// this morning has no business holding one
+    /// release the web view and its web content process, keeping enough to
+    /// restore the page exactly
     func hibernate() {
         guard canHibernate, let current = url ?? lastAttemptedURL else { return }
         savedInteractionState = webView.interactionState
@@ -877,15 +773,13 @@ final class BrowserTab: NSObject, Identifiable {
 
         observations.forEach { $0.invalidate() }
         observations = []
-        // a brand-new WKWebView that is never loaded doesn't spawn a web process,
-        // so this genuinely gives the memory back
+        // a WKWebView that never loads spawns no web process
         webView = ArtemisWebView(
             frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
         configureWebView()
         observeWebView()
         webViewGeneration += 1
-        // the observers just re-read an empty view; restore the display state the
-        // sidebar should keep showing while the tab sleeps
+        // the observers just re-read an empty view
         if let host = current.host() {
             title = title.isEmpty || title == "New Tab"
                 ? (host.hasPrefix("www.") ? String(host.dropFirst(4)) : host) : title
@@ -897,15 +791,12 @@ final class BrowserTab: NSObject, Identifiable {
         debugLog("tab hibernated: \(current.absoluteString)")
     }
 
-    /// Arc's "–" on a pinned tab: close the page but keep the pin. The live web
-    /// view (and its web content process) is released and the tab returns to
-    /// the dormant state a restored pin starts in — anchored to `pinnedURL`,
-    /// loading nothing until next selected. Unlike hibernation, the session is
-    /// deliberately dropped: closing means "done here", so the next visit
-    /// starts fresh at the pinned page, not wherever you'd wandered off to
+    /// close a pinned tab's page but keep the pin: it returns to the unloaded state
+    /// of a restored pin at `pinnedURL`, with its session dropped
     func closeToPinned() {
         guard let anchor = pinnedURL ?? url ?? lastAttemptedURL ?? pendingURL else { return }
         WebNotifications.shared.forgetPage(in: id)
+        appBadge = nil
         savedInteractionState = nil
         isHibernated = false
         pendingURL = anchor
@@ -928,9 +819,8 @@ final class BrowserTab: NSObject, Identifiable {
         canGoForward = false
     }
 
-    /// the host's installed Safari short version (e.g. "27.0"), read once from
-    /// Safari.app so the UA's `Version/` token follows OS updates. falls back to a
-    /// recent value when Safari is missing or unreadable.
+    /// the installed Safari's short version, for the UA's `Version/` token: streaming
+    /// players gate DRM on it
     private static let currentSafariVersion: String = {
         if let dict = NSDictionary(contentsOfFile: "/Applications/Safari.app/Contents/Info.plist"),
             let v = dict["CFBundleShortVersionString"] as? String, !v.isEmpty {
@@ -939,28 +829,15 @@ final class BrowserTab: NSObject, Identifiable {
         return "26.0"
     }()
 
-    /// shared baseline configuration for new tabs
-    ///
-    /// the application name keeps sites from serving degraded pages to an
-    /// unrecognized WebKit user agent
-    ///
-    /// the `Version/` token must track the host's real Safari, not a frozen
-    /// number: premium streamers (Prime Video, Netflix) gate their DRM player on
-    /// the claimed Safari version, and a stale value (e.g. `17.6` on a Safari-26
-    /// box) makes Prime serve a player that dies with "Video Unavailable". derived
-    /// from CoreServices so it follows OS updates instead of rotting.
-    ///
-    /// Launch a spare web content process ahead of a new tab, so its first load
-    /// doesn't start one (and register every installed font) on the main thread.
+    /// launch a spare web content process, so a new tab's first load doesn't
+    /// start one on the main thread
     static func prewarmWebProcess() {
         let warm = Selector(("_warmInitialProcess"))
         guard processPool.responds(to: warm) else { return }
         processPool.perform(warm)
     }
 
-    /// every tab's process pool. A configuration left to make its own builds a
-    /// new pool per tab: no warm process to reuse, and a fresh main-thread scan
-    /// of every installed font for each one
+    /// every tab's process pool; a pool per tab would scan every font on main per tab
     static let processPool = WKProcessPool()
 
     /// `dataStore` binds the tab to a profile's jar; nil is WebKit's default store,
@@ -971,25 +848,15 @@ final class BrowserTab: NSObject, Identifiable {
         if let dataStore { configuration.websiteDataStore = dataStore }
         configuration.applicationNameForUserAgent = "Version/\(currentSafariVersion) Safari/605.1.15"
         configuration.preferences.isElementFullscreenEnabled = true
-        // Writing Tools defaults to `.limited` — a floating panel that hands text
-        // back. `.complete` rewrites in place inside the page's own editors, which
-        // only a WebKit host can offer: Blink paints its own text controls.
+        // Writing Tools rewrites in place inside the page's editors
         configuration.writingToolsBehavior = .complete
-        // legacy private pref that backs the in-app Web Inspector. the modern
-        // `isInspectable` flag (set per-web-view) lets Safari attach remotely, but
-        // presenting `_inspector` *in our own window* still needs developer extras
-        // turned on at the preferences level. KVC reaches the unexposed setter.
+        // the in-app Web Inspector needs this as well as `isInspectable`
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        // let web video into real (detached) Picture in Picture, not just the macOS
-        // Viewer. typed SPI call, guarded — KVC can't reach this underscored setter.
         let prefs = configuration.preferences
         if prefs.responds(to: Selector(("_setAllowsPictureInPictureMediaPlayback:"))) {
             unsafeBitCast(prefs, to: WKPreferencesPiPSPI.self)
-                ._setAllowsPictureInPictureMediaPlayback(true)
+                ._setAllowsPictureInPictureMediaPlayback(false)
         }
-        // expose `navigator.mediaDevices` (it's undefined in a stock WKWebView).
-        // streaming players enumerate devices during init; without this they hit
-        // `undefined` and abort. Safari has these on by default — see SPI note above.
         let mediaPrefs = unsafeBitCast(prefs, to: WKPreferencesMediaDevicesSPI.self)
         if prefs.responds(to: Selector(("_setMediaStreamEnabled:"))) {
             mediaPrefs._setMediaStreamEnabled(true)
@@ -998,10 +865,8 @@ final class BrowserTab: NSObject, Identifiable {
             mediaPrefs._setMediaDevicesEnabled(true)
         }
         ExtensionLab.quiet(prefs)
-        // the profile's own extension controller and user-content controller: its
-        // extensions' content scripts, and Artemis's own scripts and rule lists.
-        // an incognito page takes its parent profile's, and WebKit lets in only the
-        // extensions with private access
+        // an incognito page takes its parent profile's controllers; WebKit lets in
+        // only the extensions with private access
         let isPrivate = dataStore?.isPersistent == false
         let profile = dataStore.map(ProfileStore.proxyProfile(of:)) ?? Profile.defaultID
         configuration.webExtensionController = WebExtensionRuntime.controller(for: profile)
@@ -1021,11 +886,7 @@ final class BrowserTab: NSObject, Identifiable {
             webView.load(URLRequest(url: url))
             return
         }
-        // read access is granted for the file itself, not its folder: under the
-        // App Sandbox the Powerbox grant covers what the user picked, and passing
-        // the parent directory asks for something we were never given. A local
-        // page's sibling stylesheet therefore won't load unless that folder was
-        // picked too — the honest behaviour, rather than a silent half-load
+        // read access to the file alone: a sibling stylesheet won't load
         webView.loadFileURL(url, allowingReadAccessTo: url)
     }
 
@@ -1122,82 +983,7 @@ final class BrowserTab: NSObject, Identifiable {
         webView.stopLoading()
     }
 
-    // MARK: - Picture in Picture
-    //
-    // native macOS PiP via WKWebView SPI (see `WKWebViewPiPSPI`). the JS API
-    // (`webkitSetPresentationMode`) is a silent no-op off Safari; `_togglePictureInPicture`
-    // is the real trigger.
-
-    /// the SPI view, or nil if this WebKit build doesn't expose PiP (graceful guard)
-    private var pipSPI: WKWebViewPiPSPI? {
-        webView.responds(to: Selector(("_togglePictureInPicture")))
-            ? unsafeBitCast(webView, to: WKWebViewPiPSPI.self) : nil
-    }
-
-    /// whether a video can be popped into PiP right now. refreshes the controls
-    /// manager first so the answer is live (it's stale/false until then)
-    var canTogglePictureInPicture: Bool {
-        guard let pip = pipSPI else { return false }
-        pip._updateMediaPlaybackControlsManager()
-        return pip._canTogglePictureInPicture
-    }
-
-    /// whether this tab currently has a PiP window open
-    var isPictureInPictureActive: Bool { pipSPI?._isPictureInPictureActive ?? false }
-
-    /// true while the tab is actively producing audio — a synchronous proxy for
-    /// "a video is really playing here". used by the mini-player's auto-pop path;
-    /// only reads media state, never enters native PiP.
-    var isPlayingMedia: Bool { pipSPI?._isPlayingAudio ?? false }
-
-    /// pop the tab's video into a floating window (⌘⇧P / menu). prefers real
-    /// detached PiP; if WebKit won't actually enter it (some WKWebView builds accept
-    /// the call but never open the window), falls back to the macOS 26 Viewer (an
-    /// in-window floating video that itself becomes PiP when the tab is hidden).
-    /// exits whichever is already up.
-    func togglePictureInPicture() {
-        guard let pip = pipSPI else { return }
-        pip._updateMediaPlaybackControlsManager()  // create the AVKit manager (macOS gate)
-        if pip._isPictureInPictureActive { pip._togglePictureInPicture(); return }
-        if pip._isInWindowActive { pip._toggleInWindow(); return }
-        if pip._canTogglePictureInPicture {
-            pip._togglePictureInPicture()
-            // if real PiP didn't take, use the Viewer instead
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if !pip._isPictureInPictureActive, pip._canToggleInWindow {
-                    pip._toggleInWindow()
-                }
-            }
-        } else if pip._canToggleInWindow {
-            pip._toggleInWindow()
-        }
-    }
-
-    /// pop the tab's playing video out, but only if it isn't already out — the
-    /// auto-on-switch-away path (tab switch or leaving the app). only fires for
-    /// genuinely playing media: a paused video is left alone (a muted-but-playing
-    /// video produces no audio, so it's also skipped — auto-PiP is for things you're
-    /// actually listening to; ⌘⇧P still works on anything).
-    func enterPictureInPictureIfPlaying() {
-        guard let pip = pipSPI, pip._isPlayingAudio else { return }
-        pip._updateMediaPlaybackControlsManager()
-        guard pip._canTogglePictureInPicture, !pip._isPictureInPictureActive else { return }
-        pip._togglePictureInPicture()
-    }
-
-    /// close this tab's PiP if it has one — when you switch back, the floating
-    /// window follows the *other* tab (Arc's Mini Player feel)
-    func exitPictureInPictureIfActive() {
-        guard let pip = pipSPI, pip._isPictureInPictureActive else { return }
-        pip._togglePictureInPicture()
-    }
-
     // MARK: - Web Inspector
-    //
-    // in-app devtools via the `_inspector` SPI (see `WKInspectorSPI`). the public
-    // `isInspectable` flag (set in `configureWebView`) only opens the door for
-    // Safari to attach remotely; this is what shows the inspector docked in our
-    // own window. graceful guard — a WebKit build without it just no-ops.
 
     /// the `_WKInspector` controller for this tab, or nil if the SPI is absent
     private var inspectorSPI: WKInspectorSPI? {
@@ -1207,8 +993,7 @@ final class BrowserTab: NSObject, Identifiable {
         return unsafeBitCast(inspector, to: WKInspectorSPI.self)
     }
 
-    /// whether this tab's Web Inspector is currently open. note: `show` connects the
-    /// frontend asynchronously, so this only flips true a beat after `toggleInspector`
+    /// whether the Web Inspector is open; turns true a beat after `toggleInspector`
     var isInspectorVisible: Bool { inspectorSPI?.isVisible ?? false }
 
     /// ⌥⌘I / menu: open this tab's Web Inspector, or close it if already up
@@ -1218,10 +1003,7 @@ final class BrowserTab: NSObject, Identifiable {
             inspector.close()
         } else {
             inspector.show()
-            // present in a dedicated window WebKit owns end-to-end. the *attached*
-            // (docked) inspector never paints here — the inspected view sits inside
-            // our custom rounded card, which WebKit can't carve a dock out of. detach
-            // is a no-op once it's already in its own window.
+            // a docked inspector never paints inside the rounded card
             inspector.detach()
         }
     }
@@ -1234,10 +1016,7 @@ final class BrowserTab: NSObject, Identifiable {
                 guard let self else { return }
                 if let title = webView.title, !title.isEmpty {
                     self.title = title
-                    // the page's real title, which is *not* reliably available at
-                    // `didFinish` — a single-page app typically sets it from
-                    // script afterwards. Anything that wants to react to what a
-                    // page is called has to listen here, not there.
+                    // a page's real title can arrive after `didFinish`
                     if let url = webView.url { self.onDidSettleTitle?(url, title) }
                 } else {
                     self.title = webView.url?.host() ?? "New Tab"
@@ -1299,10 +1078,7 @@ final class BrowserTab: NSObject, Identifiable {
 // MARK: - WKNavigationDelegate
 
 extension BrowserTab: WKNavigationDelegate {
-    /// answer proxy authentication natively when a VPN extension's compat
-    /// bridge holds credentials — otherwise WebKit surfaces macOS's own
-    /// "Proxy Authentication Required" dialog for every 407. non-proxy
-    /// challenges keep their default handling untouched
+    /// proxy auth from a VPN extension's bridge, server trust, and HTTP auth
     func webView(
         _ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
@@ -1313,18 +1089,14 @@ extension BrowserTab: WKNavigationDelegate {
                 completionHandler(.useCredential, credential)
                 return
             }
-            // a proxy WE set, whose credentials haven't arrived yet: fail the
-            // request rather than handing the user a system password dialog
-            // for a server they never chose. The extension's credentials land
-            // moments later and the tabs reload.
+            // our proxy, credentials not yet in: fail rather than raise a system
+            // dialog; the tabs reload once they land
             if ExtensionProxyBridge.shared.activeProxy(in: ProfileStore.proxyProfile(of: dataStore)) != nil {
                 completionHandler(.cancelAuthenticationChallenge, nil)
                 return
             }
         }
-        // keep the certificate this host presented: the load may be about to fail,
-        // and the failure carries no trust with it, so this is the only chance to
-        // capture what the user will be asked about
+        // the only chance to keep the certificate: a load failure carries no trust
         if space.authenticationMethod == NSURLAuthenticationMethodServerTrust,
             let trust = space.serverTrust
         {
@@ -1335,9 +1107,6 @@ extension BrowserTab: WKNavigationDelegate {
                 return
             }
         }
-        // a server asking who you are. Without this the challenge falls through
-        // to default handling, which answers it with nothing — so every router
-        // page, staging box and internal tool behind basic auth is a dead end
         switch space.authenticationMethod {
         case NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest,
             NSURLAuthenticationMethodNTLM:
@@ -1347,7 +1116,7 @@ extension BrowserTab: WKNavigationDelegate {
         }
     }
 
-    /// Put the server's login to the user. Credentials live for this session only.
+    /// put the server's login to the user; credentials live for this session only
     @MainActor
     private func askForCredentials(
         _ space: URLProtectionSpace,
@@ -1388,18 +1157,13 @@ extension BrowserTab: WKNavigationDelegate {
         blockedRequests.removeAll()
         // the old page's frames are gone; anything they were playing has stopped
         resetMediaState()
-        // a new document gets a fresh dialog budget — silencing is per page, not
-        // per tab, or one bad page would mute the site you navigate to next. It
-        // resets here rather than at `didCommit` because a commit is delivered on
-        // its own IPC and can arrive *after* the new document's first `alert()`,
-        // which would zero the count between two dialogs of the same page
+        // dialog silencing is per page; reset here because `didCommit` can arrive
+        // after the new document's first `alert()`
         suppressesDialogs = false
         dialogsThisPage = 0
         canOverrideCertificate = false
         WebNotifications.shared.forgetPage(in: id)
-        // navigating anywhere leaves the reader — including clicking a link inside
-        // it, which should land on the real page. the reader's own load is exempt
-        // (it shares the page's url, so only this flag can tell them apart)
+        // navigating anywhere leaves the reader, except the reader's own load
         if isLoadingReaderDocument {
             isLoadingReaderDocument = false
         } else if isReaderMode {
@@ -1408,14 +1172,15 @@ extension BrowserTab: WKNavigationDelegate {
         }
     }
 
-    /// the new page's document has started rendering — adopt that site's stored
-    /// zoom now, before it paints, so following a link never flashes at 100% first
+    /// adopt the new site's zoom here, before the page paints
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         webView.setValue(true, forKey: "drawsBackground")
         webView.underPageBackgroundColor = nil
+        if appBadge != nil, SitePermissionStore.originString(webView.url) != appBadgeOrigin { appBadge = nil }
         syncZoomToSite()
         endPageTranslation()
         PasswordAutofill.shared.pageDidCommit(in: self)
+        Autofill.shared.pageDidCommit(in: self)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1424,15 +1189,12 @@ extension BrowserTab: WKNavigationDelegate {
         fetchFavicon()
         probeReaderAvailability()
         PasswordAutofill.shared.pageDidFinish(in: self)
-        // apply any per-site Boosts (custom CSS/JS) for this page
         BoostStore.shared.inject(into: webView, url: webView.url)
+        Task { await translateIfRuled() }
         if let url = webView.url, url.scheme == "http" || url.scheme == "https" {
             onDidNavigate?(url, webView.title?.isEmpty == false ? webView.title! : (url.host() ?? url.absoluteString))
-            // match Safari: once a page loads, move keyboard focus into the
-            // content so it reports `document.hasFocus() == true`. focus-gated web
-            // players (Prime Video) otherwise abort their content load. only for
-            // the visible tab, and never while the user is typing in the URL bar
-            // (a field editor holds first responder then).
+            // focus the loaded page, as Safari does, so `document.hasFocus()` holds;
+            // never the hidden tab, or while a field editor holds first responder
             if manager?.selectedTab === self, let window = webView.window,
                 window.isKeyWindow, !(window.firstResponder is NSText) {
                 window.makeFirstResponder(webView)
@@ -1455,7 +1217,7 @@ extension BrowserTab: WKNavigationDelegate {
     }
 
     /// a page on screen reloads at once; one off screen reloads when next shown.
-    /// a second crash within 10s stops the loop at the error page
+    /// a second crash within a minute stops the loop at the error page
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         debugLog("web content process terminated: \(url?.absoluteString ?? "-")")
         Diagnostics.record(area: "webcontent", message: "web content process ended", inPrivate: isPrivate)
@@ -1463,9 +1225,9 @@ extension BrowserTab: WKNavigationDelegate {
         resetMediaState()
         let now = Date()
         defer { lastCrash = now }
-        if let lastCrash, now.timeIntervalSince(lastCrash) < 10 {
+        if let lastCrash, now.timeIntervalSince(lastCrash) < 60 {
             lastAttemptedURL = url ?? lastAttemptedURL
-            loadError = "This page stopped responding and was closed to protect your Mac."
+            loadError = Self.crashLoopError
             return
         }
         if BrowserWindows.shared.allManagers.contains(where: { $0.onScreenTabIDs.contains(id) }) {
@@ -1478,25 +1240,21 @@ extension BrowserTab: WKNavigationDelegate {
     private func handleLoadError(_ error: Error) {
         let nsError = error as NSError
         debugLog("navigation error: \(nsError.domain) \(nsError.code) \(nsError.localizedDescription)")
-        // cancellation isn't failure (user navigated away, or a download took over)
+        // a cancellation isn't a failure
         guard nsError.code != NSURLErrorCancelled else { return }
         // "frame load interrupted": normal when a navigation becomes a download
         guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 102) else { return }
-        // "plug-in handled load" (204): a raw media file (e.g. a direct .mp4) the
-        // engine renders in its built-in media viewer — the page DID load, not failed
+        // "plug-in handled load" (204): a raw media file shown in WebKit's viewer
         guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 204) else { return }
         loadError = nsError.localizedDescription
-        // a certificate the system refuses is the one failure the user can
-        // knowingly overrule, and the error page needs to know to offer it
         canOverrideCertificate = CertificateTrust.isOverridable(nsError)
         if let host = lastAttemptedURL?.host() {
             title = host
         }
     }
 
-    /// Accept the certificate this host most recently presented, then reload.
-    /// Scoped to that one certificate by `SecTrustCopyExceptions`, so the host
-    /// presenting a different one later asks again.
+    /// accept the certificate this host last presented, then reload; scoped to
+    /// that one certificate by `SecTrustCopyExceptions`
     @MainActor
     func acceptCertificateAndRetry() {
         guard let host = lastAttemptedURL?.host(),
@@ -1524,20 +1282,14 @@ extension BrowserTab: WKNavigationDelegate {
                 onOpenLink?(url, click)
                 return (.cancel, preferences)
             }
-            // linked split pane: a plain link click loads in the paired pane instead
-            // of navigating this one
+            // a linked split pane loads plain link clicks in its pair
             if manager?.routeLinkedNavigation(from: self, to: url) == true {
                 return (.cancel, preferences)
             }
         }
-        // a scheme WebKit doesn't render belongs to another app. Cancelling
-        // without offering it is how `mailto:` and every `zoommtg:` link on the
-        // web silently did nothing
+        // a scheme WebKit doesn't render belongs to another app
         if let url = navigationAction.request.url, !ExternalSchemes.isInternal(url.scheme) {
-            // only the page you are looking at gets to ask. An existing subframe
-            // navigating itself to an app scheme is the drive-by case and is
-            // cancelled without a word; a nil target frame is a new window, which
-            // is what `target=_blank` on a mailto: link is
+            // only the main frame or a new window may ask; a subframe is cancelled silently
             let fromMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
             if fromMainFrame, ExternalSchemes.canOffer(url) { offerExternal(url) }
             return (.cancel, preferences)
@@ -1563,8 +1315,7 @@ extension BrowserTab: WKNavigationDelegate {
                 + "mime=\(navigationResponse.response.mimeType ?? "nil") "
                 + "canShow=\(navigationResponse.canShowMIMEType)")
 
-        // servers marking a response as an attachment want a download,
-        // even when the mime type is displayable (images, pdfs, …)
+        // an attachment downloads even when its mime type is displayable
         if let http = navigationResponse.response as? HTTPURLResponse,
             let disposition = http.value(forHTTPHeaderField: "Content-Disposition"),
             disposition.lowercased().contains("attachment")
@@ -1623,8 +1374,7 @@ extension BrowserTab: WKUIDelegate {
         onRequestNewTab?(configuration, windowFeatures)
     }
 
-    /// `window.close()`. Without this a sign-in popup that closes itself when it
-    /// is done just sits there, and the flow looks stuck
+    /// `window.close()`
     func webViewDidClose(_ webView: WKWebView) {
         if let confirmed = onConfirmedClose {
             onConfirmedClose = nil
@@ -1634,12 +1384,7 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// `<input type=file>` was clicked.
-    ///
-    /// Without this method WebKit's `runOpenPanel` returns false and the click
-    /// does nothing at all — no panel, no error, no console message. The picker
-    /// itself grants the sandbox access: WebKit issues the read-only sandbox
-    /// extensions for whatever comes back, so no extra entitlement is involved.
+    /// `<input type=file>` was clicked
     func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -1655,8 +1400,7 @@ extension BrowserTab: WKUIDelegate {
         let types = Self.acceptedTypes(parameters)
         if !types.isEmpty {
             panel.allowedContentTypes = types
-            // `accept` is a hint, not a rule — a site that asks for images still
-            // has to cope with whatever the user actually picks
+            // `accept` is a hint, not a rule
             panel.allowsOtherFileTypes = true
         }
         // exactly once, on every path: WebKit traps on a second call and leaks
@@ -1716,11 +1460,7 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// "Leave site? Changes you made may not be saved."
-    ///
-    /// SPI — there is no public delegate for `beforeunload`, and WebKit reads a
-    /// delegate that doesn't answer this selector as "nobody is listening" and
-    /// unloads without asking, which is how an unsaved draft disappears.
+    /// `beforeunload`'s leave prompt. SPI: without it WebKit unloads without asking
     @objc(_webView:runBeforeUnloadConfirmPanelWithMessage:initiatedByFrame:completionHandler:)
     func _webView(
         _ webView: WKWebView, runBeforeUnloadConfirmPanelWithMessage message: String,
@@ -1733,11 +1473,8 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// Put a page's question on screen, or refuse it on the page's behalf.
-    ///
-    /// Refused when the page has been silenced, and when one of its dialogs is
-    /// already up: JS blocks inside `alert()`, so a second question can only come
-    /// from another frame, and letting frames queue is how a page holds a browser.
+    /// put a page's question on screen; refused while the page is silenced or
+    /// another of its dialogs is up
     @MainActor
     private func askPage(
         _ kind: PageDialogRequest.Kind, message: String, frame: WKFrameInfo,
@@ -1751,8 +1488,7 @@ extension BrowserTab: WKUIDelegate {
         pendingDialog = PageDialogRequest(
             kind: kind, message: message,
             host: frame.securityOrigin.host,
-            // a page that keeps asking earns a way to be silenced; leaving a page
-            // is a one-off the user asked for, so it never offers one
+            // a leave prompt never offers silencing
             checkbox: dialogsThisPage > 1 && kind != .leaveConfirm ? .silencePage : nil
         ) { [weak self] answer in
             self?.pendingDialog = nil
@@ -1760,8 +1496,7 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// A link in a scheme WebKit can't render — hand it to the app that claims
-    /// it, once the user has said so for this site.
+    /// hand a link in a scheme WebKit can't render to its app, once the user agrees
     @MainActor
     private func offerExternal(_ url: URL) {
         let scheme = url.scheme?.lowercased() ?? ""
@@ -1809,12 +1544,7 @@ extension BrowserTab: WKUIDelegate {
         pendingDialog = nil
     }
 
-    /// A page wants the camera or the microphone.
-    ///
-    /// Not implementing this method is not neutral: WebKit reads a missing
-    /// handler as a refusal, which is why `getUserMedia` used to fail on every
-    /// site in Artemis and video calls simply didn't work. The answer is a
-    /// per-site decision the user makes and the app remembers.
+    /// camera or microphone: a remembered per-site answer; WebKit treats no handler as deny
     func webView(
         _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -1832,8 +1562,7 @@ extension BrowserTab: WKUIDelegate {
         decide(wanted, origin: origin, decisionHandler: decisionHandler)
     }
 
-    /// A page wants to know where you are. Same story as capture: no handler
-    /// means WebKit refuses, so "find me" on a map never worked.
+    /// location: a remembered per-site answer
     func webView(
         _ webView: WKWebView,
         requestGeolocationPermissionFor origin: WKSecurityOrigin,
@@ -1858,9 +1587,7 @@ extension BrowserTab: WKUIDelegate {
 
 // MARK: - WKWebExtensionTab
 
-/// presents the tab to the WebExtensions runtime so `chrome.tabs` and content
-/// scripts work. all protocol methods are optional; we implement the ones that
-/// map cleanly onto existing tab plumbing and let WebKit fall back for the rest.
+/// the tab as the WebExtensions runtime sees it; unimplemented methods fall back to WebKit
 extension BrowserTab: WKWebExtensionTab {
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
         guard isPrivate else { return ExtensionManager.shared.browserWindow }

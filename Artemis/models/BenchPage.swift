@@ -1,21 +1,8 @@
 import Foundation
 
-/// The bench's stand-in for a real web page.
-///
-/// Live sites turned out to be useless as a regression signal: the same build,
-/// run twice, differed by 5x on web-process CPU purely because of ads, video
-/// autoplay and cache state — swamping every effect worth measuring. This page
-/// is instead deliberately heavy in the ways real pages are, and byte-identical
-/// on every run:
-///
-/// - a few thousand DOM nodes in a tall scrolling document, so re-laying it out
-///   or repainting it from scratch actually costs something
-/// - a grid of cards carrying gradients, blurs, shadows and transforms, i.e.
-///   composited layers rather than flat text
-/// - two always-running CSS animations, standing in for the carousels, spinners
-///   and sticky headers that make a real background tab keep painting
-///
-/// If a number moves between two runs of this, the app moved.
+/// the bench's stand-in for a web page: thousands of rows, a grid of composited cards
+/// and a requestAnimationFrame loop doing fixed work per frame (counted in
+/// `window.__ticks`), byte-identical for a given index on every run
 enum BenchPage {
     static func html(index: Int) -> String {
         let hue = index * 43 % 360
@@ -64,13 +51,8 @@ enum BenchPage {
             <header><div class="spin"></div><div class="bar"></div></header>
             <div class="grid">\(cards)</div>\(rows)
             <script>
-            // a fixed amount of work per animation frame, plus a real style
-            // mutation so the frame has something to paint. CSS animations were
-            // tried first and made a terrible measuring stick: the cost landed in
-            // WindowServer, varied 30% run to run, and swamped the effect being
-            // measured. requestAnimationFrame is both steadier and closer to what
-            // a real page does — and it is exactly what a browser is supposed to
-            // stop running when nobody is looking at the page.
+            // a fixed amount of work per animation frame, plus a style mutation
+            // so the frame has something to paint
             (function () {
               var spin = document.querySelector('.spin');
               var bar = document.querySelector('.bar');

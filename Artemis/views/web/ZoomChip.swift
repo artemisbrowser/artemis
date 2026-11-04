@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// the page zoom, floated in the card's top corner while it isn't 100%, so a site
-/// you once zoomed doesn't look broken months later. click resets it
+/// the page zoom, in the card's top corner while it isn't 100%; a click resets it
 struct ZoomChip: View {
     let tab: BrowserTab
     @State private var isHovering = false
@@ -28,7 +27,7 @@ struct ZoomChip: View {
                 Button("Zoom Out") { tab.zoomOut() }
                 Button("Actual Size") { tab.resetZoom() }
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .topTrailing)))
+            .transition(Motion.grow(from: 0.8, anchor: .topTrailing))
         }
     }
 }

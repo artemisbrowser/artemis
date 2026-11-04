@@ -4,12 +4,13 @@ import UniformTypeIdentifiers
 
 /// a file in ~/Downloads, as shown in the library
 nonisolated struct DownloadFile: Identifiable {
-    let id: URL
     let url: URL
     let name: String
     let date: Date
     let kind: String
     let contentType: UTType?
+
+    var id: URL { url }
 
     var icon: NSImage {
         NSWorkspace.shared.icon(forFile: url.path)
@@ -41,7 +42,6 @@ nonisolated struct DownloadFile: Identifiable {
                     values.addedToDirectoryDate ?? values.creationDate
                     ?? values.contentModificationDate ?? .distantPast
                 return DownloadFile(
-                    id: url,
                     url: url,
                     name: url.lastPathComponent,
                     date: date,
@@ -53,7 +53,7 @@ nonisolated struct DownloadFile: Identifiable {
 }
 
 /// filter categories for the downloads library
-enum DownloadFilter: String, CaseIterable, Identifiable {
+private enum DownloadFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case images = "Images"
     case movies = "Movies"
@@ -79,11 +79,10 @@ enum DownloadFilter: String, CaseIterable, Identifiable {
 /// the library: search, filter, and the contents of ~/Downloads
 /// grouped by how long ago files arrived
 struct LibrarySidebar: View {
-    /// width of the left icon rail — added *on top* of the sidebar width so the
-    /// archive/history list keeps the full sidebar width (the rail is "extra")
+    /// added on top of the sidebar width, so the lists keep the full sidebar width
     static let railWidth: CGFloat = 56
 
-    enum Mode: String, CaseIterable {
+    private enum Mode: String, CaseIterable {
         case downloads = "Downloads", archive = "Archive"
         case history = "History"
 
@@ -102,7 +101,6 @@ struct LibrarySidebar: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
     @Environment(\.sidebarMetrics) private var metrics
-    // remember the section you last opened, rather than always landing on Archive
     @AppStorage("libraryLastMode") private var mode: Mode = .archive
     @State private var query = ""
     @State private var filter: DownloadFilter = .all
@@ -132,13 +130,9 @@ struct LibrarySidebar: View {
                 }
             }
         }
-        // the file list is read when the Library is actually opened, not at
-        // launch: this panel is mounted for the whole session (it slides rather
-        // than unmounts), and enumerating ~/Downloads with per-file attribute
-        // fetches is not something to do while the window is still coming up
-        // re-read on every open, not just the first — and on appear, so the
-        // panel is current without scanning during launch
-        .task(id: tabManager.isLibraryOpen) {
+        // the panel stays mounted all session, so ~/Downloads is scanned when the
+        // Library opens or a download lands while it's open, never on appear alone
+        .task(id: tabManager.isLibraryOpen ? finishedDownloads : nil) {
             if tabManager.isLibraryOpen { files = await DownloadFile.loadAllOffMain() }
         }
     }
@@ -217,6 +211,10 @@ struct LibrarySidebar: View {
     }
 
     // MARK: - List
+
+    private var finishedDownloads: [URL] {
+        DownloadManager.shared.items.compactMap { $0.state == .finished ? $0.destination : nil }
+    }
 
     private var visibleFiles: [DownloadFile] {
         files.filter { file in
@@ -362,7 +360,7 @@ struct LibrarySidebar: View {
 
     /// (label, items) runs in the items' order, with one calendar lookup per
     /// distinct day rather than per item
-    static func grouped<T>(_ items: [T], by date: (T) -> Date) -> [(String, [T])] {
+    private static func grouped<T>(_ items: [T], by date: (T) -> Date) -> [(String, [T])] {
         let calendar = Calendar.current
         var day = Date.distantFuture ..< Date.distantFuture
         var ordered: [(String, [T])] = []
@@ -379,7 +377,7 @@ struct LibrarySidebar: View {
         return ordered
     }
 
-    nonisolated static func kindLabel(for type: UTType?) -> String {
+    fileprivate nonisolated static func kindLabel(for type: UTType?) -> String {
         guard let type else { return "Download" }
         if type.conforms(to: .image) { return "Image" }
         if type.conforms(to: .audiovisualContent) { return "Movie" }
@@ -388,7 +386,7 @@ struct LibrarySidebar: View {
         return type.localizedDescription?.capitalized ?? "Download"
     }
 
-    static func ageLabel(for date: Date) -> String {
+    private static func ageLabel(for date: Date) -> String {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) { return "Today" }
         if calendar.isDateInYesterday(date) { return "Yesterday" }
@@ -546,6 +544,9 @@ private struct LibraryRow<Icon: View, Trailing: View>: View {
         .background(RowHighlight(opacity: isHovering ? 0.09 : 0))
         .animation(Motion.hover, value: isHovering)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { open() }
         .onTapGesture(perform: open)
         .onHover { isHovering = $0 }
     }

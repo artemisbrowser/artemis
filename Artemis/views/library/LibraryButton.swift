@@ -11,14 +11,9 @@ struct LibraryButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                // shapes sit in the box mouth; on hover they rise, the
-                // triangle/circle splay to an even row, the star spins.
-                // box is drawn last so the shape bases tuck into it.
-                // star — big, left, tilted left, spins on hover; its bottom is
-                // clipped to the triangle's bottom line (mask after rotation
-                // keeps the cut horizontal). big rect so rotation never clips top
-                // star spins ~200° and rises on hover. all three rise by the
-                // same amount so the star's cut stays on the triangle's bottom
+                // the star's bottom is cut level with the triangle's base by an oversized mask
+                // applied after rotation; every shape rises by the same 1pt on hover so the cut
+                // stays put. the box is drawn last, over their bases
                 Star(cornerRadius: 0.32)
                     .frame(width: 11, height: 11)
                     .rotationEffect(.degrees(isHovering ? -208 : -8))
@@ -29,18 +24,15 @@ struct LibraryButton: View {
                     )
                     .offset(x: -2.5, y: isHovering ? -3.5 : -2.5)
 
-                // triangle — right; rises and rotates a little clockwise on hover
                 Image(systemName: "triangle.fill")
                     .font(.system(size: 3.3))
                     .rotationEffect(.degrees(isHovering ? -5 : -20))
                     .offset(x: 4.5, y: isHovering ? -5 : -4)
 
-                // circle — middle dot; rises and drifts right on hover
                 Circle()
                     .frame(width: 2, height: 2)
                     .offset(x: isHovering ? 3.5 : 2, y: isHovering ? -8 : -7)
 
-                // storage box: rounded bin with a horizontal slot on the front
                 StorageBox()
                     .offset(y: 4)
             }
@@ -50,7 +42,7 @@ struct LibraryButton: View {
         .buttonStyle(.plain)
         .background(DownloadLanding())
         .onHover { hovering in
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.6)) {
+            withAnimation(Motion.pop) {
                 isHovering = hovering
             }
             onHoverChanged?(hovering)
@@ -135,7 +127,6 @@ struct RecentDownloadsPeek: View {
 
     var body: some View {
         Group {
-            // no downloads → no slab at all
             if !files.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(files) { file in
@@ -191,6 +182,9 @@ private struct PeekRow: View {
         .background(RowHighlight(opacity: isHovering ? 0.09 : 0))
         .animation(Motion.hover, value: isHovering)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { NSWorkspace.shared.open(file.url) }
         .onTapGesture {
             NSWorkspace.shared.open(file.url)
         }

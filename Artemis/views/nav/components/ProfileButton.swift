@@ -22,7 +22,6 @@ struct ProfileButton: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .tooltip(profile.name)
-        // keep a peeked overlay sidebar alive while the panel is open
         .holdsSidebar(while: isShowingPanel)
         .popover(isPresented: $isShowingPanel, arrowEdge: .top) {
             ProfilePanel(close: { isShowingPanel = false })

@@ -2,23 +2,18 @@
 """Score a tab-name sweep.
 
 Reads ~/Downloads/artemis-sweep.jsonl (written by ARTEMIS_DIAG=sweep) and
-reports, for every prompt × context-depth combination, the things that can be
-measured without an opinion:
+reports, for every prompt × context-depth combination:
 
   named      how often a page ended up with a name at all
   words      how long those names are (the sidebar column fits about four)
-  site-only  names that are just the site's brand — true of the page and
-             useless as a name for it
-  dupes      one name landing on two different pages of the same site, which
-             is the failure that makes a sidebar unreadable
-  junk       consent walls, "enable JavaScript", error pages: the name is
-             fine, the page was never really loaded
+  site       names that are just the site's brand, on a page other than its front
+  dupe       one name landing on two different pages of the same site
+  junk       names that read as a consent wall, "enable JavaScript" or an error page
   echo       the name is the title with nothing removed
+  fill       names containing a joining word ("for", "of", "the", ...)
+  new        names carrying a word the title doesn't
 
-None of these say whether a name is *good* — that still needs judgement, and
-`--sample` prints a comparison table to judge from. What they do is throw out
-the variants that are obviously broken, so judgement is spent on the handful
-that aren't.
+`--sample` and `--compare` print names side by side for judging quality.
 """
 
 import argparse
@@ -59,17 +54,14 @@ def summarise(rows: list[dict]) -> dict:
         name = r["name"].lower().strip()
         if JUNK.search(name):
             junk += 1
-        # a site's own name IS the right name for its front page; only count
-        # it as a failure on a page that is one of many
+        # a site's own name is the right name for its front page
         path = r["url"].split(r["host"], 1)[-1] if r["host"] in r["url"] else "/"
         front = path in ("", "/")
-        if not front and name.replace(" ", "") in {b for b in brandish(r["host"])}:
+        if not front and name.replace(" ", "") in brandish(r["host"]):
             site_only += 1
         if name == r["title"].lower().strip():
             echo += 1
 
-    # a tab name is a label, not a sentence: joining words are wasted column
-    # ("Minimal prompt for shell" should read "Minimal shell prompt")
     filler = sum(
         1
         for r in named
@@ -77,8 +69,6 @@ def summarise(rows: list[dict]) -> dict:
                ("for", "of", "with", "to", "and", "the", "a", "in", "on"))
     )
 
-    # Names carrying a word the title doesn't. Every other measure here is
-    # satisfied by a good shortening, so without this one abstraction is invisible.
     new_word = 0
     for r in named:
         title_words = set(re.findall(r"[a-z0-9]+", r["title"].lower()))
@@ -86,8 +76,6 @@ def summarise(rows: list[dict]) -> dict:
         if name_words - title_words:
             new_word += 1
 
-    # a name that lands on two different pages of one site tells them apart
-    # from nothing
     per_host = defaultdict(lambda: defaultdict(set))
     for r in named:
         per_host[r["host"]][r["name"].lower()].add(r["url"])
@@ -149,8 +137,8 @@ def main() -> None:
     )
     print(header)
     print("-" * len(header))
-    for key in sorted(groups):
-        s = summarise(groups[key])
+    summaries = {key: summarise(groups[key]) for key in sorted(groups)}
+    for key, s in summaries.items():
         print(
             f"{key[0]:10} {key[1]:11} {s['context']:6.0f} {s['named_pct']:5.0f}% "
             f"{s['mean_words']:6.1f} {s['over_four']:4.0f}% {s['site_only']:5} "
@@ -159,8 +147,7 @@ def main() -> None:
         )
 
     print("\nwhy a page ended up unnamed")
-    for key in sorted(groups):
-        s = summarise(groups[key])
+    for key, s in summaries.items():
         if s["rejections"]:
             detail = ", ".join(f"{k}: {v}" for k, v in sorted(s["rejections"].items()))
             print(f"  {key[0]:10} {key[1]:11} {detail}")
@@ -180,9 +167,7 @@ def main() -> None:
                 )
 
     if args.compare:
-        # the same pages, two runs, side by side — the only honest way to tell
-        # which prompt is better once the countable measures agree. Order is
-        # shuffled per page so a reader can't drift into favouring one column.
+        # column order is shuffled per page so the reader can't favour one run
         other = load(args.compare)
         by_url = {r["url"]: r for r in rows}
         pairs = [(by_url[r["url"]], r) for r in other if r["url"] in by_url]

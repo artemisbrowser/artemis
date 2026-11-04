@@ -1,15 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// the content area when a split is shown: 2–4 panes tiled in a single row
-/// (columns) or stack (rows), each hosting a tab's live web view, separated by
-/// resizable dividers. the focused pane (the one the url bar / nav act on) wears
-/// an accent ring; clicking any pane focuses it without stealing the click from
-/// the page underneath.
-///
-/// dividers are AppKit-backed, like the sidebar's resize strip — SwiftUI hover
-/// and cursor tracking are unreliable pressed up against a WKWebView, but a
-/// native cursor rect + mouse drag are rock solid there.
+/// the content area when a split is shown: its panes tiled from the split's tree,
+/// with resizable dividers between. clicking a pane focuses it and still reaches the page
 struct SplitContentView: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(RearrangeDragState.self) private var rearrange
@@ -26,15 +19,11 @@ struct SplitContentView: View {
     private var cardBase: Color { tabManager.currentSpace.appearance.cardBase }
 
     var body: some View {
-        // panes are hosted in a FLAT layer keyed by tab id and positioned from the
-        // tiling tree's analytic frames — they only resize/reposition as the layout
-        // changes, never re-parent (re-parenting tears a WKWebView from its host and
-        // blanks it). while a drag is over this split, a live *preview* tree removes
-        // the dragged pane (others reflow) and inserts a placeholder where the drop
-        // would land; dividers are computed analytically from the same tree.
+        // panes sit in one flat layer keyed by tab id and never re-parent:
+        // re-parenting tears a WKWebView from its host and blanks it
         GeometryReader { geo in
             let container = CGRect(origin: .zero, size: geo.size)
-            let root = rearrange.previewRoot(for: group) ?? group.root
+            let root = rearrange.previewRoot(for: group) ?? group.layoutRoot
             let frames = root.paneFrames(in: container, gap: splitPaneGap)
             let dividers = root.dividers(in: container, gap: splitPaneGap)
 
@@ -55,7 +44,6 @@ struct SplitContentView: View {
                     }
                 }
 
-                // the drop placeholder (reflows the panes around it)
                 if let ph = frames.first(where: { $0.tab == RearrangeDragState.placeholderTab }) {
                     PlaceholderPane(tab: draggedTab, accent: accent)
                         .frame(width: ph.rect.width, height: ph.rect.height)
@@ -68,8 +56,7 @@ struct SplitContentView: View {
                         .position(x: d.rect.midX, y: d.rect.midY)
                 }
             }
-            // animate the pickup + each move of the placeholder so panes glide; a
-            // live divider drag changes ratios (not these values) so it stays instant
+            // a divider drag changes ratios, not these, so it stays instant
             .animation(Motion.pop, value: rearrange.isDragging)
             .animation(Motion.pop, value: rearrange.target)
         }
@@ -77,7 +64,6 @@ struct SplitContentView: View {
         .onDisappear { stopFocusMonitor() }
     }
 
-    /// the tab being dragged (for the placeholder's favicon/title)
     private var draggedTab: BrowserTab? {
         guard let id = rearrange.draggedID else { return nil }
         return tabManager.currentSpace.tabs.first { $0.id == id }
@@ -106,11 +92,8 @@ struct SplitContentView: View {
 
     // MARK: - Click-to-focus
 
-    /// watch left-mouse-downs and focus whichever pane was clicked, returning the
-    /// event untouched so the page still receives the click. mirrors the sidebar's
-    /// click monitor (SwiftUI taps don't reach reliably over a WKWebView). reading
-    /// `paneFrames` through the captured struct hits live @State storage, so the
-    /// frames stay current as panes resize
+    /// focuses whichever pane a left-mouse-down lands in and passes the event on;
+    /// SwiftUI taps don't reach reliably over a WKWebView
     private func startFocusMonitor() {
         stopFocusMonitor()
         focusMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
@@ -135,13 +118,11 @@ struct SplitContentView: View {
     }
 }
 
-/// the gap between panes — also a divider's hit area. the space backdrop shows
-/// through it, framing each pane like the single web card's margin.
+/// the gap between panes, which is also a divider's hit area
 let splitPaneGap: CGFloat = 10
 
-/// one resizable divider, positioned in a gap between panes. the drag adjusts the
-/// node + boundary it was computed for (`SplitDividerInfo`); a faint grip rides its
-/// centre so the gap reads as draggable.
+/// one resizable divider in a gap between panes; dragging adjusts the node and
+/// boundary it was computed for
 private struct SplitDividerView: View {
     @Environment(TabManager.self) private var tabManager
     let info: SplitDividerInfo
@@ -153,6 +134,7 @@ private struct SplitDividerView: View {
             Capsule()
                 .fill(tabManager.currentSpace.appearance.chromeInk.opacity(0.22))
                 .frame(width: isCols ? 3 : 28, height: isCols ? 28 : 3)
+                .accessibilityHidden(true)
             SplitDivider(
                 orientation: info.axis,
                 onDrag: { delta in
@@ -165,9 +147,8 @@ private struct SplitDividerView: View {
     }
 }
 
-/// one pane of a split: a tab's web view under an accent focus ring, with
-/// hover-revealed controls (link toggle + close) tucked in the top-trailing
-/// corner. holds its own hover state so only this pane's controls light up.
+/// one pane of a split: a tab's web view under a focus ring, with hover controls
+/// in its top-trailing corner
 private struct SplitPane: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(RearrangeDragState.self) private var rearrange
@@ -177,14 +158,11 @@ private struct SplitPane: View {
     let dimInactive: Bool
     let accent: Color
     let cardBase: Color
-    /// the pane currently choosing a link target (nil when not picking)
+    /// the pane currently choosing a link target
     let linkingSource: BrowserTab.ID?
     let onFrameChange: (CGRect) -> Void
-    /// the link chip was tapped (start picking, cancel, or unlink — owner decides)
     let onLinkButton: () -> Void
-    /// this pane was chosen as the link target
     let onChooseTarget: () -> Void
-    /// cancel the in-progress target pick
     let onCancelLink: () -> Void
 
     @State private var hovering = false
@@ -192,7 +170,7 @@ private struct SplitPane: View {
     private var ringWidth: CGFloat { isFocused ? 2 : 1 }
     private var isLinkSource: Bool { group.isLinked && group.linkSourceID == tab.id }
     private var isLinkTarget: Bool { group.isLinked && group.linkTargetID == tab.id }
-    /// this pane is the source mid-pick (waiting for the user to choose a target)
+    /// this pane is the source of a pick underway
     private var isPickingHere: Bool { linkingSource == tab.id }
     /// a pick is underway and this pane is an eligible target
     private var isCandidate: Bool { linkingSource != nil && linkingSource != tab.id }
@@ -217,28 +195,28 @@ private struct SplitPane: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                // focused pane wears a solid accent ring; the rest a faint hairline
                 .strokeBorder(isFocused ? accent.opacity(0.9) : .white.opacity(0.08), lineWidth: ringWidth)
                 .allowsHitTesting(false)
         }
-        // a linked source/target gets a corner badge so the flow is legible
         .overlay(alignment: .topLeading) { linkBadge }
         .overlay(alignment: .topTrailing) { controls }
-        // while picking a link target, every other pane offers itself; the source
-        // pane offers a cancel
         .overlay { linkPicker }
         .opacity(dimInactive && !isFocused ? 0.5 : 1)
         .shadow(color: .black.opacity(0.28), radius: 8, y: 2)
-        // global frame for the click-to-focus monitor (the drop hit-test uses the
-        // tree's analytic frames, not live ones)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Split pane, \(tab.displayTitle)")
+        .accessibilityActions {
+            Button(isLinkSource ? "Unlink This Pane" : "Open This Pane's Links in Another Pane", action: onLinkButton)
+            Button("Close This Pane") { tabManager.removeFromSplit(tab) }
+        }
+        // for the click-to-focus monitor only; the drop hit-test uses the tree's frames
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { onFrameChange($0) }
         .animation(Motion.fade, value: isFocused)
         .animation(Motion.hover, value: hovering)
         .animation(Motion.pop, value: linkingSource)
     }
 
-    /// the target-picker overlay shown during a link pick: candidate panes show a
-    /// "Link here" prompt (tap anywhere to choose); the source pane shows a cancel.
+    /// during a link pick, every other pane offers itself and the source offers a cancel
     @ViewBuilder
     private var linkPicker: some View {
         if isCandidate {
@@ -275,9 +253,8 @@ private struct SplitPane: View {
         }
     }
 
-    /// top-trailing hover region; small enough that it only shadows a corner of
-    /// the page. revealing the buttons on hover here is reliable — the cursor is
-    /// over this SwiftUI overlay, composited above the web view
+    /// the top-trailing hover region; hover is reliable here because the cursor is
+    /// over this SwiftUI overlay, not the web view
     private var controls: some View {
         HStack(spacing: 6) {
             if hovering {
@@ -304,11 +281,8 @@ private struct SplitPane: View {
         .onHover { hovering = $0 }
     }
 
-    /// the third control: a drag handle that picks the pane up and re-tiles the
-    /// split on release (replaces the old rotate command). it only *starts* the
-    /// drag (`begin`) — an NSEvent monitor in MainView then tracks the cursor and
-    /// commits on release, so the pane can vacate its slot (unmounting this handle)
-    /// without cancelling the in-flight drag.
+    /// picks the pane up to re-tile the split. it only starts the drag: MainView's
+    /// monitor tracks and commits it, since this handle unmounts once the pane leaves
     private var rearrangeHandle: some View {
         chip("arrow.up.and.down.and.arrow.left.and.right", tint: nil)
             .contentShape(Rectangle())
@@ -322,7 +296,7 @@ private struct SplitPane: View {
                         }
                     })
             .tooltip("Drag to rearrange the split")
-            .transition(.opacity.combined(with: .scale(scale: 0.85)))
+            .transition(Motion.grow(from: 0.85))
     }
 
     private func paneButton(
@@ -333,7 +307,7 @@ private struct SplitPane: View {
         }
         .buttonStyle(.plain)
         .tooltip(help)
-        .transition(.opacity.combined(with: .scale(scale: 0.85)))
+        .transition(Motion.grow(from: 0.85))
     }
 
     /// the shared chip look for a pane control (a button or the drag handle)
@@ -360,12 +334,9 @@ private struct SplitPane: View {
     }
 }
 
-/// the overlay shown while a tab is dragged in the content. over a split the
-/// in-layout placeholder (in the preview tree) shows the drop and the panes reflow
-/// around it; this draws the cases that aren't a placeholder: the single-page grey
-/// region highlight, and the floating mini-rect ghost (favicon + title) that
-/// follows the cursor when no placeholder is shown. drawn in `splitRearrangeSpace`,
-/// never hit-testing.
+/// what a drag in the content shows besides the in-layout placeholder: the drop
+/// guides, the single-page region highlight and the floating ghost. drawn in
+/// `splitRearrangeSpace`, never hit-testing
 struct RearrangeOverlay: View {
     @Environment(RearrangeDragState.self) private var rearrange
     @Environment(TabManager.self) private var tabManager
@@ -374,14 +345,11 @@ struct RearrangeOverlay: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // the static drop-zone map: faint lines marking where to aim for each
-            // orientation. sits under the live highlight/ghost; toggleable.
             if showDropGuides, let guide = rearrange.dropGuide() {
                 dropGuideCanvas(guide)
                     .frame(width: guide.size.width, height: guide.size.height)
                     .transition(.opacity)
             }
-            // single page: a grey region highlight (a split shows its placeholder)
             if let region = rearrange.regionRect {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(.white.opacity(0.14))
@@ -393,7 +361,6 @@ struct RearrangeOverlay: View {
                     .frame(width: max(region.width - 6, 0), height: max(region.height - 6, 0))
                     .position(x: region.midX, y: region.midY)
             }
-            // floating ghost when there's no in-layout placeholder to show the drop
             if rearrange.showsFloatingGhost, let tab = draggedTab {
                 ghost(tab).position(rearrange.cursor)
             }
@@ -408,8 +375,7 @@ struct RearrangeOverlay: View {
         return tabManager.currentSpace.tabs.first { $0.id == id }
     }
 
-    /// the lines between zones that drop differently, so crossing one always
-    /// changes the layout. dashed accent.
+    /// the lines between zones that drop differently
     private func dropGuideCanvas(_ guide: RearrangeDragState.DropGuide) -> some View {
         Canvas { ctx, _ in
             ctx.stroke(
@@ -418,8 +384,7 @@ struct RearrangeOverlay: View {
         }
     }
 
-    /// the predicted region scaled down to a small preview, aspect preserved, so
-    /// the ghost reads as the shape the pane would take
+    /// the predicted region scaled down, aspect preserved
     private var ghostSize: CGSize {
         guard let r = rearrange.regionRect, r.width > 0, r.height > 0 else {
             return CGSize(width: 132, height: 96)
@@ -464,9 +429,7 @@ struct RearrangeOverlay: View {
     }
 }
 
-/// the drop placeholder that sits in the live preview tree where a dragged pane
-/// would land — a dashed accent box (matching the sidebar→content highlight) with
-/// the dragged tab's favicon + title, so the panes reflow around a real slot.
+/// the leaf in the preview tree where a dragged pane would land
 private struct PlaceholderPane: View {
     let tab: BrowserTab?
     let accent: Color
@@ -502,9 +465,8 @@ private struct PlaceholderPane: View {
     }
 }
 
-/// AppKit-backed resize strip between two panes. reports the drag as a running
-/// delta in points (along the split axis); the parent converts that to a ratio
-/// shift. a faint grip rides its centre so the gap reads as draggable.
+/// AppKit-backed resize strip between two panes; reports the drag as a running
+/// delta in points along the split axis
 struct SplitDivider: NSViewRepresentable {
     let orientation: SplitOrientation
     let onDrag: (CGFloat) -> Void
@@ -554,6 +516,22 @@ struct SplitDivider: NSViewRepresentable {
 
         override func mouseUp(with event: NSEvent) {
             onCommit?()
+        }
+
+        override func isAccessibilityElement() -> Bool { true }
+        override func accessibilityRole() -> NSAccessibility.Role? { .splitter }
+        override func accessibilityLabel() -> String? { "Resize panes" }
+        override func accessibilityOrientation() -> NSAccessibilityOrientation {
+            orientation == .columns ? .vertical : .horizontal
+        }
+        /// VoiceOver's increment grows the first pane by 20pt
+        override func accessibilityPerformIncrement() -> Bool { nudge(20) }
+        override func accessibilityPerformDecrement() -> Bool { nudge(-20) }
+
+        private func nudge(_ delta: CGFloat) -> Bool {
+            onDrag?(delta)
+            onCommit?()
+            return true
         }
     }
 }

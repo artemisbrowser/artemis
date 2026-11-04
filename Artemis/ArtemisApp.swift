@@ -21,16 +21,13 @@ struct ArtemisApp: App {
     /// before any window has taken focus
     @State private var seedManager = TabManager()
     @State private var windows = BrowserWindows.shared
-    /// the focused window's manager, mirrored into `@State`: menu items track
-    /// only what `@State` holds. Read through `windows.current` instead and they
-    /// are built once and never refresh — ⌘R and the zoom keys stay dead
+    /// the focused window's manager, mirrored into `@State`: menu items refresh
+    /// only against `@State`, never against `windows.current`
     @State private var focusedManager: TabManager?
     /// which pinned extension ⌘E reaches next
     @State private var extensionCycleIndex = 0
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
-    // external links (Artemis as default browser) are routed by the delegate into
-    // Scout windows — handling them here, not on the WindowGroup, avoids SwiftUI
-    // spawning a phantom main window per URL
+    // owns external links, so the WindowGroup never spawns a window per URL
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// the window a menu command belongs to: whichever browser window has focus
@@ -59,19 +56,15 @@ struct ArtemisApp: App {
     }
 
     var body: some Scene {
-        // The browser window. SwiftUI owns it — the menu bar's items only track
-        // the app's state while they hang off a group with a window in it
+        // menu items track app state only while they hang off a group with a window
         WindowGroup(id: Self.browserWindowID) {
             BrowserWindowRoot()
                 .environment(ExtensionManager.shared)
                 .navigationTitle("")
         }
-        // don't let the group spawn a window for external URL events — those are
-        // the delegate's job (→ Scout). without this, every link opened from
-        // another app also births a phantom main window.
+        // external URL events belong to the delegate, never this group
         .handlesExternalEvents(matching: ["artemis-main"])
         .onChange(of: scenePhase) { _, phase in
-            // capture any latest navigations before we lose focus
             if phase != .active { seedManager.save() }
         }
         .onChange(of: windows.current.map(ObjectIdentifier.init), initial: true) { _, _ in
@@ -92,8 +85,7 @@ struct ArtemisApp: App {
                 }
             }
 
-            // tab management. Replaces `.newItem` rather than extending it so the
-            // group's own New Window item doesn't sit beside ours.
+            // replaces `.newItem` so the group's own New Window item isn't shown too
             CommandGroup(replacing: .newItem) {
                 Button("New Tab…") {
                     tabManager.requestNewTab()
@@ -112,9 +104,7 @@ struct ArtemisApp: App {
                 }
                 .keyboardShortcut("w")
 
-                // ⌘W closes the tab while there is one to close, so the window
-                // needs a key of its own. Hidden when ⌘W already says
-                // "Close Window", rather than sitting under a second copy of it
+                // hidden while ⌘W itself says "Close Window"
                 if strip?.selectedTab != nil {
                     Button("Close Window") {
                         NSApp.keyWindow?.performClose(nil)
@@ -210,6 +200,8 @@ struct ArtemisApp: App {
                 Button("Import Bookmarks…") { importBookmarks() }
                 Button("Import from Arc…") { ArcMigration.run(into: browser) }
                     .disabled(browser.arcImport != nil)
+                Button("Import from Browser…") { BrowserImportModel.open(in: browser) }
+                    .disabled(browser.browserImport != nil)
 
                 Divider()
 
@@ -232,10 +224,8 @@ struct ArtemisApp: App {
                 Button("Send Feedback…") { FeedbackDraft.open(in: strip ?? browser) }
             }
 
-            // view
             CommandGroup(before: .toolbar) {
-                // page zoom — per-site and remembered (ZoomStore). "+" needs the
-                // shift-less key so ⌘= works too, the way every mac browser does it
+                // "+" on the shift-less key, so ⌘= zooms in too
                 Button("Zoom In") {
                     tabManager.selectedTab?.zoomIn()
                 }
@@ -362,9 +352,7 @@ struct ArtemisApp: App {
                 .keyboardShortcut("i", modifiers: [.command, .option])
                 .disabled(tabManager.selectedTab?.url == nil)
 
-                // F12 as well as ⌥⌘I, the way every browser answers it.
-                // KeyEquivalent has no F-key constants; the function keys live
-                // at U+F708… in the private use area, which is what AppKit sends
+                // F12: AppKit sends function keys from U+F704 in the private use area
                 Button("Web Inspector ") {
                     tabManager.selectedTab?.toggleInspector()
                 }
@@ -381,7 +369,6 @@ struct ArtemisApp: App {
                 .disabled(!ExtensionManager.shared.enabledExtensions(in: tabManager).contains(where: \.isPinned))
             }
 
-            // navigation
             CommandMenu("Navigate") {
                 Button("Reload Page") {
                     tabManager.selectedTab?.reload()
@@ -389,8 +376,7 @@ struct ArtemisApp: App {
                 .keyboardShortcut("r")
                 .disabled(tabManager.selectedTab?.url == nil)
 
-                // Arc puts a hard refresh on ⌘⇧R, which is Reader here (and in
-                // Safari). Safari's own spelling of it is ⌘⌥R
+                // Safari's key: ⌘⇧R is Reader
                 Button("Reload From Origin") {
                     tabManager.selectedTab?.reloadFromOrigin()
                 }
@@ -409,7 +395,7 @@ struct ArtemisApp: App {
                 .keyboardShortcut("]")
                 .disabled(tabManager.selectedTab?.canGoForward != true)
 
-                // Arc's arrow spellings of the same two, so either hand works
+                // Arc's arrow spellings of the same two
                 Button("Back ") {
                     tabManager.selectedTab?.goBack()
                 }
@@ -550,8 +536,7 @@ struct ArtemisApp: App {
             }
         }
 
-        // incognito: the same chrome over a throwaway space and jar. never
-        // restored, never opened at launch, never handed a link from another app
+        // incognito: never restored, opened at launch, or handed an external link
         WindowGroup(id: IncognitoWindow.id) {
             IncognitoWindowRoot()
                 .environment(ExtensionManager.shared)
@@ -599,8 +584,7 @@ struct ArtemisApp: App {
         ])
     }
 
-    /// pick a backup file and put it back. replacing your spaces is not something
-    /// to do on a mis-click, so it asks first and says exactly what it will touch
+    /// pick a backup file and, once confirmed, restore it over the current spaces
     private func restoreBackup() {
         guard let archive = BackupIO.chooseArchive() else { return }
         let alert = NSAlert()
@@ -620,12 +604,7 @@ struct ArtemisApp: App {
         BackupIO.restore(archive, options: .init(), into: browser)
     }
 
-    /// Another browser's bookmarks, turned into spaces of pinned tabs — Artemis
-    /// has no bookmarks, so there is nowhere else for them to go.
-    ///
-    /// The picker is the sandbox grant: the profile files of Chrome, Firefox and
-    /// the rest sit in folders an App Sandbox app can't reach on its own, and a
-    /// user-chosen file is the one thing it can.
+    /// another browser's bookmarks, turned into spaces of pinned tabs
     private func importBookmarks() {
         let panel = NSOpenPanel()
         panel.message =
@@ -662,8 +641,7 @@ struct ArtemisApp: App {
         browser.importBookmarks(parsed)
     }
 
-    /// ⌘O. The picker is also the sandbox grant: WebKit gets a read extension for
-    /// whatever comes back, which nothing else in the app can hand it
+    /// ⌘O: each picked file opens in a tab
     private func openLocalFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -673,9 +651,8 @@ struct ArtemisApp: App {
         for url in panel.urls { tabManager.newTab(url: url, select: url == panel.urls.first) }
     }
 
-    /// ⌘W: close the tab in whichever browser window has focus. A window with no
-    /// tab left to close, a Scout window (its page *is* the window), and every
-    /// auxiliary window close outright
+    /// ⌘W: close the focused browser window's tab. a window with no tab, a Scout
+    /// window, and every auxiliary window close outright
     private func handleCloseShortcut() {
         guard let window = NSApp.keyWindow else { return }
         guard let manager = BrowserWindows.shared.manager(for: window),
@@ -684,16 +661,13 @@ struct ArtemisApp: App {
         manager.closeSelectedTab()
     }
 
-    /// ⌘⇧C / ⌘⇧⌥C. Arc calls its version "Super Copy" because it strips the
-    /// tracking parameters a site hung on the link — what you meant to share is
-    /// the page, not who sent you to it
+    /// ⌘⇧C / ⌘⇧⌥C: copy the page's link, tracking parameters stripped
     private func exportPage(_ kind: BrowserTab.PageExport) {
         guard let tab = tabManager.selectedTab else { return }
         Task { await tab.export(kind) }
     }
 
-    /// ⌘E: step through the pinned extensions, running each one's action —
-    /// Arc's "hold ⌘, tap E" without needing the hold
+    /// ⌘E: step through the pinned extensions, running each one's action
     private func cycleExtensions() {
         let pinned = ExtensionManager.shared.enabledExtensions(in: tabManager).filter(\.isPinned)
         guard !pinned.isEmpty else { return }
@@ -703,9 +677,8 @@ struct ArtemisApp: App {
     }
 }
 
-/// routes links opened from other apps (Artemis as default browser) into floating
-/// Scout windows — owning them as real `NSWindow`s rather than SwiftUI scenes, so a
-/// URL never spawns a phantom main window and we control front ordering directly.
+/// routes links opened from other apps into Scout windows, which are plain
+/// `NSWindow`s rather than SwiftUI scenes
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// SwiftUI wraps its own delegate around this one, so `NSApp.delegate` is
     /// never it. the command bar needs the real instance to open a Scout window
@@ -722,37 +695,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.shared = self
     }
 
-    /// last-chance flush. `scenePhase` covers backgrounding, but a quit while the
-    /// window is frontmost never leaves `.active` — without this, whatever changed
-    /// since the last debounced save (up to a second of tab moves) is lost
+    /// every debounced or queued store write, made synchronously: a quit from
+    /// the front never leaves `.active`, so `scenePhase` alone misses it
     func applicationWillTerminate(_ notification: Notification) {
         tabManager?.saveNow()
-        // tab names are written off the main thread; a rename made seconds
-        // before quitting has to be flushed here or it dies with the process
         TabNameStore.shared.saveNow()
-        // history saves are debounced by a second — the last page of a session
-        // is exactly the one that debounce would lose
         for profile in BrowserCore.shared.profiles {
             profile.history.saveNow()
             profile.archive.saveNow()
             profile.inputHistory.saveNow()
         }
-        // both debounce through a detached task, which the process outlives by
-        // nothing: a zoom set, or a camera answer given, in the last second
         ZoomStore.shared.saveNow()
         SitePermissionStore.shared.saveNow()
+        RoutingStore.shared.saveNow()
+        AutofillStore.shared.saveNow()
         // a page's notifications die with its document
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
 
-    /// A launch can leave no window at all: AppKit restores the group by an
-    /// identifier built from the *type* of its content, so a build that changed
-    /// the scene's view hierarchy matches nothing and SwiftUI opens nothing.
-    /// Last resort, well after a restore would have landed.
+    /// opens a window if none exists well after a restore would have landed:
+    /// restoration keys off the scene's view type, which a new build can change
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // ⌘⌥N, from whatever app you happen to be in
+        // ⌘⌥N from any app
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
         AppIconChoice.apply()
+        SpotlightIndex.scheduleRefresh()
         if !SelfTest.isRequested, !AppStorageLocation.isExtensionLab {
             Task { await Reports.run() }
             Updates.shared.start()
@@ -778,8 +745,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// New Window, by its shortcut rather than its title — the title is the part
-    /// that gets translated
+    /// New Window, found by its shortcut since its title is localised
     private func openBrowserWindow() {
         let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
         guard
@@ -790,9 +756,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.sendAction(action, to: item.target, from: item)
     }
 
-    /// the other half of Handoff: a page picked up from another device. It is a
-    /// page you were already reading, so it gets a real tab rather than a Scout
-    /// window — you asked to continue, not to glance
+    /// a page handed off from another device opens in a tab, not a Scout window
     func application(
         _ application: NSApplication, continue userActivity: NSUserActivity,
         restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
@@ -807,26 +771,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            // a link from another app is a glance — a file you double-clicked in
-            // Finder is something you meant to open, so it gets a real tab
+            // a file gets a tab; a web link gets a Scout window
             if url.isFileURL {
                 if let tab = tabManager?.newTab(url: url, select: true) {
                     tabManager?.revealTab(tab)
                 }
             } else if url.scheme == "http" || url.scheme == "https" {
-                openScout(url)
+                openScoutWindow(url)
             }
         }
     }
 
-    /// ⌘⌥N and the menu: open a Scout window on a page deliberately, rather
-    /// than only when another app hands us a link
-    func openScoutWindow(_ url: URL) { openScout(url) }
-
-    private func openScout(_ url: URL) {
-        // Scout needs no model of its own — the window builds one. Waiting for a
-        // manager here meant a link that *launched* Artemis arrived before there
-        // was one and was dropped on the floor.
+    /// a Scout window on `url`, or a tab in its routed space when routing is direct.
+    /// needs no manager: the Scout window builds its own
+    func openScoutWindow(_ url: URL) {
         if UserDefaults.standard.externalLinkRouting == .direct,
             let manager = BrowserWindows.shared.browserScope ?? tabManager,
             let destination = manager.routedSpace(for: url)

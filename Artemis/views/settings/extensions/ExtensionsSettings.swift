@@ -145,9 +145,7 @@ struct ExtensionsSettings: View {
     }
 }
 
-/// per-site Boosts: the install-nothing cousin of an extension. a real editor —
-/// pick a Boost, edit its CSS and JS, save — rather than a write-once add form,
-/// because a tweak you can't revise is a tweak you delete and retype.
+/// per-site Boosts: a site's own CSS and JS, each editable in a sheet after it is added
 private struct BoostsSection: View {
     @State private var store = BoostStore.shared
     @State private var editing: Boost?
@@ -394,7 +392,7 @@ private struct ExtensionRow: View {
 
                 if ext.webExtension.hasOptionsPage {
                     Button("Options") {
-                        Task { try? await extensions.openOptionsPage(for: ext) }
+                        extensions.openOptionsPage(for: ext)
                     }
                     .controlSize(.small)
                     .disabled(!ext.isEnabled)

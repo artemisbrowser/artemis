@@ -2,12 +2,8 @@ import AppKit
 import Foundation
 import SQLite3
 
-/// Moving in from Arc.
-///
-/// Arc keeps its sidebar in one JSON file: a list of spaces and a flat pool of
-/// items linked by parent/child ids. This turns that into Artemis' own
-/// `SpaceData`, so an import lands through the same path a relaunch takes —
-/// spaces, colours, folders, splits, pinned and Today, favourites and all.
+/// Arc's sidebar file, spaces plus a flat pool of items linked by parent/child
+/// ids, as Artemis `SpaceData`, so an import lands through the relaunch path
 enum ArcImport {
     static let bundleID = "company.thebrowser.Browser"
 
@@ -407,45 +403,11 @@ enum ArcImport {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    /// Run `body` against a copy of a Chromium database: the live file is locked
-    /// while Arc runs, and its write-ahead log holds the newest rows, so both
-    /// come across before it is opened.
-    private static func withDatabase<T>(at url: URL, _ body: (OpaquePointer) -> T) -> T? {
-        let files = FileManager.default
-        guard files.isReadableFile(atPath: url.path) else { return nil }
-        let scratch = files.temporaryDirectory.appending(path: "arc-\(UUID().uuidString)")
-        guard (try? files.createDirectory(at: scratch, withIntermediateDirectories: true)) != nil
-        else { return nil }
-        defer { try? files.removeItem(at: scratch) }
-
-        let copy = scratch.appending(path: url.lastPathComponent)
-        guard (try? files.copyItem(at: url, to: copy)) != nil else { return nil }
-        for suffix in ["-wal", "-shm"] {
-            let side = URL(fileURLWithPath: url.path + suffix)
-            guard files.fileExists(atPath: side.path) else { continue }
-            try? files.copyItem(at: side, to: URL(fileURLWithPath: copy.path + suffix))
-        }
-
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(copy.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
-            let db = handle
-        else {
-            sqlite3_close(handle)
-            return nil
-        }
-        defer { sqlite3_close(db) }
-        return body(db)
-    }
-
     private static func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return 0 }
         defer { sqlite3_finalize(statement) }
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
-    }
-
-    private static func text(_ statement: OpaquePointer?, _ column: Int32) -> String? {
-        sqlite3_column_text(statement, column).map { String(cString: $0) }
     }
 
     private static func blob(_ statement: OpaquePointer?, _ column: Int32) -> Data {
@@ -481,54 +443,18 @@ enum ArcImport {
     static func survey(_ directory: URL = dataDirectory) -> Survey {
         var out = Survey(directory: directory, sidebar: read(from: directory))
         for profile in profiles(in: directory) {
-            out.history += withDatabase(at: profile.appending(path: "History")) {
+            out.history += BrowserImport.withDatabase(at: profile.appending(path: "History")) {
                 scalar($0, "SELECT count(*) FROM urls WHERE hidden = 0 AND last_visit_time > 0;")
             } ?? 0
-            withDatabase(at: profile.appending(path: "Cookies")) { db in
+            BrowserImport.withDatabase(at: profile.appending(path: "Cookies")) { db in
                 out.cookies += scalar(db, "SELECT count(*) FROM cookies;")
                 out.cookieSites += scalar(db, "SELECT count(DISTINCT host_key) FROM cookies;")
             }
-            out.logins += withDatabase(at: profile.appending(path: "Login Data")) {
+            out.logins += BrowserImport.withDatabase(at: profile.appending(path: "Login Data")) {
                 scalar($0, "SELECT count(*) FROM logins WHERE blacklisted_by_user = 0;")
             } ?? 0
         }
         return out
-    }
-
-    // MARK: - History
-
-    /// Arc's history is Chromium's: one database per profile, merged here by url
-    static func history(inProfile profile: URL, limit: Int = 4000) -> [HistoryEntry] {
-        read(historyAt: profile.appending(path: "History"), limit: limit)
-    }
-
-    private static func read(historyAt url: URL, limit: Int) -> [HistoryEntry] {
-        withDatabase(at: url) { db in
-            var out: [HistoryEntry] = []
-            var statement: OpaquePointer?
-            let sql = """
-                SELECT url, title, last_visit_time, visit_count, typed_count FROM urls
-                WHERE hidden = 0 AND last_visit_time > 0
-                ORDER BY last_visit_time DESC LIMIT ?;
-                """
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return out }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_int(statement, 1, Int32(limit))
-
-            while sqlite3_step(statement) == SQLITE_ROW {
-                guard let raw = text(statement, 0), let url = URL(string: raw),
-                    url.scheme == "http" || url.scheme == "https"
-                else { continue }
-                let title = text(statement, 1) ?? ""
-                out.append(
-                    HistoryEntry(
-                        url: url, title: title.isEmpty ? (url.host() ?? raw) : title,
-                        lastVisited: chromeDate(sqlite3_column_int64(statement, 2)),
-                        visitCount: Int(sqlite3_column_int(statement, 3)),
-                        typedCount: Int(sqlite3_column_int(statement, 4))))
-            }
-            return out
-        } ?? []
     }
 
     // MARK: - Cookies
@@ -537,7 +463,7 @@ enum ArcImport {
     /// `key` comes from `ArcSecrets.key()`, which is where the user consents;
     /// a cookie that won't decrypt is dropped rather than written as rubbish.
     static func cookies(in profile: URL, key: Data, now: Date = Date()) -> CookieRead {
-        withDatabase(at: profile.appending(path: "Cookies")) { db in
+        BrowserImport.withDatabase(at: profile.appending(path: "Cookies")) { db in
             var read = CookieRead()
             var seen: Set<String> = []
             var statement: OpaquePointer?
@@ -555,15 +481,15 @@ enum ArcImport {
 
             while sqlite3_step(statement) == SQLITE_ROW {
                 read.rows += 1
-                guard let host = text(statement, 0), !host.isEmpty,
-                    let name = text(statement, 1)
+                guard let host = BrowserImport.text(statement, 0), !host.isEmpty,
+                    let name = BrowserImport.text(statement, 1)
                 else { continue }
-                guard seen.insert("\(host)\u{1}\(name)\u{1}\(text(statement, 4) ?? "")").inserted
+                guard seen.insert("\(host)\u{1}\(name)\u{1}\(BrowserImport.text(statement, 4) ?? "")").inserted
                 else { continue }
                 let sealed = blob(statement, 2)
                 let value: String
                 if sealed.isEmpty {
-                    value = text(statement, 3) ?? ""
+                    value = BrowserImport.text(statement, 3) ?? ""
                 } else if let unsealed = try? ArcSecrets.decrypt(sealed, key: key, host: host) {
                     value = unsealed
                     read.unsealed += 1
@@ -573,7 +499,7 @@ enum ArcImport {
 
                 var properties: [HTTPCookiePropertyKey: Any] = [
                     .name: name, .value: value, .domain: host,
-                    .path: text(statement, 4) ?? "/",
+                    .path: BrowserImport.text(statement, 4) ?? "/",
                 ]
                 if sqlite3_column_int(statement, 6) != 0 { properties[.secure] = "TRUE" }
                 if sqlite3_column_int(statement, 7) != 0 {
@@ -615,7 +541,7 @@ enum ArcImport {
     }
 
     static func logins(in profile: URL, key: Data) -> [Login] {
-        withDatabase(at: profile.appending(path: "Login Data")) { db in
+        BrowserImport.withDatabase(at: profile.appending(path: "Login Data")) { db in
             var out: [Login] = []
             var statement: OpaquePointer?
             let sql = """
@@ -626,16 +552,16 @@ enum ArcImport {
             defer { sqlite3_finalize(statement) }
 
             while sqlite3_step(statement) == SQLITE_ROW {
-                let origin = text(statement, 0) ?? ""
+                let origin = BrowserImport.text(statement, 0) ?? ""
                 let sealed = blob(statement, 2)
                 guard !sealed.isEmpty,
                     let password = try? ArcSecrets.decrypt(sealed, key: key), !password.isEmpty
                 else { continue }
-                let address = origin.isEmpty ? (text(statement, 3) ?? "") : origin
+                let address = origin.isEmpty ? (BrowserImport.text(statement, 3) ?? "") : origin
                 out.append(
                     Login(
                         title: URL(string: address)?.host() ?? address, url: address,
-                        username: text(statement, 1) ?? "", password: password))
+                        username: BrowserImport.text(statement, 1) ?? "", password: password))
             }
             return out
         } ?? []

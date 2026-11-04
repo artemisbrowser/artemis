@@ -53,50 +53,36 @@ enum ScoutBarAppearanceStore {
     }
 }
 
-/// Scout — a link opened from another app (Artemis as default browser) lands in
-/// this small floating window instead of cluttering the main browser. Read it and
-/// close, or "Open in …" to promote it into a real tab in the chosen Space.
-///
-/// The window drives its own `TabManager` over a space private to it, so every
-/// browser command — find, zoom, reader, the inspector, Picture in Picture —
-/// works on the page in front of you rather than on the main window's tab.
+/// Scout: the small window a link opened from another app lands in, until "Open
+/// in …" promotes it to a tab. it drives its own `TabManager` over a private
+/// space, so browser commands act on its page, not the main window's
 struct ScoutView: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.colorScheme) private var scheme
     @AppStorage(ScoutBarStyle.storageKey) private var barStyleRaw = ScoutBarStyle.fallback.rawValue
     @AppStorage(ScoutBarAppearanceStore.key) private var customAppearanceJSON = ""
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
-    /// closes the owning Scout window (an AppKit `NSWindow`, so SwiftUI's
-    /// `dismiss` doesn't reach it)
+    /// closes the owning `NSWindow`, which SwiftUI's `dismiss` doesn't reach
     let onClose: () -> Void
 
     /// the one page this window holds
     private var tab: BrowserTab? { tabManager.selectedTab }
-    /// the Space "Open in …" will target — seeded from the link's preferred space,
-    /// re-derived as the page redirects unless the user picks one by hand
+    /// the space "Open in …" targets: the url's preferred space until the user picks one
     @State private var targetSpace: Space?
     @State private var pickedManually = false
     @State private var showSpaceMenu = false
-    /// colours sampled across the top edge of the live page (left→right), so the
-    /// adaptive bar can mirror the page as a horizontal gradient rather than one
-    /// flat average
+    /// colours sampled left→right across the live page's top edge
     @State private var sampledStops: [Color]?
-    /// last observed scroll offset — re-sample only when the page actually moves
     @State private var lastScrollY: Double = -1
-    /// guards against overlapping snapshots piling up during fast scrolls
     @State private var isSampling = false
-    /// how many columns we sample across the bar's width
     private static let stopCount = 12
 
-    /// light heartbeat: while the page is in adaptive mode this reads the scroll
-    /// offset a few times a second and only snapshots when it changed, so an idle
-    /// page costs a cheap JS read and scrolling keeps the bar colour in step
     private let ticker = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
 
     /// the browser window a promoted page lands in
     private var browser: TabManager? { BrowserWindows.shared.browserScope }
 
-    /// the resolved target — falls back to the browser's current space
+    /// falls back to the browser's current space
     private var target: Space {
         targetSpace ?? browser?.currentSpace ?? tabManager.currentSpace
     }
@@ -154,10 +140,8 @@ struct ScoutView: View {
         .background { ScoutBackdrop(paint: barPaint).ignoresSafeArea() }
         .environment(\.chromeInk, ink)
         .frame(minWidth: 480, minHeight: 360)
-        // rise into the transparent titlebar so the toolbar row sits inline with
-        // the traffic lights instead of below the reserved titlebar safe area
+        // the toolbar row sits inline with the traffic lights
         .ignoresSafeArea(.container, edges: .top)
-        // ⌘O promotes into the currently-shown target space
         .background(
             Button("", action: { promote(into: target) })
                 .keyboardShortcut("o", modifiers: .command)
@@ -169,13 +153,11 @@ struct ScoutView: View {
                 targetSpace = browser?.preferredSpace(for: url)
             }
         }
-        // follow redirects to a better-fitting space until the user overrides
         .onChange(of: tab?.url) { _, newURL in
             guard let newURL else { return }
             if !pickedManually { targetSpace = browser?.preferredSpace(for: newURL) }
             scheduleSample()
         }
-        // re-sample the page colour once a load settles, and when switching modes
         .onChange(of: tab?.isLoading) { _, loading in
             if loading == false { scheduleSample() }
         }
@@ -221,8 +203,7 @@ struct ScoutView: View {
         .shadow(color: .black.opacity(rim > 0 ? 0.3 : 0), radius: 12, y: 3)
     }
 
-    /// once per tick: cheaply read the scroll offset; only when it moved do we
-    /// pay for a snapshot, so an idle page barely costs anything
+    /// snapshots only when the scroll offset moved since the last tick
     private func pollScroll() {
         guard barStyle == .dynamic, let webView = tab?.webView, webView.window != nil
         else { return }
@@ -237,8 +218,6 @@ struct ScoutView: View {
         }
     }
 
-    /// snapshot the top sliver of the page a beat after it settles, so the
-    /// adaptive bar matches what's actually rendered beneath it
     private func scheduleSample() {
         guard barStyle == .dynamic else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -252,14 +231,11 @@ struct ScoutView: View {
         guard width > 0 else { return }
         isSampling = true
         let config = WKSnapshotConfiguration()
-        // a thin strip across the very top — the colours sitting under the bar
         config.rect = CGRect(x: 0, y: 0, width: width, height: 8)
-        // wide enough to keep left→right detail, narrow enough to stay cheap
         config.snapshotWidth = NSNumber(value: 128)
         webView.takeSnapshot(with: config) { image, _ in
             isSampling = false
             guard let columns = image?.columnColors(Self.stopCount) else { return }
-            // morph from the previous gradient to the new one, never snap
             withAnimation(.easeInOut(duration: 0.25)) {
                 sampledStops = columns.map(Color.init(nsColor:))
             }
@@ -295,8 +271,7 @@ struct ScoutView: View {
         .background(WindowDragStrip().padding(.top, -BrowserToolbar.top).padding(.bottom, -toolbarGap))
     }
 
-    /// split control: the main half promotes into `target`, the chevron half
-    /// opens a menu of every space to pick a different one
+    /// promotes into `target`, or the chevron picks another space
     private var promoteControl: some View {
         HStack(spacing: 0) {
             ScoutPromoteButton(space: target) { promote(into: target) }
@@ -312,8 +287,6 @@ struct ScoutView: View {
         .chromeGlass(in: .capsule)
     }
 
-    /// dropdown of every space — icon on the left, name on the right; tapping
-    /// promotes the page straight into that space
     private var spaceMenu: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(browser?.spaces ?? []) { space in
@@ -327,14 +300,13 @@ struct ScoutView: View {
         .frame(minWidth: 200)
     }
 
-    /// user chose a space by hand — lock onto it and promote there now
     private func pick(_ space: Space) {
         pickedManually = true
         targetSpace = space
         promote(into: space)
     }
 
-    /// hand the page off to the main browser as a real tab in `space`, then close
+    /// hands the page to the main browser as a tab in `space`, then closes
     private func promote(into space: Space) {
         guard tab?.isPrivate != true,
             let url = tab?.url ?? tab?.lastAttemptedURL ?? tab?.pendingURL
@@ -434,9 +406,7 @@ private struct ScoutAppearanceFill: View {
     }
 }
 
-/// a horizontal gradient of sampled page colours. `Animatable` interpolates the
-/// stops component-by-component, so a change of colours morphs smoothly instead
-/// of snapping — even mid-scroll
+/// a horizontal gradient of sampled page colours that morphs between samples
 private struct GradientBar: View, Animatable {
     var colors: [Color]
 
@@ -452,14 +422,12 @@ private struct GradientBar: View, Animatable {
     }
 }
 
-/// a variable-length vector of doubles that SwiftUI can interpolate — here it
-/// carries flattened sRGB colour components so a gradient can animate
+/// flattened sRGB colour components SwiftUI can interpolate, so a gradient animates
 struct AnimatableVector: VectorArithmetic {
     var values: [Double]
 
     init(values: [Double]) { self.values = values }
 
-    /// flatten colours to [r,g,b, r,g,b, …]
     init(colors: [Color]) {
         values = colors.flatMap { color -> [Double] in
             let c = NSColor(color).usingColorSpace(.sRGB) ?? .gray
@@ -467,7 +435,6 @@ struct AnimatableVector: VectorArithmetic {
         }
     }
 
-    /// rebuild colours from the flattened components
     var colors: [Color] {
         stride(from: 0, to: values.count - 2, by: 3).map { i in
             Color(.sRGB, red: values[i], green: values[i + 1], blue: values[i + 2])
@@ -490,8 +457,7 @@ struct AnimatableVector: VectorArithmetic {
 
     var magnitudeSquared: Double { values.reduce(0) { $0 + $1 * $1 } }
 
-    /// combine two vectors element-wise, padding the shorter with zeros so a
-    /// changing stop count never crashes the interpolation
+    /// element-wise, padding the shorter with zeros so a changing stop count can't crash
     private static func pairwise(
         _ a: [Double], _ b: [Double], _ op: (Double, Double) -> Double
     ) -> [Double] {
@@ -795,8 +761,7 @@ struct ScoutBarEditor: View {
         .onChange(of: appearance) { _, new in json = ScoutBarAppearanceStore.encode(new) }
     }
 
-    /// the four-way fill control. solid/gradient seed colours so their editor has
-    /// something to work with; glass/dynamic just switch the mode
+    /// solid and gradient seed colours so their editor has something to work with
     private var styleBinding: Binding<ScoutBarStyle> {
         Binding(
             get: { style },
@@ -884,8 +849,7 @@ extension Color {
 }
 
 private extension NSImage {
-    /// average colour of each of `count` equal columns, left→right — one cheap
-    /// downscale to a `count`×1 bitmap, then read the pixels back
+    /// the average colour of each of `count` equal columns, left→right
     func columnColors(_ count: Int) -> [NSColor]? {
         guard count > 0,
             let tiff = tiffRepresentation,

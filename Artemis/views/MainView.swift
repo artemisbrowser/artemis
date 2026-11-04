@@ -7,35 +7,29 @@ struct MainView: View {
     @AppStorage("sidebarWidth") private var sidebarWidth = 250.0
 
     private static let sidebarWidthRange = 160.0...450.0
-    // the peek's bounce overshoots the window edge by a few px, momentarily
-    // exposing the very-left strip where the cursor sits. the overlay's hover
-    // region hangs this far off its leading edge (mirrors the trailing grip
-    // buffer) so that gap still counts as "over the sidebar"
+    /// how far the overlay's hover region hangs off its leading edge, so the
+    /// peek's bounce past the window edge still counts as over the sidebar
     private static let overlayOvershootSlack: CGFloat = 12
     /// the peeking overlay's grab strip and trailing hover buffer
     private static let overlayGripWidth: CGFloat = 18
     private static let overlayBufferWidth: CGFloat = 10
 
     private var isSidebarCollapsed: Bool { tabManager.isSidebarCollapsed }
-    /// the rim of space between the window edge and the web card. 10 is the
-    /// house style; 0 makes the page the whole window (Settings › Customization)
+    /// the rim between the window edge and the web card; 0 makes the page the whole window
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
-    // how long the cursor must dwell on the edge before the sidebar peeks (ms)
+    /// ms the cursor dwells on the edge before the sidebar peeks
     @AppStorage("sidebarRevealDelay") private var sidebarRevealDelay = 100.0
-    // width of the invisible window-edge strip that catches the hover (pt)
+    /// width in pt of the window-edge strip that catches the hover
     @AppStorage("sidebarHoverAreaWidth") private var sidebarHoverAreaWidth = 8.0
-    // how long the peek's slide-in animation runs (s) — its bounce is fixed
+    /// seconds the peek's slide-in runs; its bounce is fixed
     @AppStorage("sidebarRevealDuration") private var sidebarRevealDuration = 0.2
+    /// set only from the onChange handlers, never mid-render
     @State private var isSidebarOverlayVisible = false
-    // driven only from the onChange handlers below (never recomputed mid-render)
-
     @State private var isOverlayHovered = false
-    // a context menu takes the cursor's hover for as long as it is open
+    /// a context menu takes the cursor's hover for as long as it is open
     @State private var isMenuOpen = false
-    // true while the overlay is springing in: the entrance overshoots a few px
-    // past the window edge, briefly uncovering the cursor in the edge strip —
-    // we must not read that as "mouse left" and collapse mid-reveal
+    /// the overlay is springing in; its overshoot uncovering the edge strip is not "mouse left"
     @State private var overlayEntering = false
     @State private var overlayEnterTask: Task<Void, Never>?
     @State private var isResizingSidebar = false
@@ -43,28 +37,21 @@ struct MainView: View {
     @State private var windowSize = CGSize(width: 1000, height: 700)
     @State private var edgeHoverTask: Task<Void, Never>?
     @State private var overlayDismissTask: Task<Void, Never>?
+    @State private var collapseDismissTask: Task<Void, Never>?
 
-    // the sidebar's drag state lives here (not in Sidebar) so a tab dragged out
-    // of the list can be dropped onto the page to start/extend a split
+    /// owned here, not by Sidebar, so a tab dragged out of the list can drop onto the page
     @State private var drag = SidebarDragState()
-    // dragging a pane around its split to re-tile it (the content-area rearrange)
+    /// a pane being dragged around its split to re-tile it
     @State private var rearrange = RearrangeDragState()
-    // the web card's window-space frames + a drag monitor, for drag-to-split
     @State private var frames = CardFrames()
     @State private var contentDragMonitor: Any?
-    // drives the in-split pane rearrange: started when a pane's handle picks up,
-    // it tracks the cursor + commits on release, so the dragged pane can leave the
-    // layout (its handle unmounts) without cancelling the drag
+    /// outlives the dragged pane's handle, which unmounts once the pane leaves the layout
     @State private var rearrangeMonitor: Any?
-
-
 
     /// fullscreen with the sidebar away: pure content, no rim, no rounding
     private var isEdgeToEdge: Bool { isFullScreen && isSidebarCollapsed }
 
-
-    /// the Library's left icon rail is "extra" — opening it widens the whole
-    /// sidebar by the rail width so the archive/history list keeps its full width
+    /// the Library's icon rail widens the whole sidebar, so its list keeps full width
     private var libraryRailExtra: CGFloat {
         tabManager.isLibraryOpen ? LibrarySidebar.railWidth : 0
     }
@@ -101,18 +88,12 @@ struct MainView: View {
         ) { _ in
             isFullScreen = false
         }
-        // The grab strip, when the rim is too thin to hold one. It has to be
-        // ABOVE the sidebar, not on the card's edge: the sidebar floats in a
-        // later overlay, so a strip living under it lost every click on the
-        // sidebar's own side of the seam to the swipe detector — which is
-        // exactly the half of the boundary the hand reaches for, and why
-        // resizing worked collapsed but not pinned.
+        // the grab strip when the rim is too thin to hold one; it must sit above
+        // the sidebar's overlay or the sidebar's side of the seam loses its clicks
         .overlay(alignment: .leading) {
             if !isSidebarCollapsed, edgeInset < WindowChrome.minGrabWidth {
                 resizeHandle(width: Self.seamGrabWidth, centreOffsetFromEdge: libraryRailExtra)
-                    // negative padding rather than .offset: offset is
-                    // render-only and would leave this hosted AppKit view's
-                    // hit area behind
+                    // padding, not .offset: offset is render-only and leaves the AppKit hit area behind
                     .padding(.leading, pinnedFootprint - Self.seamGrabWidth / 2)
             }
         }
@@ -144,17 +125,17 @@ struct MainView: View {
             if let origin = tabManager.addressBarOrigin, !origin.isEmpty {
                 withAnimation(Motion.address) { tabManager.addressBarOrigin = .zero }
             }
-            // collapsing hands over to the overlay in place — it stays
-            // until the mouse wanders off it; pinning dismisses it instantly
+            // collapsing hands over to the overlay in place until the mouse leaves; pinning dismisses it
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 isSidebarOverlayVisible = collapsed
             }
+            collapseDismissTask?.cancel()
             if collapsed {
-                Task {
+                collapseDismissTask = Task {
                     try? await Task.sleep(for: .seconds(2))
-                    if !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen {
+                    if !Task.isCancelled, !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen {
                         isSidebarOverlayVisible = false
                     }
                 }
@@ -168,7 +149,6 @@ struct MainView: View {
             }
         }
         .onChange(of: isSidebarOverlayVisible) { _, visible in
-            // shield the spring's entrance overshoot from the dismiss logic
             overlayEnterTask?.cancel()
             if visible {
                 overlayEntering = true
@@ -192,10 +172,7 @@ struct MainView: View {
         }
         // each overlay animates only its own subtree: a root-level animation
         // would also animate whatever else changes in the same transaction
-        .overlay {
-            commandBarOverlay
-                .animation(Motion.pop, value: tabManager.isCommandBarVisible)
-        }
+        .overlay { CommandBarOverlay() }
         // ⌘L, a new blank tab, first launch
         .onChange(of: tabManager.urlFieldFocusRequest) { tabManager.editAddress() }
         .overlay {
@@ -207,6 +184,10 @@ struct MainView: View {
                 .animation(Motion.fade, value: tabManager.arcImport == nil)
         }
         .overlay {
+            browserImportOverlay
+                .animation(Motion.fade, value: tabManager.browserImport == nil)
+        }
+        .overlay {
             Group {
                 if let peek = tabManager.peekTab {
                     PeekView(tab: peek)
@@ -215,13 +196,11 @@ struct MainView: View {
             .animation(Motion.fade, value: tabManager.peekTab?.id)
         }
         .overlay {
-            // full-window gradient preview (a throwaway mock browser); the eye in
-            // the space editor launches it. exiting resumes the editor in place
+            // the space editor's full-window gradient preview; exiting resumes the editor
             Group {
                 if tabManager.gradientPreview != nil {
                     GradientPreview {
-                        // restore the space's real theme, then clear (the space header
-                        // reopens the editor and resumes the edit when this goes nil)
+                        // the space header resumes the edit once this goes nil
                         if let resume = tabManager.resumeGradientEdit,
                             let space = tabManager.spaces.first(where: { $0.id == resume.id }),
                             let revert = tabManager.previewRevert
@@ -261,13 +240,9 @@ struct MainView: View {
                 try? await Task.sleep(for: .milliseconds(250))
                 tabManager.urlFieldFocusRequest += 1
             }
-            // everything below belongs to the app, not to this window: a second
-            // window must not prewarm again, and must not start a second copy of
-            // a diagnostic run — one that opens windows would then open more
+            // everything below runs once per app, not per window
             guard BrowserWindows.shared.claimLaunchWork() else { return }
 
-            // build the pristine session tab renaming will use, so the first
-            // rename of a launch doesn't pay for the instructions itself
             Task { await Intelligence.shared.prewarmChores() }
             // dev hook: ARTEMIS_DIAG=ext dumps extension runtime state
             if SelfTest.isExtensionsDiagRequested {
@@ -296,18 +271,15 @@ struct MainView: View {
             if SelfTest.isNameBenchRequested {
                 Task { await SelfTest.runNameBench() }
             }
-            // dev hook: ARTEMIS_DIAG=corpus visits real sites and records what
-            // each page offers a tab namer (feeds ARTEMIS_DIAG=sweep)
+            // dev hook: ARTEMIS_DIAG=corpus records what real sites offer a tab namer
             if SelfTest.isCorpusDiagRequested {
                 Task { await SelfTest.runCorpusDiag(manager: tabManager) }
             }
-            // dev hook: ARTEMIS_DIAG=corpus-clean takes that corpus back out of
-            // the user's history
+            // dev hook: ARTEMIS_DIAG=corpus-clean takes that corpus back out of history
             if SelfTest.isCorpusCleanRequested {
                 Task { await SelfTest.runCorpusClean(manager: tabManager) }
             }
-            // dev hook: ARTEMIS_DIAG=sweep replays that corpus against every
-            // prompt × context-depth combination
+            // dev hook: ARTEMIS_DIAG=sweep replays that corpus against every prompt × context depth
             if SelfTest.isSweepDiagRequested {
                 Task { await SelfTest.runSweepDiag() }
             }
@@ -333,8 +305,7 @@ struct MainView: View {
                 tabManager.selectedTab?.load(url)
             }
         }
-        // outermost so every subtree — the pinned sidebar, the floating overlay
-        // sidebar, and the content area — shares one drag state
+        // outermost, so the sidebar, its overlay and the content share one drag state
         .environment(drag)
         .environment(rearrange)
     }
@@ -363,11 +334,24 @@ struct MainView: View {
                 Color.black.opacity(0.25)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // a running import is not interruptible; before and
-                        // after, the scrim closes the sheet
+                        // a running import is not interruptible
                         if case .working = model.phase {} else { model.cancel(in: tabManager) }
                     }
                 ArcImportSheet(model: model)
+                    .offset(y: -20)
+            }
+        }
+    }
+
+    /// import from another browser, modal like the Arc picker
+    @ViewBuilder
+    private var browserImportOverlay: some View {
+        if let model = tabManager.browserImport {
+            ZStack {
+                Color.black.opacity(0.25)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.cancel(in: tabManager) }
+                BrowserImportSheet(model: model)
                     .offset(y: -20)
             }
         }
@@ -388,27 +372,6 @@ struct MainView: View {
         }
     }
 
-    private var commandBarOverlay: some View {
-        // no scrim: the page stays bright and the sidebar/edge-reveal stay live.
-        // the field is pinned a fifth of the way down so results grow beneath it
-        GeometryReader { geo in
-            if let origin = tabManager.addressBarOrigin {
-                let window = geo.frame(in: .global).origin
-                AddressBar(
-                    origin: origin.isEmpty ? .zero : origin.offsetBy(dx: -window.x, dy: -window.y),
-                    size: geo.size)
-                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
-            } else if tabManager.isCommandBarVisible {
-                // a fresh bar when it switches between new tab and address
-                CommandBar(address: tabManager.commandBarEditsAddress)
-                    .id(tabManager.commandBarEditsAddress)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, geo.size.height * 0.2)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
-            }
-        }
-    }
-
     /// a menu or popover that held the overlay open has let go: dismiss it if the
     /// cursor wandered off meanwhile. the delay lets a follow-on popover claim it
     private func releaseOverlayHold() {
@@ -421,7 +384,7 @@ struct MainView: View {
         }
     }
 
-    /// thin strip on the window edge; dwell half a second to peek the sidebar
+    /// thin strip on the window edge; dwelling on it peeks the sidebar
     private var edgeRevealZone: some View {
         Color.clear
             .frame(width: sidebarHoverAreaWidth)
@@ -439,8 +402,7 @@ struct MainView: View {
             }
     }
 
-    /// the sidebar as a floating panel over the page (dynamic mode)
-    ///
+    /// the overlay sidebar's outline, rounded on its page side
     private var panelShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0, bottomLeadingRadius: 0,
@@ -464,16 +426,14 @@ struct MainView: View {
     /// what every dismiss path asks before letting the overlay go
     private var overlayHeld: Bool { isOverlayHovered || pointerInsideRig }
 
-    /// the grab strip beside the sidebar: the overlay uses its own generous
-    /// width; pinned mode uses the rim (or nothing, when the rim is too thin to
-    /// grab — the card's leading-edge overlay handle covers that case)
+    /// the grab strip beside the sidebar: its own width in the overlay, the rim
+    /// when pinned, or nothing when the rim is too thin to grab (the seam handle covers it)
     private var rigGripWidth: CGFloat {
         if isSidebarCollapsed { return Self.overlayGripWidth }
         return edgeInset >= WindowChrome.minGrabWidth ? edgeInset : 0
     }
 
-    /// what the card yields when the sidebar is pinned (the hover buffer is
-    /// overlay-only chrome and takes no layout room)
+    /// what the card yields when the sidebar is pinned; the hover buffer takes no room
     private var pinnedFootprint: CGFloat {
         sidebarWidth + libraryRailExtra + rigGripWidth
     }
@@ -483,21 +443,18 @@ struct MainView: View {
         sidebarWidth + libraryRailExtra + rigGripWidth + Self.overlayBufferWidth
     }
 
-    /// The one sidebar, floating at the window's leading edge in both modes.
-    /// BrowserShell slides its host; the real traffic lights live inside
-    /// `Sidebar`, so they move with it.
+    /// the one sidebar, floating at the window's leading edge in both modes;
+    /// BrowserShell slides its host
     private var sidebarRig: some View {
         HStack(spacing: 0) {
             Sidebar(width: sidebarWidth)
                 .frame(width: sidebarWidth + libraryRailExtra)
                 .frame(maxHeight: .infinity)
-                // overlay mode: absorb stray clicks in empty sidebar areas so
-                // they don't fall through to the page underneath
+                // overlay mode: empty sidebar areas must not click through to the page
                 .background {
                     if isSidebarCollapsed { Color.black.opacity(0.001) }
                 }
-                // overlay mode: the floating panel's own backdrop (the space's
-                // appearance + shadow); pinned mode shows the window's backdrop
+                // pinned mode shows the window's backdrop instead
                 .background(alignment: .leading) {
                     if isSidebarCollapsed {
                         OverlayPanelBackground(
@@ -509,15 +466,11 @@ struct MainView: View {
 
             resizeHandle(width: rigGripWidth)
 
-            // invisible buffer: extends the overlay's hover area past the grip
-            // so a small overshoot doesn't dismiss the peek
+            // extends the overlay's hover area past the grip
             Color.clear
                 .frame(width: Self.overlayBufferWidth)
                 .frame(maxHeight: .infinity)
         }
-        // hover catchment off the leading edge: when the peek's entrance
-        // bounce overshoots a few px right, the cursor lands in this strip
-        // instead of outside the panel (which would trip the dismiss)
         .padding(.leading, Self.overlayOvershootSlack)
         .overlay(alignment: .leading) {
             Color.clear
@@ -526,13 +479,11 @@ struct MainView: View {
                 .contentShape(Rectangle())
         }
         .onHover { hovering in
-            // pinned mode has no hover semantics — the sidebar is furniture
             guard isSidebarCollapsed else { return }
             isOverlayHovered = hovering
             overlayDismissTask?.cancel()
             guard !hovering else { return }
-            // debounce: a context menu or brief overshoot steals hover for a
-            // moment — only dismiss if the cursor is still gone after a beat
+            // a context menu or brief overshoot steals hover for a moment
             overlayDismissTask = Task {
                 try? await Task.sleep(for: .milliseconds(120))
                 while pointerInsideRig {
@@ -551,10 +502,9 @@ struct MainView: View {
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
     }
 
-    /// where the shell puts the sidebar and the card. The sidebar host is as
-    /// wide as the rig ever gets, so pinning never resizes it; past the rig's
-    /// grip it lets clicks through, except while a folder's peek hangs there.
-    /// Hidden, the whole host sits off the window's leading edge.
+    /// where the shell puts the sidebar and the card. the sidebar host is as wide
+    /// as the rig ever gets, so pinning never resizes it; past the grip it passes
+    /// clicks through unless a folder's peek hangs there
     private var shellPlacement: BrowserShell<AnyView, AnyView>.Placement {
         let slack = Self.overlayOvershootSlack
         let rig = sidebarWidth + libraryRailExtra
@@ -572,7 +522,8 @@ struct MainView: View {
     /// a modal over the window takes the pointer from everything under it
     private var isModalOverlayUp: Bool {
         tabManager.peekTab != nil || tabManager.isSpaceCreatorVisible
-            || tabManager.arcImport != nil || tabManager.gradientPreview != nil
+            || tabManager.arcImport != nil || tabManager.browserImport != nil
+            || tabManager.gradientPreview != nil
             || tabManager.feedback != nil
     }
 
@@ -622,14 +573,13 @@ struct MainView: View {
         .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
     }
 
-    /// invisible grab strip between sidebar and web card    /// invisible grab strip between sidebar and web card
+    /// invisible grab strip between sidebar and web card
     private func resizeHandle(width: CGFloat, centreOffsetFromEdge: CGFloat? = nil) -> some View {
         SidebarResizeHandle(
             width: $sidebarWidth,
             range: Self.sidebarWidthRange,
             onDraggingChanged: { dragging in
                 isResizingSidebar = dragging
-                // drag ended with the cursor off the overlay → let it go
                 if !dragging, !overlayHeld {
                     isSidebarOverlayVisible = false
                 }
@@ -639,18 +589,14 @@ struct MainView: View {
         .frame(width: width)
     }
 
-    /// how wide the grab strip is when it has to straddle the seam rather than
-    /// sit in a rim. Wide enough to find without looking: the collapsed
-    /// sidebar's grip is 18pt and feels fine, while the old 6pt strip — which
-    /// sat entirely on the *page* side of the seam, so grabbing the sidebar's
-    /// own edge did nothing — did not
+    /// the grab strip's width when it straddles the seam rather than sitting in a rim
     private static let seamGrabWidth: CGFloat = 16
 
     @ViewBuilder
     private var webCard: some View {
         GeometryReader { geo in
             CardStack(cornerRadius: isEdgeToEdge ? 0 : WindowChrome.cardRadius(inset: edgeInset))
-            // fill the card (GeometryReader places content at its natural size)
+            // GeometryReader places content at its natural size
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // the rearrange gesture, the panes' frames and this overlay all share
             // one space, anchored to the card's top-left
@@ -662,29 +608,14 @@ struct MainView: View {
             .onChange(of: geo.size) { _, s in rearrange.containerSize = s }
             .onChange(of: geo.frame(in: .global)) { _, f in frames.cardFrame = f }
         }
-        // an instant swap, not a crossfade: the focused tab's web view hands off
-        // between the single host and its split pane, and a WKWebView can only
-        // live in one superview — a fade would briefly mount it in both. the
-        // panes' own insert/remove animation carries the motion instead
-        .overlay {
-            // while the command bar is up, one tap on the page dismisses it
-            // instead of reaching the content
-            if tabManager.isCommandBarVisible {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        tabManager.isCommandBarVisible = false
-                    }
-            }
-        }
+        .overlay { CommandBarPageShield() }
         .overlay(alignment: .topTrailing) { CardCornerControls() }
-        // a site asking for the camera, the microphone or your location. over the
-        // page, because that's whose question it is
+        // a site's camera, microphone or location request sits over its page
         .overlay(alignment: .topLeading) {
             if let request = tabManager.currentPermissionRequest {
                 PermissionPrompt(request: request)
                     .padding(14)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(Motion.slide(.top))
             }
         }
         .animation(Motion.panel, value: tabManager.currentPermissionRequest?.id)
@@ -705,9 +636,7 @@ struct MainView: View {
         return true
     }
 
-    /// while a sidebar drag is live, follow the cursor over the page and mark the
-    /// nearest edge as the split drop zone (the sidebar's drop commit reads it).
-    /// the event is returned untouched so the drag itself is unaffected
+    /// while a sidebar drag is live, follows the cursor over the page; the event passes through untouched
     private func startContentDragMonitor() {
         stopContentDragMonitor()
         contentDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged]) { event in
@@ -723,10 +652,8 @@ struct MainView: View {
         if rearrange.incoming { rearrange.clear() }
     }
 
-    /// while a sidebar tab is dragged over the content, drive the shared rearrange
-    /// overlay (the rectangular ghost + grey region highlight) as an *incoming*
-    /// drag, and keep `contentDropZone` set as the "cursor is over content" flag
-    /// the sidebar reads to suppress its own merge/reorder.
+    /// drives the rearrange overlay as an incoming drag while a sidebar tab is over
+    /// the content; `contentDropZone` doubles as the sidebar's "over content" flag
     private func updateContentDropZone(_ event: NSEvent) {
         guard drag.isDragging, let tab = drag.tab, !tab.isEssential,
             drag.group == nil,  // dragging a whole split isn't a content drop
@@ -740,18 +667,14 @@ struct MainView: View {
         let point = CGPoint(
             x: event.locationInWindow.x,
             y: content.bounds.height - event.locationInWindow.y)
-        // the floating overlay sidebar sits above the web card — a drag still over
-        // the sidebar isn't a content drop, even though it's inside contentFrame
+        // the overlay sidebar sits inside contentFrame but isn't a content drop
         guard frames.contentFrame.contains(point), !drag.sidebarFrame.contains(point) else {
             clearContentDrop()
             return
         }
 
-        // flag for the sidebar's over-content guards
         if drag.contentDropZone == nil { drag.contentDropZone = .right }
 
-        // feed the rearrange overlay: the cursor in the card's space, the split it
-        // would join (or the lone page it would tile with)
         let group = tabManager.displayedSplitGroup
         let single = group == nil ? tabManager.selectedTab?.id : nil
         let local = CGPoint(x: point.x - frames.cardFrame.minX, y: point.y - frames.cardFrame.minY)
@@ -807,76 +730,49 @@ struct MainView: View {
     }
 }
 
-/// the persistently-mounted web pages, with the shown one on top. on a switch
-/// the incoming page fades in over the *fully opaque* outgoing one (held
-/// underneath until the fade lands) — so only one live layer animates and the
-/// backdrop never bleeds through a half-faded gap. switching to no page (empty/
-/// error) fades the outgoing out instead.
-private struct WebContentStack: View {
-    let tabs: [BrowserTab]
-    let shownID: BrowserTab.ID?
-
-    @State private var visibleID: BrowserTab.ID?  // on top, fading in
-    @State private var fadingID: BrowserTab.ID?  // held opaque underneath, then dropped
-    @State private var incomingOpacity: Double = 1
-    @State private var outgoingOpacity: Double = 1
+/// the command bar over the window, in a view of its own so opening and closing
+/// it re-runs this rather than the window body
+private struct CommandBarOverlay: View {
+    @Environment(TabManager.self) private var tabManager
 
     var body: some View {
-        let _ = Bench.tick("WebContentStack")
-        ZStack {
-            ForEach(tabs) { tab in
-                WebViewContainer(
-                    tab: tab,
-                    // only the page on top and the one it's fading over are being
-                    // looked at; everything else in the stack is held warm, and
-                    // held pages must be *hidden*, not merely transparent
-                    isVisible: tab.id == visibleID || tab.id == fadingID)
-                    // generation is part of the id so a container rebuild (new web
-                    // view, same tab) re-mounts and hosts the fresh view
-                    .id("\(tab.id)#\(tab.webViewGeneration)")
-                    .opacity(opacity(for: tab.id))
-                    .zIndex(tab.id == visibleID ? 2 : (tab.id == fadingID ? 1 : 0))
-                    .allowsHitTesting(tab.id == visibleID)
-                    .pageDialog(for: tab)
-                    .translateSelection(for: tab)
+        // no scrim: the page and the sidebar's edge reveal stay live
+        GeometryReader { geo in
+            if let origin = tabManager.addressBarOrigin {
+                let window = geo.frame(in: .global).origin
+                AddressBar(
+                    origin: origin.isEmpty ? .zero : origin.offsetBy(dx: -window.x, dy: -window.y),
+                    size: geo.size)
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
+            } else if tabManager.isCommandBarVisible {
+                // a fresh bar when it switches between new tab and address
+                CommandBar(address: tabManager.commandBarEditsAddress)
+                    .id(tabManager.commandBarEditsAddress)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, geo.size.height * 0.2)
+                    .transition(Motion.grow(from: 0.97, anchor: .top))
             }
         }
-        .onAppear { if visibleID == nil { visibleID = shownID } }
-        .onChange(of: shownID) { _, new in crossfade(to: new) }
+        .animation(Motion.pop, value: tabManager.isCommandBarVisible)
     }
+}
 
-    private func opacity(for id: BrowserTab.ID) -> Double {
-        if id == visibleID { return incomingOpacity }
-        if id == fadingID { return outgoingOpacity }
-        return 0
-    }
+/// while the command bar is up, one tap on the page dismisses it instead of
+/// reaching the content
+private struct CommandBarPageShield: View {
+    @Environment(TabManager.self) private var tabManager
 
-    private func crossfade(to new: BrowserTab.ID?) {
-        guard new != visibleID else { return }
-        fadingID = visibleID
-        visibleID = new
-        incomingOpacity = 0
-        outgoingOpacity = 1
-        withAnimation(Motion.contentSwap) {
-            incomingOpacity = 1
-            // no incoming page (empty/error): fade the outgoing page out instead
-            // of holding it, so the card dissolves to the backdrop cleanly
-            if new == nil { outgoingOpacity = 0 }
-        } completion: {
-            fadingID = nil
-            incomingOpacity = 1
-            outgoingOpacity = 1
+    var body: some View {
+        if tabManager.isCommandBarVisible {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { tabManager.isCommandBarVisible = false }
         }
     }
 }
 
-/// artemis signature backdrop: deep space, not arc's candy gradients
-///
-/// this is the default theme; per-space themes arrive with Spaces
-
-/// The window's space backdrop and the tooltip tint that follows it. Its own
-/// view so the per-frame `backdropPosition` reads during a swipe invalidate
-/// only this, not the window body.
+/// the window's space backdrop and the tooltip tint that follows it, in a view of
+/// its own so per-frame `backdropPosition` reads invalidate only this
 private struct WindowBackdrop: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(TooltipState.self) private var tooltipState
@@ -915,8 +811,8 @@ private struct CardCornerControls: View {
     }
 }
 
-/// The web card's pages and which of them stay mounted. Owns the warm and
-/// crossfade-hold state, so a switch re-runs this view and not the window body.
+/// the web card's pages and which of them stay mounted; owns the warm and
+/// crossfade-hold state, so a switch re-runs this and not the window body
 private struct CardStack: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(RearrangeDragState.self) private var rearrange
@@ -949,24 +845,19 @@ private struct CardStack: View {
                             cornerRadius: cornerRadius,
                             style: .continuous))
             } else if let split = tabManager.displayedSplitGroup {
-                // split view: panes carry their own backgrounds, rounding and
-                // shadows, with the space backdrop showing through the gaps —
-                // so no single-card base/clip/shadow here
+                // panes carry their own base, rounding and shadow
                 SplitContentView(group: split)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 singleCard
             }
 
-            // unified tiling drop overlay (rectangular ghost + grey region
-            // highlight): rearranging an existing pane, OR a sidebar tab
-            // dragged into the content. covers both split and single page.
+            // a pane being rearranged, or a sidebar tab dragged into the content
             if rearrange.isDragging {
                 RearrangeOverlay(accent: accent)
             }
         }
-        // seed the warm set at once (launch is off the animation path) so the
-        // very first swipe already has its neighbours mounted
+        // seeded at once so the first swipe already has its neighbours mounted
         .onAppear {
             if warmSpaceIDs.isEmpty { warmSpaceIDs = tabManager.neighborSpaceIDs() }
         }
@@ -982,26 +873,22 @@ private struct CardStack: View {
             tabManager.hydrateNeighbors()
             warmSpaceIDs = tabManager.neighborSpaceIDs()
         }
-        // note the outgoing page so it can be held through the crossfade
         .onChange(of: tabManager.displayedContentTab?.id, initial: true) { _, id in noteShown(id) }
     }
 
     /// web views kept mounted: the shown page, the page it is crossfading over,
-    /// and the warm neighbours (current ± 1 space), so the likely next switch is
-    /// a show/hide rather than a mid-gesture mount
+    /// and the warm neighbours (current ± 1 space)
     private var mountedTabs: [BrowserTab] {
         var tabs: [BrowserTab] = []
         func add(_ tab: BrowserTab?) {
             guard let tab, tab.url != nil, !tabs.contains(where: { $0.id == tab.id }) else { return }
             tabs.append(tab)
         }
-        // always mount what's shown right now, even before the warm set refreshes
+        // what's shown, even before the warm set refreshes
         add(tabManager.displayedContentTab)
         for space in tabManager.spaces where warmSpaceIDs.contains(space.id) {
             add(tabManager.selectedTab(in: space) ?? space.tabs.first)
         }
-        // and the page being faded over, so the crossfade has something to hold
-        // underneath instead of dissolving to the card's base colour
         if PerfFlags.holdsCrossfadePage {
             add(heldTabID.flatMap(tab(withID:)))
         }
@@ -1015,8 +902,7 @@ private struct CardStack: View {
         return tabManager.essentials.first { $0.id == id }
     }
 
-    /// hold the outgoing page mounted for the length of the crossfade, then let
-    /// it go. holding it any longer is a steady-state cost for a one-off moment
+    /// holds the outgoing page mounted for the length of the crossfade only
     private func noteShown(_ id: BrowserTab.ID?) {
         let outgoing = shownBeforeID
         shownBeforeID = id
@@ -1030,23 +916,26 @@ private struct CardStack: View {
         }
     }
 
-    /// the ordinary single-page card — one mounted web view (plus warm
-    /// neighbours), error/start fallbacks, the space-tinted base, rounding and
-    /// drop shadow
+    /// the single-page card: its mounted web views, the error/start fallbacks, base, rounding and shadow
     @ViewBuilder
     private var singleCard: some View {
         let shown = tabManager.displayedContentTab
         ZStack {
-            // the live, persistently-mounted pages — crossfaded among themselves
-            WebContentStack(
-                tabs: mountedTabs,
-                shownID: shown?.loadError == nil ? shown?.id : nil)
+            let shownID = shown?.loadError == nil ? shown?.id : nil
+            let tabs = mountedTabs
+            PageStack(tabs: tabs, shownID: shownID)
+            ForEach(tabs) { tab in
+                Color.clear
+                    .pageDialog(for: tab)
+                    .translateSelection(for: tab)
+                    .opacity(tab.id == shownID ? 1 : 0)
+                    .allowsHitTesting(tab.id == shownID)
+            }
 
             if let tab = shown, tab.loadError != nil {
                 ErrorPage(tab: tab)
             } else if shown?.url == nil {
-                // no page on the shown tab: an empty space reveals the window's
-                // space backdrop, otherwise the start page
+                // an empty space reveals the window's backdrop
                 if isEmptySpace {
                     Color.clear
                 } else {
@@ -1057,12 +946,9 @@ private struct CardStack: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // a card with no page on it drags the window from the same top band
         .background(alignment: .top) { WindowDragStrip().frame(height: PageDragBand.height) }
-        // transparent over an empty space so the theme backdrop shows through;
-        // otherwise the space's own dark base, so a loading or just-switched
-        // card never flashes white (the page paints over it once it's ready)
+        // the space's base under a page, so a loading card never flashes white
         .background(isEmptySpace ? Color.clear : tabManager.currentSpace.appearance.cardBase)
-        // the start/error pages sit on the card, so they take the card's ink
-        // rather than the system appearance's
+        // the start and error pages take the card's ink, not the system appearance's
         .environment(\.chromeInk, tabManager.currentSpace.appearance.cardInk)
         .overlay(alignment: .top) {
             if let shown {
@@ -1076,9 +962,9 @@ private struct CardStack: View {
     }
 }
 
-/// The floating overlay sidebar's backdrop: the window's position-driven
-/// SpaceBackdrop clipped to the panel, so every space transition crossfades in
-/// lockstep with the window. Never hit-tests, so it can't steal the overlay's hover.
+/// the overlay sidebar's backdrop: the window's position-driven SpaceBackdrop
+/// clipped to the panel, so space transitions stay in lockstep with the window.
+/// never hit-tests, so it can't steal the overlay's hover
 private struct OverlayPanelBackground: View {
     @Environment(TabManager.self) private var tabManager
     let shape: UnevenRoundedRectangle
@@ -1091,8 +977,7 @@ private struct OverlayPanelBackground: View {
             .frame(width: max(windowWidth, width), alignment: .leading)
             .frame(width: width, alignment: .leading)
             .clipShape(shape)
-            // the substrate's full-bleed glass rim is cropped by the clip, so the
-            // lens is re-added at the panel shape, only while glass is in view
+            // the clip crops the substrate's glass rim, so the lens is re-added at the panel shape
             .overlay {
                 if glassInView {
                     Rectangle().fill(.clear)

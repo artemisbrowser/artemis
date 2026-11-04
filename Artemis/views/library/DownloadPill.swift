@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The sidebar footer's view of downloads under way: the newest one, or a count,
+/// the sidebar footer's view of downloads under way: the newest one, or a count,
 /// with its progress along the bottom. Finished, a click opens the file (⌘-click
 /// shows it in Finder); before that it opens Library › Downloads.
 struct DownloadPill: View {
@@ -47,9 +47,14 @@ struct DownloadPill: View {
                 .contentShape(.capsule)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(many ? "\(downloads.shelf.count) downloads" : label(for: item))
+            .accessibilityValue(status(for: item, many: many))
+            .accessibilityAction(named: item.state == .downloading ? "Cancel" : "Dismiss") {
+                dismiss(item, many: many)
+            }
             .background(isLanding || tabManager.kind == .incognito ? DownloadLanding() : nil)
             .onHover { isHovering = $0 }
-            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            .transition(Motion.grow(from: 0.95))
         }
     }
 

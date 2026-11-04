@@ -6,7 +6,7 @@ nonisolated struct ArchiveEntry: Codable, Identifiable {
     var url: URL
     var title: String
     var archivedAt: Date
-    /// the space the tab was archived from, for grouping/labels later
+    /// the name of the space the tab was archived from
     var spaceName: String
 
     init(id: UUID = UUID(), url: URL, title: String, archivedAt: Date = Date(), spaceName: String) {
@@ -18,25 +18,19 @@ nonisolated struct ArchiveEntry: Codable, Identifiable {
     }
 }
 
-/// the auto-archive: Today tabs that went stale get closed and land here, newest
-/// first, browsable and restorable from the Library. persisted to a JSON file in
-/// the app container — stays entirely on-device (privacy pillar)
+/// the auto-archive: Today tabs that went stale, newest first, restorable from
+/// the Library
 @Observable
 final class ArchiveStore {
     private(set) var entries: [ArchiveEntry] = []
 
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private var saveTask: Task<Void, Never>?
-    @ObservationIgnored private static let maxEntries = 5000
+    private static let maxEntries = 5000
 
-    /// `entries` from `read(_:)` skips the load, so a caller can decode off main
-    init(fileURL: URL, entries: [ArchiveEntry]? = nil) {
+    init(fileURL: URL) {
         self.fileURL = fileURL
-        if let entries { self.entries = entries } else { load() }
-    }
-
-    nonisolated static func read(_ url: URL) -> [ArchiveEntry]? {
-        AppStorageLocation.loadDurable([ArchiveEntry].self, from: url)
+        entries = AppStorageLocation.loadDurable([ArchiveEntry].self, from: fileURL) ?? []
     }
 
     /// file a freshly-archived tab at the front
@@ -64,9 +58,7 @@ final class ArchiveStore {
         scheduleSave()
     }
 
-    func clear() { clear(since: .distantPast) }
-
-    /// drop matching entries, so a test run can take itself back out
+    /// drop the entries that match
     func forget(where shouldForget: (ArchiveEntry) -> Bool) {
         let before = entries.count
         entries.removeAll(where: shouldForget)
@@ -104,23 +96,17 @@ final class ArchiveStore {
     private func scheduleSave() {
         saveTask?.cancel()
         let snapshot = entries
+        let takenAt = AppStorageLocation.snapshotTime()
         let url = fileURL
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            // encode as well as write off the main actor — this fires a second
-            // after every navigation and the list runs to thousands of entries,
-            // so encoding on the caller lands a stall in the middle of browsing
+            // thousands of entries: encode off the main actor too
             await Task.detached(priority: .utility) {
                 if let data = try? JSONEncoder().encode(snapshot) {
-                    AppStorageLocation.writeDurable(data, to: url)
+                    AppStorageLocation.writeDurable(data, to: url, takenAt: takenAt)
                 }
             }.value
         }
-    }
-
-    private func load() {
-        guard let decoded = Self.read(fileURL) else { return }
-        entries = decoded
     }
 }

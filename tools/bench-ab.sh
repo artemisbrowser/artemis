@@ -1,7 +1,7 @@
 #!/bin/bash
-# Interleaved A/B: run each arm alternately N times and print every result, so
-# the comparison isn't decided by whatever the machine was doing for one minute.
-# Usage: tools/bench-ab.sh <loop> <reps> <armA-perf-off> <armB-perf-off>
+# Interleaved A/B: alternate bench-loop.sh runs of two ARTEMIS_PERF_OFF arms,
+# printing every result.
+# Usage: tools/bench-ab.sh <loop> <reps> <armA-perf-off> [armB-perf-off]
 set -u
 cd "$(dirname "$0")/.."
 loop="$1"; reps="$2"; a="$3"; b="${4:-}"

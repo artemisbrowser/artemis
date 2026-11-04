@@ -195,7 +195,12 @@ struct SidebarSettings: View {
             }
 
             Section("Spaces") {
-                Slider(value: $spaceTransitionDuration, in: 0...0.8, step: 0.05) {
+                Slider(
+                    value: Binding(
+                        get: { spaceTransitionDuration * 1000 },
+                        set: { spaceTransitionDuration = $0 / 1000 }),
+                    in: 0...800, step: 50
+                ) {
                     InfoLabel(
                         "Switching speed",
                         info: "Switching spaces slides the tab list over \(String(format: "%.2f", spaceTransitionDuration)) s.")

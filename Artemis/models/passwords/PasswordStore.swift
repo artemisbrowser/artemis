@@ -1,5 +1,4 @@
 import Foundation
-import LocalAuthentication
 import Security
 import UniformTypeIdentifiers
 
@@ -140,8 +139,6 @@ final class PasswordStore {
     static let offerToSaveKey = "passwordsOfferToSave"
     static let fillFromSuggestionsKey = "passwordsFillFromSuggestions"
     private static let neverSaveKey = "passwordsNeverSave"
-    /// how long one device-owner check opens revealing, copying and exporting
-    private static let unlockWindow: TimeInterval = 300
     private nonisolated static let queue = DispatchQueue(label: "Artemis.Passwords")
 
     private(set) var logins: [SavedLogin] = []
@@ -154,7 +151,6 @@ final class PasswordStore {
         UserDefaults.standard.stringArray(forKey: neverSaveKey) ?? []
     /// an index exists but couldn't be read or decoded; nothing is written over it
     private(set) var isUnreadable = false
-    @ObservationIgnored private var unlockedUntil = Date.distantPast
     /// whether this install still has a profile; a login naming one it doesn't belongs to the default
     @ObservationIgnored private let profileExists: (UUID) -> Bool
 
@@ -265,9 +261,6 @@ final class PasswordStore {
         replace(login, password: password)
         return login
     }
-
-    /// true while the last device-owner check still covers revealing passwords
-    var isUnlocked: Bool { Date() < unlockedUntil }
 
     func edit(
         _ login: SavedLogin, username: String, password: String?, notes: String? = nil,
@@ -440,18 +433,6 @@ final class PasswordStore {
     /// what a record stores for `profile`: the default profile is nil, as before profiles
     nonisolated static func stored(_ profile: UUID) -> UUID? {
         profile == Profile.defaultID ? nil : profile
-    }
-
-    // MARK: - Device owner
-
-    /// Touch ID or the account password, remembered for `unlockWindow`
-    func authenticate(_ reason: String) async -> Bool {
-        if Date() < unlockedUntil { return true }
-        let context = LAContext()
-        guard (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
-        else { return false }
-        unlockedUntil = Date().addingTimeInterval(Self.unlockWindow)
-        return true
     }
 
     // MARK: - Sites

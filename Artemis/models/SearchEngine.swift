@@ -16,7 +16,7 @@ enum SearchEngine: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// UserDefaults key shared by the @AppStorage setting and URLInput
+    /// app-wide key the default profile mirrors its engine into
     static let storageKey = "searchEngine"
 
     /// the app-wide choice, which is the default profile's; DuckDuckGo until one is made
@@ -41,7 +41,7 @@ enum SearchEngine: String, CaseIterable, Identifiable {
         }
     }
 
-    /// base endpoint; the query is appended as the `q` item
+    /// the query is appended as `q`, or `search` on Wikipedia
     private var endpoint: String {
         switch self {
         case .duckduckgo: "https://duckduckgo.com/"
@@ -58,10 +58,8 @@ enum SearchEngine: String, CaseIterable, Identifiable {
         }
     }
 
-    /// build the results URL for a raw query
     func searchURL(for query: String) -> URL? {
         guard var components = URLComponents(string: endpoint) else { return nil }
-        // Wikipedia's search param is `search`, everyone else uses `q`
         let name = self == .wikipedia ? "search" : "q"
         components.queryItems = [URLQueryItem(name: name, value: query)]
         return components.url

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Artemis (Release; --debug for Debug), sign it with ARTEMIS_SIGN_IDENTITY
-# (Picture in Picture and the extension runtime need a real certificate) and
+# (the extension runtime needs a real certificate) and
 # install it into /Applications. --run launches it afterwards.
 set -euo pipefail
 
@@ -19,7 +19,9 @@ done
 BUILT=".build/Build/Products/$CONFIG/Artemis.app"
 INSTALLED="/Applications/Artemis.app"
 ENTITLEMENTS=".build/Build/Intermediates.noindex/Artemis.build/$CONFIG/Artemis.build/Artemis.app.xcent"
-IDENTITY="${ARTEMIS_SIGN_IDENTITY:-$(cat "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/.signing-identity" 2>/dev/null || echo "Apple Development")}"
+# a worktree has no .signing-identity of its own, so fall back to the main checkout's
+IDENTITY="${ARTEMIS_SIGN_IDENTITY:-$(cd "$(dirname "$0")" && cat "$(git rev-parse --show-toplevel)/.signing-identity" 2>/dev/null \
+  || cat "$(git rev-parse --path-format=absolute --git-common-dir)/../.signing-identity" 2>/dev/null || echo "Apple Development")}"
 
 echo "→ building ($CONFIG)"
 xcodebuild -scheme Artemis -configuration "$CONFIG" -derivedDataPath .build build \
@@ -34,7 +36,7 @@ if [[ "$CONFIG" == "Release" ]]; then
   done
 fi
 
-echo "→ signing (real cert — PiP and the extension runtime need it)"
+echo "→ signing (real cert — the extension runtime needs it)"
 codesign --force --deep --sign "$IDENTITY" \
   --entitlements "$ENTITLEMENTS" --generate-entitlement-der "$BUILT"
 

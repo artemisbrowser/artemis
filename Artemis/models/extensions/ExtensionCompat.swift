@@ -1,25 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// The Artemis extension compatibility layer: makes `chrome.proxy` extensions
-/// (VPNs like Surfshark) run on WebKit's runtime, which has no proxy API at all.
-///
-/// ## How
-///
-/// WebKit's `chrome`/`browser` is one writable JS object, and its manifest
-/// parser prefers `background.scripts` over `background.service_worker`. So at
-/// install we *patch the package*: drop `__artemis/compat.js` into it, rewrite
-/// the background to `scripts: [compat.js, original]` (a document-environment
-/// background where script order guarantees the shim defines `chrome.proxy`
-/// before the extension runs), add the `nativeMessaging` permission, and inject
-/// a `<script>` tag into every packaged HTML page (popups crash on the same
-/// missing APIs). The shim bridges to native over `runtime.sendNativeMessage`
-/// → `ExtensionManager`'s delegate → `ExtensionProxyBridge`, which drives
-/// `WKWebsiteDataStore.proxyConfigurations`.
-///
-/// Nothing verifies package signatures (WebKit itself strips the CRX header
-/// unchecked), and MV3's forced `script-src 'self'` CSP is satisfied because
-/// the shim ships *inside* the package.
+/// patches a stored package so the `__artemis/compat.js` shim runs before the extension's own
+/// code in its background, pages and content scripts, filling the namespaces WebKit lacks and
+/// bridging to native over `runtime.sendNativeMessage`
 nonisolated enum ExtensionCompat {
     /// manifest permissions whose namespaces are `undefined` in WebKit and
     /// which the shim fills, bridging to native code where the page can't
@@ -28,11 +12,8 @@ nonisolated enum ExtensionCompat {
         "tabGroups", "management", "downloads", "search",
     ]
 
-    /// service-worker globals that a background bundle can't live without. if
-    /// one appears we keep a real service-worker environment (WebKit generates
-    /// `importScripts` wrappers for a scripts array under
-    /// `preferred_environment`), otherwise the simpler document background is
-    /// used — both run our shim first, which is the whole point
+    /// service-worker globals that keep a background in a real worker; any other background
+    /// becomes a scripts array, which WebKit runs as a document
     private static let serviceWorkerOnlyAPIs = [
         "skipWaiting", "clients.claim", "clients.matchAll", "self.registration",
         "importScripts", "addEventListener(\"fetch\"", "addEventListener('fetch'",
@@ -49,18 +30,14 @@ nonisolated enum ExtensionCompat {
     static let redirectHostKey = "artemis_redirect_host"
     /// manifest key mapping the worker's literal importScripts targets that run no code
     /// to whether they exist (an empty file) or not (a failed fetch)
-    static let inertImportsKey = "artemis_inert_imports"
+    private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    static let shimVersion = 45
+    private static let shimVersion = 45
 
     // MARK: - Entry point
 
-    /// migrate + patch a stored extension in place and return the URL WebKit
-    /// should load. call before `WKWebExtension(resourceBaseURL:)`:
-    /// - a stored `extension.zip` is unpacked to a directory first (patching
-    ///   needs files, and WebKit loads directories just as happily)
-    /// - packages that declare a shimmed permission get the compat layer,
-    ///   idempotently (the manifest marker records the shim version)
+    /// unpack and patch a stored extension in place, returning the URL for
+    /// `WKWebExtension(resourceBaseURL:)`. idempotent per shim version
     @concurrent static func prepare(storedID id: String) async -> URL? {
         guard var root = await migrateZipIfNeeded(id: id) else { return nil }
         if let dir = ExtensionInstaller.manifestRoot(under: root) { root = dir }
@@ -70,9 +47,8 @@ nonisolated enum ExtensionCompat {
 
     // MARK: - Zip migration
 
-    /// store installs used to keep the raw `extension.zip` for WebKit to load
-    /// directly; a package can only be patched as files. unpack once, then the
-    /// stored form is a plain directory forever
+    /// a stored `extension.zip` unpacked into the package directory, which can be patched as
+    /// files; the zip itself when unpacking fails
     private static func migrateZipIfNeeded(id: String) async -> URL? {
         let dir = ExtensionInstaller.storageRoot.appendingPathComponent(id, isDirectory: true)
         let zip = dir.appendingPathComponent("extension.zip")
@@ -82,8 +58,6 @@ nonisolated enum ExtensionCompat {
         }
         let unpacked = dir.appendingPathComponent("unpacked", isDirectory: true)
         try? fm.removeItem(at: unpacked)
-        // ditto is the system's archive tool and inherits our sandbox; the zip
-        // and destination both live in our container, so extraction is allowed
         let ditto = Process()
         ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         ditto.arguments = ["-x", "-k", zip.path, unpacked.path]
@@ -121,11 +95,8 @@ nonisolated enum ExtensionCompat {
         return URL(string: "\(scheme)://\(id.lowercased())/")!
     }
 
-    /// the compat layer goes into *every* extension, not just proxy ones: its
-    /// most valuable fix is generic (WebKit's `tabs.query` and friends return
-    /// undefined when called detached from their namespace, which is exactly
-    /// what `webextension-polyfill` and every promisify wrapper does — see
-    /// `bindNamespaces` in the shim)
+    /// every extension gets the shim: WebKit's namespace methods return undefined when called
+    /// detached from their namespace, as `webextension-polyfill` calls them (`bindNamespaces`)
     static func needsShim(manifest: [String: Any]) -> Bool {
         (manifest["manifest_version"] as? NSNumber) != nil || manifest["background"] != nil
     }
@@ -157,12 +128,11 @@ nonisolated enum ExtensionCompat {
             else { return false }
         }
 
-        // 2. the shim runs before the background's own code. a worker that must stay
-        // one (importScripts, modules, clients) keeps its own URL, which its relative
-        // imports resolve against, and imports the shim first; any other becomes a
-        // scripts array, which WebKit runs as a document (scripts > service_worker)
+        // 2. a worker that must stay one keeps its URL, which its relative imports resolve
+        // against, and imports the shim first; any other becomes a scripts array, which WebKit
+        // runs as a document (scripts > service_worker)
         if var background = manifest["background"] as? [String: Any] {
-            // an earlier shim wrapped such a worker at the package root, moving it
+            // unwrap the scripts pair older shim versions built around such a worker
             if background["preferred_environment"] as? String == "service_worker",
                 let scripts = background["scripts"] as? [String],
                 scripts.count == 2, scripts[0] == "__artemis/compat.js"
@@ -175,8 +145,9 @@ nonisolated enum ExtensionCompat {
             let scriptsWin = !((background["scripts"] as? [String]) ?? []).isEmpty
             if scriptsWin, let worker = background["service_worker"] as? String {
                 let file = packageRoot.appendingPathComponent(worker)
-                if let data = try? Data(contentsOf: file), withoutShimImport(data) != data {
-                    try? withoutShimImport(data).write(to: file)
+                if let data = try? Data(contentsOf: file) {
+                    let stripped = withoutShimImport(data)
+                    if stripped != data { try? stripped.write(to: file) }
                 }
             }
             if !scriptsWin, let worker = background["service_worker"] as? String {
@@ -234,9 +205,7 @@ nonisolated enum ExtensionCompat {
         else { return false }
         try? out.write(to: manifestURL)
 
-        // 6. every packaged HTML page gets the shim first — popups and options
-        // pages crash on the same missing APIs the background does. the src is
-        // absolute because extension pages serve from the extension origin root
+        // 6. every packaged HTML page loads the shim first
         patchHTMLFiles(under: packageRoot)
         markScriptsUTF8(under: packageRoot)
         uncommentLocales(under: packageRoot)
@@ -297,9 +266,8 @@ nonisolated enum ExtensionCompat {
             return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]]
         }
 
-        // cheapest first, so small rulesets survive whole and the oversized one
-        // absorbs what is left. costing is a pass of its own: holding every
-        // parsed ruleset at once costs hundreds of megabytes
+        // cheapest first, so small rulesets survive whole; costed in a pass of its own so
+        // only one parsed ruleset is alive at a time
         let order = resources.indices.compactMap { index -> (index: Int, cost: Int)? in
             autoreleasepool {
                 guard let path = sourcePath(resources[index]), let rules = readRules(path)
@@ -391,9 +359,9 @@ nonisolated enum ExtensionCompat {
         return units * perUnit
     }
 
-    /// Chrome injects a file into a frame once however many entries list it; WebKit
-    /// runs it again and the second copy dies redeclaring its globals (Grammarly on
-    /// Google Docs). a file a match-everything entry already injects the same way goes
+    /// Chrome injects a file into a frame once however many entries list it; WebKit runs it again
+    /// and the second copy dies redeclaring its globals. a file a match-everything entry already
+    /// injects the same way goes
     private static func withoutRepeats(_ scripts: [[String: Any]]) -> [[String: Any]] {
         let timing = { (entry: [String: Any]) in
             "\(entry["run_at"] as? String ?? "document_idle")|\(entry["world"] as? String ?? "ISOLATED")"
@@ -437,7 +405,7 @@ nonisolated enum ExtensionCompat {
         if data != original { try? data.write(to: worker) }
     }
 
-    /// the shim's import is always the file's first line; earlier shims wrote it unguarded
+    /// the shim's import is always the file's first line, in any form a shim version has written
     private static func withoutShimImport(_ data: Data) -> Data {
         let bom = Data([0xEF, 0xBB, 0xBF])
         let start = data.starts(with: bom) ? bom.count : 0
@@ -452,9 +420,8 @@ nonisolated enum ExtensionCompat {
         return data
     }
 
-    /// does this background bundle use APIs that only exist in a real service
-    /// worker? cheap textual check — a false positive only means we keep the
-    /// environment the extension was written for, which is never wrong
+    /// does this background use APIs only a real service worker has? a textual check, whose
+    /// false positive keeps the environment the extension asked for
     private static func needsServiceWorkerEnvironment(
         packageRoot: URL, entry: String, isModule: Bool
     ) -> Bool {
@@ -562,7 +529,7 @@ nonisolated enum ExtensionCompat {
 
     /// the page shim with only the gap entries this manifest can reach inlined;
     /// nil manifest inlines them all
-    static func pageJS(reaching manifest: [String: Any]?) -> String {
+    private static func pageJS(reaching manifest: [String: Any]?) -> String {
         let declared = Set(["permissions", "optional_permissions"].flatMap {
             ((manifest?[$0] as? [Any]) ?? []).compactMap { $0 as? String }
         })

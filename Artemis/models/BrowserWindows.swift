@@ -17,6 +17,7 @@ final class BrowserWindows {
     private(set) var primary: TabManager?
 
     private var registry: [ObjectIdentifier: (window: NSWindow, manager: TabManager)] = [:]
+    @ObservationIgnored private var launchWorkClaimed = false
 
     /// the space a window about to open should land on — set by New Window, read
     /// by the root view as it builds its manager
@@ -59,15 +60,12 @@ final class BrowserWindows {
         if primary === entry.manager { primary = registry.values.first?.manager }
     }
 
-    /// once per launch: the first window to ask takes the app-wide work — the
-    /// warm-ups and the diagnostic hooks — so a second window doesn't repeat it
+    /// true once per launch: the first window to ask runs the app-wide warm-ups
     func claimLaunchWork() -> Bool {
         guard !launchWorkClaimed else { return false }
         launchWorkClaimed = true
         return true
     }
-
-    @ObservationIgnored private var launchWorkClaimed = false
 
     /// the manager driving `window`, if it is one of ours
     func manager(for window: NSWindow?) -> TabManager? {
@@ -94,8 +92,6 @@ final class BrowserWindows {
         if let current, current.kind == .main { return current }
         return mainManagers.first ?? primary.flatMap { $0.kind == .main ? $0 : nil }
     }
-
-
 }
 
 /// registers the window's manager so menu commands can find it
@@ -110,7 +106,7 @@ struct WindowBinder: NSViewRepresentable {
 
     func updateNSView(_ nsView: BinderView, context: Context) {}
 
-    /// AppKit may put it in a window runs of the loop after SwiftUI makes it
+    /// AppKit can move it into its window several runloop turns after SwiftUI makes it
     final class BinderView: NSView {
         var manager: TabManager?
 

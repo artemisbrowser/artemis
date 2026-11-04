@@ -1,9 +1,8 @@
 import AppKit
 import WebKit
 
-/// What every browser window shares: the profiles, the spaces and their tabs,
-/// the undo stacks. One instance for the app; a `TabManager` is per window and
-/// holds only what that window has selected and open.
+/// what every browser window shares: the profiles, the spaces and their tabs,
+/// the undo stacks. a `TabManager` is per window and holds only its selection
 @Observable
 @MainActor
 final class BrowserCore {
@@ -20,12 +19,11 @@ final class BrowserCore {
     var permissionQueue: [PermissionRequest] = []
 
     let continuity = Continuity()
-    /// Artemis' floating mini-player (replaces native PiP at the entry points)
+    /// the floating mini-player
     let miniPlayer = MiniPlayer()
 
-    /// pages owned by a window rather than a space — a Scout page, a Peek
-    /// preview. Held weakly, and here rather than on the window, so anything
-    /// enumerating tabs reaches them from any window and before one registers
+    /// pages owned by a window rather than a space (Scout, Peek), held weakly
+    /// here so any window can enumerate them, even before one registers
     let windowLocal = NSHashTable<BrowserTab>.weakObjects()
 
     /// the space to reopen on next launch — whichever window last chose one

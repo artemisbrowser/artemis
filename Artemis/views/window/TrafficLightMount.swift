@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The window's real traffic lights, re-parented into the sidebar so they move on its exact
+/// the window's real traffic lights, re-parented into the sidebar so they move on its exact
 /// frames; the sidebar hides by animating its width, as a `.transition` leaves hosted views behind.
 /// `MountView.layout()` holds 9pt gaps against AppKit's stock frames; fullscreen hands them back.
 struct TrafficLightMount: NSViewRepresentable {
@@ -11,10 +11,10 @@ struct TrafficLightMount: NSViewRepresentable {
     }
 
     /// close/minimise/zoom placement: 14pt buttons on a pitch of button + gap
-    static let buttonSize: CGFloat = 14
-    static let buttonGap: CGFloat = 9
-    static let leadingInset: CGFloat = 9
-    static var buttonPitch: CGFloat { buttonSize + buttonGap }
+    private static let buttonSize: CGFloat = 14
+    private static let buttonGap: CGFloat = 9
+    private static let leadingInset: CGFloat = 9
+    private static var buttonPitch: CGFloat { buttonSize + buttonGap }
 
     /// wide enough that the last button ends inside the bounds — hit-testing
     /// stops at the mount's edge
@@ -23,7 +23,7 @@ struct TrafficLightMount: NSViewRepresentable {
     static let height: CGFloat = 32
 
     /// where button `index` (0 = close) sits inside the mount
-    static func buttonFrame(_ index: Int) -> NSRect {
+    private static func buttonFrame(_ index: Int) -> NSRect {
         NSRect(
             x: leadingInset + CGFloat(index) * buttonPitch, y: 9,
             width: buttonSize, height: buttonSize)
@@ -43,18 +43,16 @@ struct TrafficLightMount: NSViewRepresentable {
         context.coordinator.attach(nsView as? MountView)
     }
 
-    /// The buttons' home. Transparent to clicks outside the buttons themselves,
-    /// and it answers the private group-hover question AppKit asks so the
-    /// glyphs (×, −, ⤢) appear on hover — outside the titlebar there's no theme
-    /// frame to answer it.
+    /// the buttons' home: transparent to clicks outside them, and it answers
+    /// AppKit's private group-hover question so the glyphs show on hover, as
+    /// outside the titlebar there's no theme frame to answer it
     final class MountView: NSView {
         private var tracking: NSTrackingArea?
         private var mouseInside = false
         private var frameObservers: [NSObjectProtocol] = []
-        /// ask the coordinator to adopt if it hasn't. A mount is laid out before
-        /// its window exists, and a second window's mount is built while the
-        /// first window is still key — neither moment is one adoption can be
-        /// driven *from*, so it is re-checked rather than waited for
+        /// asks the coordinator to adopt if it hasn't: a mount is laid out before
+        /// its window exists, and a second window's is built while the first is
+        /// key, so adoption is re-checked rather than awaited
         var recheckAdoption: (() -> Void)?
 
         override func viewDidMoveToWindow() {
@@ -71,17 +69,16 @@ struct TrafficLightMount: NSViewRepresentable {
             return view === self ? nil : view
         }
 
-        /// the mount owns the buttons' placement. AppKit periodically re-asserts
-        /// its stock frames (20pt pitch) on the buttons wherever they live; each
-        /// button's frame-change notification lands back here and this re-applies
-        /// ours. only writing when a frame is actually wrong keeps it loop-free
+        /// AppKit re-asserts its stock frames (20pt pitch) on the buttons wherever
+        /// they live; each frame change lands back here and this re-applies ours,
+        /// writing only a frame that is wrong so it stays loop-free
         override func layout() {
             super.layout()
             recheckAdoption?()
             applyButtonFrames()
         }
 
-        func applyButtonFrames() {
+        fileprivate func applyButtonFrames() {
             for (index, button) in orderedButtons.enumerated() {
                 let frame = TrafficLightMount.buttonFrame(index)
                 if button.frame != frame { button.frame = frame }
@@ -95,7 +92,7 @@ struct TrafficLightMount: NSViewRepresentable {
         }
 
         /// watch the adopted buttons so a system re-assert is corrected
-        func watchButtonFrames() {
+        fileprivate func watchButtonFrames() {
             frameObservers.forEach(NotificationCenter.default.removeObserver)
             frameObservers = subviews.compactMap { view in
                 guard view is NSButton else { return nil }
@@ -119,9 +116,8 @@ struct TrafficLightMount: NSViewRepresentable {
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             if let tracking { removeTrackingArea(tracking) }
-            // `.inVisibleRect` tracks the live bounds — a fixed rect captured at
-            // adoption can be zero (SwiftUI sizes the view *after* makeNSView),
-            // and a zero tracking rect means enter/exit simply never fire
+            // `.inVisibleRect` tracks the live bounds; SwiftUI sizes the view after
+            // makeNSView, and a zero tracking rect never fires enter/exit
             let area = NSTrackingArea(
                 rect: .zero,
                 options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
@@ -138,15 +134,9 @@ struct TrafficLightMount: NSViewRepresentable {
             setMouseInside(false)
         }
 
-        /// flip the group-hover state and tell the widgets *immediately*.
-        ///
-        /// the widget's glyph is driven by internal state, not by what
-        /// `_mouseInGroup:` returns at draw time — so a bare `needsDisplay`
-        /// changes nothing. `_NSThemeWidget` exposes exactly one recompute hook,
-        /// the zero-argument `mouseEnteredOrExited` (found by runtime
-        /// introspection): poking it makes the widget re-ask its surroundings —
-        /// our `_mouseInGroup:` below — and update the glyph on the spot. all
-        /// three get poked so the group lights up and dims as one.
+        /// the glyph follows `_NSThemeWidget`'s internal state, not `_mouseInGroup:`
+        /// at draw time; its private zero-argument `mouseEnteredOrExited` makes it
+        /// re-ask, so all three are poked to light and dim as one
         func setMouseInside(_ inside: Bool) {
             guard mouseInside != inside else { return }
             mouseInside = inside
@@ -159,9 +149,7 @@ struct TrafficLightMount: NSViewRepresentable {
             }
         }
 
-        /// AppKit's group-hover question: "should this button show its glyph?"
-        /// The buttons ask their ancestors; in the titlebar the theme frame
-        /// answers. Here, we do.
+        /// AppKit's group-hover question, which the buttons ask their ancestors
         @objc func _mouseInGroup(_ button: NSButton) -> Bool {
             mouseInside
         }

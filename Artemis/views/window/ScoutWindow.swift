@@ -2,10 +2,8 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// The compact single-page window: a link glanced at from another app, and the
-/// popup a page opens for a sign-in flow. Both hold one page in a space private
-/// to the window, driven by their own `TabManager`, so every browser command
-/// lands on the page in front of you.
+/// the compact single-page window, for a link glanced at from another app or a
+/// page's sign-in popup: one page in a private space, under its own `TabManager`
 @MainActor
 enum ScoutWindow {
     /// windows are held until they close — an `NSWindow` with no owner is
@@ -20,9 +18,8 @@ enum ScoutWindow {
         return present(manager, size: glanceSize(), centred: true)
     }
 
-    /// `window.open`. The web view has to come back synchronously and already
-    /// belong to a window, so the window is built around it here and WebKit
-    /// drives the navigation itself
+    /// `window.open`: the web view must come back synchronously and already belong
+    /// to a window, so the window is built around it and WebKit drives the load
     static func openPopup(
         configuration: WKWebViewConfiguration, features: WKWindowFeatures
     ) -> WKWebView? {
@@ -53,8 +50,7 @@ enum ScoutWindow {
         window.title = "Scout"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        // clear the opaque window backing so the frame's liquid glass samples
-        // the desktop behind it instead of a flat grey fill
+        // a clear backing, so the frame's glass samples the desktop, not flat grey
         window.isOpaque = false
         window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
@@ -74,11 +70,6 @@ enum ScoutWindow {
         PanelMotion.appear(window)
 
         self.open.append(window)
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: window, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { self.open.removeAll { $0 === window } }
-        }
         return window
     }
 
@@ -88,6 +79,10 @@ enum ScoutWindow {
     /// window came in: shrinking a touch as it fades, then closing for real
     private final class Exit: NSObject, NSWindowDelegate {
         private var leaving: Set<ObjectIdentifier> = []
+
+        func windowWillClose(_ notification: Notification) {
+            ScoutWindow.open.removeAll { $0 === notification.object as? NSWindow }
+        }
 
         func windowShouldClose(_ window: NSWindow) -> Bool {
             guard leaving.insert(ObjectIdentifier(window)).inserted else { return false }
@@ -117,17 +112,19 @@ enum ScoutWindow {
         }
     }
 
+    private static var screenFrame: NSRect {
+        (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
     /// two-thirds of the screen: big enough to read, plainly not the browser
     private static func glanceSize() -> NSSize {
-        let screen = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screen = screenFrame
         return NSSize(width: screen.width * 2 / 3, height: screen.height * 2 / 3)
     }
 
     /// what the page asked for, clamped to something usable on this screen
     private static func popupSize(_ features: WKWindowFeatures) -> NSSize {
-        let screen = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screen = screenFrame
         let width = features.width?.doubleValue ?? 640
         let height = features.height?.doubleValue ?? 720
         return NSSize(
@@ -138,9 +135,7 @@ enum ScoutWindow {
     /// centred over the window that opened it, so a popup lands where you were
     /// looking rather than over a corner of the desktop
     private static func offsetFromFrontmost(size: NSSize) -> NSPoint {
-        let anchor = NSApp.keyWindow?.frame
-            ?? (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let anchor = NSApp.keyWindow?.frame ?? screenFrame
         return NSPoint(
             x: anchor.midX - size.width / 2,
             y: anchor.midY - size.height / 2)

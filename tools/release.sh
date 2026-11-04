@@ -15,6 +15,7 @@ cd "$(dirname "$0")/.."
 
 (($# >= 4)) || { sed -n 2,11p "$0"; exit 2; }
 VERSION=$1 N=$2 CHANNEL=$3 NOTES=$4 DRY=${5:-}
+[[ -z $DRY || $DRY == --dry-run ]] || { echo "the fifth argument can only be --dry-run" >&2; exit 2; }
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "VERSION must be x.y.z" >&2; exit 2; }
 ((N >= 1 && N <= 99)) || { echo "N must be 1-99" >&2; exit 2; }
 [[ $CHANNEL == release || $CHANNEL == beta ]] || { echo "CHANNEL must be release or beta" >&2; exit 2; }
@@ -47,13 +48,15 @@ fi
 
 echo "→ Artemis $VERSION ($BUILD), $CHANNEL"
 rm -rf "$OUT" && mkdir -p "$OUT"
+APP="$R/build/Build/Products/Release/Artemis.app"
+rm -rf "$APP"
 # no get-task-allow (CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO); Xcode signs Sparkle's helpers inside-out
 xcodebuild -scheme Artemis -configuration Release -derivedDataPath "$R/build" \
   -allowProvisioningUpdates DEVELOPMENT_TEAM=$TEAM CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Development" \
   CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO ARTEMIS_BUNDLE_ID=app.artemisbrowser.Artemis ARTEMIS_FEED_URL=$FEED \
-  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION=$BUILD ARCHS=arm64 build \
-  | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
-APP="$R/build/Build/Products/Release/Artemis.app"
+  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION=$BUILD ARCHS=arm64 build >"$OUT/build.log" 2>&1 || true
+grep -E "error:|BUILD (SUCCEEDED|FAILED)" "$OUT/build.log" || true
+grep -q "BUILD SUCCEEDED" "$OUT/build.log" || { echo "build failed, see $OUT/build.log" >&2; exit 1; }
 codesign --verify --deep --strict "$APP"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Contents/Info.plist")" == "$BUILD" ]]
 # captured, not piped: grep -q stops reading early and pipefail counts the writer's SIGPIPE

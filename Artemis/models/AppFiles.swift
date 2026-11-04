@@ -1,9 +1,7 @@
 import Foundation
 
-/// one place that knows where Artemis keeps its on-device data, and how it writes
-/// it. every store (history, archive, zoom, spaces, boosts) goes
-/// through here so the container layout is defined once and the durable-write
-/// rules can't drift between them.
+/// where Artemis keeps its on-device data, and the durable write and load every
+/// store goes through
 nonisolated enum AppStorageLocation {
     /// whether this process runs inside an App Sandbox container
     static let isContainerised = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
@@ -34,35 +32,37 @@ nonisolated enum AppStorageLocation {
         directory.appendingPathComponent(name)
     }
 
-    /// write atomically, keeping the previous good copy as `<name>.bak`.
-    ///
-    /// atomic alone protects against a torn file, but not against writing a
-    /// *valid* file with bad content (a decode bug, an empty model after a
-    /// failed migration). the rotation gives `loadDurable` something to fall back
-    /// to, which is what makes losing a year of spaces to one bad launch
-    /// impossible.
-    /// Serialises every durable write in the process. The rotation is a
-    /// read-then-two-writes sequence, and stores save from detached tasks — two
-    /// overlapping saves could otherwise copy a half-written primary over the
-    /// good backup, which is the one file the fallback depends on.
+    /// serialises every durable write in the process: overlapping rotations could
+    /// copy a half-written primary over the backup
     private static let writes = DispatchQueue(label: "com.artemis.durable-write")
 
-    /// The ordinary path: the rotation is queued, not awaited. Ordering is still
-    /// the queue's, so a later save can't overtake an earlier one — the caller
-    /// simply stops waiting for the disk.
-    ///
-    /// It used to wait, and on the main thread that meant waiting behind every
-    /// background store's write. A profile of a loaded machine caught exactly
-    /// that: the main thread parked in `_dispatch_lane_barrier_sync_invoke_and_complete`
-    /// while eight cooperative threads queued writes ahead of it.
-    static func writeDurable(_ data: Data, to url: URL) {
-        writes.async { rotate(data, to: url) }
+    /// when each file's newest written snapshot was taken; touched only on `writes`
+    nonisolated(unsafe) private static var newestWritten: [URL: UInt64] = [:]
+
+    /// a monotonic stamp for a snapshot, to pass to `writeDurable(_:to:takenAt:)`
+    static func snapshotTime() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    /// write atomically, keeping the previous non-empty copy as `<name>.bak` for
+    /// `loadDurable` to fall back to. queued, not awaited; writes land in call order,
+    /// except that one stamped older than a write already made to `url` is dropped
+    static func writeDurable(_ data: Data, to url: URL, takenAt: UInt64? = nil) {
+        writes.async {
+            if let takenAt {
+                guard takenAt >= newestWritten[url, default: 0] else { return }
+                newestWritten[url] = takenAt
+            }
+            rotate(data, to: url)
+        }
     }
 
-    /// The same write, finished before it returns — for `applicationWillTerminate`
-    /// and the other save-now paths, where a queued write dies with the process.
+    /// `writeDurable`, finished before it returns: for `applicationWillTerminate`
+    /// and the other save-now paths, where a queued write dies with the process
     static func writeDurableNow(_ data: Data, to url: URL) {
-        writes.sync { rotate(data, to: url) }
+        let takenAt = snapshotTime()
+        writes.sync {
+            newestWritten[url] = takenAt
+            rotate(data, to: url)
+        }
     }
 
     private static func rotate(_ data: Data, to url: URL) {

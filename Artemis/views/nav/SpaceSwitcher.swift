@@ -6,10 +6,8 @@ extension String {
     var isEmojiIcon: Bool { !isEmpty && !allSatisfy(\.isASCII) }
 }
 
-/// renders a space icon, picking the right primitive: a tinted SF Symbol or the
-/// emoji glyph (emoji keep their own colours, so a foreground tint is a no-op on
-/// them). every place that shows `space.icon` goes through this so the two kinds
-/// stay interchangeable
+/// a space icon as a tinted SF Symbol or an emoji glyph, which keeps its own
+/// colours; every place that shows `space.icon` goes through this
 struct SpaceGlyph: View {
     let icon: String
     var size: CGFloat = 13
@@ -66,7 +64,7 @@ struct SpaceSwitcher: View {
         // a slot the cursor leaves diagonally can miss its own exit event
         .onHover { if !$0 { hovered = nil } }
         .onAppear {
-            guard tabManager.kind == .main else { return }
+            guard tabManager.kind == .main, flagsMonitor == nil else { return }
             flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
                 [tabManager] event in
                 showsNumbers = BrowserWindows.shared.manager(for: event.window) === tabManager
@@ -111,12 +109,8 @@ private struct SpaceIcon: View {
     /// space, cookie jar and all
     private var isDropTarget: Bool { drag.spaceDropTarget == space.id }
 
-    /// 1 when this space is centred, falling to 0 one slot away — so the icon
-    /// crossfades grey↔accent as the carousel slides, in lockstep with the
-    /// backdrop; a click animates the colour. the backdrop's tint position,
-    /// because this is a colour: the filmstrip's spring
-    /// overshoots the target and comes back, which made the icon wobble past its
-    /// accent and re-approach while the background glided straight there
+    /// 1 when this space is centred, falling to 0 one slot away. reads the
+    /// backdrop's tint position, not the filmstrip's, whose spring overshoots
     private var selectedness: Double {
         // the strip's slot, not the row's: mid-jump the origin sits beside the
         // destination, and its dot fades out from there
@@ -137,7 +131,6 @@ private struct SpaceIcon: View {
     var body: some View {
         let _ = Bench.tick("SpaceIcon")
         Button {
-            // tapping just switches now — editing lives in the top header
             tabManager.selectSpace(space)
         } label: {
             ZStack {
@@ -191,6 +184,7 @@ private struct SpaceIcon: View {
             tabManager.profiles.count > 1
                 ? "\(space.name) · \(tabManager.core.profile(of: space).name)" : space.name,
             style: .centered)
+        .accessibilityAddTraits(space.id == tabManager.selectedSpaceID ? .isSelected : [])
         .contextMenu {
             Button {
                 // select it, then ask the top header to open its editor. the
@@ -219,10 +213,9 @@ struct SpaceEditor: View {
     @State private var name = ""
     @State private var appearance = SpaceAppearance()
     @State private var showingIconPicker = false
-    // every theme edit is buffered: the working `appearance` is never pushed to
-    // the real space until the tick commits it (the eye previews it in a throwaway
-    // mock window). `original` is the theme as it was when editing began — what
-    // the x reverts to, and what the space keeps showing until a tick
+    // theme edits are buffered in `appearance` and reach the space only on the
+    // tick (the eye wears them until the preview ends); `original` is what the
+    // space shows meanwhile, and what the x reverts to
     @State private var original = SpaceAppearance()
     @State private var grainPct = 0  // mirror of grain×100, animated for the rolling label
 
@@ -383,8 +376,6 @@ struct SpaceEditor: View {
                     options: SpaceFill.allCases.map { ($0, $0.label) },
                     selection: $appearance.fill)
 
-                // every theme is buffered now, so all fills get the controls:
-                // preview in a mock window, revert, commit — inline to the right
                 Spacer(minLength: 6)
                 GlassIconButton("eye", label: "Preview") { launchPreview() }
                 GlassIconButton("xmark", label: "Discard changes", tint: .red.opacity(0.85)) {
@@ -542,20 +533,18 @@ struct GlassSegmented<Value: Hashable>: View {
     }
 }
 
-/// a single liquid-glass icon button island (preview / revert / commit etc.)
+/// a single liquid-glass icon button island (preview / revert / commit)
 private struct GlassIconButton: View {
     let systemName: String
     let label: String
-    var tint: Color = .primary.opacity(0.8)
-    var prominent = false
+    let tint: Color
     let action: () -> Void
 
     init(_ systemName: String, label: String, tint: Color = .primary.opacity(0.8),
-         prominent: Bool = false, action: @escaping () -> Void) {
+         action: @escaping () -> Void) {
         self.systemName = systemName
         self.label = label
         self.tint = tint
-        self.prominent = prominent
         self.action = action
     }
 
@@ -565,9 +554,7 @@ private struct GlassIconButton: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: 28, height: 28)
-                .glassEffect(
-                    prominent ? .regular.tint(tint.opacity(0.18)).interactive() : .regular.interactive(),
-                    in: .capsule)
+                .glassEffect(.regular.interactive(), in: .capsule)
         }
         .buttonStyle(.plain)
         .fixedSize()
@@ -623,10 +610,8 @@ struct IconPicker: View {
                 .modifier(EditorField())
 
             ScrollView {
-                // one lazy grid for everything — sections are native Section rows
-                // inside it (headers span all columns), so there's a single lazy
-                // container recycling cells rather than a LazyVStack of per-section
-                // LazyVGrids. read the selection once for the whole pass
+                // one lazy grid whose Section headers span all columns; the
+                // selection is read once for the whole pass
                 let current = icon
                 LazyVGrid(
                     columns: columns, spacing: 6,
@@ -657,10 +642,8 @@ struct IconPicker: View {
 
     private var columns: [GridItem] { [GridItem(.adaptive(minimum: cellSize), spacing: 6)] }
 
-    // as light as a scrolling cell gets: a bare glyph + tap. no Button, no .help
-    // tracking area, no idle background shape (only the selected cell draws one),
-    // and the glyph is rendered straight from the known tab kind. emoji carry
-    // their own colour so they skip the foreground tint entirely
+    // a bare glyph and tap: no Button, no tooltip tracking area, and only the
+    // selected cell draws a background
     private func cell(_ icon: String, selected: Bool) -> some View {
         glyph(icon)
             .frame(width: cellSize, height: cellSize)
@@ -675,7 +658,7 @@ struct IconPicker: View {
             // the glyph's own name is the only thing distinguishing one cell from
             // the next; without it the grid is 250 unnamed shapes
             .accessibilityElement()
-            .accessibilityLabel(icon)
+            .accessibilityLabel(kind == .emoji ? icon : icon.replacingOccurrences(of: ".", with: " "))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityAction { self.icon = icon }
     }
@@ -702,16 +685,16 @@ struct IconPicker: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .glassEffect(.regular, in: .capsule)
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
     }
 }
 
-/// the two end glyphs of the glass slider (px specs halved for retina):
-/// a 12.5×14.5 panel rectangle + an equal vertical capsule offset 2.5 down/
-/// right. clear = 1pt outlines; blurred = both filled with a 0.5pt gap around
-/// the capsule
+/// the glass slider's end glyphs: a 12.5×14.5 panel rectangle and an equal
+/// capsule offset 2.5 down and right. clear = 1pt outlines; blurred = both
+/// filled, with a 0.5pt gap around the capsule
 private struct GlassEndIcon: View {
     var blurred: Bool
 
@@ -769,7 +752,7 @@ private struct GlassEndIcon: View {
         .offset(x: rectX, y: 3)
     }
 
-    // MARK: Blurred — the clear icon's shapes, filled, with a 1pt gap punched
+    // MARK: Blurred — the clear icon's shapes, filled, with `gap` punched
     // around the capsule (matches the clear icon's rectangle/capsule geometry)
 
     @ViewBuilder private var blurredContent: some View {
@@ -797,13 +780,9 @@ private struct GlassEndIcon: View {
     }
 }
 
-/// the clear icon's panel: a rounded rectangle whose bottom and right edges are
-/// each broken where the capsule crosses them — the outside segment runs to the
-/// break and stops, the inside segment curves to a free tip (down on the bottom
-/// edge, left on the right edge), the way Apple's liquid glass refracts at the
-/// boundary. break points are derived from the capsule geometry so they stay
-/// attached if the layout shifts. drawn as two open subpaths: an outside frame
-/// and an inside corner piece holding the two free tips
+/// the clear icon's panel: a rounded rectangle broken where the capsule crosses its
+/// bottom and right edges, drawn as two open subpaths, an outside frame and an
+/// inside corner piece whose two free tips curve away like refracted glass
 private struct RefractedPanel: Shape {
     var cornerRadius: CGFloat
     var lineWidth: CGFloat
@@ -901,10 +880,8 @@ private struct PresetSwatch: View {
 
 // MARK: - Space creator
 
-/// the new-space dialog — a modal card that fronts creation entirely. the space
-/// doesn't exist until "Create": name and palette are chosen here first (no
-/// half-configured "New Space" ever lands in the switcher), and only then is the
-/// space materialised and its first tab opened. Cancel leaves nothing behind.
+/// the new-space dialog: the space doesn't exist until "Create", so Cancel leaves
+/// nothing behind
 struct SpaceCreator: View {
     @Environment(TabManager.self) private var tabManager
     @State private var icon = "circle.fill"
@@ -968,8 +945,7 @@ struct SpaceCreator: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
         .shadow(color: .black.opacity(0.35), radius: 24, y: 8)
         .onAppear {
-            // suggest the identity auto-created spaces used to get — the user
-            // still confirms (or changes) everything before the space exists
+            // a suggested identity, confirmed or changed before the space exists
             let n = tabManager.spaces.count
             icon = TabManager.defaultIcons[n % TabManager.defaultIcons.count]
             profileID = tabManager.currentProfile.id
@@ -1059,7 +1035,7 @@ struct SpaceCreator: View {
 }
 
 /// which profile a space browses as, by icon and name
-struct ProfilePicker: View {
+private struct ProfilePicker: View {
     @Environment(TabManager.self) private var tabManager
     @Binding var selection: Profile.ID
 

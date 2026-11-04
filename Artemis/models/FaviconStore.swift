@@ -2,33 +2,22 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// persistent, host-keyed favicon cache shared by every tab.
-///
-/// the icon a tab shows is a function of its host, not a per-tab fetch — so the
-/// same site reuses one icon everywhere, a relaunch repaints real icons instantly
-/// from disk (no globe flash), and lazily-restored tabs show their icon before
-/// they ever load a page.
-///
-/// being `@Observable` and read through `icon(for:)`, any view that asks for a
-/// host's icon re-renders the moment a fetch fills it in.
+/// persistent favicon cache keyed by host, shared by every tab. a view that
+/// reads `icon(for:)` or `accent(for:)` repaints when a fetch lands
 @Observable
 final class FaviconStore {
     static let shared = FaviconStore()
 
-    /// host → icon, the single source of truth the UI reads
+    /// host → icon
     @ObservationIgnored private var cache: [String: NSImage] = [:]
     /// host → vivid colour sampled from its icon, computed lazily on first ask
     @ObservationIgnored private var accentCache: [String: Color] = [:]
-    /// hosts with a fetch already in flight, so we never stampede the same site
+    /// hosts with a fetch in flight
     @ObservationIgnored private var inFlight: Set<String> = []
-    /// hosts we've already looked for on disk and not found.
-    ///
-    /// without this, every render of a row for an iconless host runs a fresh
-    /// `NSImage(contentsOf:)` — a synchronous file read, in the middle of a
-    /// 60fps sidebar swipe, that is always going to fail. cleared for a host the
-    /// moment its icon actually lands
+    /// hosts already missed on disk, so a render never repeats a failing
+    /// synchronous file read; cleared when the host's icon lands
     @ObservationIgnored private var knownMissing: Set<String> = []
-    /// version bump that drives SwiftUI invalidation without exposing the dict
+    /// bumped on every stored icon; the observed stand-in for the caches
     private var generation = 0
 
     @ObservationIgnored private let dir: URL
@@ -98,8 +87,7 @@ final class FaviconStore {
         guard let host, !host.isEmpty else { return }
         let key = Self.key(for: host)
         if inFlight.contains(key) { return }
-        // a declared icon can be higher quality than a cached guess, so always
-        // (re)fetch when the page hands us one; otherwise skip if we have it.
+        // a declared icon always refetches; a guessed one stands once cached
         if declaredIconURL == nil, cache[key] != nil { return }
         fetch(key: key, declared: declaredIconURL, isPrivate: isPrivate)
     }
@@ -176,12 +164,9 @@ final class FaviconStore {
 
     // MARK: - Dominant colour
 
-    /// the most prominent vivid colour in an icon, normalised to a legible ring
-    /// tint. transparent, near-grey and near-black pixels are ignored; the
-    /// remaining pixels are bucketed by hue and weighted by saturation×brightness,
-    /// so a logo's brand colour wins over a pale background. a purely monochrome
-    /// icon falls back to a light neutral so the ring still reads.
-    static func dominantColor(of image: NSImage) -> Color {
+    /// the icon's strongest hue, weighted by saturation × brightness and clamped to
+    /// a legible ring tint; a monochrome icon gets its own average tone instead
+    private static func dominantColor(of image: NSImage) -> Color {
         let dim = 24
         guard let rep = bitmap(of: image, dim: dim) else { return Color(white: 0.85) }
 
@@ -190,8 +175,7 @@ final class FaviconStore {
         var rSum = [Double](repeating: 0, count: bins)
         var gSum = [Double](repeating: 0, count: bins)
         var bSum = [Double](repeating: 0, count: bins)
-        // average of every opaque pixel (grey/black included) — the fallback tone
-        // for a monochrome icon, so a black favicon rings dark, not white
+        // average of every opaque pixel, grey and black included
         var allW = 0.0, allR = 0.0, allG = 0.0, allB = 0.0
 
         for y in 0..<dim {
@@ -216,8 +200,7 @@ final class FaviconStore {
         }
 
         guard let i = weight.indices.max(by: { weight[$0] < weight[$1] }), weight[i] > 0 else {
-            // no vivid pixels — a monochrome icon. ring its own tone (black stays
-            // dark, matching the favicon), floored just enough to stay visible
+            // monochrome: its own tone, floored to stay visible
             guard allW > 0 else { return Color(white: 0.85) }  // fully transparent
             let mono = NSColor(srgbRed: allR / allW, green: allG / allW, blue: allB / allW, alpha: 1)
             var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
@@ -228,8 +211,6 @@ final class FaviconStore {
         let base = NSColor(srgbRed: rSum[i] / w, green: gSum[i] / w, blue: bSum[i] / w, alpha: 1)
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        // clamp into a vivid, legible range so faint or dark brand colours still
-        // make a crisp ring
         return Color(
             hue: Double(h),
             saturation: Double(min(max(s, 0.55), 0.9)),

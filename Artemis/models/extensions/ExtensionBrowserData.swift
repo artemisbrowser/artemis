@@ -1,9 +1,8 @@
 import AppKit
 import WebKit
 
-/// The namespaces that read or change the browser itself (history, top sites,
-/// recently closed tabs, browsing data, displays), answered from the profile the
-/// asking instance runs in, never another. Each answers only if the manifest asked.
+/// the namespaces that read or change the browser itself, answered from the profile the asking
+/// instance runs in, never another. each answers only if the manifest declares its permission
 extension ExtensionAPIBridge {
     func handleBrowserData(
         _ type: String, _ message: [String: Any], for context: WKWebExtensionContext
@@ -91,13 +90,14 @@ extension ExtensionAPIBridge {
     private func removeBrowsingData(_ message: [String: Any], from profile: Profile, manager: TabManager) async {
         let requested = (message["types"] as? [String]) ?? []
         let since = Date(timeIntervalSince1970: (message["since"] as? Double ?? 0) / 1000)
-        // the whole of it goes the way Settings' Clear Browsing Data does, input
-        // history and tab session blobs with it
+        // all of history clears as Settings' Clear Browsing Data does, input history and tab
+        // session blobs with it
         if requested.contains("history") {
             if since.timeIntervalSince1970 <= 0 {
                 await PrivacyCleaner.clear(.history, range: .all, in: profile, manager: manager)
             } else {
                 profile.history.clear(since: since)
+                SpotlightIndex.forget(.profile(profile.id))
             }
         }
 

@@ -5,11 +5,8 @@ import WebKit
 /// `hardwareConcurrency`: one answer per site within a launch, different across sites and launches.
 /// the seed is drawn per launch and never persisted
 enum FingerprintNoise {
-    /// AppStorage key for the toggle
     static let enabledKey = "fingerprintDefence"
 
-    /// this launch's secret. never written down — persisting it would give a
-    /// tracker exactly the stable identifier this is meant to deny them
     private static let sessionSeed: UInt32 = UInt32.random(in: 1...UInt32.max)
 
     static var isEnabled: Bool {
@@ -26,7 +23,7 @@ enum FingerprintNoise {
                 forMainFrameOnly: false))
     }
 
-    static func script(seed: UInt32) -> String {
+    private static func script(seed: UInt32) -> String {
         """
         (() => {
           if (window.__artemisFingerprintNoise) return;

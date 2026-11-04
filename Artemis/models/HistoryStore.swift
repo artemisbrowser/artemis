@@ -6,19 +6,12 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
     private(set) var title: String
     var lastVisited: Date
     var visitCount: Int
-    /// times you reached this page by typing it in the command bar rather than
-    /// following a link — the strongest signal that you meant to go there
+    /// times this page was reached by typing it in the command bar
     var typedCount: Int
 
-    /// lowercased "title url", cached at write time.
-    ///
-    /// the command bar searches history on every keystroke; lowercasing 5,000
-    /// titles and urls per character is thousands of transient allocations for an
-    /// answer that never changes between navigations. not encoded — it's derived,
-    /// and rebuilding it on decode keeps the file clean
+    /// lowercased "title url"; derived, so rebuilt on decode rather than stored
     private(set) var searchKey: String
-    /// lowercased host and title, kept beside `searchKey` because ranking asks
-    /// for them by prefix and building them per query is the cost that matters
+    /// lowercased host and title, which ranking matches by prefix
     private(set) var searchHost: String
     private(set) var searchTitle: String
     /// which a–z and 0–9 `searchKey` holds. a query needing a letter this page
@@ -91,9 +84,8 @@ struct HistoryMatch {
     let titleRanges: [Range<Int>]
 }
 
-/// local browsing history — recorded on every committed navigation, persisted
-/// to a JSON file in the app container, and searchable for the command bar.
-/// stays entirely on-device (privacy pillar)
+/// one profile's browsing trail, newest first: recorded on every committed
+/// navigation, capped at `maxEntries`, and kept only on this Mac
 @Observable
 final class HistoryStore {
     private(set) var entries: [HistoryEntry] = []
@@ -115,7 +107,6 @@ final class HistoryStore {
     /// record a visit; collapses repeats of the same url into one entry that
     /// floats to the front with a bumped count
     func record(url: URL, title: String) {
-        // ignore noisy non-page urls
         guard url.scheme == "http" || url.scheme == "https" else { return }
 
         if let index = entries.firstIndex(where: { $0.url == url }) {
@@ -163,12 +154,7 @@ final class HistoryStore {
     func search(_ query: String, limit: Int = 6) -> [HistoryEntry] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
-        // Score each match once and sort the pairs. `sorted` calls its comparator
-        // O(n log n) times, so scoring inside it charged every comparison a fresh
-        // host lookup and two lowercased copies — on a path that runs per
-        // keystroke, over a trail that is allowed to reach 5000 entries.
-        // the mask says which letters a page's text holds at all: a query needing
-        // one it lacks can't match, and skipping it here spares the ICU scan
+        // a page whose mask lacks one of the query's letters can't match
         let mask = CommandMatcher.mask(q.utf8)
         let needle = Array(q.utf8)
         var scored: [Ranked] = []
@@ -197,9 +183,7 @@ final class HistoryStore {
         _ needle: [UInt8], mask: UInt64, limit: Int, now: Date = Date()
     ) -> [HistoryMatch] {
         guard !needle.isEmpty else { return [] }
-        // a three-letter query matches most of the trail, and only `limit` of
-        // them are ever shown: rank the scores alone, then build the handful of
-        // matches that survive rather than a `HistoryEntry` copy per candidate
+        // rank indices and scores alone; only the `limit` survivors become matches
         var ranked: [(index: Int, score: Int, preferTitle: Bool)] = []
         for (index, entry) in entries.enumerated() where (mask & ~entry.searchMask) == 0 {
             let title = CommandMatcher.match(needle, entry.searchTitle)?.score
@@ -231,15 +215,10 @@ final class HistoryStore {
             .sorted { $0.frecency(now: now) > $1.frecency(now: now) }
     }
 
-    /// a match and what it scored. A concrete type rather than a tuple: labelled
-    /// tuples flowing through map/sorted/prefix are a type-checking cost the
-    /// compiler charges by the minute
     private struct Ranked {
         let entry: HistoryEntry
         let score: Int
     }
-
-    func clear() { clear(since: .distantPast) }
 
     /// forget specific pages, leaving the rest of the trail alone, so a test or
     /// diagnostic run can take itself back out of the user's history
@@ -250,8 +229,7 @@ final class HistoryStore {
         scheduleSave()
     }
 
-    /// drop everything visited since `date` — Clear Browsing Data's time-ranged
-    /// clear. `.distantPast` wipes the lot
+    /// drop everything visited since `date`; `.distantPast` wipes the lot
     func clear(since date: Date) {
         let before = entries.count
         entries.removeAll { $0.lastVisited >= date }
@@ -275,24 +253,20 @@ final class HistoryStore {
     private func scheduleSave() {
         saveTask?.cancel()
         let snapshot = entries
+        let takenAt = AppStorageLocation.snapshotTime()
         let url = fileURL
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            // encode as well as write off the main actor — this fires a second
-            // after every navigation and the list runs to thousands of entries,
-            // so encoding on the caller lands a stall in the middle of browsing
             await Task.detached(priority: .utility) {
                 if let data = try? JSONEncoder().encode(snapshot) {
-                    AppStorageLocation.writeDurable(data, to: url)
+                    AppStorageLocation.writeDurable(data, to: url, takenAt: takenAt)
                 }
             }.value
         }
     }
 
-    /// write the trail out right now. saves are debounced by a second, which is
-    /// right while browsing and wrong when the app is about to go away — a
-    /// cleanup that terminates immediately afterwards never reached disk
+    /// write synchronously, for a caller about to quit
     func saveNow() {
         saveTask?.cancel()
         guard let data = try? JSONEncoder().encode(entries) else { return }

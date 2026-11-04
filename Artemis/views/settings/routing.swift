@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Where links open: rules sending a site to a space, links handed over by
+/// where links open: rules sending a site to a space, links handed over by
 /// other apps, and the Peek and Scout previews. A rule is a glob over
 /// `host/path`, and the first one that matches wins, so the list is reorderable.
 struct LinksSettings: View {
@@ -13,10 +13,7 @@ struct LinksSettings: View {
     @State private var sentence = ""
     @State private var proposal: RoutingProposal?
     @State private var thinking = false
-    /// why the last attempt produced nothing — the readiness of the model, or
-    /// the error it failed with. "nothing came back" is not a useful answer
     @State private var declined: String?
-
 
     var body: some View {
         Form {
@@ -38,32 +35,32 @@ struct LinksSettings: View {
             }
 
             Section {
-                    HStack(spacing: 10) {
-                        // in a Form a TextField's title becomes a leading label,
-                        // so the example goes in the prompt instead
-                        TextField(
-                            "", text: $sentence,
-                            prompt: Text("Keep my work GitHub in the Work space"))
-                            .textFieldStyle(.roundedBorder)
-                            .labelsHidden()
-                            .onSubmit(ask)
-                        Button("Draft", action: ask)
-                            .disabled(thinking || sentence.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                    if thinking {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Drafting, then checking it against its own examples…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if let declined {
-                        Label(declined, systemImage: "exclamationmark.triangle")
+                HStack(spacing: 10) {
+                    // in a Form a TextField's title becomes a leading label,
+                    // so the example goes in the prompt instead
+                    TextField(
+                        "", text: $sentence,
+                        prompt: Text("Keep my work GitHub in the Work space"))
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .onSubmit(ask)
+                    Button("Draft", action: ask)
+                        .disabled(thinking || sentence.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if thinking {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Drafting, then checking it against its own examples…")
                             .font(.caption)
-                            .foregroundStyle(.orange)
-                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(.secondary)
                     }
+                }
+                if let declined {
+                    Label(declined, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .labelStyle(.titleAndIcon)
+                }
                 if let proposal { proposalView(proposal) }
             } header: {
                 InfoLabel(
@@ -103,9 +100,8 @@ struct LinksSettings: View {
         .formStyle(.grouped)
     }
 
-    /// what the model drafted, with the outcome of checking it. a rule that
-    /// fails its own examples is shown, not hidden — the pattern is usually
-    /// nearly right and the reason it is wrong is the useful part
+    /// what the model drafted, with the outcome of checking it; a rule that fails
+    /// its own examples is shown with the problem but can't be added
     @ViewBuilder
     private func proposalView(_ proposal: RoutingProposal) -> some View {
         let destination = tabManager.spaces.first { $0.name == proposal.spaceName }
@@ -150,15 +146,12 @@ struct LinksSettings: View {
 
     private func ask() {
         let request = sentence
+        guard !thinking, !request.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         proposal = nil
         declined = nil
-        // the model being unavailable is the commonest reason nothing comes
-        // back, and it is a fact about the Mac rather than about the sentence
         let names = tabManager.spaces.map(\.name)
         Intelligence.refreshReadiness()
         guard Intelligence.isOn(Intelligence.enabledKey), Intelligence.isReady else {
-            // the model is an OS-managed asset the app cannot install or hurry,
-            // so the sentence gets read without it rather than the feature dying
             propose(RoutingRule.suggest(from: request, spaces: names))
             return
         }
@@ -189,8 +182,6 @@ struct LinksSettings: View {
                 Text(destination.name)
                     .foregroundStyle(.secondary)
             } else {
-                // the space is gone; the rule stays visible rather than firing
-                // into nothing, so you can see why it stopped working
                 Label("Space deleted", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .labelStyle(.titleAndIcon)
@@ -201,6 +192,7 @@ struct LinksSettings: View {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Remove rule")
             .foregroundStyle(.secondary)
         }
     }
@@ -226,7 +218,7 @@ struct LinksSettings: View {
     }
 
     private func commit() {
-        guard let spaceID = draftSpaceID else { return }
+        guard let spaceID = draftSpaceID, !draftPattern.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         routing.add(pattern: draftPattern, spaceID: spaceID)
         draftPattern = ""
     }

@@ -1,10 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// appkit-backed resize strip between sidebar and web card
-///
-/// cursor rects + native mouse drag are reliable next to a WKWebView,
-/// where SwiftUI's onHover and cursor push/pop frequently drop out
+/// the resize strip between sidebar and web card, in AppKit: next to a WKWebView,
+/// SwiftUI's onHover and cursor push/pop drop out where cursor rects don't
 struct SidebarResizeHandle: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {

@@ -2,12 +2,9 @@ import AppKit
 import UserNotifications
 import WebKit
 
-/// Native half of the namespaces WebKit leaves undefined that need more than
-/// JavaScript: offscreen documents, the identity sign-in window, the side
-/// panel, downloads, Notification Center, search and self-uninstall. The
-/// `ExtensionCompat` shim calls in over `sendNativeMessage`; events go back out
-/// over the `connectNative` ports it opens. Everything is keyed by the
-/// context's `key(of:)`: one extension runs once per profile.
+/// native half of the namespaces WebKit leaves undefined that need more than JavaScript. the
+/// `ExtensionCompat` shim calls in over `sendNativeMessage` and hears events on its `connectNative`
+/// ports; state is keyed by `key(of:)`, as one extension runs once per profile
 @MainActor
 final class ExtensionAPIBridge {
     static let shared = ExtensionAPIBridge()
@@ -56,7 +53,7 @@ final class ExtensionAPIBridge {
 
         case "runtime.installedNow":
             return ["fresh": !PerfFlags.on("install-filter")
-                || ExtensionManager.shared.installedThisSession.contains(Self.key(of: context))]
+                || ExtensionManager.shared.installedThisSession.contains(id)]
 
         case "contexts.list":
             var found: [String: Any] = [:]
@@ -183,7 +180,7 @@ final class ExtensionAPIBridge {
 
     /// one extension instance: its id in the profile it runs in. the id alone
     /// names it in every profile, and their offscreen pages and ports must not mix
-    static func key(of context: WKWebExtensionContext) -> String {
+    private static func key(of context: WKWebExtensionContext) -> String {
         let profile = context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:))
         return key(of: context, in: profile ?? Profile.defaultID)
     }
@@ -342,9 +339,9 @@ final class ExtensionAPIBridge {
     }
 }
 
-/// `identity.launchWebAuthFlow`: the provider's page in the current tab's
-/// session, stopped at the first navigation to the redirect host. The window
-/// appears only once a load finishes without reaching it
+/// `identity.launchWebAuthFlow`: the provider's page in the current tab's session, stopped at
+/// the first navigation to the redirect host. the window appears only once a load finishes
+/// without reaching it
 private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private let url: URL
     private let redirectHost: String

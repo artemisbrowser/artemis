@@ -2,14 +2,11 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// top-level browser model: owns the spaces and routes the tab API to the
-/// current space, so tab-facing views keep working unchanged. also owns
-/// history and persists everything (urls only; web views rebuild lazily)
+/// one window's browser model: routes the tab API to the current space and
+/// persists the session (urls only; web views rebuild lazily)
 @Observable
 final class TabManager {
-    /// everything shared with the app's other windows — spaces, favourites,
-    /// history, the undo stacks. Mutating through these accessors mutates the
-    /// one core, so every window sees it
+    /// state every window shares: spaces, favourites, history, the undo stacks
     @ObservationIgnored let core: BrowserCore
 
     var spaces: [Space] {
@@ -20,8 +17,7 @@ final class TabManager {
     /// which window this manager drives, and so which chrome it wears
     let kind: WindowKind
 
-    /// this window's tooltip bubble — it draws in its own panel, so a second
-    /// window needs a second one or the tip follows the wrong pointer
+    /// one per window: the bubble draws in this window's own panel
     @ObservationIgnored let tooltipState = TooltipState()
 
     /// this window's sidebar is unlocked (peeks on hover). the last toggle in
@@ -33,17 +29,13 @@ final class TabManager {
 
     var selectedSpaceID: Space.ID
 
-    /// fractional carousel position across `spaces` while switching/swiping —
-    /// 1.2 means 20% of the way from space 1 toward space 2. drives the sidebar
-    /// pager offset; on a swipe release it springs (with overshoot) for a lively
-    /// filmstrip settle
+    /// fractional index into `spaces` driving the sidebar pager: 1.2 is 20% of
+    /// the way from space 1 to space 2. springs with overshoot on a swipe release
     var spacePagePosition: Double = 0
 
-    /// the position that drives the *backdrop colour* cross-fade. tracks the
-    /// drag 1:1 live, but settles with a plain ease — never the filmstrip's
-    /// bouncy spring — so the spring's overshoot can't momentarily blend in a
-    /// third space's colour (a visible flicker). decoupled from
-    /// `spacePagePosition` only during the settle; equal at every rest point
+    /// `spacePagePosition` for the backdrop colour: tracks a drag 1:1 but settles
+    /// with a plain ease, so no overshoot blends in a third space's colour. equal
+    /// to `spacePagePosition` at every rest point
     var backdropPosition: Double = 0 {
         didSet {
             let step = (backdropPosition * Self.tintSteps).rounded()
@@ -51,9 +43,8 @@ final class TabManager {
         }
     }
 
-    /// `backdropPosition` in quarters of a space. Colours blended across a
-    /// swipe read this, so they change a few times per space rather than on
-    /// every scroll event
+    /// `backdropPosition` in quarters of a space, so swipe-blended colours change
+    /// a few times per space rather than on every scroll event
     private(set) var tintStep: Double = 0
     private static let tintSteps = 4.0
     var tintPosition: Double { tintStep / Self.tintSteps }
@@ -85,13 +76,8 @@ final class TabManager {
     /// auto-archive: stale Today tabs are closed for you and land here
     var archive: ArchiveStore { currentProfile.archive }
 
-    /// tabs you closed, newest first — the undo stack behind ⇧⌘T.
-    ///
-    /// Distinct from the archive, which is where tabs go when Artemis closes
-    /// them *for* you after they've gone stale. This is for the ones you closed
-    /// yourself and immediately wished you hadn't, so it keeps the page's whole
-    /// session (back/forward list and scroll position), not just its url, and it
-    /// lives for as long as the app does rather than on disk.
+    /// tabs you closed, newest first: the undo stack behind ⇧⌘T. keeps each page's
+    /// whole session, in memory only; the archive holds tabs Artemis closed for you
     var closedTabs: [ClosedTab] {
         get { core.closedTabs }
         set { core.closedTabs = newValue }
@@ -101,22 +87,17 @@ final class TabManager {
         get { core.closedFolders }
         set { core.closedFolders = newValue }
     }
-    /// deep enough to cover a tidying spree, short enough that the session blobs
-    /// it holds can't add up to anything
     private static let closedTabLimit = 25
 
-    /// sites waiting on an answer about the camera, the microphone or your
-    /// location. a queue rather than a slot: one page can ask for the camera and
-    /// the microphone in the same breath, two tabs can ask at once, and every
-    /// request carries a WebKit handler that has to be called exactly once
+    /// pending camera, microphone and location requests, any number at once; each
+    /// carries a WebKit handler that must be called exactly once
     var permissionQueue: [PermissionRequest] {
         get { core.permissionQueue }
         set { core.permissionQueue = newValue }
     }
 
     var isFindBarVisible = false
-    /// ⌥⌘F opens the find bar already in question mode, rather than making you
-    /// open it and then switch
+    /// the next find bar opens in question mode (⌥⌘F)
     @ObservationIgnored var opensFindBarAsking = false
     var isCommandBarVisible = false {
         didSet {
@@ -138,32 +119,24 @@ final class TabManager {
     var addressBarOrigin: CGRect?
     /// the sidebar url pill's frame, window coordinates, nil while unmounted
     @ObservationIgnored var urlPillFrame: CGRect?
-    /// the tab the rename dialog is open for. one alert for the sidebar rather
-    /// than one per row: every row's alert contributed a preference that the
-    /// display cycle reduced up the tree on every pass
+    /// the tab the sidebar's one rename alert is open for
     var renamingTab: BrowserTab?
-    /// the new-space creator dialog is up. a space is *only* born through it —
-    /// name and palette are chosen before the space (and its first tab) exist,
-    /// so there's never a half-configured "New Space" in the switcher
+    /// the new-space creator is up; it is the only way a space is created
     var isSpaceCreatorVisible = false
-    /// a window drag is in flight (see WindowDragStrip). the floating sidebar
-    /// hides when the pointer leaves it, and a window moving under a still
-    /// pointer reads as leaving
+    /// a window drag is in flight: the floating sidebar must not read the window
+    /// moving under a still pointer as the pointer leaving
     var isDraggingWindow = false
-    /// the move-in-from-Arc picker, or nil when it isn't up. It carries the
-    /// survey of what Arc has, so the sheet can be specific about what it takes
+    /// the Arc import sheet with its survey of what Arc has; nil when closed
     var arcImport: ArcImportModel?
+    var browserImport: BrowserImportModel?
     /// the Send Feedback sheet, or nil when it isn't up
     var feedback: FeedbackDraft?
-    /// the ephemeral Peek/Glance preview tab (⇧-click a link), or nil when closed.
-    /// not part of any space — a throwaway web view shown in a floating overlay
+    /// the ⇧-click Peek preview, belonging to no space; nil when closed
     var peekTab: BrowserTab?
-    /// the link the cursor is currently over, for the status capsule at the bottom
-    /// of the content; nil when not hovering a link
+    /// the link under the pointer, for the status capsule
     var hoveredLinkURL: URL?
-    /// the Library panel (Archive / Downloads / History) is open, replacing the
-    /// sidebar's tab list. lives here so the window layout can widen the sidebar
-    /// by the rail's width while it's showing
+    /// the Library panel is open in place of the sidebar's tab list; the window
+    /// layout widens the sidebar by its rail meanwhile
     var isLibraryOpen = false
     /// the space a click-jump is leaving, while the slide runs. a jump of any
     /// length slides one slot: the strip starts one slot short of the
@@ -185,9 +158,7 @@ final class TabManager {
         return strip
     }
     var urlFieldFocusRequest = 0
-    /// ⌘G / ⌘⇧G: bumped by the menu, watched by the find bar. the search itself
-    /// lives in the bar (it owns the query and the match count), so the menu
-    /// asks rather than searches
+    /// ⌘G / ⌘⇧G: bumped by the menu, watched by the find bar, which owns the search
     var findNextRequest = 0
     var findPreviousRequest = 0
     /// bumped to ask the top space header to open its editor (so the bottom
@@ -199,14 +170,11 @@ final class TabManager {
     /// a folder's peek panel hangs off the sidebar's trailing edge, over the page
     var isFolderPeekOpen = false
 
-    /// non-nil while the editor's eye is previewing a theme on the real space;
-    /// MainView shows the interaction-blocking overlay + banner
+    /// the theme the space editor's eye is previewing on the real space
     var gradientPreview: SpaceAppearance?
-    /// the space's theme to restore when the preview exits (it's applied to the
-    /// real space during preview, then reverted)
+    /// the space's own theme, restored when the preview exits
     @ObservationIgnored var previewRevert: SpaceAppearance?
-    /// stash of the in-progress edit (space id + working appearance) so the editor
-    /// can reopen and resume exactly where it left off once the preview closes
+    /// the editor's in-progress edit, resumed when the preview closes
     @ObservationIgnored var resumeGradientEdit: (id: UUID, appearance: SpaceAppearance)?
 
     private var saveTask: Task<Void, Never>? {
@@ -228,26 +196,23 @@ final class TabManager {
         get { core.linkHoverReporter }
         set { core.linkHoverReporter = newValue }
     }
-    /// ditto for the media-state reporter behind the speaker indicator / mute
+    /// the same, for the media-state reporter behind the speaker indicator
     private var mediaStateReporter: MediaStateReporter? {
         get { core.mediaStateReporter }
         set { core.mediaStateReporter = newValue }
     }
     /// debounces clearing the hovered link so a quick link→link move can't blink
     @ObservationIgnored private var clearHoverTask: Task<Void, Never>?
-    /// Artemis' floating mini-player (replaces native PiP at the entry points;
-    /// the native-PiP methods on `BrowserTab` stay intact but unwired)
     var miniPlayer: MiniPlayer { core.miniPlayer }
     /// the pre-Spaces global pinned-tab list, folded into the first space on the
     /// first launch that finds it
     private static let legacyPinnedKey = "pinnedTabURLs"
-    /// hours a Today tab can sit untouched before it auto-archives (0 = off).
-    /// the @AppStorage setting writes this key; defaults to 12 (Arc's default)
+    /// hours a Today tab can sit untouched before it auto-archives (0 = off)
     static let autoArchiveHoursKey = "autoArchiveHours"
     static let defaultAutoArchiveHours: Double = 12
 
-    /// when on, switching away from a tab playing video pops it into Picture in
-    /// Picture, and returning to it closes the PiP — Arc's Mini Player feel
+    /// when on, leaving a tab playing video pops it into Picture in Picture, and
+    /// returning to it closes the PiP
     static let autoPictureInPictureKey = "autoPictureInPicture"
 
     static let defaultIcons = [
@@ -360,6 +325,7 @@ final class TabManager {
             MediaStateReporter.install(into: ucc, handler: media)
             WebNotifications.install(into: ucc)
             PasswordAutofill.install(into: ucc)
+            Autofill.install(into: ucc)
             PasskeyBridge.install(into: ucc)
         }
         mediaStateReporter = media
@@ -388,8 +354,7 @@ final class TabManager {
         if kind != .main { discardPrivateSpace() }
     }
 
-    /// bring `tab` to the foreground — switch to its space if needed, select it,
-    /// and front the main window. used by the mini-player's return button.
+    /// switch to `tab`'s space, select it and front its window
     func revealTab(_ tab: BrowserTab) {
         focus(tab)
         NSApp.activate(ignoringOtherApps: true)
@@ -407,16 +372,15 @@ final class TabManager {
                 guard let home = spaces.first(where: { $0.profileID == tab.profileID }) else { return }
                 selectSpace(home)
             }
-            activeEssentialID = tab.id
+            selectedTabID = tab.id
         } else if let space = allSpaces.first(where: { $0.tabs.contains(where: { $0.id == tab.id }) }) {
             if space.id != selectedSpaceID { selectSpace(space) }
             selectedTabID = tab.id
         }
     }
 
-    /// every live tab the model owns — all spaces, every profile's favourites,
-    /// the Peek preview and any window's own pages (Scout, incognito). the one
-    /// place that enumerates them, so nothing has to remember the fourth list exists
+    /// every live tab the model owns: all spaces, every profile's favourites, the
+    /// Peek preview and any window's own pages (Scout, incognito)
     var allTabs: [BrowserTab] {
         var out = spaces.flatMap(\.tabs)
         out.append(contentsOf: core.allEssentials)
@@ -430,8 +394,7 @@ final class TabManager {
         return spaces + [privateSpace]
     }
 
-    /// find the tab owning a web view — the reverse map a shared script-message
-    /// handler needs, since one handler serves every tab
+    /// the tab owning `webView`, for script-message handlers shared by every tab
     func tab(hosting webView: WKWebView) -> BrowserTab? {
         allTabs.first { $0.webView === webView }
     }
@@ -447,7 +410,7 @@ final class TabManager {
 
     /// update the hovered-link capsule; a clear is deferred a beat so moving
     /// straight from one link to another doesn't flash the capsule away
-    func setHoveredLink(_ url: URL?) {
+    private func setHoveredLink(_ url: URL?) {
         clearHoverTask?.cancel()
         if let url {
             hoveredLinkURL = url
@@ -459,17 +422,12 @@ final class TabManager {
         }
     }
 
-    /// auto-PiP across the app boundary: when auto-PiP is on, leaving Artemis for
-    /// another app pops the playing video into Picture in Picture, and returning
-    /// closes it — so video keeps playing while you work elsewhere (the same feel as
-    /// the tab-switch behaviour in `selectedTabID`)
+    /// with auto-PiP on, leaving Artemis pops the playing video into Picture in
+    /// Picture and returning closes it
     private func observeAppFocusForPiP() {
         let center = NotificationCenter.default
-        // `queue: nil` runs this synchronously on the posting (main) thread the
-        // instant the app resigns active — *before* the Spaces/window transition
-        // animates — so the PiP window is already parked in the corner by the time
-        // the next window is shown. dispatching async to .main would defer it until
-        // the transition finishes, which reads as the video flying in late.
+        // `queue: nil` runs synchronously as the app resigns active, ahead of the
+        // window transition, so PiP is parked before the next app's window shows
         center.addObserver(
             forName: NSApplication.willResignActiveNotification, object: nil, queue: nil
         ) { [weak self] _ in
@@ -493,10 +451,8 @@ final class TabManager {
         return spaces.first { $0.id == selectedSpaceID } ?? spaces[0]
     }
 
-    /// a Scout or incognito window's own space. Real in every way a space is — its
-    /// tabs have history, find, zoom — but it belongs to that window alone: it
-    /// is never in `core.spaces`, so no other window lists it and nothing
-    /// persists it
+    /// a Scout or incognito window's own space: never in `core.spaces`, so no
+    /// other window lists it and nothing persists it
     private(set) var privateSpace: Space?
 
     /// an incognito window's jar: every page it opens browses in it, and it goes
@@ -509,11 +465,9 @@ final class TabManager {
         return ProfileStore.dataStore(for: space.profileID)
     }
 
-    /// give this window a throwaway space holding one page, themed after the
-    /// space the link would otherwise have landed in, and browsing as its profile.
-    ///
-    /// A popup passes the opener's `configuration` instead of a url — WebKit
-    /// owns that navigation and loads it into the web view we hand back.
+    /// give this window a throwaway one-page space, themed and profiled like the
+    /// space the link would have landed in. a popup passes the opener's
+    /// `configuration` instead of a url, and WebKit loads it into the returned view
     @discardableResult
     func openScoutSpace(on url: URL? = nil, adopting configuration: WKWebViewConfiguration? = nil)
         -> BrowserTab
@@ -575,10 +529,8 @@ final class TabManager {
         }
     }
 
-    /// the two spaces the backdrop is currently between, and how far across.
-    /// every tint derived from the backdrop reads this — the backdrop's position,
-    /// not the springy `spacePagePosition`, so chrome colour and background
-    /// colour are always the same fraction of the way across
+    /// the two spaces the backdrop is between, and how far across. every tint
+    /// reads this, not `spacePagePosition`, so chrome and background always agree
     private var backdropPair: (SpaceAppearance, SpaceAppearance, Double) {
         let strip = stripSpaces
         let p = min(max(tintPosition, 0), Double(max(strip.count - 1, 0)))
@@ -588,17 +540,13 @@ final class TabManager {
         return (a.appearance, b.appearance, p - p.rounded(.down))
     }
 
-    /// the accent cross-faded across spaces by the carousel position, so the
-    /// global favourites' selection ring melts to the next space's colour in
-    /// lockstep with the backdrop rather than snapping on switch
+    /// the accent cross-faded in step with the backdrop
     var blendedAccent: Color {
         let (a, b, t) = backdropPair
         return SpaceAppearance.blend(a.accent, b.accent, t)
     }
 
-    /// the sidebar ink for the backdrop as it is *right now*, mid-blend. reading
-    /// `currentSpace` instead left the url pill, nav buttons and tab titles at the
-    /// outgoing space's ink for the whole slide, then flipped them on settle
+    /// the sidebar ink cross-faded in step with the backdrop
     var blendedInk: Color {
         let (a, b, t) = backdropPair
         return SpaceAppearance.blend(a.chromeInk, b.chromeInk, t)
@@ -623,8 +571,8 @@ final class TabManager {
     var pinnedTabs: [BrowserTab] { currentSpace.pinnedTabs }
     var todayTabs: [BrowserTab] { currentSpace.todayTabs }
 
-    /// the active favourite, if one is selected, otherwise the current space's
-    /// own selected tab — the single source of truth for the url bar / web view
+    /// the active favourite, else the current space's selected tab: what the url
+    /// bar and web view show
     var selectedTab: BrowserTab? {
         if let id = activeEssentialID, let essential = essentials.first(where: { $0.id == id }) {
             return essential
@@ -650,13 +598,13 @@ final class TabManager {
 
     /// this window is now showing `id` in `space`. The space keeps it too, so a
     /// new window opens where you last were and the session restores it
-    func setSelectedTab(_ id: BrowserTab.ID?, in space: Space) {
+    private func setSelectedTab(_ id: BrowserTab.ID?, in space: Space) {
         shownTabBySpace[space.id] = id
         space.selectedTabID = id
     }
 
     /// a tab that no longer exists can't stay any window's choice
-    func forgetSelection(of id: BrowserTab.ID) {
+    private func forgetSelection(of id: BrowserTab.ID) {
         shownTabBySpace = shownTabBySpace.filter { $0.value != id }
     }
 
@@ -666,9 +614,7 @@ final class TabManager {
             let previous = selectedTab
             if previous?.id != newValue { closeAddressEdit() }
             let autoPiP = UserDefaults.standard.bool(forKey: Self.autoPictureInPictureKey)
-            // auto-PiP: pop the outgoing tab out *before* we switch, while it's still
-            // the foreground/key web view — WebKit only lets the active video enter
-            // PiP, so doing this after the selection change is too late
+            // before the switch: WebKit only lets the foreground video enter PiP
             if autoPiP, let previous, previous.id != newValue {
                 miniPlayer.enterIfPlaying(previous)
             }
@@ -686,8 +632,7 @@ final class TabManager {
             activateSplit(for: selectedTab)
             selectedTab?.touch()  // viewing a tab resets its auto-archive clock
             settleSelection(from: previous)
-            // returning to a tab that's floating in PiP closes it, so the window
-            // follows the inactive tab — Arc's Mini Player feel
+            // returning to a tab floating in PiP closes the PiP
             if autoPiP, previous?.id != selectedTab?.id, let active = selectedTab {
                 miniPlayer.exitIfActive(for: active)
             }
@@ -717,9 +662,7 @@ final class TabManager {
         }
     }
 
-    /// ⌘T. A Scout window has no tab strip to put one in, and pulling the
-    /// browser forward is not what you asked for — the request is simply not one
-    /// this window can answer
+    /// ⌘T; a Scout window has no tab strip, so it ignores it
     func requestNewTab() {
         guard kind != .scout else { return }
         if activeEssentialID == nil, SpaceLock.shared.isLocked(currentSpace) {
@@ -816,8 +759,7 @@ final class TabManager {
         let survivingPane = space.splitGroup(containing: tab.id)?.tabIDs.first { $0 != tab.id }
         detachFromSplit(tab)
         rememberClosed(tab, from: space, undoGroup: undoGroup)
-        // Arc's ✕ on a pinned tab *archives* it: a pin was deliberate, so its
-        // removal leaves a trail in the Library (incognito excepted — no disk)
+        // ✕ on a pinned tab archives it (incognito excepted: no disk)
         if tab.isPinned, !tab.isPrivate,
             let url = tab.pinnedURL ?? tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
         {
@@ -825,13 +767,8 @@ final class TabManager {
         }
         space.tabs.remove(at: index)
         space.normalizeTree()
-        abandonPermissions(for: tab)
-        WebNotifications.shared.forgetPage(in: tab.id)
-        tab.abandonDialog()
-        TabStateStore.remove(tab.id)
-        ExtensionManager.shared.tabDidClose(tab)
-        // no window may keep pointing at a tab that has gone
-        for manager in BrowserWindows.shared.allManagers { manager.forgetSelection(of: tab.id) }
+        SpotlightIndex.forget(.items([tab.id]))
+        letGo(of: tab)
         if space.selectedTabID == tab.id {
             // prefer a remaining pane of the same split, else the nearest tab
             if let survivingPane, space.splitGroup(containing: survivingPane) != nil {
@@ -848,12 +785,8 @@ final class TabManager {
         scheduleSave()
     }
 
-    /// ⌘W. On an *open pinned* tab this is Arc's "close and keep pinned" — the
-    /// pin survives and the page goes dormant; deleting a pin is the explicit
-    /// ✕ / context-menu action, never a reflex keystroke
-    /// a link dropped into the sidebar: a new tab at the drop position, pinned
-    /// when it landed in the pinned section. loads in the background — the
-    /// tidy-name pass runs when its title settles
+    /// a link dropped into the sidebar: a background tab at the drop position,
+    /// pinned when it landed in the pinned section
     @discardableResult
     func addTab(from url: URL, to container: SidebarContainer, at index: Int) -> BrowserTab {
         let tab = newTab(url: url, select: false)
@@ -861,6 +794,8 @@ final class TabManager {
         return tab
     }
 
+    /// ⌘W; an open pinned tab goes dormant and keeps its pin, which only ✕ or the
+    /// context menu deletes
     func closeSelectedTab() {
         guard let selectedTab else { return }
         if selectedTab.isPinned, selectedTab.pendingURL == nil {
@@ -898,9 +833,7 @@ final class TabManager {
         }
     }
 
-    /// ⌘⇧P / menu / command bar: pop the focused tab's video into the floating
-    /// mini-player (or put it back). native PiP is left in place but unwired —
-    /// swap `miniPlayer.toggle` for `selectedTab?.togglePictureInPicture()` to revert.
+    /// ⌘⇧P: pop the focused tab's video into the mini-player, or put it back
     func togglePictureInPicture() {
         guard let tab = selectedTab else { return }
         miniPlayer.toggle(tab)
@@ -908,16 +841,8 @@ final class TabManager {
 
     // MARK: - Tidy tab titles
 
-    /// Ask the on-device model for a short name for a tab whose page title is a
-    /// mouthful.
-    ///
-    /// Only for tabs that live in the sidebar long enough for the name to be
-    /// worth anything — pinned tabs and favourites — because that's where you
-    /// scan a column of truncated titles looking for the one you want. A Today
-    /// tab you'll close in four minutes doesn't need a better name, and asking
-    /// for one is a second of the model's time spent on nothing.
-    ///
-    /// Never touches a tab you named yourself.
+    /// ask the on-device model for a short name for a pinned tab or favourite
+    /// whose title is a mouthful; never touches a tab you named yourself
     private func tidyTitle(for tab: BrowserTab, url: URL, title: String) {
         guard Intelligence.isOn(Intelligence.tidyTitlesKey), Intelligence.isReady else {
             tidyBreadcrumb("skip (switch/readiness) \(url.host() ?? "?")")
@@ -930,16 +855,8 @@ final class TabManager {
         }
         guard !title.isEmpty, let key = TabNameStore.key(url) else { return }
 
-        // A real page's title churns: YouTube alone goes "New Tab" → "(14) Arc
-        // is Dead…" → "YouTube" → "Arc is Dead…" within a couple of seconds,
-        // and firing the model at each step both wastes it and (measurably)
-        // makes it start declining. Wait for the title to hold still, then ask
-        // once. The pending work is per tab, so one busy tab can't cancel
-        // another's.
-        //
-        // Pinning a page that has already finished loading skips that wait
-        // entirely — its title isn't going to churn, and the whole point of
-        // renaming at pin time is that it happens while you're still looking
+        // a loading page's title churns, so ask once it holds still for 1.2s, per
+        // tab; a page already loaded asks at once
         let settledAlready = !tab.isLoading && tab.title == title
         tidyDebounce[tab.id]?.cancel()
         tidyDebounce[tab.id] = Task { [weak self, weak tab] in
@@ -949,9 +866,7 @@ final class TabManager {
             // ask about the title as it stands NOW, not as it was 1.2s ago
             let settled = Self.normalisedTitle(tab.title)
             guard !settled.isEmpty, settled != "New Tab" else { return }
-            // already named from this exact title — re-asking costs a second of
-            // the model's time to arrive at the same answer. this is what makes
-            // re-pinning a page you've pinned before instant, across launches
+            // already named from this exact title, in this launch or an earlier one
             guard TabNameStore.shared.generatedFrom(for: url) != settled else {
                 self.tidyBreadcrumb("already named from this title")
                 return
@@ -961,20 +876,16 @@ final class TabManager {
             self.tidyRequested.insert(request)
             self.tidyBreadcrumb("asking for: \(settled.prefix(60))")
 
-            // what the page says about itself, not just what it calls itself:
-            // "Pricing" or "Issue #4021" is only nameable once you know whose
-            // it is. read from the DOM, on device, and never for incognito
-            // (which never reaches here at all)
+            // the page's own text, read from the DOM on device, so a title like
+            // "Pricing" can be named after whose it is
             let context = await PageText.summaryContext(from: tab.webView)
 
-            // the model occasionally declines under back-to-back load; one
-            // retry turns a silent no-rename into a rename
-            // the site's own name is a fair name for its front page and a
-            // useless one anywhere else, so the rules need to know which it is
+            // the site's own name suits its front page only
             let isFrontPage = url.path().isEmpty || url.path() == "/"
             var name = await Intelligence.shared.tidyTitle(
                 pageTitle: settled, host: url.host() ?? "", context: context,
                 isFrontPage: isFrontPage)
+            // the model sometimes declines under back-to-back load
             if name == nil {
                 try? await Task.sleep(for: .milliseconds(600))
                 name = await Intelligence.shared.tidyTitle(
@@ -985,21 +896,13 @@ final class TabManager {
                 self.tidyBreadcrumb("model declined twice for: \(settled.prefix(40))")
                 return
             }
-            // Store against the name key, and check the tab is still *at* that
-            // key rather than at that exact URL: pages rewrite their own URL
-            // while the model is thinking (YouTube appends playback and
-            // tracking parameters within a second of load), and an exact-URL
-            // comparison threw every one of those answers away
+            // pages rewrite their own url while the model thinks, so the tab need
+            // only still be at the name key
             guard TabNameStore.key(tab.url ?? tab.pendingURL) == key else {
                 self.tidyBreadcrumb("tab left \(key) before '\(name)' arrived")
                 return
             }
-            // An answer is good if it answers the title the tab is showing
-            // NOW. Counting requests and letting only the newest win looked
-            // equivalent and wasn't: a page whose title churns away and back
-            // (YouTube does this constantly) had the right answer computed for
-            // its real title, then discarded as stale in favour of a request
-            // for the flicker — which declined, leaving the tab unnamed.
+            // an answer counts only for the title the tab shows now
             guard Self.normalisedTitle(tab.title) == settled else {
                 self.tidyBreadcrumb("title moved on before '\(name)' landed")
                 return
@@ -1011,26 +914,30 @@ final class TabManager {
 
     /// in-flight debounced rename work, one slot per tab
     @ObservationIgnored private var tidyDebounce: [UUID: Task<Void, Never>] = [:]
-    /// A title with the noise sites keep in it taken off.
-    ///
-    /// An unread count is the commonest: YouTube, Gmail and Slack all rewrite
-    /// their title to "(14) Real Title" and back again as notifications arrive,
-    /// which is a different string every time and so looked like a different
-    /// page needing a different name.
+    /// `title` without the leading unread counts, like "(14) ", that sites add
+    /// and drop as notifications arrive
     static func normalisedTitle(_ title: String) -> String {
         var text = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        while let match = text.range(of: "^\\(\\d+\\)\\s*", options: .regularExpression) {
+        while let match = text.range(of: unreadPrefix, options: .regularExpression) {
             text.removeSubrange(match)
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    private static let unreadPrefix = "^\\(\\d+\\)\\s*"
+
+    /// the count a title's leading "(n)" announces; nil for none or zero
+    static func unreadCount(in title: String) -> Int? {
+        let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let match = text.range(of: unreadPrefix, options: .regularExpression),
+            let count = Int(text[match].filter(\.isNumber)), count > 0
+        else { return nil }
+        return count
     }
     /// (name key, title) pairs already asked about, so a page that settles on
     /// the same title twice doesn't queue a second model call
     @ObservationIgnored private var tidyRequested: Set<String> = []
 
-    /// a tiny always-on trail of what the tidy pipeline did and why — the
-    /// difference between "renaming does nothing" and a one-line answer.
-    /// in-memory only; ARTEMIS_DIAG=ai prints it
+    /// the tidy pipeline's last 40 decisions, in memory only; ARTEMIS_DIAG=ai prints it
     @ObservationIgnored private(set) var tidyTrail: [String] = []
     private func tidyBreadcrumb(_ line: String) {
         tidyTrail.append(line)
@@ -1038,25 +945,15 @@ final class TabManager {
         debugLog("tidy: \(line)")
     }
 
-
-    /// Ask for a tidy name *now*, with whatever title the page already has.
-    /// `tidyTitle` otherwise only runs when a title settles — so a page that
-    /// finished loading *before* you pinned it (drag into the pinned section,
-    /// ⌘D, the context menu) was never renamed: its title had already settled
-    /// and no further event would come. Arc renames at the moment of pinning;
-    /// so do we
+    /// ask for a tidy name now, from the title the page already has: a page
+    /// pinned after loading sees no further title change to trigger `tidyTitle`
     func requestTidyName(for tab: BrowserTab) {
         guard !tab.isPrivate else { return }
         guard let url = tab.url ?? tab.lastAttemptedURL else { return }
         tidyTitle(for: tab, url: url, title: tab.title)
     }
 
-    /// Name a tab yourself.
-    ///
-    /// Clearing the name entirely means "call it what the page calls itself",
-    /// so it drops the model's name as well as yours — otherwise deleting a
-    /// name would leave whatever the model chose sitting underneath it, which
-    /// reads as the rename having been ignored.
+    /// name a tab yourself; an empty name drops the model's name too
     func rename(_ tab: BrowserTab, to name: String?) {
         guard !tab.isPrivate else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1074,19 +971,11 @@ final class TabManager {
 
     // MARK: - Full-text index
 
-    /// Read the page's text and add it to the local search index, if the user
-    /// has asked for that.
-    ///
-    /// Deliberately late and deliberately cheap. It waits a beat so the work
-    /// lands after the page has settled rather than competing with its own load,
-    /// and it collects text by walking the DOM rather than reading `innerText` —
-    /// `innerText` is layout-dependent, so asking for it forces a layout of a
-    /// page you may not even be looking at.
+    /// add the page's text to the local search index when that's on, 1.5s after
+    /// the load, walking the DOM since `innerText` forces a layout
     private func indexPageText(_ tab: BrowserTab, into index: FullTextIndex, url: URL, title: String) {
         guard UserDefaults.standard.bool(forKey: FullTextIndex.enabledKey) else { return }
-        // a diagnostic run drives hundreds of pages through real tabs; that is
-        // measurement, not browsing, and it has no business in the history the
-        // user searches (it also quietly broke the index's own tests)
+        // diagnostic runs drive hundreds of pages; none belong in the user's index
         guard ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == nil else { return }
         guard let scheme = url.scheme, scheme == "http" || scheme == "https" else { return }
         Task { [weak tab] in
@@ -1101,8 +990,7 @@ final class TabManager {
 
     /// put a tab on the undo stack on its way out
     private func rememberClosed(_ tab: BrowserTab, from space: Space, undoGroup: UUID? = nil) {
-        // incognito leaves no trace, and that includes an undo stack that would
-        // happily reopen one of its pages in a normal space
+        // incognito leaves no trace, the undo stack included
         guard !tab.isPrivate else { return }
         guard let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL else { return }
         // read the slot while the tree still holds the tab — the caller removes
@@ -1156,8 +1044,7 @@ final class TabManager {
             return nil
         }
         guard let newest = closedTabs.first else { return nil }
-        // tabs closed together come back together: undoing "close these five"
-        // five times is not undo
+        // tabs closed together come back together
         guard let group = newest.undoGroup else { return reopen(closedTabs.removeFirst()) }
         // the folders they were filed in go back first, so they have somewhere to land
         if let shape = closedFolders.first(where: { $0.undoGroup == group }) {
@@ -1221,10 +1108,8 @@ final class TabManager {
 
     // MARK: - Site permissions
 
-    /// the question currently on screen, if any
-    /// the question this window should be putting to the user — one raised by a
-    /// page it can actually show. The queue is shared, so without this a Scout
-    /// window's camera prompt would also appear over the browser
+    /// the first queued question from a page this window owns; the queue is
+    /// shared by every window
     var currentPermissionRequest: PermissionRequest? {
         permissionQueue.first { owns($0.tabID) }
     }
@@ -1275,6 +1160,17 @@ final class TabManager {
 
     /// a tab going away takes its unanswered questions with it — WebKit is still
     /// holding a handler for each one, and it has to be called
+    /// what a tab removed for good still holds: pending permission and dialog
+    /// callbacks, its saved page state, extensions' view of it, any window's selection
+    private func letGo(of tab: BrowserTab) {
+        abandonPermissions(for: tab)
+        WebNotifications.shared.forgetPage(in: tab.id)
+        tab.abandonDialog()
+        TabStateStore.remove(tab.id)
+        ExtensionManager.shared.tabDidClose(tab)
+        for manager in BrowserWindows.shared.allManagers { manager.forgetSelection(of: tab.id) }
+    }
+
     private func abandonPermissions(for tab: BrowserTab) {
         let doomed = permissionQueue.filter { $0.tabID == tab.id }
         permissionQueue.removeAll { $0.tabID == tab.id }
@@ -1323,16 +1219,15 @@ final class TabManager {
         return peek
     }
 
-    /// merge the Peek preview with the current tab into a split view: promote the
-    /// peek's url into a real tab, then tile it beside the tab that was selected.
-    /// falls back to a plain promote when there's no eligible tab to split with.
+    /// promote the Peek preview and tile it beside the selected tab, or just open
+    /// it when there's nothing to pair it with
     func splitPeekWithCurrent() {
         let current = selectedTab
         guard let promoted = promotePeek(select: false) else { return }
         guard let current, !current.isEssential,
             currentSpace.tabs.contains(where: { $0.id == current.id })
         else {
-            selectedTabID = promoted.id  // nothing to pair with — just open it
+            selectedTabID = promoted.id
             return
         }
         createSplit([current, promoted], anchor: current)
@@ -1352,7 +1247,7 @@ final class TabManager {
     }
 
     /// a link clicked with modifiers held
-    func openLink(_ url: URL, as click: LinkClick, from tab: BrowserTab?) {
+    private func openLink(_ url: URL, as click: LinkClick, from tab: BrowserTab?) {
         switch destination(of: click, isPrivate: tab?.isPrivate == true) {
         case nil:
             tab?.load(url)
@@ -1393,25 +1288,17 @@ final class TabManager {
 
     // MARK: - Scout (external links)
 
-    /// open `url` as a real tab in the current space and bring the main window
-    /// forward — a Scout promoting itself into the browser
-    func adoptIntoBrowser(_ url: URL) {
-        adoptIntoBrowser(url, into: currentSpace)
-    }
-
-    /// open `url` as a real tab in `space`, switching to that space first so the
-    /// page lands where the user chose — a Scout promoting into a specific Space
+    /// open `url` as a real tab in `space`, switching to that space and bringing
+    /// the app forward
     func adoptIntoBrowser(_ url: URL, into space: Space) {
         if space.id != selectedSpaceID { selectSpace(space) }
         newTab(url: url)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// the Space that best fits `url`: one already holding a tab on the same base
-    /// domain, else the current space. lets Scout's "Open in …" default feel
-    /// seamless — a github link lands where you already keep github.
+    /// the space that best fits `url`: a routing rule's, else one already holding
+    /// a tab on the same base domain, else the current space
     func preferredSpace(for url: URL) -> Space {
-        // a rule you wrote beats a guess from what happens to be open
         if let routed = routedSpace(for: url) { return routed }
         guard let target = Self.baseDomain(of: url) else { return currentSpace }
         // current space wins ties, so an unrelated link stays put
@@ -1461,9 +1348,8 @@ final class TabManager {
             at: pin ? space.pinnedEntries.count : 0)
     }
 
-    /// Arc's "–" on an open pinned tab: close the page, keep the pin. The tab
-    /// goes dormant at its pinned URL (web view and process released, session
-    /// dropped); selection moves off it the same way a real close would
+    /// "–" on an open pinned tab: the page goes dormant at its pinned url and the
+    /// pin stays; selection moves off it as a close would
     func closeAndKeepPinned(_ tab: BrowserTab) {
         guard tab.isPinned || tab.isEssential else { return }
         // an active favourite: leaving it is the same as closing its view
@@ -1476,7 +1362,7 @@ final class TabManager {
             scheduleSave()
             return
         }
-        let space = currentSpace
+        let space = self.space(of: tab) ?? currentSpace
         // a pinned split sleeps whole and stays a split: showing any pane wakes them all
         let group = space.splitGroup(containing: tab.id)
         tab.closeToPinned()
@@ -1548,25 +1434,11 @@ final class TabManager {
     /// fully remove a favourite from the grid (the ✕ on its tile)
     func removeEssential(_ tab: BrowserTab) {
         essentials.removeAll { $0.id == tab.id }
+        SpotlightIndex.forget(.items([tab.id]))
         if activeEssentialID == tab.id {
             activeEssentialID = nil
             prepareCurrentSpace()
         }
-        scheduleSave()
-    }
-
-    /// reorder within the favourites grid (drag-and-drop)
-    func moveEssential(_ tab: BrowserTab, before other: BrowserTab) {
-        guard tab.id != other.id,
-            let from = essentials.firstIndex(where: { $0.id == tab.id })
-        else { return }
-        let moved = essentials.remove(at: from)
-        guard let to = essentials.firstIndex(where: { $0.id == other.id }) else {
-            essentials.append(moved)
-            scheduleSave()
-            return
-        }
-        essentials.insert(moved, at: to)
         scheduleSave()
     }
 
@@ -1622,10 +1494,8 @@ final class TabManager {
         isCommandBarVisible = false
     }
 
-    /// split an off-pinned tab into two — one holding the page you navigated to,
-    /// one holding the pinned anchor — honouring the user's preferences for which
-    /// keeps the pinned slot and where the split-off tab lands. focus follows the
-    /// page you'd navigated to, wherever it ends up
+    /// split an off-pinned tab into the page you navigated to and its pinned
+    /// anchor, kept and placed per the user's settings; focus follows the page
     func separateFromPinned(_ tab: BrowserTab) {
         guard let deviated = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL,
             let pinnedURL = tab.pinnedURL
@@ -1703,7 +1573,7 @@ final class TabManager {
         if pinned, tab.pinnedURL == nil {
             tab.pinnedURL = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
         }
-        // dragging into the pinned section is Arc's rename moment
+        // pinning by drag asks for a tidy name
         if becamePinned { requestTidyName(for: tab) }
         space.moveEntry(.tab(tab.id), to: container, at: index)
         space.normalizeTree()
@@ -1723,15 +1593,11 @@ final class TabManager {
         // what a folder hides is not there to be jumped to
         let rows = essentials + currentSpace.visibleRows.compactMap(\.tabs.first)
         guard rows.indices.contains(index) else { return }
-        // the setter routes a favourite to the grid and anything else to the
-        // space's own selection, so both kinds of row work the same way here
         selectedTabID = rows[index].id
         isCommandBarVisible = false
     }
 
-    /// ⌃⇥: the tab you were on before this one, then the one before that —
-    /// Arc's recent-tab switcher without the overlay. Recency comes from
-    /// `lastAccessed`, which selection already maintains
+    /// ⌃⇥: the `offset`th most recently used other tab, by `lastAccessed`
     func selectRecentTab(offset: Int) {
         let reachable = core.allEssentials.filter { tab in spaces.contains { $0.profileID == tab.profileID } }
         let pool = kind == .main ? reachable + spaces.flatMap(\.tabs) : currentSpace.tabs
@@ -1744,9 +1610,8 @@ final class TabManager {
         focus(recent[index])
     }
 
-    /// ⌘⇧K: clear the space's Today tabs, keeping pinned tabs and whatever is
-    /// on screen. They go to the archive, exactly as the stale sweep would have
-    /// filed them — clearing is impatience, not deletion
+    /// ⌘⇧K: archive the space's Today tabs, keeping whatever is on screen and
+    /// tabs in a split or a folder
     func clearTodayTabs() {
         let space = currentSpace
         let doomed = space.todayTabs.filter {
@@ -1754,16 +1619,13 @@ final class TabManager {
                 && !space.isFoldered($0.id)
         }
         guard !doomed.isEmpty else { return }
+        SpotlightIndex.forget(.items(Set(doomed.map(\.id))))
         for tab in doomed {
             if !tab.isPrivate, let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL {
                 archive.add(url: url, title: tab.displayTitle, spaceName: space.name)
             }
             rememberClosed(tab, from: space)
-            abandonPermissions(for: tab)
-            WebNotifications.shared.forgetPage(in: tab.id)
-            tab.abandonDialog()
-            TabStateStore.remove(tab.id)
-            ExtensionManager.shared.tabDidClose(tab)
+            letGo(of: tab)
             space.tabs.removeAll { $0.id == tab.id }
         }
         space.normalizeTree()
@@ -1810,19 +1672,14 @@ final class TabManager {
         tab.onOpenLink = { [weak self, weak tab] url, click in
             self?.openLink(url, as: click, from: tab)
         }
-        // renaming keys off the *title*, not the navigation: at `didFinish` the
-        // title is often still empty, and falling back to the host produced a
-        // string short enough to look like it needed no tidying — so pages whose
-        // titles arrive late were silently never renamed
+        // renaming keys off the settled title: at `didFinish` it is often still empty
         tab.onDidSettleTitle = { [weak self, weak tab] url, title in
             guard let self, let tab, !tab.isPrivate else { return }
             self.tidyTitle(for: tab, url: url, title: title)
         }
         tab.onDidNavigate = { [weak self, weak tab] url, title in
             guard let self else { return }
-            // incognito leaves no trace — its visits never reach the history file.
-            // a diagnostic run drives hundreds of pages through real tabs; that
-            // is measurement, not browsing, and has no business in the history
+            // neither incognito nor a diagnostic run leaves history
             let diagnostic = ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] != nil
             if let tab, !diagnostic, let profile = self.core.profile(tab.profileID) {
                 profile.history.record(url: url, title: title)
@@ -1858,8 +1715,7 @@ final class TabManager {
 
     // MARK: - Hibernation
 
-    /// minutes a background tab may idle before its web view is released
-    /// (0 = never). 30 is deliberately conservative: waking is fast, but not free
+    /// minutes a background tab may idle before its web view is released (0 = never)
     static let hibernateAfterMinutesKey = "hibernateAfterMinutes"
     static let defaultHibernateAfterMinutes: Double = 30
 
@@ -1898,7 +1754,7 @@ final class TabManager {
     /// release the web view of any background tab left untouched past the
     /// threshold. the tab stays in the sidebar exactly as it was — selecting it
     /// restores scroll position and form state from its interaction blob
-    func hibernateIdleTabs() {
+    private func hibernateIdleTabs() {
         let interval = hibernateInterval
         guard interval > 0 else { return }
         let cutoff = Date(timeIntervalSinceNow: -interval)
@@ -1908,9 +1764,7 @@ final class TabManager {
         }
     }
 
-    /// under real memory pressure, don't wait for the timer — put every eligible
-    /// background tab to sleep immediately. this is the difference between the
-    /// system swapping and Artemis quietly giving memory back
+    /// under memory pressure, every eligible background tab sleeps at once
     private func watchMemoryPressure() {
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .main)
@@ -1930,9 +1784,8 @@ final class TabManager {
         memoryPressureSource = source
     }
 
-    /// close any Today tab that's sat untouched past the threshold, filing it in
-    /// the archive. pinned tabs, favourites, and each space's selected tab are
-    /// never touched ("tabs are not a to-do list")
+    /// file every Today tab untouched past its profile's threshold in the archive.
+    /// each space's selected tab is never touched
     func archiveStaleTabs() {
         let now = Date()
         var didChange = false
@@ -1950,10 +1803,12 @@ final class TabManager {
                     && now.timeIntervalSince(tab.lastAccessed) >= interval
             }
             guard !stale.isEmpty else { continue }
+            SpotlightIndex.forget(.items(Set(stale.map(\.id))))
             for tab in stale {
                 if let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL {
                     core.profile(of: space).archive.add(url: url, title: tab.title, spaceName: space.name)
                 }
+                letGo(of: tab)
                 space.tabs.removeAll { $0.id == tab.id }
             }
             space.normalizeTree()
@@ -2009,20 +1864,15 @@ final class TabManager {
         // a focused favourite is global, so it stays focused across spaces;
         // only fall back to the space's own tab when none is active
         prepareCurrentSpace()
-        // the switch itself drives the backdrop cross-fade. doing it here (not in
-        // the sidebar's pager) means it works even when the sidebar is collapsed
-        // and the pager isn't in the view tree — otherwise the position freezes
-        // and the colour never transitions. a live swipe drives the position by
-        // hand (and passes animatePosition: false), so it never fights the drag
+        // the switch, not the sidebar's pager, drives the backdrop cross-fade, so it
+        // runs with the sidebar collapsed; a live swipe drives the position itself
         if animatePosition {
             animateSpacePosition(to: spaces.firstIndex(where: { $0.id == space.id }))
         }
     }
 
-    /// glide `spacePagePosition` to a space index so the window backdrop fades
-    /// colour-to-colour. mirrors the sidebar pager's pacing (it reads the same
-    /// keys) so a visible filmstrip slides in lockstep; when none is shown the
-    /// fade still runs on its own
+    /// glide both positions to a space index at the sidebar pager's pace (same
+    /// key), so a shown filmstrip slides in step with the backdrop
     private func animateSpacePosition(to index: Int?) {
         guard let index else { return }
         let target = Double(index)
@@ -2041,9 +1891,7 @@ final class TabManager {
         switchSlides = true
         glideToken += 1
         let token = glideToken
-        // a click / programmatic switch eases (no spring), so both positions
-        // move together with no overshoot — this is also the only driver when
-        // the sidebar is collapsed and the pager isn't in the tree
+        // eased, not sprung, so the two positions move together without overshoot
         withAnimation(.easeInOut(duration: duration)) {
             spacePagePosition = target
             backdropPosition = target
@@ -2077,47 +1925,51 @@ final class TabManager {
         return space
     }
 
-    /// Turn another browser's bookmarks into spaces of pinned tabs.
-    ///
-    /// Each folder becomes a space with its links pinned; loose links land in
-    /// one space of their own. Nothing is opened — the tabs are pinned and lazy,
-    /// so importing four hundred links costs four hundred rows and no web
-    /// processes. Returns the space to land in.
+    /// turn another browser's bookmarks into spaces of pinned tabs, one per folder
+    /// plus one for loose links; favourites join the profile's. nothing opens, and
+    /// importing twice adds nothing. returns the space to land in
     @discardableResult
-    func importBookmarks(_ result: BookmarkImport.Result) -> Space? {
-        var made: [Space] = []
-        for folder in result.folders where !folder.links.isEmpty {
-            made.append(space(named: folder.name, pinning: folder.links))
-        }
+    func importBookmarks(_ result: BookmarkImport.Result, into profileID: Profile.ID? = nil) -> Space? {
+        let profile = core.profile(profileID) ?? currentProfile
+        var landed = result.folders.map { pin($0.links, inSpaceNamed: $0.name, icon: $0.icon, profile: profile.id) }
         if !result.loose.isEmpty {
-            made.append(space(named: "Imported", pinning: result.loose))
+            landed.append(pin(result.loose, inSpaceNamed: "Imported", icon: nil, profile: profile.id))
         }
-        guard let first = made.first else { return nil }
-        selectSpace(first)
+        var known = Set(profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.absoluteString })
+        for link in result.favourites where known.insert(link.url.absoluteString).inserted {
+            let tab = BrowserTab(restoring: link.url, pinned: false, dataStore: profile.dataStore)
+            tab.isEssential = true
+            tab.adopt(restoredTitle: link.title)
+            wire(tab)
+            tab.prefetchFavicon()
+            profile.essentials.append(tab)
+        }
+        if let first = landed.first { selectSpace(first) }
         scheduleSave()
-        return first
+        return landed.first
     }
 
-    private func space(named name: String, pinning links: [BookmarkImport.Link]) -> Space {
-        let preset = SpacePreset.all[spaces.count % SpacePreset.all.count]
-        let space = Space(
-            name: name, icon: "square.stack", appearance: preset.appearance,
-            profileID: currentSpace.profileID)
+    private func pin(_ links: [BookmarkImport.Link], inSpaceNamed name: String, icon: String?, profile: Profile.ID)
+        -> Space
+    {
+        let space = spaces.first { $0.name == name && $0.profileID == profile } ?? {
+            let preset = SpacePreset.all[spaces.count % SpacePreset.all.count]
+            let made = Space(name: name, icon: icon ?? "square.stack", appearance: preset.appearance, profileID: profile)
+            spaces.append(made)
+            return made
+        }()
+        var pinned = Set(space.pinnedTabs.compactMap { ($0.pinnedURL ?? $0.url ?? $0.pendingURL)?.absoluteString })
+        let fresh = links.filter { pinned.insert($0.url.absoluteString).inserted }
         let store = dataStore(for: space)
-        space.tabs = links.map { link in
-            let tab = BrowserTab(
-                restoring: link.url, pinned: true, pinnedURL: link.url, dataStore: store)
+        for link in fresh {
+            let tab = BrowserTab(restoring: link.url, pinned: true, pinnedURL: link.url, dataStore: store)
             wire(tab)
-            return tab
+            space.tabs.append(tab)
+            // the name it was filed under beats the page's own title
+            if !link.title.isEmpty { TabNameStore.shared.setCustom(link.title, for: link.url) }
         }
         space.normalizeTree()
-        // the name the person filed it under beats the page's own title — which a
-        // lazily-restored tab doesn't have yet in any case
-        for link in links where !link.title.isEmpty {
-            TabNameStore.shared.setCustom(link.title, for: link.url)
-        }
-        space.selectedTabID = space.tabs.first?.id
-        spaces.append(space)
+        if space.selectedTabID == nil { space.selectedTabID = space.tabs.first?.id }
         return space
     }
 
@@ -2167,6 +2019,7 @@ final class TabManager {
             let index = spaces.firstIndex(where: { $0.id == space.id })
         else { return }
         spaces.remove(at: index)
+        SpotlightIndex.forget(.items(Set([space.id] + space.tabs.map(\.id))))
         // a glide in flight names a slot by its old index
         glideOrigin = nil
         for tab in space.tabs { WebNotifications.shared.forgetPage(in: tab.id) }
@@ -2176,18 +2029,11 @@ final class TabManager {
             dropForeignEssential()
             prepareCurrentSpace()
         }
-        // removal reindexes the row; snap the carousel to the selected slot (no
-        // fade — there's no neighbour sliding in) so the backdrop stays in sync
+        // removal reindexes the row: snap both positions to the selected slot
         if let i = spaces.firstIndex(where: { $0.id == selectedSpaceID }) {
             spacePagePosition = Double(i)
             backdropPosition = Double(i)
         }
-        scheduleSave()
-    }
-
-    func moveSpaces(fromOffsets: IndexSet, toOffset: Int) {
-        spaces.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        glideOrigin = nil
         scheduleSave()
     }
 
@@ -2245,12 +2091,6 @@ final class TabManager {
         scheduleSave()
     }
 
-    /// sign a profile out of everything: its cookies, cache and site storage
-    func clearSiteData(of profile: Profile) {
-        let id = profile.id
-        Task { await ProfileStore.clear(id) }
-    }
-
     /// delete a profile and everything it holds. its spaces move to the default
     /// profile first, so no tab is lost with it
     func deleteProfile(_ profile: Profile) {
@@ -2266,7 +2106,9 @@ final class TabManager {
         for tab in profile.essentials { tab.stopLoading() }
         profile.essentials = []
         profiles.removeAll { $0.id == profile.id }
+        SpotlightIndex.forget(.profile(profile.id))
         PasswordStore.shared.deleteAll(in: profile.id)
+        AutofillStore.shared.deleteAll(in: profile.id)
         // before the jar goes: an extension controller still holding it keeps it on disk
         ExtensionManager.shared.profileDeleted(profile.id)
         let id = profile.id
@@ -2278,19 +2120,13 @@ final class TabManager {
         scheduleSave()
     }
 
-    /// give the now-current space a valid selection and hydrate it
-    /// the page the web card shows. an in-flight space switch points this at the
-    /// incoming space's tab at swipe *release* — so the big content area
-    /// transitions in lockstep with the slide instead of snapping in a half
-    /// second later when the carousel finally settles. falls back to the real
-    /// selection (the rest of the chrome reads `selectedTab` directly)
+    /// the page the web card shows: from swipe release, the incoming space's tab,
+    /// so the content moves with the slide; otherwise `selectedTab`
     var displayedContentTab: BrowserTab? { contentOverride ?? selectedTab }
     private var contentOverride: BrowserTab?
 
-    /// at swipe release: show the incoming space's page immediately. its web view
-    /// is already mounted and painted (kept warm, never torn down on a switch),
-    /// so the content crossfades in lockstep with the slide rather than lagging
-    /// the spring. the override is cleared once selectedTab catches up at settle
+    /// at swipe release: show the incoming space's already-mounted page until
+    /// `selectedTab` catches up at settle
     func beginContentSwitch(toSpaceAt index: Int) {
         guard spaces.indices.contains(index) else { return }
         let incoming = selectedTab(in: spaces[index]) ?? spaces[index].tabs.first
@@ -2311,10 +2147,8 @@ final class TabManager {
         contentSpaceID = nil
     }
 
-    /// the current space and its immediate neighbours — the only spaces whose
-    /// pages we keep mounted/warm. bounding to this window caps how many heavy
-    /// web views (200 MB+ each) live in memory at once, instead of accumulating
-    /// one per space ever visited
+    /// the current space and its neighbours, the only spaces whose pages stay
+    /// mounted; each web view costs 200 MB+
     func neighborSpaceIDs() -> Set<Space.ID> {
         let center = contentSpaceID ?? selectedSpaceID
         guard let i = spaces.firstIndex(where: { $0.id == center }) else { return [] }
@@ -2323,10 +2157,8 @@ final class TabManager {
         return ids
     }
 
-    /// load the active page of the spaces adjacent to the current one, off the
-    /// animation path (called after a switch settles). a web view's first mount
-    /// is what hitches a transition, so paying it here — while idle — means a
-    /// later swipe to a neighbour is a pure show/hide with nothing to mount
+    /// load the neighbouring spaces' active pages once a switch settles, so a
+    /// later swipe mounts nothing mid-transition
     func hydrateNeighbors() {
         let center = contentSpaceID ?? selectedSpaceID
         guard let i = spaces.firstIndex(where: { $0.id == center }) else { return }
@@ -2335,6 +2167,7 @@ final class TabManager {
         }
     }
 
+    /// give the current space a valid selection and warm it
     private func prepareCurrentSpace() {
         let space = currentSpace
         if space.selectedTab == nil, let first = space.tabs.first {
@@ -2345,10 +2178,8 @@ final class TabManager {
         activateSplit(for: selectedTab)
     }
 
-    /// load any lazy panes of the split `tab` belongs to — not just the focused
-    /// one — so showing a split warms every pane at once. for a plain tab it's
-    /// just `tab.activateIfNeeded()`. `space` defaults to the current one; pass a
-    /// neighbour when warming it ahead of a swipe (its tabs live in that space).
+    /// load every lazy pane of the split `tab` belongs to, or just `tab`; `space`
+    /// is the one holding `tab`, the current one by default
     private func activateSplit(for tab: BrowserTab?, in space: Space? = nil) {
         guard let tab else { return }
         let space = space ?? currentSpace
@@ -2372,14 +2203,12 @@ final class TabManager {
     }
 
     /// the live tabs of the shown split, in pane order
-    var displayedSplitTabs: [BrowserTab] {
+    private var displayedSplitTabs: [BrowserTab] {
         guard let group = displayedSplitGroup else { return [] }
         return currentSpace.tabs(in: group)
     }
 
-    /// tabs marked with ⌘/⇧-click in the sidebar. One selection serves every
-    /// action that can sensibly take several tabs — closing, pinning, muting,
-    /// sleeping, moving to another space, tiling into a split
+    /// tabs marked with ⌘/⇧-click in the sidebar, the target of every bulk action
     var selection: Set<BrowserTab.ID> = []
 
     /// the selected tabs in list order, so a bulk action happens top to bottom
@@ -2425,9 +2254,7 @@ final class TabManager {
 
     // MARK: Acting on the selection
 
-    /// Close every selected tab as one act, so one ⇧⌘T brings the whole lot
-    /// back. Closing them one by one would put five separate entries on the undo
-    /// stack, and undoing "close these five" five times is not undo.
+    /// close every selected tab as one act, so one ⇧⌘T brings them all back
     func closeSelection() {
         let doomed = selectedTabs
         guard !doomed.isEmpty else { return }
@@ -2445,9 +2272,6 @@ final class TabManager {
         for other in doomed { close(other, undoGroup: group) }
     }
 
-    /// pin or unpin the whole selection. The verb follows the majority: a
-    /// selection that is mostly unpinned pins, so the menu item never reads as a
-    /// no-op on half the tabs
     func setPinnedForSelection(_ pinned: Bool) {
         for tab in selectedTabs where tab.isPinned != pinned { togglePin(tab) }
         clearSelection()
@@ -2458,8 +2282,7 @@ final class TabManager {
         clearSelection()
     }
 
-    /// put the selection to sleep now rather than waiting for the idle timer —
-    /// the manual half of hibernation, for when you know you're done with them
+    /// put the selection to sleep now, sparing whatever is on screen
     func hibernateSelection() {
         let keep = visibleTabIDs
         for tab in selectedTabs where !keep.contains(tab.id) && tab.canHibernate {
@@ -2483,10 +2306,9 @@ final class TabManager {
         clearSelection()
     }
 
-    /// tile `tabs` together as a new split in the current space. `anchor` keeps
-    /// its slot and section; the others are pulled in beside it (becoming
-    /// contiguous, coerced to the anchor's pinned/today section). focus lands on
-    /// the anchor. returns the new group, or nil if fewer than two valid panes
+    /// tile `tabs` as a new split in the current space around `anchor`, which keeps
+    /// its slot, section and focus; the rest join beside it in that section. nil
+    /// if fewer than two valid panes
     @discardableResult
     func createSplit(
         _ tabs: [BrowserTab], anchor: BrowserTab? = nil,
@@ -2553,10 +2375,8 @@ final class TabManager {
         scheduleSave()
     }
 
-    /// drop an incoming tab into `group` at a precise tiling target — splitting a
-    /// specific pane (`paneEdge`) or the whole group's outer edge — keeping the run
-    /// contiguous and focusing the new pane. no-op past the pane cap. this is the
-    /// rich version of `addToSplit`, used by the sidebar→content drag.
+    /// drop `tab` into `group` beside a pane or at the group's outer edge, keeping
+    /// the run contiguous, and focus it; no-op past the pane cap
     func addPane(_ tab: BrowserTab, to group: SplitGroup, target: SplitDropTarget) {
         let space = currentSpace
         guard !tab.isEssential, !group.contains(tab.id),
@@ -2611,9 +2431,7 @@ final class TabManager {
             if wasFocused, let survivor = group.tabIDs.first {
                 selectedTabID = survivor
             }
-            // the removed pane still sits between the survivors in the tab order,
-            // breaking the sidebar's contiguous run (it'd render each pane as a
-            // loose row). pull the group's panes back together into one block
+            // the removed pane still sits between the survivors in the tab order
             regroupContiguous(in: space)
         }
         scheduleSave()
@@ -2678,15 +2496,15 @@ final class TabManager {
         }
     }
 
-    /// persist after a divider drag — the resize mutates the tree live during the
-    /// drag (`SplitGroup.resize(path:boundary:by:)`); this just commits the save
+    /// a divider drag ended: its ratios land on the split's tree and are saved
     func commitSplitLayout(_ group: SplitGroup) {
+        group.endResize()
         scheduleSave()
     }
 
     /// rearrange a split's panes by dropping one beside another (`axis`/`before`),
     /// against a whole-group outer edge, or onto another pane's centre to swap.
-    /// the dragged pane stays focused; the result is persisted.
+    /// the dragged pane stays focused
     func rearrangeSplit(_ group: SplitGroup, _ action: SplitRearrange) {
         // linking points at tab ids, so it survives a move — but `removeLeaf` drops
         // it when an endpoint is the moved pane; restore both ends after
@@ -2815,8 +2633,7 @@ final class TabManager {
 
     // MARK: - Folders
 
-    /// a new, empty folder, or nil at the nesting cap. Folders are only ever
-    /// born from a menu — no drag gesture makes one
+    /// a new, empty folder, or nil at the nesting cap
     @discardableResult
     func newFolder(
         named name: String = "New Folder", in container: SidebarContainer = .section(.today),
@@ -2921,7 +2738,7 @@ final class TabManager {
         space.removeEntry(.folder(folder.id))
         space.folders.removeAll { removed in nodes.contains { $0.id == removed.id } }
         space.normalizeTree()
-        // incognito leaves no trace, and that includes an undo stack
+        // incognito leaves no trace, the undo stack included
         if kind != .incognito {
             closedFolders.insert(
                 ClosedFolder(
@@ -2979,20 +2796,18 @@ final class TabManager {
     func save() {
         SessionStore.saveInBackground(sessionSnapshot())
         saveTabStates()
+        SpotlightIndex.scheduleRefresh()
     }
 
-    /// persist synchronously, for app termination — a detached write would be
-    /// killed with the process before it lands
+    /// persist synchronously, for app termination, where a background write dies
+    /// with the process
     func saveNow() {
         SessionStore.save(sessionSnapshot())
         saveTabStates(immediately: true)
     }
 
-    /// rebuild every space from whatever is currently in `session.json`.
-    ///
-    /// used after restoring a backup: rather than a second deserializer that
-    /// would drift from the launch path, a restore writes the session file and
-    /// re-runs exactly the code launch uses
+    /// rebuild every space from `session.json` through the launch path, once a
+    /// backup restore has written it
     func reloadFromDisk() {
         guard let session = SessionStore.load(), !session.spaces.isEmpty else { return }
         let rebuilt = session.spaces.map(Self.makeSpace(from:))
@@ -3020,12 +2835,8 @@ final class TabManager {
         ProfileStore.reconcile(keeping: Set(profiles.map(\.id)))
     }
 
-    /// move a tab into another space, keeping it exactly as it is where the
-    /// profile allows — the sidebar's drag-onto-a-space-icon gesture.
-    ///
-    /// crossing into another profile means a new cookie jar, so the web view is
-    /// rebuilt there (`BrowserTab.rebuildWebView`); within one profile the live
-    /// page, and its scroll position, simply move house
+    /// move a tab into another space (a drag onto its icon); the live page moves
+    /// as is within a profile and rebuilds in the new jar across profiles
     func moveTab(_ tab: BrowserTab, toSpace destination: Space) {
         guard !tab.isEssential,
             let source = spaces.first(where: { space in space.tabs.contains { $0.id == tab.id } }),
@@ -3037,8 +2848,7 @@ final class TabManager {
         source.tabs.removeAll { $0.id == tab.id }
         if wasSelected { source.selectedTabID = source.tabs.first?.id }
 
-        // a pinned tab stays pinned in its new home; that's the point of moving it,
-        // so it lands in the pinned run rather than below the Today tabs
+        // a pinned tab lands in the destination's pinned run
         source.normalizeTree()
         destination.tabs.insert(
             tab, at: tab.isPinned ? destination.pinnedTabs.count : destination.tabs.count)
@@ -3123,12 +2933,9 @@ final class TabManager {
             selectedSpaceID: kind == .main ? selectedSpaceID : core.persistedSpaceID)
     }
 
-    /// write each persistable tab's `interactionState` to its own file, so a
-    /// restored tab comes back at its scroll position with its back/forward list
-    /// and form contents rather than as a fresh load of the same url.
-    ///
-    /// only shared spaces are saved: an incognito window's blobs carry form
-    /// contents, and its promise is that closing it leaves nothing behind.
+    /// write each shared-space tab's `interactionState` to its own file, so a
+    /// restored tab keeps its scroll position, back/forward list and form
+    /// contents; an incognito window's blobs are never written
     private func saveTabStates(immediately: Bool = false) {
         for space in spaces {
             for tab in space.tabs where tabURL(tab) != nil && (immediately || tab.hasUnsavedState) {
@@ -3151,8 +2958,6 @@ final class TabManager {
     private func tabURL(_ tab: BrowserTab) -> String? {
         (tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL)?.absoluteString
     }
-
-
 
     private static func makeProfile(from data: ProfileData) -> Profile {
         // the default profile's settings are the app-wide keys, which it reads itself
@@ -3247,19 +3052,15 @@ final class TabManager {
     }
 }
 
-/// A site is asking for something and nobody has answered yet.
-///
-/// Held by `TabManager` as a queue: a page can ask for the camera and the
-/// microphone in the same breath (and two tabs can ask at once), and every
-/// request carries a WebKit decision handler that must be called exactly once —
-/// so they're answered one at a time rather than racing a single slot.
+/// a site's question nobody has answered yet; its WebKit handler must be called
+/// exactly once
 @MainActor
 final class PermissionRequest: Identifiable {
     let id = UUID()
     let origin: String
     let permissions: [SitePermission]
     let tabID: BrowserTab.ID?
-    /// asked from the burner space: the answer is remembered in memory only
+    /// asked from incognito: the answer is remembered in memory only
     let isEphemeral: Bool
     private var respond: ((PermissionDecision) -> Void)?
 

@@ -74,8 +74,8 @@ nonisolated enum Passkeys {
     }
 
     /// `SHA256(rpId) || flags || signCount(4) [|| AAGUID || credIdLen(2) || credId || COSE key]`
-    static func authenticatorData(rpID: String, credential: (id: Data, publicKey: Data)? = nil) -> Data {
-        var flags = userPresent | userVerified
+    static func authenticatorData(rpID: String, verified: Bool, credential: (id: Data, publicKey: Data)? = nil) -> Data {
+        var flags = userPresent | (verified ? userVerified : 0)
         if credential != nil { flags |= attestedData }
         var data = Data(SHA256.hash(data: Data(rpID.utf8))) + [flags] + CBOR.bigEndian(0, 4)
         if let credential {

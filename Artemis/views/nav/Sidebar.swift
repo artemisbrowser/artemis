@@ -3,7 +3,7 @@ import QuartzCore
 import SwiftUI
 
 /// a tab row's position within the drag coordinate space
-struct SidebarRowFrame: Equatable {
+private struct SidebarRowFrame: Equatable {
     /// the entry the row draws — a split reports one frame per pane, all naming
     /// their own tab, so the merge math still sees the panes individually
     let entry: SidebarEntry
@@ -66,14 +66,9 @@ struct Sidebar: View {
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
 
     private let metrics = SidebarMetrics.standard
-    /// adaptive sidebar ink — dark over light backdrops, white over dark ones.
-    /// fed to descendants via the environment so they stop hardcoding white.
-    ///
-    /// the *settled* space's ink, not the blended one: the tab lists ride inside
-    /// the filmstrip and slide away with their own space, so re-tinting them per
-    /// frame would invalidate every mounted row for a colour nobody is comparing
-    /// against the backdrop. the chrome that does sit over the backdrop — the nav
-    /// row, the url pill, the bottom bar — takes `BlendedInk` instead
+    /// the settled space's ink, not the blended one: the tab lists slide away with
+    /// their own space, so re-tinting per frame would invalidate every mounted row.
+    /// chrome over the backdrop takes `BlendedInk` instead
     private var ink: Color { tabManager.currentSpace.appearance.chromeInk }
     @State private var isPeekVisible = false
     @State private var isPeekHovered = false
@@ -85,25 +80,18 @@ struct Sidebar: View {
 
     @State private var clickMonitor: Any?
 
-    // one unified drag system (tabs + favourites), all in `contentSpace`. the
-    // shared state lets a tab be dragged up into the favourites grid and a
-    // favourite back down into the tabs, with a single morphing ghost
-    // shared with the content area (MainView owns it) so a tab dragged out of the
-    // sidebar can be dropped onto the page to split
+    /// shared with the content area (MainView owns it), so a tab dragged out of
+    /// the sidebar can be dropped onto the page to split
     @Environment(SidebarDragState.self) private var drag
-    // the content-area tiling drag — while a sidebar tab is over the page it
-    // becomes the rectangular ghost (an "incoming" rearrange), and the drop reads
-    // its target to split a specific pane / outer edge / the lone page
+    /// the content-area tiling drag: over the page a sidebar tab becomes its
+    /// "incoming" ghost, and the drop reads its target
     @Environment(RearrangeDragState.self) private var rearrange
-    /// frames the drag and peek logic hit-test against. a reference box, not
-    /// `@State`: they move on every frame of a swipe, and as state each write
-    /// re-ran this whole body; their readers redraw on drag or peek changes
+    /// frames the drag and peek logic hit-test against, in an unobserved box as
+    /// they move on every frame of a swipe; their readers redraw on drag or peek
+    /// changes
     @State private var measured = SidebarGeometry()
-    /// the pointer's last spot in the tab area — a context menu carries no
-    /// location of its own, and a new folder is placed where you asked for it.
-    /// a reference box, not `@State`: the pointer writes it on every mouse-moved
-    /// event and only the context menu ever reads it, so storing it as state
-    /// re-ran this whole body at pointer rate for a value nothing was drawing
+    /// the pointer's last spot in the tab area, where a context-menu folder lands.
+    /// an unobserved box: written on every mouse move, read only by the menu
     @State private var menuPoint = LastPoint()
     @State private var tabsScrolled = false
     /// the Library is built only while open or sliding out
@@ -124,8 +112,8 @@ struct Sidebar: View {
     @State private var dwellRowID: BrowserTab.ID?
     @State private var dwellTask: Task<Void, Never>?
     @State private var mergeAnchorRect: CGRect = .zero
-    // gap between panes once a split is focused (tighter than it was); an
-    // unfocused split sits flush with a hairline divider instead
+    // gap between panes once a split is focused; an unfocused split sits flush
+    // with a hairline divider instead
     private static let splitSegmentGap: CGFloat = 3
     private static let mergeDwellMS = 360
     // which unfocused split row the cursor is over, for its whole-row hover
@@ -140,11 +128,9 @@ struct Sidebar: View {
     @State private var splitHoldTask: Task<Void, Never>?
     @State private var splitGestureLocation: CGPoint = .zero
     @State private var liftedPaneID: BrowserTab.ID?
-    // a lifted pane is pulled out of its split's row and floats as the ghost,
-    // leaving a grey gap exactly like hovering its own tab over the split to merge
-    // in. `liftSlot` is the gap's slot (where it'll drop back), nil once the cursor
-    // pulls clear of the row; `liftAnchorRect` locks the slot math to the split's
-    // original bounds so the gap doesn't oscillate as the row reflows around it
+    // a lifted pane floats as the ghost, leaving a grey gap at `liftSlot` (nil once
+    // the cursor pulls clear of the row); `liftAnchorRect` locks the slot math to
+    // the split's original bounds so the gap doesn't oscillate as the row reflows
     @State private var liftSlot: Int?
     @State private var liftAnchorRect: CGRect = .zero
     private static let paneLiftHoldMS = 350
@@ -155,16 +141,14 @@ struct Sidebar: View {
     // the space name doesn't jump down the moment any drag starts
     @State private var revealEmptyEssentials = false
 
-    // space-carousel state. the pager is a filmstrip of every space; the
-    // centred position is `tabManager.spacePagePosition` in page units (fractional mid-swipe).
-    // a click animates it across the whole distance — sliding past each space
-    // between — while a swipe drives it by hand. isSwiping/isSettling gate the
-    // two drivers apart; panelWidth feeds the page pitch and snap threshold
+    // the pager's centred position is `tabManager.spacePagePosition`, in page
+    // units; a click animates it, a swipe drives it by hand. isSwiping/isSettling
+    // keep the two drivers apart; panelWidth feeds the pitch and snap threshold
     @State private var isSwiping = false
     @State private var isSettling = false
     // the position the carousel is settling toward, and a token so an in-flight
     // settle's completion bails if a newer swipe has superseded it — together
-    // these make the settle interruptible, so swipes chain without a cooldown
+    // these make the settle interruptible
     @State private var pendingTarget: Int?
     /// the uncommitted target a run of quick swipes is carrying on from
     @State private var chainBase: Int?
@@ -186,11 +170,10 @@ struct Sidebar: View {
     @State private var settledIndex: Int?
     @State private var previousSettledIndex: Int?
 
-    /// width below which reload + sidebar toggle fold into a … menu:
-    /// the exact point where the toggle's box would touch the nav group
-    /// (lights 69 + gap to toggle + toggle + nav + 12 insets)
     var width: Double = 250
 
+    /// below this width the toggle folds into the nav's … menu: where its box
+    /// would touch the nav group (lights 69 + gap + toggle + nav + 12 insets)
     private var isCompact: Bool { width < 240 }
 
     /// the sidebar's own margin: how far its content sits from the panel edge.
@@ -198,23 +181,16 @@ struct Sidebar: View {
     /// whatever the window rim already contributes (see `trailingInset`)
     static let contentInset: CGFloat = 12
 
-    /// What follows the sidebar's frame is rim, not sidebar: the resize grip
-    /// when pinned, the overlay panel's own overhang when floating — both the
-    /// width of the window's edge inset. That space reads as part of the
-    /// sidebar's right margin, so the padding here only has to make up the
-    /// difference.
-    ///
-    /// The old fixed 2pt assumed the rim was always there to supply the other
-    /// 10. At rim 0 — a flush card, where the rim contributes nothing — it left
-    /// the rows 2pt from the edge against 12pt on the left.
+    /// what follows the sidebar's frame is rim (the resize grip, or the overlay's
+    /// overhang) and reads as part of its right margin, so the padding here only
+    /// makes up the difference
     private var trailingInset: CGFloat {
         Self.trailingInset(rim: edgeInset, collapsed: isSidebarCollapsed)
     }
 
-    /// how much space actually follows the sidebar's frame. floating, that's the
-    /// overlay panel's overhang, which is always the full rim; pinned, it's the
-    /// resize grip, which isn't laid out at all below the minimum grab width —
-    /// so a 3pt rim contributes nothing and the margin must supply all 12
+    /// how much space follows the sidebar's frame: floating, the overlay's
+    /// overhang, always the full rim; pinned, the resize grip, which isn't laid
+    /// out below the minimum grab width
     static func rimContribution(rim: Double, collapsed: Bool) -> CGFloat {
         if collapsed { return rim }
         return rim >= WindowChrome.minGrabWidth ? rim : 0
@@ -233,11 +209,9 @@ struct Sidebar: View {
             // top row sits on the traffic lights' line:
             // sidebar toggle right of the lights, nav buttons right-aligned
             HStack(spacing: 0) {
-                // the REAL window traffic lights, living in the sidebar so they
-                // are part of its layout — one motion, nothing to synchronize
-                // (see TrafficLightMount). the row already carries the sidebar's
-                // 12pt inset and the buttons sit 9pt into the mount, so a −9
-                // nudge lands the close button at the traditional window x=12
+                // the real traffic lights, laid out here so they move with the
+                // sidebar (see TrafficLightMount); they sit 9pt into the mount,
+                // so −9 lands the close button at window x=12
                 TrafficLightMount()
                     .frame(width: TrafficLightMount.width, height: TrafficLightMount.height)
                     .padding(.leading, -9)
@@ -262,12 +236,9 @@ struct Sidebar: View {
             .background(WindowDragStrip().padding(.top, -BrowserToolbar.top).padding(.bottom, -Self.dragBarOverhang))
             .modifier(BlendedInk())
 
-            // library + spaces sit side by side; sliding the pair left/right by
-            // one panel width swaps between them. an .offset rather than a .move
-            // transition so the ScrollView-backed lists ride the slide as one
-            // block — a transition snaps the (NSScrollView-backed) list to its
-            // final spot once it's settled, instead of interpolating. this is the
-            // same mechanism the space pager uses for its lists
+            // library and spaces slide by one panel width as an .offset: a .move
+            // transition snaps the NSScrollView-backed lists to their final spot
+            // instead of interpolating
             GeometryReader { geo in
                 let lib = libraryContentWidth
                 let pitch = lib + Self.libraryGutter
@@ -371,7 +342,7 @@ struct Sidebar: View {
                 RecentDownloadsPeek()
                     .padding(.horizontal, 12)
                     .padding(.bottom, 44)  // sits just above the bottom bar
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(Motion.slide(.bottom))
                     .onHover { hovering in
                         isPeekHovered = hovering
                         if !hovering {
@@ -414,8 +385,6 @@ struct Sidebar: View {
         clickMonitor = nil
     }
 
-    /// the hovered folder's contents, hanging off the row's trailing edge. it
-    /// lives above the list's clip, so it can reach past the sidebar
     /// the folder whose panel belongs on screen: hovered, and still folded —
     /// opening it puts the tabs in the list, so the panel has nothing to add
     private var peekingFolder: TabFolder? {
@@ -425,6 +394,8 @@ struct Sidebar: View {
         return folder
     }
 
+    /// the hovered folder's contents, hanging off the row's trailing edge. it
+    /// lives above the list's clip, so it can reach past the sidebar
     @ViewBuilder private var folderPeekOverlay: some View {
         GeometryReader { proxy in
             if let folder = peekingFolder,
@@ -498,8 +469,7 @@ struct Sidebar: View {
         }
     }
 
-    /// the full tab area: pinned section, divider, New Tab, today section —
-    /// all draggable/reorderable, with a floating ghost + insertion line. A
+    /// the full tab area: pinned section, divider, New Tab, today section. a
     /// neighbour's panel is the same view, so it becomes live without a rebuild;
     /// only the live one reports frames, scroll and pointer to the shared state
     private func tabArea(_ space: Space, live: Bool) -> some View {
@@ -523,6 +493,10 @@ struct Sidebar: View {
                         // equal breathing room on both sides of the divider,
                         // independent of the uniform tab-to-tab spacing
                         .padding(.vertical, metrics.pinnedDividerGap - metrics.tabSpacing)
+                        // the only mark between pinned and today tabs, so VoiceOver hears it as a heading
+                        .accessibilityElement()
+                        .accessibilityLabel("Today")
+                        .accessibilityAddTraits(.isHeader)
                 }
 
                 NewTabRow(suppressHover: drag.isDragging)
@@ -550,10 +524,8 @@ struct Sidebar: View {
             if live, case .active(let point) = phase { menuPoint.value = point }
         }
         .contextMenu { sidebarMenu }
-        // a link dragged in from a page (or another app) becomes a tab where
-        // it lands — dropped above the New Tab row it arrives *pinned*, Arc's
-        // gesture for "keep this". the tidy-name pass then runs when the
-        // page's title settles
+        // a link dragged in from a page or another app becomes a tab where it
+        // lands; above the New Tab row it arrives pinned
         .dropDestination(for: URL.self, action: { urls, location -> Bool in
             guard let url = urls.first,
                 let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
@@ -593,6 +565,7 @@ struct Sidebar: View {
         .onPreferenceChange(SidebarRowFrameKey.self) { if live { measured.rowFrames = $0 } }
         .onPreferenceChange(NewTabBoundaryKey.self) { if live { measured.newTabBoundaryY = $0 } }
         .environment(\.isLivePanel, live)
+        .accessibilityHidden(!live)
     }
 
     /// right-clicking the sidebar where no row is: the other way a folder is
@@ -616,7 +589,7 @@ struct Sidebar: View {
 
     /// how far a row at this depth is inset. the indent is part of the row's
     /// reported frame, so hit-testing and the insertion line agree with it
-    fileprivate static let folderIndent: CGFloat = 12
+    private static let folderIndent: CGFloat = 12
 
     private func indent(_ depth: Int) -> CGFloat { CGFloat(depth) * Self.folderIndent }
 
@@ -627,9 +600,11 @@ struct Sidebar: View {
     private func draggableRow(
         _ tab: BrowserTab, in row: SidebarRow, selectedID: BrowserTab.ID?
     ) -> some View {
-        TabRow(
+        let folder: String? =
+            if case .folder(let id) = row.container { tabManager.currentSpace.folder(id)?.name } else { nil }
+        return TabRow(
             tab: tab, isSelected: tab.id == selectedID,
-            dragInProgress: drag.isDragging
+            dragInProgress: drag.isDragging, folder: folder
         )
         // source slot stays in place, dimmed, while it's being dragged
         .opacity(drag.tab?.id == tab.id ? 0.6 : 1)
@@ -681,10 +656,9 @@ struct Sidebar: View {
                 draggableRow(tab, in: row, selectedID: selectedID)
             }
         case .group(let group, let members):
-            // the grey gap comes from either merging another tab in (merge) or a
-            // pane lifted out of this very split (liftSlot). either way it stays one
-            // stable liveSplitRow call — branching the row's view shape here would
-            // tear out its in-flight drag gesture (see liftSlot docs)
+            // the grey gap is a merge (another tab coming in) or a lift (a pane of
+            // this split). one stable liveSplitRow call either way: branching the
+            // view shape here would tear out the row's in-flight drag gesture
             let liftedHere = liftedPaneID.flatMap { group.contains($0) ? $0 : nil }
             let gap = liftedHere != nil
                 ? liftSlot
@@ -693,17 +667,14 @@ struct Sidebar: View {
         }
     }
 
-    /// a split in the tab list, rendered as one row. shown (or while a drop is
-    /// previewing): panes as pills. not shown: panes flush with hairline dividers,
-    /// lighting as a whole on hover. which *pane* is focused shows only in the
-    /// content window's ring, never here. a quick drag moves the whole split; a
-    /// press-and-hold lifts one pane out; a click re-opens the split
+    /// a split as one row: panes as pills while shown or previewing a drop, else
+    /// flush with hairline dividers. a quick drag moves the whole split, a
+    /// press-and-hold lifts one pane out, a click re-opens it
     private func liveSplitRow(
         group: SplitGroup, members allMembers: [BrowserTab], insertIndex: Int?, in row: SidebarRow
     ) -> some View {
-        // a pane lifted out of this split is pulled from the row entirely (it floats
-        // as the ghost) — the grey gap at `insertIndex` shows where it'll land. the
-        // segments still slide because their identities (tab ids) are stable
+        // a lifted pane leaves the row (it floats as the ghost); the segments
+        // still slide, their identities being tab ids
         let members = allMembers.filter { $0.id != liftedPaneID }
         let isShown = tabManager.displayedSplitGroup?.id == group.id
         let pills = isShown || insertIndex != nil
@@ -735,15 +706,19 @@ struct Sidebar: View {
             else if hoveredSplitID == group.id { hoveredSplitID = nil }
         }
         .gesture(splitRowGesture(group: group, members: members, segW: segW))
-        .contextMenu { splitRowMenu(group) }
+        .contextMenu { MenuEntriesView(entries: Self.splitRowMenuEntries(group, in: tabManager)) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(allMembers.map(\.displayTitle).joined(separator: ", "))
+        .accessibilityValue(isShown ? "split view, selected" : "split view")
+        .accessibilityAddTraits(isShown ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { focusSplitAsWhole(group) }
+        .accessibilityActions { MenuEntryActions(entries: Self.splitRowMenuEntries(group, in: tabManager)) }
         .animation(Motion.pop, value: insertIndex)
         .animation(Motion.hover, value: hoveredSplitID == group.id)
     }
 
-    /// one pane of a split row. the row (not the pane) owns the gestures, so the
-    /// pane stays inert and — crucially — can be pulled out of the layout when
-    /// lifted without cancelling the row's in-flight drag (same trick as the
-    /// favourites grid: gesture on the container, tiles free to reflow)
+    /// one pane of a split row. the row owns the gestures, so a lifted pane can
+    /// leave the layout without cancelling the row's in-flight drag
     private func splitSegment(
         _ tab: BrowserTab, pill: Bool, control: SplitSegmentCell.Control?, in row: SidebarRow
     ) -> some View {
@@ -780,33 +755,26 @@ struct Sidebar: View {
         tabManager.isCommandBarVisible = false
     }
 
-    @ViewBuilder
-    private func splitRowMenu(_ group: SplitGroup) -> some View {
+    /// the split row's context menu, which VoiceOver also offers as actions
+    static func splitRowMenuEntries(_ group: SplitGroup, in tabManager: TabManager) -> [MenuEntry] {
         let members = tabManager.currentSpace.tabs(in: group)
         let pinned = members.first?.isPinned == true
-        Button { tabManager.togglePin(group) } label: {
-            Label(pinned ? "Unpin Split" : "Pin Split", systemImage: pinned ? "pin.slash" : "pin")
-                .labelStyle(.titleAndIcon)
-        }
-        Divider()
-        Button { tabManager.toggleSplitLinked(group) } label: {
-            Label(
-                group.isLinked ? "Unlink Panes" : "Open Links in Next Pane",
-                systemImage: "link").labelStyle(.titleAndIcon)
-        }
-        Button { tabManager.dissolveSplit(group) } label: {
-            Label("Unsplit", systemImage: "rectangle").labelStyle(.titleAndIcon)
-        }
-        Divider()
+        var entries: [MenuEntry] = [
+            .button(pinned ? "Unpin Split" : "Pin Split", pinned ? "pin.slash" : "pin") { tabManager.togglePin(group) },
+            .divider,
+            .button(group.isLinked ? "Unlink Panes" : "Open Links in Next Pane", "link") {
+                tabManager.toggleSplitLinked(group)
+            },
+            .button("Unsplit", "rectangle") { tabManager.dissolveSplit(group) },
+            .divider,
+        ]
         if pinned, members.contains(where: { $0.pendingURL == nil }) {
-            Button { tabManager.requestClose(group, keepingPin: true) } label: {
-                Label("Close Split and Keep Pinned", systemImage: "minus").labelStyle(.titleAndIcon)
-            }
+            entries.append(.button("Close Split and Keep Pinned", "minus") {
+                tabManager.requestClose(group, keepingPin: true)
+            })
         }
-        Button { tabManager.requestClose(group) } label: {
-            Label(pinned ? "Archive Pinned Split" : "Close Split", systemImage: "xmark")
-                .labelStyle(.titleAndIcon)
-        }
+        entries.append(.button(pinned ? "Archive Pinned Split" : "Close Split", "xmark") { tabManager.requestClose(group) })
+        return entries
     }
 
     // MARK: - Split row gesture (click re-opens / drag moves whole / hold lifts one)
@@ -1036,11 +1004,9 @@ struct Sidebar: View {
 
     // MARK: - Lift-out (pane pulled from its own split)
 
-    /// while a pane is lifted out, place its grey gap: track the slot it'd drop
-    /// back into while the cursor is over the source row, or clear it once the
-    /// cursor pulls clear (then the row just shows the survivors and the normal
-    /// list insertion line drives). the slot math runs against the row's locked
-    /// original bounds so the gap doesn't oscillate as the row reflows around it
+    /// while a pane is lifted out, track the slot it'd drop back into over its
+    /// source row, or clear it once the cursor pulls clear and the list's
+    /// insertion line takes over
     private func updateLift() {
         guard let lifted = liftedPaneID, liftAnchorRect != .zero,
             let group = tabManager.currentSpace.splitGroup(containing: lifted)
@@ -1062,9 +1028,8 @@ struct Sidebar: View {
     }
 
     /// open the empty-favourites drop zone while a dragged tab is held above the
-    /// space header; close it again when the tab is pulled back down past it.
-    /// opening pushes the header down, so the close threshold sits below the open
-    /// one — the gap (the zone's own height) keeps it from flapping at the edge
+    /// space header. opening pushes the header down, so the close threshold sits
+    /// a zone's height below the open one
     private func updateEmptyEssentialsReveal() {
         // non-empty grids are always shown; an incognito window has none to drop into
         guard tabManager.kind == .main, tabManager.essentials.isEmpty else { return }
@@ -1209,11 +1174,9 @@ struct Sidebar: View {
                     .position(x: measured.tabContentRect.midX + inset / 2, y: lineY)
             }
 
-            // one floating ghost everywhere, following the cursor. a whole-split
-            // drag shows every pane as a merged pill row (the sidebar block); a
-            // single tab is the usual row that morphs to a tile over the favourites.
-            // over the content the rectangular content ghost takes over, so hide
-            // this one there.
+            // one ghost following the cursor: a split as its pill row, a tab as a
+            // row that morphs to a tile over the favourites. over the content the
+            // content area's own ghost takes over
             if rearrange.incoming {
                 EmptyView()
             } else if let folder = drag.folder {
@@ -1326,10 +1289,9 @@ struct Sidebar: View {
         }
     }
 
-    /// a tab dropped on the content area, using the rearrange overlay's target:
-    /// split a specific pane / the whole group's outer edge when a split is shown,
-    /// else tile with the lone focused page on the dropped-to side. falls back to a
-    /// plain side split if no precise target was resolved.
+    /// a tab dropped on the content area, at the rearrange overlay's target: into
+    /// the shown split, else tiled with the lone focused page on that side;
+    /// without a resolved target, appended to the split or tiled on the right
     private func commitContentSplit(_ tab: BrowserTab) {
         guard !tab.isEssential else { return }
         let target = rearrange.target
@@ -1467,10 +1429,9 @@ struct Sidebar: View {
         }
     }
 
-    /// the ghost's centre for a rendered `size`, anchored so the cursor keeps the
-    /// same spot on the chip it was grabbed by (no centre-snap on pickup). the grab
-    /// offset is clamped in case the ghost morphs to a smaller shape than the source
-    /// (e.g. a full-width row becoming a favourite tile), so the cursor stays on it
+    /// the ghost's centre for a rendered `size`, keeping the cursor on the spot it
+    /// grabbed; the grab offset is clamped so a ghost morphed smaller than its
+    /// source stays under the cursor
     private func ghostCenter(size: CGSize) -> CGPoint {
         let gx = min(max(drag.grabOffset.width, 0), size.width)
         let gy = min(max(drag.grabOffset.height, 0), size.height)
@@ -1495,22 +1456,15 @@ struct Sidebar: View {
     // MARK: - Space carousel
 
     /// empty gutter between panels in the swipe filmstrip, so the next space's
-    /// tabs arrive after a window-edge gap rather than flush against the last:
-    /// the current page's trailing inset (2) + the next page's leading inset (12)
+    /// tabs arrive after a window-edge gap rather than flush against the last
     private static let spaceGutter: CGFloat = 14
 
     /// same window-edge gap, but between the library panel and the spaces, so
     /// neither shows while the other is centred
     private static let libraryGutter: CGFloat = 14
 
-    /// the content column's width with the library closed — the sidebar frame
-    /// minus its leading (12) + trailing (2) insets
-    /// The panel is laid out at a *fixed* width rather than the live frame
-    /// width, so rows don't re-truncate while the sidebar animates. That width
-    /// has to be exactly what the margins leave: it used to be a hard-coded
-    /// `− 14` (the old 12 + 2), which the moment the trailing margin changed
-    /// made the content wider than its container, and the clip above sliced the
-    /// url pill and every tab row off at the right edge.
+    /// the content column's fixed width with the library closed: exactly what the
+    /// margins leave, so rows don't re-truncate while the sidebar animates
     private var baseContentWidth: CGFloat {
         Self.contentWidth(sidebarWidth: width, rim: edgeInset, collapsed: isSidebarCollapsed)
     }
@@ -1596,11 +1550,8 @@ struct Sidebar: View {
         .environment(\.spaceAccent, live ? tabManager.currentSpace.appearance.accent : space.appearance.accent)
     }
 
-    /// space switching as a filmstrip: every space sits side by side, and the
-    /// view scrolls to the selected one. a click jumping several spaces slides
-    /// past all the ones between; a two-finger swipe drags it by hand. the live
-    /// interactive panel is overlaid on the current space's slot, so the static
-    /// strip underneath only ever shows while a neighbour is passing through
+    /// space switching as a filmstrip: every built space side by side, scrolled
+    /// to the selected one. only the current space's panel is live
     private var spacePager: some View {
         GeometryReader { geo in
             let w = geo.size.width
@@ -1637,9 +1588,9 @@ struct Sidebar: View {
         }
     }
 
-    /// Panels kept built: the current slot, the slot it slid in from, the settled
-    /// space and its neighbours, and the space settled before. A run of quick
-    /// swipes keeps only the live panel and the run's own reach.
+    /// panels kept built: the current slot, the slot it slid in from, the settled
+    /// space and its neighbours, and the space settled before. a run of quick
+    /// swipes keeps only the live panel and the run's own reach
     private var builtSlots: Set<Int> {
         if let chainBase { return [currentIndex, chainBase - 1, chainBase, chainBase + 1] }
         let from = currentIndex + (tabManager.spaceSwitchForward ? -1 : 1)
@@ -1676,10 +1627,9 @@ struct Sidebar: View {
         tabManager.backdropPosition = pos  // colour tracks the drag 1:1
     }
 
-    /// take over the carousel for a freshly-started swipe. A settle still in
-    /// flight hands its target over as the chain's base instead of committing:
-    /// the switch commits once, when a settle finishes undisturbed, so a run of
-    /// quick swipes doesn't pay for a commit on each one's first frame
+    /// take over the carousel for a freshly-started swipe. a settle in flight
+    /// hands its target over as the chain's base: the switch commits only when a
+    /// settle finishes undisturbed
     private func beginInteractiveSwipe() {
         isSwiping = true
         settleToken += 1  // invalidate any in-flight settle's completion
@@ -1695,10 +1645,8 @@ struct Sidebar: View {
         tabManager.spacePagePosition = swipeAnchor
     }
 
-    /// where the filmstrip is *on screen*. `withAnimation` sets
-    /// `spacePagePosition` to the destination on the spot and leaves the
-    /// interpolation to the rendered `.offset`, so mid-settle the stored value is
-    /// the answer to the wrong question
+    /// where the filmstrip is on screen: `withAnimation` stores the destination at
+    /// once and interpolates only the rendered `.offset`
     private var onScreenPosition: Double {
         guard isSettling else { return tabManager.spacePagePosition }
         let target = tabManager.spacePagePosition - settleFrom
@@ -1707,8 +1655,7 @@ struct Sidebar: View {
     }
 
     private func handleSwipeEnded(_ translation: CGFloat) {
-        // the gesture is over — release the swipe flag now (not at settle), so the
-        // very next swipe can take over immediately instead of waiting out a cooldown
+        // released now, not at settle, so the next swipe can take over at once
         let wasSwiping = isSwiping
         isSwiping = false
         guard tabManager.kind == .main else { return }
@@ -1751,8 +1698,10 @@ struct Sidebar: View {
         // at release: show the target space's (already-mounted) page now, so the
         // content crossfades in lockstep with the slide instead of snapping in
         // when the carousel settles. the pager's own reslot stays at completion
-        if target != base {
-            tabManager.beginContentSwitch(toSpaceAt: target)
+        // slots are `stripSpaces` order, which a click-jump's glide reorders
+        let landing = tabManager.stripSpaces[target]
+        if target != base, let index = tabManager.spaces.firstIndex(where: { $0.id == landing.id }) {
+            tabManager.beginContentSwitch(toSpaceAt: index)
         }
 
         isSettling = true
@@ -1776,7 +1725,7 @@ struct Sidebar: View {
                     settledIndex = target
                     previousSettledIndex = nil
                 }
-                tabManager.selectSpace(at: target)  // model catches up; panel reslots
+                tabManager.selectSpace(landing)  // model catches up; panel reslots
             } else {
                 tabManager.endContentSwitch()
             }
@@ -1933,6 +1882,20 @@ private struct SpaceHeader: View {
         )
         .animation(Motion.hover, value: active)
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        // its buttons only appear on hover, so they're offered as actions instead
+        .accessibilityElement(children: isRenaming ? .contain : .ignore)
+        .accessibilityLabel(space.name)
+        .accessibilityValue(space.pinnedCollapsed ? "pinned tabs hidden" : "")
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityActions {
+            if tabManager.kind == .main {
+                Button(space.pinnedCollapsed ? "Show Pinned Tabs" : "Hide Pinned Tabs") {
+                    withAnimation(Motion.pop) { space.pinnedCollapsed.toggle() }
+                }
+                Button("Rename Space") { beginRename(space) }
+                Button("Edit Space…") { isEditing = true }
+            }
+        }
         .onHover { isHovering = $0 }
         // tap the row (not the edit button) to rename inline
         .onTapGesture { if !isRenaming, tabManager.kind == .main { beginRename(space) } }
@@ -2104,10 +2067,8 @@ private struct SplitSegmentCell: View {
     }
 }
 
-/// single tab row: favicon, title, loading spinner / close-on-hover
-
-/// internal rather than private so the self-test can render a real row and read
-/// what it actually drew — the rename bug it caught lived in this view alone
+/// single tab row: favicon, title, loading spinner / close-on-hover. internal so
+/// the self-test can render a real row
 struct TabRow: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.sidebarMetrics) private var metrics
@@ -2115,6 +2076,8 @@ struct TabRow: View {
     let tab: BrowserTab
     let isSelected: Bool
     var dragInProgress = false
+    /// the folder the row is filed under, for VoiceOver
+    var folder: String?
     @State private var isHovering = false
     @State private var iconHovering = false
     @State private var textHovering = false
@@ -2143,17 +2106,15 @@ struct TabRow: View {
     /// rows don't light up as the ghost passes over them
     private var showsHover: Bool { isHovering && !dragInProgress }
 
-    /// "Click to rename" appears only in the moment after a rename lands, and
-    /// only on the tab you're already on — on any other row a click selects it,
-    /// so the hint would be a lie. Deliberately not a hover affordance: it says
-    /// "that name was chosen for you, and you can change it", which is worth
-    /// saying once after the dust settles and tiresome on every pass of the
-    /// cursor
+    /// "Click to rename" shows only just after a rename lands, and only on the
+    /// selected tab — on any other row a click selects instead
     private var showsRenameHint: Bool {
         isSelected && !isEditing && justRenamed
     }
     /// a pinned tab sitting somewhere other than its saved page
     private var offPinned: Bool { tab.isOffPinnedURL }
+    /// only a pinned row carries the unread badge
+    private var shownTitle: String { tab.isPinned ? tab.badgedTitle : tab.displayTitle }
     /// staged for a split via ⌘/⇧-click
     private var multiSelected: Bool { tabManager.selection.contains(tab.id) }
     /// the accent of the space this row is drawn for — a neighbour panel in the
@@ -2175,9 +2136,16 @@ struct TabRow: View {
         // one element to VoiceOver, not a favicon plus a label plus two hover
         // buttons: the row *is* the control, and its name is the tab's name
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(tab.displayTitle)
+        .accessibilityLabel(shownTitle)
         .accessibilityValue(accessibilityState)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { select() }
+        .accessibilityActions { TabRowMenu(row: self, spoken: true) }
+        .focusable(interactions: .activate)
+        .onKeyPress(keys: [.return, .space]) { _ in
+            select()
+            return .handled
+        }
         // ⌘-click stages this tab for a split; ⇧-click extends the range; a plain
         // click selects it (and clears any staging)
         .overlay {
@@ -2199,10 +2167,7 @@ struct TabRow: View {
                 draftName = tab.displayTitle
                 isEditing = true
             } else {
-                tabManager.clearSelection()
-                // picking a tab is a decision: it also dismisses the command bar
-                tabManager.selectedTabID = tab.id
-                tabManager.isCommandBarVisible = false
+                select()
             }
         }
         // a tab you've navigated away from is no longer the one you were naming
@@ -2234,277 +2199,156 @@ struct TabRow: View {
         .contextMenu { TabRowMenu(row: self) }
     }
 
+    /// picking a tab is a decision: it also dismisses the command bar
+    private func select() {
+        tabManager.clearSelection()
+        tabManager.selectedTabID = tab.id
+        tabManager.isCommandBarVisible = false
+    }
+
     /// true when this row is part of a multi-selection worth acting on as one
-    var isMultiSelected: Bool {
+    private var isMultiSelected: Bool {
         tabManager.selection.count > 1 && tabManager.selection.contains(tab.id)
     }
 
-    /// what the menu offers when several tabs are selected: the same verbs, but
-    /// applied to all of them. The single-tab items would be a lie here — you
-    /// right-clicked five tabs, not one.
-    @ViewBuilder
-    var bulkMenuItems: some View {
+    /// the context menu, which VoiceOver also offers as actions. several selected
+    /// tabs get the same verbs applied to all of them: the single-tab items would
+    /// be a lie, as you right-clicked five tabs, not one
+    fileprivate var menuEntries: [MenuEntry] { isMultiSelected ? bulkMenuEntries : singleTabMenuEntries }
+
+    private var bulkMenuEntries: [MenuEntry] {
         let chosen = tabManager.selectedTabs
         let count = chosen.count
         let allPinned = chosen.allSatisfy(\.isPinned)
         let allMuted = chosen.allSatisfy(\.isMuted)
-
-        Text("\(count) tabs selected")
-
-        Button {
-            tabManager.newFolder(with: chosen)
-        } label: {
-            Label("New Folder with \(count) Tabs", systemImage: "folder.badge.plus")
-                .labelStyle(.titleAndIcon)
-        }
-
-        Button {
-            tabManager.setPinnedForSelection(!allPinned)
-        } label: {
-            Label(
-                allPinned ? "Unpin \(count) Tabs" : "Pin \(count) Tabs",
-                systemImage: allPinned ? "pin.slash" : "pin")
-                .labelStyle(.titleAndIcon)
-        }
-
-        Button {
-            tabManager.setMutedForSelection(!allMuted)
-        } label: {
-            Label(
+        var entries: [MenuEntry] = [
+            MenuEntry(title: "\(count) tabs selected", kind: .header),
+            .button("New Folder with \(count) Tabs", "folder.badge.plus") { tabManager.newFolder(with: chosen) },
+            .button(allPinned ? "Unpin \(count) Tabs" : "Pin \(count) Tabs", allPinned ? "pin.slash" : "pin") {
+                tabManager.setPinnedForSelection(!allPinned)
+            },
+            .button(
                 allMuted ? "Unmute \(count) Tabs" : "Mute \(count) Tabs",
-                systemImage: allMuted ? "speaker.wave.2" : "speaker.slash")
-                .labelStyle(.titleAndIcon)
-        }
-
-        Button {
-            tabManager.hibernateSelection()
-        } label: {
-            Label("Put \(count) Tabs to Sleep", systemImage: "moon.zzz")
-                .labelStyle(.titleAndIcon)
-        }
-
+                allMuted ? "speaker.wave.2" : "speaker.slash"
+            ) { tabManager.setMutedForSelection(!allMuted) },
+            .button("Put \(count) Tabs to Sleep", "moon.zzz") { tabManager.hibernateSelection() },
+        ]
         if tabManager.kind == .main, tabManager.spaces.count > 1 {
-            Menu {
-                ForEach(tabManager.spaces) { space in
-                    if space.id != tabManager.selectedSpaceID {
-                        Button(space.name) { tabManager.moveSelection(to: space) }
-                    }
-                }
-            } label: {
-                Label("Move \(count) Tabs to Space", systemImage: "arrow.right.square")
-                    .labelStyle(.titleAndIcon)
-            }
+            entries.append(MenuEntry(
+                title: "Move \(count) Tabs to Space", systemImage: "arrow.right.square",
+                kind: .submenu(
+                    otherSpaces { tabManager.moveSelection(to: $0) }, spokenPrefix: "Move \(count) Tabs to")))
         }
-
-        Divider()
-        splitMenuItems
-        Divider()
-
-        Button {
-            tabManager.closeSelection()
-        } label: {
-            Label("Close \(count) Tabs", systemImage: "xmark")
-                .labelStyle(.titleAndIcon)
-        }
+        entries += [.divider] + splitMenuEntries + [.divider]
+        entries.append(.button("Close \(count) Tabs", "xmark") { tabManager.closeSelection() })
+        return entries
     }
 
-    @ViewBuilder
-    var singleTabMenuItems: some View {
+    private var singleTabMenuEntries: [MenuEntry] {
         let isIncognito = tabManager.kind == .incognito
-        Group {
-            if !isIncognito {
-                Button {
-                    tabManager.toggleEssential(tab)
-                } label: {
-                    Label("Add to Favourites", systemImage: "star")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-            Button {
+        var entries: [MenuEntry] = []
+        if !isIncognito {
+            entries.append(.button("Add to Favourites", "star") { tabManager.toggleEssential(tab) })
+        }
+        entries.append(
+            .button(tab.isPinned ? "Unpin Tab" : "Pin Tab", tab.isPinned ? "pin.slash" : "pin") {
                 tabManager.togglePin(tab)
-            } label: {
-                Label(
-                    tab.isPinned ? "Unpin Tab" : "Pin Tab",
-                    systemImage: tab.isPinned ? "pin.slash" : "pin")
-                    .labelStyle(.titleAndIcon)
-            }
-            if tab.isOffPinnedURL, let here = tab.url {
-                Button {
-                    tab.pinnedURL = here
-                    tabManager.scheduleSave()
-                } label: {
-                    Label("Make This the Pinned Page", systemImage: "pin.circle")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-
-            Button {
+            })
+        if tab.isOffPinnedURL, let here = tab.url {
+            entries.append(.button("Make This the Pinned Page", "pin.circle") {
+                tab.pinnedURL = here
+                tabManager.scheduleSave()
+            })
+        }
+        entries.append(
+            .button(tab.isMuted ? "Unmute Tab" : "Mute Tab", tab.isMuted ? "speaker.wave.2" : "speaker.slash") {
                 tab.toggleMuted()
-            } label: {
-                Label(
-                    tab.isMuted ? "Unmute Tab" : "Mute Tab",
-                    systemImage: tab.isMuted ? "speaker.wave.2" : "speaker.slash")
-                    .labelStyle(.titleAndIcon)
-            }
-            if tab.isCapturing {
-                Button {
-                    tab.stopCapture()
-                } label: {
-                    Label("Stop Camera and Microphone", systemImage: "video.slash")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-
-            Divider()
-
-            Button {
-                tab.copyLink()
-            } label: {
-                Label("Copy Link", systemImage: "link")
-                    .labelStyle(.titleAndIcon)
-            }
-            Button {
-                tabManager.duplicateTab(tab)
-            } label: {
-                Label("Duplicate Tab", systemImage: "plus.square.on.square")
-                    .labelStyle(.titleAndIcon)
-            }
-            if tab.pendingURL == nil {
-                Button {
-                    tab.reload()
-                } label: {
-                    Label("Reload Tab", systemImage: "arrow.clockwise")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-            Button {
+            })
+        if tab.isCapturing {
+            entries.append(.button("Stop Camera and Microphone", "video.slash") { tab.stopCapture() })
+        }
+        entries += [
+            .divider,
+            .button("Copy Link", "link") { tab.copyLink() },
+            .button("Duplicate Tab", "plus.square.on.square") { tabManager.duplicateTab(tab) },
+        ]
+        if tab.pendingURL == nil {
+            entries.append(.button("Reload Tab", "arrow.clockwise") { tab.reload() })
+        }
+        entries.append(
+            .button(
+                tab.keepsLoaded ? "Stop Keeping Loaded" : "Keep Loaded", tab.keepsLoaded ? "lock.open" : "lock"
+            ) {
                 tab.keepsLoaded.toggle()
                 tabManager.scheduleSave()
-            } label: {
-                Label(
-                    tab.keepsLoaded ? "Stop Keeping Loaded" : "Keep Loaded",
-                    systemImage: tab.keepsLoaded ? "lock.open" : "lock")
-                    .labelStyle(.titleAndIcon)
-            }
-            if !isIncognito, tabManager.spaces.count > 1 {
-                Menu {
-                    ForEach(tabManager.spaces) { space in
-                        if space.id != tabManager.selectedSpaceID {
-                            Button(space.name) { tabManager.moveTab(tab, toSpace: space) }
-                        }
-                    }
-                } label: {
-                    Label("Move to Space", systemImage: "arrow.right.square")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-
-            Divider()
-
-            // a name is remembered on disk, so incognito tabs keep the page's own
-            if !isIncognito {
-                Button {
-                    tabManager.renamingTab = tab
-                } label: {
-                    Label("Rename Tab…", systemImage: "pencil")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-
-            // only offered when there's something to revert *to* — a tab showing
-            // its own page title has nothing to put back
-            if TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) != nil {
-                Button {
-                    tabManager.usePageTitle(for: tab)
-                } label: {
-                    Label("Use Page Title", systemImage: "arrow.uturn.backward")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-
-            Divider()
-            splitMenuItems
-            Divider()
-
-            if tab.isPinned, tab.pendingURL == nil {
-                Button {
-                    tabManager.requestClose(tab, keepingPin: true)
-                } label: {
-                    Label("Close and Keep Pinned", systemImage: "minus")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-            Button {
-                tabManager.requestClose(tab)
-            } label: {
-                Label(tab.isPinned ? "Archive Pinned Tab" : "Close Tab", systemImage: "xmark")
-                    .labelStyle(.titleAndIcon)
-            }
-            if !tab.isPinned {
-                Button {
+            })
+        if !isIncognito, tabManager.spaces.count > 1 {
+            entries.append(MenuEntry(
+                title: "Move to Space", systemImage: "arrow.right.square",
+                kind: .submenu(otherSpaces { tabManager.moveTab(tab, toSpace: $0) }, spokenPrefix: "Move to")))
+        }
+        entries.append(.divider)
+        // a name is remembered on disk, so incognito tabs keep the page's own
+        if !isIncognito {
+            entries.append(.button("Rename Tab…", "pencil") { tabManager.renamingTab = tab })
+        }
+        // only offered when there's something to revert *to* — a tab showing
+        // its own page title has nothing to put back
+        if TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) != nil {
+            entries.append(.button("Use Page Title", "arrow.uturn.backward") { tabManager.usePageTitle(for: tab) })
+        }
+        entries += [.divider] + splitMenuEntries + [.divider]
+        if tab.isPinned, tab.pendingURL == nil {
+            entries.append(.button("Close and Keep Pinned", "minus") { tabManager.requestClose(tab, keepingPin: true) })
+        }
+        entries.append(.button(tab.isPinned ? "Archive Pinned Tab" : "Close Tab", "xmark") { tabManager.requestClose(tab) })
+        if !tab.isPinned {
+            entries += [
+                .button("Close Tabs Below", "arrow.down.to.line") {
                     tabManager.closeTodayTabs(besides: tab, onlyBelow: true)
-                } label: {
-                    Label("Close Tabs Below", systemImage: "arrow.down.to.line")
-                        .labelStyle(.titleAndIcon)
-                }
-                Button {
+                },
+                .button("Close Other Tabs", "xmark.square") {
                     tabManager.closeTodayTabs(besides: tab, onlyBelow: false)
-                } label: {
-                    Label("Close Other Tabs", systemImage: "xmark.square")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
+                },
+            ]
+        }
+        return entries
+    }
+
+    /// every space but the current one, each moving the tab(s) there
+    private func otherSpaces(_ move: @escaping (Space) -> Void) -> [MenuEntry] {
+        tabManager.spaces.filter { $0.id != tabManager.selectedSpaceID }.map { space in
+            .button(space.name) { move(space) }
         }
     }
 
     /// split-view actions, contextual to whether this tab is already a pane, a
     /// split is currently shown, or there's a focused tab to split alongside
-    @ViewBuilder
-    private var splitMenuItems: some View {
+    private var splitMenuEntries: [MenuEntry] {
         let space = tabManager.currentSpace
-        if tabManager.selection.count >= SplitGroup.minPanes,
-            tabManager.selection.contains(tab.id)
-        {
-            Button {
-                tabManager.createSplitFromSelection()
-            } label: {
-                Label(
-                    "Open \(tabManager.selection.count) Tabs in Split View",
-                    systemImage: "rectangle.split.2x1")
-                    .labelStyle(.titleAndIcon)
-            }
+        if tabManager.selection.count >= SplitGroup.minPanes, tabManager.selection.contains(tab.id) {
+            return [
+                .button("Open \(tabManager.selection.count) Tabs in Split View", "rectangle.split.2x1") {
+                    tabManager.createSplitFromSelection()
+                }
+            ]
         } else if let group = space.splitGroup(containing: tab.id) {
-            Button {
-                tabManager.removeFromSplit(tab)
-            } label: {
-                Label("Remove from Split", systemImage: "rectangle.split.2x1.slash")
-                    .labelStyle(.titleAndIcon)
-            }
-            Button {
-                tabManager.dissolveSplit(group)
-            } label: {
-                Label("Unsplit", systemImage: "rectangle")
-                    .labelStyle(.titleAndIcon)
-            }
-        } else if let group = tabManager.displayedSplitGroup,
-            group.tabIDs.count < SplitGroup.maxPanes
-        {
-            Button {
-                tabManager.addToSplit(group, tab: tab)
-            } label: {
-                Label("Add to Split View", systemImage: "plus.rectangle")
-                    .labelStyle(.titleAndIcon)
-            }
+            return [
+                .button("Remove from Split", "rectangle.split.2x1.slash") { tabManager.removeFromSplit(tab) },
+                .button("Unsplit", "rectangle") { tabManager.dissolveSplit(group) },
+            ]
+        } else if let group = tabManager.displayedSplitGroup, group.tabIDs.count < SplitGroup.maxPanes {
+            return [.button("Add to Split View", "plus.rectangle") { tabManager.addToSplit(group, tab: tab) }]
         } else if let focused = tabManager.selectedTab, focused.id != tab.id,
             !focused.isEssential, space.tabs.contains(where: { $0.id == focused.id })
         {
-            Button {
-                tabManager.createSplit([focused, tab], anchor: focused)
-            } label: {
-                Label("Open in Split View", systemImage: "rectangle.split.2x1")
-                    .labelStyle(.titleAndIcon)
-            }
+            return [
+                .button("Open in Split View", "rectangle.split.2x1") {
+                    tabManager.createSplit([focused, tab], anchor: focused)
+                }
+            ]
         }
+        return []
     }
 
     /// the ordinary row: favicon, title and accessory under one full-width highlight
@@ -2522,7 +2366,7 @@ struct TabRow: View {
                         .font(.system(size: 10))
                         .foregroundStyle(ink.opacity(0.3))
                         .lineLimit(1)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .transition(Motion.slide(.bottom))
                 }
             }
             .animation(Motion.pop, value: showsRenameHint)
@@ -2545,11 +2389,9 @@ struct TabRow: View {
         .animation(Motion.hover, value: highlightOpacity)
     }
 
-    /// an off-pinned row: the highlight is split into a 32×32 square around the
-    /// favicon and a separate highlight around the text, each lighting only while
-    /// it itself is hovered. once the tab is focused it reads as one continuous
-    /// highlight, but the split layout and slash stay put. the text's 5pt left
-    /// inset mirrors the 5pt gap from the close button to the row's right edge
+    /// an off-pinned row: separate hover highlights for the favicon square and the
+    /// text, one continuous highlight once focused. the text's leading inset
+    /// mirrors the close button's gap to the row's right edge
     private var splitRow: some View {
         HStack(spacing: 0) {
             faviconView
@@ -2583,7 +2425,7 @@ struct TabRow: View {
                             .font(.system(size: 10))
                             .foregroundStyle(ink.opacity(0.3))
                             .lineLimit(1)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .transition(Motion.slide(.bottom))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -2596,10 +2438,9 @@ struct TabRow: View {
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(ink.opacity(!isSelected && textHovering && !dragInProgress ? 0.09 : 0))
-                    // reach 3pt left over the favicon square so the text gets the
-                    // same 8pt highlight inset the favicon has, without moving the
-                    // text. hover still uses the un-extended bounds below, so the
-                    // favicon wins wherever the two overlap
+                    // reaches 3pt over the favicon square for an 8pt inset without
+                    // moving the text; hover keeps the un-extended bounds, so the
+                    // favicon wins where the two overlap
                     .padding(.leading, -3))
             .animation(Motion.hover, value: textHovering)
             .contentShape(Rectangle())
@@ -2634,10 +2475,8 @@ struct TabRow: View {
     @ViewBuilder
     private var titleText: some View {
         if isEditing {
-            // click-to-rename: the row's own name becomes the field, so the
-            // text neither moves nor restyles as you start typing. same
-            // gesture as the space header above: enter or click-away commits,
-            // escape discards
+            // the row's own name becomes the field, so the text neither moves nor
+            // restyles; enter or click-away commits, escape discards
             TextField("Name", text: $draftName)
                 .textFieldStyle(.plain)
                 .font(.system(size: metrics.fontSize))
@@ -2658,15 +2497,13 @@ struct TabRow: View {
                     }
                 }
         } else {
-            // the tab's *display* name — what you called it, else what the model
-            // called it, else the page's own title. it sparkles when it changes,
-            // but only when the page underneath it hasn't (see SparklingTitle).
-            // deliberately no text pointer: hovering a focused tab is still just
-            // hovering a tab — the I-beam belongs to the field, once you're in it
+            // what you called the tab, else what the model called it, else the
+            // page's title; it sparkles when it changes on the same page. no I-beam
+            // here: that belongs to the field
             RenamingTitle(
-                title: tab.displayTitle,
-                // the *stored* name, not the text on screen: a page retitling
-                // itself (four times, on a YouTube load) is not a rename
+                title: shownTitle,
+                // the stored name, not the text on screen: a page retitling
+                // itself is not a rename
                 renameToken: TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) ?? "",
                 identity: (tab.url ?? tab.pendingURL)?.absoluteString ?? "",
                 fontSize: metrics.fontSize,
@@ -2694,10 +2531,13 @@ struct TabRow: View {
     /// sleep — said out loud instead
     private var accessibilityState: String {
         var parts: [String] = []
+        if isSelected { parts.append("selected") }
         if tab.isPinned { parts.append("pinned") }
+        if let folder { parts.append("in folder \(folder)") }
         if tab.isMuted { parts.append("muted") }
         else if tab.isPlayingMediaContent { parts.append("playing audio") }
         if tab.isHibernated { parts.append("asleep") }
+        if tab.isPinned, let unread = tab.unread { parts.append(UnreadBadge.spoken(unread)) }
         if let host = (tab.url ?? tab.pendingURL)?.host() { parts.append(host) }
         return parts.joined(separator: ", ")
     }
@@ -2706,7 +2546,8 @@ struct TabRow: View {
     /// "back to pinned URL" and "separate from pinned tab") only while hovering
     private func setIconHover(_ hovering: Bool) {
         iconHovering = hovering
-        guard hovering else { stopFlagsMonitor(); return }
+        stopFlagsMonitor()
+        guard hovering else { return }
         cmdHeld = NSEvent.modifierFlags.contains(.command)
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             cmdHeld = event.modifierFlags.contains(.command)
@@ -2756,11 +2597,15 @@ struct TabRow: View {
                 .tooltip(tab.isMuted ? "Unmute Tab" : "Mute Tab", keys: ["⌘", "⇧", "M"])
                 .transition(.opacity)
             }
+            // the ✕ takes the badge's place while hovered
+            if tab.isPinned, !visible, let unread = tab.unread {
+                UnreadBadge(badge: unread)
+                    .frame(height: 16)
+                    .transition(.opacity)
+            }
             if visible {
-                // Arc's pinned control is ONE slot that changes meaning: an
-                // open pinned tab offers "–" (close the page, keep the pin);
-                // once dormant the same spot shows "✕", which archives the
-                // pin. Never both at once — closing is two deliberate steps
+                // a pinned tab's one slot: "–" while open closes the page and
+                // keeps the pin; once dormant "✕" archives it. never both at once
                 let keepsPin = tab.isPinned && tab.pendingURL == nil
                 // one button for both, so the – can turn into the ✕ in place
                 HoverIconButton(boxSize: metrics.closeBoxSize) {
@@ -2777,6 +2622,7 @@ struct TabRow: View {
         }
         .animation(Motion.hover, value: showsAudioControl)
         .animation(Motion.hover, value: tab.isCapturing)
+        .animation(Motion.hover, value: tab.isPinned ? tab.unread : nil)
         // the ✕ takes width from the title as it appears; easing it means the
         // name reflows rather than snapping to a new truncation mid-hover
         .animation(Motion.hover, value: visible)
@@ -2787,13 +2633,37 @@ struct TabRow: View {
     private var showsAudioControl: Bool { tab.isPlayingMediaContent || tab.isMuted }
 }
 
-/// the floating drag ghost: a 60%-opacity chip with a soft highlight that
-/// morphs between the two zones. over the favourites the favicon is the
-/// centred centrepiece with no name; over the tabs the favicon slides back to
-/// the left and the name fades in beside it. the frame resizes to match
-/// the floating ghost for a whole-split drag: every pane rendered as a merged row
-/// of segment pills, matching the sidebar block — so dragging a split shows all of
-/// it, not just one representative tab
+/// a pinned tab's or favourite's unread mark: a count, or a dot for a bare flag
+struct UnreadBadge: View {
+    @Environment(\.chromeInk) private var ink
+    let badge: AppBadge
+
+    var body: some View {
+        switch badge {
+        case .flag:
+            Circle()
+                .fill(ink.opacity(0.55))
+                .frame(width: 6, height: 6)
+        case .count(let count):
+            Text(count > 99 ? "99+" : "\(count)")
+                .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(ink.opacity(0.75))
+                .padding(.horizontal, 4)
+                .frame(minWidth: 15, minHeight: 15)
+                .background(Capsule().fill(ink.opacity(0.13)))
+        }
+    }
+
+    static func spoken(_ badge: AppBadge) -> String {
+        switch badge {
+        case .flag: "unread"
+        case .count(let count): "\(count) unread"
+        }
+    }
+}
+
+/// the floating ghost for a whole-split drag: every pane as a merged row of
+/// segment pills, matching the sidebar block
 private struct SplitDragGhost: View {
     let members: [BrowserTab]
     let gap: CGFloat
@@ -2810,6 +2680,8 @@ private struct SplitDragGhost: View {
     }
 }
 
+/// the floating drag ghost, morphing between the zones: over the favourites a
+/// centred favicon, over the tabs the favicon at the leading edge with the name
 private struct DragGhost: View {
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.chromeInk) private var ink
@@ -2869,13 +2741,9 @@ private struct DragGhost: View {
     }
 }
 
-/// tints its content with the backdrop's *blended* ink and accent — for the
-/// chrome that sits over the window backdrop rather than inside the sliding
-/// filmstrip, so it crossfades with the background instead of flipping when the
-/// switch lands.
-///
-/// a modifier of its own because it reads the carousel position: applied inline
-/// it would make the sidebar's whole body a per-frame dependency of every swipe
+/// the backdrop's blended ink and accent, for chrome over the window backdrop.
+/// a modifier of its own because it reads the carousel position: inline, the
+/// sidebar's whole body would re-run on every frame of a swipe
 private struct BlendedInk: ViewModifier {
     @Environment(TabManager.self) private var tabManager
 
@@ -2886,17 +2754,18 @@ private struct BlendedInk: ViewModifier {
     }
 }
 
-/// a tab row's context menu. a view of its own so `.contextMenu` is handed a
-/// value to resolve when the menu is raised, instead of the whole item tree
-/// being constructed on every one of the row's body passes
+/// a tab row's context menu, or the same entries as accessibility actions. a
+/// view of its own so it is handed a value to resolve when asked, instead of the
+/// entries being built on every one of the row's body passes
 private struct TabRowMenu: View {
     let row: TabRow
+    var spoken = false
 
     var body: some View {
-        if row.isMultiSelected {
-            row.bulkMenuItems
+        if spoken {
+            MenuEntryActions(entries: row.menuEntries)
         } else {
-            row.singleTabMenuItems
+            MenuEntriesView(entries: row.menuEntries)
         }
     }
 }
@@ -2960,8 +2829,8 @@ private struct LivePanelOnly<Content: View>: View {
     }
 }
 
-/// The filmstrip's scroll. The only pager piece that reads the per-frame
-/// position, so a swipe re-runs this modifier and not the panels it moves.
+/// the filmstrip's scroll: the only pager piece that reads the per-frame
+/// position, so a swipe re-runs this modifier and not the panels it moves
 private struct PagerOffset: ViewModifier {
     @Environment(TabManager.self) private var tabManager
     let pitch: CGFloat
@@ -2971,9 +2840,9 @@ private struct PagerOffset: ViewModifier {
     }
 }
 
-/// A pager slot. A parked panel is skipped when the pager re-runs for a switch
-/// it had no part in; what it shows still updates through the observation its
-/// own body records. The live panel always re-runs with the sidebar.
+/// a pager slot. a parked panel is skipped when the pager re-runs for a switch
+/// it had no part in, still updating through its own body's observation; the
+/// live panel always re-runs with the sidebar
 private struct PanelSlot<Content: View>: View, Equatable {
     let space: Space
     let live: Bool
@@ -2986,8 +2855,8 @@ private struct PanelSlot<Content: View>: View, Equatable {
     }
 }
 
-/// Builds its content in its own body, so whatever that content reads
-/// invalidates this leaf rather than the view that declared it.
+/// builds its content in its own body, so whatever that content reads
+/// invalidates this leaf rather than the view that declared it
 private struct Live<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
@@ -2997,7 +2866,6 @@ private struct Live<Content: View>: View {
 /// where an incognito window's profile button would be: it says what the window
 /// is, and closing it is the only thing left to do
 private struct IncognitoBadge: View {
-    @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
 
     var body: some View {

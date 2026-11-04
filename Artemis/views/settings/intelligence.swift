@@ -1,13 +1,7 @@
 import SwiftUI
 
-/// The on-device intelligence pane.
-///
-/// Structured around one switch, deliberately. The most consistent complaint
-/// about AI in a browser, from the people most likely to use this one, isn't
-/// that it's bad — it's that it's imposed and awkward to remove: features
-/// force-pushed, spread across a dozen settings, downloading gigabytes without
-/// asking. So the master switch is first, it is off until you turn it on, and
-/// everything under it is greyed out and plainly subordinate to it.
+/// the on-device intelligence pane: one master switch, off by default, with every
+/// feature under it disabled until it is on
 struct IntelligenceSettings: View {
     @AppStorage(Intelligence.enabledKey) private var isEnabled = false
     @AppStorage(Intelligence.tidyTitlesKey) private var tidyTitles = true
@@ -79,8 +73,7 @@ struct IntelligenceSettings: View {
             }
         }
         .formStyle(.grouped)
-        // the one place a stale answer would be visible: you go to System
-        // Settings, switch Apple Intelligence on, and come back here
+        // readiness changes when Apple Intelligence is switched on in System Settings
         .onAppear { Intelligence.refreshReadiness() }
     }
 }

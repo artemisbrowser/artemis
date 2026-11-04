@@ -5,17 +5,15 @@ import WebKit
 
 // MARK: - Shared extension action icon
 
-/// a single extension's toolbar action: its icon, clickable to run the action
-/// or open its popup, with a right-click menu to pin, open options, disable, or
-/// remove. reused by both the url-bar pinned strip and the dropdown grid so the
-/// two stay visually identical, arc-style.
-struct ExtensionActionButton: View {
+/// one extension's action: a click runs it or opens its popup, a right-click
+/// pins, opens options, disables or removes it. drawn by both the url-bar strip
+/// and the dropdown grid
+private struct ExtensionActionButton: View {
     @Environment(ExtensionManager.self) private var extensions
     @Environment(\.chromeInk) private var chromeInk
     let ext: InstalledExtension
     var boxSize: CGFloat = 26
-    /// tile mode (the dropdown grid): a rounded, always-visible backing plate and
-    /// a pin badge, arc-style. bare mode (the url-bar strip) has neither.
+    /// the dropdown grid's form: an always-visible plate and a pin badge
     var tile: Bool = false
 
     @State private var isHovering = false
@@ -48,15 +46,11 @@ struct ExtensionActionButton: View {
         .contextMenu { contextMenu }
         .popover(isPresented: $showPopup, arrowEdge: .bottom) {
             if let popupAction {
-                // the popup web view is created/loaded async by WebKit — present
-                // a real-sized placeholder until it lands, or the popover opens
-                // as an empty glass blob that only fills in on a later re-render
                 ExtensionPopupContainer(action: popupAction)
             }
         }
-        // a popup left open holds its web view (and whatever hung state it was
-        // in) forever — Surfshark's spinner survived across opens this way.
-        // closing the action tears the popup page down so every open is fresh
+        // closing the popover must close the popup page, or its web view and any
+        // hung state it holds carry over to the next open
         .onChange(of: showPopup) { _, shown in
             if !shown {
                 popupAction?.closePopup()
@@ -119,7 +113,7 @@ struct ExtensionActionButton: View {
         }
         if ext.webExtension.hasOptionsPage {
             Button("Options…") {
-                Task { try? await extensions.openOptionsPage(for: ext) }
+                extensions.openOptionsPage(for: ext)
             }
         }
         Divider()
@@ -142,52 +136,53 @@ struct ExtensionActionButton: View {
 
 // MARK: - Popup host
 
-/// bridges the async gap between "user clicked" and "WebKit built the popup web
-/// view": shows a fixed-size loading placeholder, polls briefly for the view
-/// (there's no notification for its creation), then swaps the real popup in
+/// an action's popup, behind a real-sized placeholder until WebKit builds its web
+/// view (an unsized popover opens as an empty blob). WebKit sends no notice of
+/// the build, so this polls
 struct ExtensionPopupContainer: View {
     let action: WKWebExtension.Action
     @State private var webView: WKWebView?
+    @State private var failed = false
 
     var body: some View {
         if let webView {
             ExtensionPopupView(webView: webView)
+        } else if failed {
+            Text("This extension's popup didn't open.")
+                .foregroundStyle(.secondary)
+                .padding(20)
         } else {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 360, height: 460)
                 .task {
-                    // ~5s of 50ms polls: popups are local resources, so the view
-                    // appears almost immediately — the tail is pure safety
                     for _ in 0..<100 {
                         // an unloaded extension's popup has no configuration, and
                         // WebKit throws building a web view without one
-                        guard action.webExtensionContext?.isLoaded == true else { return }
+                        guard action.webExtensionContext?.isLoaded == true else { break }
                         if let view = action.popupWebView {
                             webView = view
                             return
                         }
                         try? await Task.sleep(for: .milliseconds(50))
                     }
+                    if !Task.isCancelled { failed = true }
                 }
         }
     }
 }
 
-/// hosts an extension action's popup `WKWebView` in a SwiftUI popover. WebKit
-/// drives the popup's content size; we size to it, clamped to sane bounds so a
-/// misbehaving popup can't take over the screen.
-struct ExtensionPopupView: View {
+/// an extension action's popup web view, sized to the content WebKit reports,
+/// within `clamp`'s bounds
+private struct ExtensionPopupView: View {
     let webView: WKWebView
     @State private var size = ExtensionPopupView.clamp(.zero)
 
     var body: some View {
         PopupWebViewHost(webView: webView)
             .frame(width: size.width, height: size.height)
-            // WebKit drives the popup web view's size to the extension's own
-            // content — and keeps adjusting it as the popup lays out (Surfshark
-            // resizes itself well after load). track it live, or the popover
-            // freezes at the first guess and slices the content off at the edge
+            // WebKit keeps resizing the web view to the popup's content, well
+            // after load too; tracked live, or the popover clips at its first size
             .onReceive(
                 NotificationCenter.default.publisher(
                     for: NSView.frameDidChangeNotification, object: webView)
@@ -195,10 +190,8 @@ struct ExtensionPopupView: View {
             .onAppear {
                 webView.postsFrameChangedNotifications = true
                 resize()
-                // a password manager's popup opens onto a text field (unlock,
-                // search); make the web view first responder so typing works
-                // without a click-inside first. deferred: the popover's window
-                // doesn't exist yet at onAppear
+                // first responder so a popup's text field takes typing without a
+                // click; deferred, as the popover's window doesn't exist at onAppear
                 DispatchQueue.main.async {
                     webView.window?.makeFirstResponder(webView)
                 }
@@ -214,8 +207,8 @@ struct ExtensionPopupView: View {
         if clamped != size { size = clamped }
     }
 
-    /// popup bounds: Chrome's own limits (800×600 max), so any popup written
-    /// for Chrome fits whole — the old 520-wide cap cut wide popups' flanks off
+    /// popup bounds: at most Chrome's own 800×600, so a popup written for Chrome
+    /// fits whole
     private static func clamp(_ reported: CGSize) -> CGSize {
         CGSize(
             width: min(max(reported.width > 1 ? reported.width : 360, 250), 800),
@@ -232,9 +225,7 @@ private struct PopupWebViewHost: NSViewRepresentable {
 
 // MARK: - Pinned strip (lives in the url bar)
 
-/// the row of pinned extension icons that sits just left of the settings button
-/// in the url pill. empty (and zero-width) when nothing is pinned, so it never
-/// disturbs the bar's existing layout.
+/// the pinned extensions' icons in the url pill; zero-width when none are pinned
 struct PinnedExtensionsBar: View {
     @Environment(ExtensionManager.self) private var extensions
     @Environment(TabManager.self) private var tabManager
@@ -253,9 +244,8 @@ struct PinnedExtensionsBar: View {
 
 // MARK: - Dropdown grid (lives in the site-settings popover)
 
-/// the "Extensions" block inside the url-bar settings dropdown: a grid of every
-/// enabled extension's icon, plus an add button, mirroring Arc's panel. shows
-/// nothing but the add button when no extensions are installed.
+/// the "Extensions" block of the site-settings popover: every enabled
+/// extension's icon in a grid, then an add button
 struct ExtensionsDropdownSection: View {
     @Environment(ExtensionManager.self) private var extensions
     @Environment(TabManager.self) private var tabManager
@@ -304,7 +294,6 @@ struct ExtensionsDropdownSection: View {
         .onHover { addHovering = $0 }
         .disabled(isAdding)
         .tooltip("Add an extension")
-        // ask where to browse for extensions rather than jumping straight to Finder
         .popover(isPresented: $showSourceChooser, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 2) {
                 AddSourceRow(
@@ -334,16 +323,11 @@ struct ExtensionsDropdownSection: View {
 
     private func pickAndInstall() {
         guard let url = ExtensionPicker.run() else { return }
-        runInstall { try await extensions.installFromDisk(url) }
-    }
-
-    /// shared install-and-finalize wrapper
-    private func runInstall(_ install: @escaping () async throws -> InstalledExtension) {
         addError = nil
         isAdding = true
         Task {
             do {
-                let ext = try await install()
+                let ext = try await extensions.installFromDisk(url)
                 await ExtensionInstallFlow.finalize(ext, manager: extensions)
             } catch {
                 addError = error.localizedDescription
@@ -353,8 +337,7 @@ struct ExtensionsDropdownSection: View {
     }
 }
 
-/// a row in the "add extension" source chooser, styled like the other sidebar
-/// action rows (icon + title, hover highlight)
+/// a row in the "add extension" source chooser
 private struct AddSourceRow: View {
     let title: String
     let subtitle: String
@@ -389,10 +372,9 @@ private struct AddSourceRow: View {
     }
 }
 
-// MARK: - Store-page install banner
+// MARK: - Install
 
-/// shared open-panel for sideloading: accepts an unpacked folder or a packed
-/// .zip / .xpi / .crx archive
+/// the open panel for sideloading: an unpacked folder or a .zip, .xpi or .crx
 enum ExtensionPicker {
     @MainActor static func run() -> URL? {
         let panel = NSOpenPanel()
@@ -409,25 +391,22 @@ enum ExtensionPicker {
     }
 }
 
-/// finishes any install once the extension is parsed (but still disabled):
-/// shows the consent gate and either enables it or removes it. shared by every
-/// entry point — disk, store URL, and catalog — so they behave identically.
+/// finishes every install once the extension is parsed but still disabled:
+/// the consent gate then enables it or removes it
 enum ExtensionInstallFlow {
     @MainActor static func finalize(_ ext: InstalledExtension, manager: ExtensionManager) async {
-        // on where it was installed; Settings › Extensions adds other profiles
+        // enabled in the current profile only; Settings › Extensions adds others
         if ExtensionConsent.confirm(for: ext) {
             manager.setEnabled(ext, true, in: manager.currentProfile)
         } else {
-            manager.remove(ext)  // declined → leave nothing behind
+            manager.remove(ext)
         }
     }
 }
 
-/// the security gate: after an extension is parsed (but before anything runs),
-/// show exactly what it's asking for and require an explicit yes. an NSAlert
-/// works from any context — including inside the url-bar popover, where a SwiftUI
-/// sheet wouldn't attach cleanly.
-enum ExtensionConsent {
+/// what a parsed extension asks for, before any of it runs, needing an explicit
+/// yes. an `NSAlert`, since a SwiftUI sheet won't attach from inside a popover
+private enum ExtensionConsent {
     @MainActor static func confirm(for ext: InstalledExtension) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Install “\(ext.name)”?"

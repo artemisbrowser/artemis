@@ -1,42 +1,31 @@
 import CryptoKit
 import WebKit
 
-/// One subscribable filter list.
+/// one subscribable filter list
 struct Blocklist: Identifiable, Hashable {
     let id: String
     let name: String
     let detail: String
     let url: URL
-    /// off by default — the two core lists carry the weight; the rest are opt-in
     let onByDefault: Bool
     /// how long a downloaded copy stays current, from the lists' `Expires:` header
     var maxAge: TimeInterval = 4 * 86_400
 
-    var enabledKey: String { "blocklist.\(id).enabled" }
+    fileprivate var enabledKey: String { "blocklist.\(id).enabled" }
 
     var isEnabled: Bool {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? onByDefault
     }
 }
 
-/// Native content blocking via `WKContentRuleListStore`.
-///
-/// Rules are compiled to WebKit bytecode and evaluated in the networking process,
-/// so blocking happens before a request leaves the machine and page script can't
-/// see or defeat it. Artemis subscribes to real EasyList-format filter lists and
-/// converts them with `AdblockConverter` — the same source material uBlock Origin
-/// uses — rather than shipping a hand-written domain list.
-///
-/// Compilation is the expensive part (tens of thousands of rules), so it happens
-/// once per list *version*: the identifier embeds a hash of the source text, and
-/// an unchanged list is looked up from WebKit's on-disk store instead of rebuilt.
+/// native content blocking via `WKContentRuleListStore`, from EasyList-format lists converted by
+/// `AdblockConverter`. a chunk's identifier embeds a hash of its JSON, so an unchanged chunk is
+/// looked up in WebKit's on-disk store instead of compiled again
 @Observable
 @MainActor
 final class ContentBlocker {
     static let shared = ContentBlocker()
 
-    /// the catalog. EasyList + EasyPrivacy are the pair almost every blocker
-    /// starts from; the rest are the common add-ons people actually want
     static let catalog: [Blocklist] = [
         Blocklist(
             id: "easylist", name: "EasyList",
@@ -62,13 +51,11 @@ final class ContentBlocker {
 
     private static let enabledKey = "contentBlockingEnabledV1"
     private static let lastUpdateKey = "contentBlockingLastUpdate"
-    /// identifiers of the compiled chunks currently in WebKit's store, plus the
-    /// rule counts they represent. lets launch install the existing bytecode
-    /// without re-reading and re-converting 3.5MB of filter text every time
+    /// identifiers of the compiled chunks in WebKit's store, and their rule counts, which launch
+    /// installs without converting the lists again
     private static let compiledIdentifiersKey = "contentBlockingCompiledIDs"
     private static let compiledStatsKey = "contentBlockingCompiledStats"
-    /// fingerprint of `siteFixes` the compiled chunks were built with: a new fix
-    /// must force a rebuild, or launch keeps reinstalling the old bytecode
+    /// fingerprint of the `siteFixes` the compiled chunks were built with; a mismatch forces a rebuild
     private static let compiledFixesKey = "contentBlockingCompiledFixes"
     private static var fixesFingerprint: String {
         digest(String(data: (try? JSONEncoder().encode(siteFixes)) ?? Data(), encoding: .utf8) ?? "")
@@ -93,10 +80,8 @@ final class ContentBlocker {
     private(set) var lastError: String?
 
     @ObservationIgnored private var installed: [WKContentRuleList] = []
-    /// serializes every install. `apply()` (from the enable toggle) and
-    /// `updateLists` (from launch refresh or the Settings button) can otherwise
-    /// overlap, and whichever finished *second* would leave its chunk identifiers
-    /// on disk while the other's prune deleted them — a cache that never hits
+    /// serializes every install: an overlapping `apply()` and `updateLists` could each prune
+    /// the chunks the other recorded as compiled
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var refresher: Task<Void, Never>?
     @ObservationIgnored private let cacheDirectory = AppStorageLocation.directory
@@ -126,23 +111,19 @@ final class ContentBlocker {
         return "\(ruleCount.formatted()) rules active — updated \(updated)\(dropped)."
     }
 
-    var enabledLists: [Blocklist] { Self.catalog.filter(\.isEnabled) }
+    private var enabledLists: [Blocklist] { Self.catalog.filter(\.isEnabled) }
 
     func setList(_ list: Blocklist, enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: list.enabledKey)
-        // the compiled set no longer matches the subscription, so the launch
-        // fast path must not reuse it
+        // the compiled set no longer matches the subscription, so launch must not reuse it
         UserDefaults.standard.removeObject(forKey: Self.compiledIdentifiersKey)
         Task { await updateLists(force: true) }
     }
 
     // MARK: - Applying
 
-    /// block until nothing is compiling or installing.
-    ///
-    /// `isUpdating` only covers the download path; the launch rebuild compiles
-    /// through the same queue without setting it, so anything that needs a quiet
-    /// machine (the self-test's performance budgets) has to await the queue itself
+    /// returns once nothing is compiling or installing, including the launch rebuild, which
+    /// `isUpdating` doesn't cover
     func waitForIdle() async {
         await work?.value
     }
@@ -160,7 +141,7 @@ final class ContentBlocker {
 
     /// hosts the privacy list blocks, so a blocked request can be reported as a
     /// tracker; anything else blocked counts as an ad
-    @ObservationIgnored private(set) var trackerHosts: Set<String> = []
+    @ObservationIgnored private var trackerHosts: Set<String> = []
     private var trackerHostsCache: URL {
         cacheDirectory.appendingPathComponent("trackerhosts.txt")
     }
@@ -191,11 +172,6 @@ final class ContentBlocker {
         return hosts
     }
 
-    private func loadTrackerHosts() async {
-        guard trackerHosts.isEmpty else { return }
-        trackerHosts = await Self.readTrackerHosts(trackerHostsCache)
-    }
-
     @concurrent nonisolated private static func readTrackerHosts(_ file: URL) async -> Set<String> {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
         return Set(text.split(separator: "\n").map(String.init))
@@ -203,7 +179,6 @@ final class ContentBlocker {
 
     /// a rule list reaches a document only when the document loads after it is
     /// installed, so a page that is already open has to run again
-    @MainActor
     private static func reloadLoadedTabs() {
         guard let manager = ExtensionManager.shared.tabManager else { return }
         for tab in manager.allTabs where !tab.isHibernated && tab.url != nil {
@@ -282,13 +257,10 @@ final class ContentBlocker {
             }
         }
         guard !sources.isEmpty else {
-            // nothing downloadable (offline, first launch without network) —
-            // fall back to the built-in starter list so blocking is never simply off
             lastError = lastError ?? "no lists available offline"
             await install(sources: [Self.starterList], stamp: false, reloadTabs: reloadTabs)
             return
         }
-        // an unchanged download (or a failed one) isn't worth seconds of conversion
         guard force || changed || installed.isEmpty else { return }
         await install(sources: sources, stamp: true, reloadTabs: reloadTabs)
     }
@@ -313,13 +285,11 @@ final class ContentBlocker {
         } catch {
             debugLog("blocklist \(list.id) fetch failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
-            // a stale cached copy beats no blocking at all
             return previous.map { ($0, false) }
         }
     }
 
-    /// convert + compile + install. conversion runs off the main actor — it walks
-    /// a hundred thousand lines and would otherwise stall the UI for seconds
+    /// convert, compile and install, converting off the main actor
     private func install(sources: [String], stamp: Bool, reloadTabs: Bool) async {
         let fixes = Self.siteFixes
         let converted = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
@@ -352,11 +322,7 @@ final class ContentBlocker {
         }
         guard !compiled.isEmpty else { return }
 
-        for ucc in SharedWebContent.all {
-            for list in installed { ucc.remove(list) }
-            if isEnabled { for list in compiled { ucc.add(list) } }
-        }
-        installed = compiled
+        replaceInstalled(with: compiled)
         if reloadTabs { Self.reloadLoadedTabs() }
         ruleCount = converted.ruleCount
         droppedCount = converted.droppedCount
@@ -372,12 +338,8 @@ final class ContentBlocker {
         debugLog("blocklists installed: \(compiled.count) chunks, \(converted.ruleCount) rules")
     }
 
-    /// build from whatever is cached, without hitting the network (launch path).
-    ///
-    /// the fast path installs the bytecode WebKit already has: converting the
-    /// lists again costs ~3s of CPU and hundreds of megabytes of transient
-    /// allocation to arrive at rules that are byte-identical to last launch's.
-    /// only a cache miss (first run, or lists changed underneath us) converts.
+    /// build from the cached lists without the network, reusing the last build's bytecode
+    /// while it is still current
     private func rebuild() async {
         if await installPreviouslyCompiled() { return }
 
@@ -409,22 +371,25 @@ final class ContentBlocker {
             lists.append(list)
         }
 
+        replaceInstalled(with: lists)
+        if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 2 {
+            ruleCount = stats[0]
+            droppedCount = stats[1]
+        }
+        if trackerHosts.isEmpty { trackerHosts = await Self.readTrackerHosts(trackerHostsCache) }
+        debugLog("blocklists: reused \(lists.count) already-compiled chunks")
+        return true
+    }
+
+    private func replaceInstalled(with lists: [WKContentRuleList]) {
         for ucc in SharedWebContent.all {
             for list in installed { ucc.remove(list) }
             if isEnabled { for list in lists { ucc.add(list) } }
         }
         installed = lists
-        if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 2 {
-            ruleCount = stats[0]
-            droppedCount = stats[1]
-        }
-        await loadTrackerHosts()
-        debugLog("blocklists: reused \(lists.count) already-compiled chunks")
-        return true
     }
 
-    /// every compile writes a new bytecode blob keyed by content hash; without
-    /// this sweep, a year of weekly updates leaves 50 dead copies on disk
+    /// every compile stores a new blob under its content hash, so the superseded ones are removed
     private func pruneStaleCompiledLists(keeping identifiers: Set<String>) async {
         guard let store = WKContentRuleListStore.default() else { return }
         let existing = (try? await store.availableIdentifiers()) ?? []
@@ -436,19 +401,14 @@ final class ContentBlocker {
 
     private static func digest(_ text: String) -> String {
         let hash = SHA256.hash(data: Data(text.utf8))
-        return hash.compactMap { String(format: "%02x", $0) }.joined().prefix(16).description
+        return String(hash.map { String(format: "%02x", $0) }.joined().prefix(16))
     }
 
     // MARK: - Artemis' own site fixes
 
-    /// Exceptions Artemis carries itself, appended after every converted list.
-    ///
-    /// Prime Video's ad-supported tier stitches its ads in from
-    /// `amazon-adsystem.com`; blocking that *on an Amazon page* makes the player
-    /// abort outright ("Video Unavailable"). So it stays blocked as a tracker
-    /// everywhere except Amazon/Prime, where it is load-bearing for playback.
-    /// YouTube's player tears its stream down and retries while its playback
-    /// report (`/api/stats/qoe`) is blocked, so that one stays open on YouTube.
+    /// exceptions appended after every converted list. Prime Video's player aborts ("Video
+    /// Unavailable") while `amazon-adsystem.com` is blocked on Amazon pages, and YouTube's tears
+    /// its stream down while `/api/stats/qoe` is blocked
     static let siteFixes: [ContentRule] = {
         let amazonHosts = [
             "*amazon.co.uk", "*amazon.com", "*amazon.de", "*amazon.fr", "*amazon.es",
@@ -468,9 +428,7 @@ final class ContentBlocker {
         ]
     }()
 
-    /// The offline fallback: a small curated set of the most prolific ad and
-    /// tracker domains, used before the first successful download (or when the
-    /// machine has never been online). Superseded by EasyList the moment it lands.
+    /// the most prolific ad and tracker domains, installed until a list first downloads
     private static let starterList: String = {
         let domains = [
             "doubleclick.net", "googlesyndication.com", "google-analytics.com",
@@ -484,8 +442,6 @@ final class ContentBlocker {
             "doubleverify.com", "yieldmo.com", "sharethrough.com", "smartadserver.com",
             "teads.tv", "zedo.com", "adroll.com", "bluekai.com", "demdex.net", "krxd.net",
         ]
-        // expressed as filter syntax so it goes through the same converter as
-        // everything else — one code path, no second rule format to maintain
         return domains.map { "||\($0)^$third-party" }.joined(separator: "\n")
     }()
 }

@@ -1,15 +1,9 @@
 import WebKit
 
-/// Reports the URL of the link the cursor is hovering, for the status-style
-/// capsule the chrome shows at the bottom of the content. Installed once as a
-/// persistent user script + message handler on the shared content controller, so
-/// every tab (and iframe) reports hovers without per-tab wiring.
-///
-/// it posts the href on `mouseover` of an `<a>` and clears on `mouseout` — but
-/// only when the cursor isn't entering another link, so moving link→link doesn't
-/// flicker the capsule off and on.
+/// reports the href under the cursor, nil when it leaves for a non-link. one
+/// handler serves every frame of every tab on the shared content controller
 final class LinkHoverReporter: NSObject, WKScriptMessageHandler {
-    static let messageName = "artemisLinkHover"
+    private static let messageName = "artemisLinkHover"
 
     private let onChange: (URL?) -> Void
 

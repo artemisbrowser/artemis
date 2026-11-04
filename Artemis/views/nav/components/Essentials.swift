@@ -1,15 +1,7 @@
 import SwiftUI
 
-/// the global favourites ("essentials") grid at the top of the sidebar — a
-/// responsive row of favicon tiles shared across every space. tiles grow to
-/// fill the available width.
-///
-/// rows are balanced: one favourite spans the full width, two split it in half,
-/// three in thirds, and so on. a tile never shrinks below `essentialTileMin`
-/// (two tiles inline at the narrowest sidebar), and a row holds at most five.
-/// when the count won't fit on one line the favourites split into the fewest
-/// rows possible, then spread evenly across them — five in a sidebar that only
-/// fits four become a 3+2 rather than 4+1, so every tile keeps some room.
+/// the favourites grid at the top of the sidebar, shared across every space:
+/// favicon tiles in balanced rows (see `BalancedTileLayout`)
 struct EssentialsGrid: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.sidebarMetrics) private var metrics
@@ -28,7 +20,7 @@ struct EssentialsGrid: View {
 
     private static let maxPerRow = 5
 
-    /// the favourites actually laid out (the dragged one removed)
+    /// the dragged favourite is left out
     private var items: [BrowserTab] {
         tabManager.essentials.filter { $0.id != hiddenID }
     }
@@ -40,13 +32,11 @@ struct EssentialsGrid: View {
         return nil
     }
 
-    /// the rendered sequence: the favourites with the empty reflow gap spliced
-    /// in. each carries a stable identity (its tab id, or the gap sentinel) so
-    /// the layout *moves* tiles to their new spots — sliding with a spring —
-    /// rather than fading content between fixed slots as the gap travels
+    /// the favourites with the reflow gap spliced in; stable ids make the layout
+    /// move tiles as the gap travels rather than cross-fade between fixed slots
     private var slots: [GridSlot] {
         var s = items.map { GridSlot.tile($0) }
-        if let p = phantom { s.insert(.gap, at: min(p, s.count)) }
+        if let p = phantom { s.insert(.gap, at: p) }
         return s
     }
 
@@ -64,12 +54,10 @@ struct EssentialsGrid: View {
                 switch slot {
                 case .tile(let tab):
                     EssentialTile(tab: tab)
-                        // landing in the grid springs up into place; picking one
-                        // up cuts straight to the ghost — a zero-duration removal,
-                        // so the tile is gone the same frame the ghost appears and
-                        // the two highlights never overlap and flash
+                        // removal takes zero time: the tile must be gone the
+                        // frame its ghost appears, or the two highlights flash
                         .transition(.asymmetric(
-                            insertion: .scale(scale: 0.55).combined(with: .opacity),
+                            insertion: Motion.grow(from: 0.55),
                             removal: .opacity.animation(.linear(duration: 0))))
                 case .gap:
                     Color.clear
@@ -79,6 +67,8 @@ struct EssentialsGrid: View {
         .animation(Motion.pop, value: slotIDs)
         .onPreferenceChange(EssentialFrameKey.self) { frames = $0 }
         .gesture(dragGesture)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Favourites")
     }
 
     /// pick a favourite up into the shared drag system. the gesture lives on the
@@ -107,7 +97,6 @@ struct EssentialsGrid: View {
                 drag.end()
             }
     }
-
 }
 
 /// a slot in the favourites grid — a real favourite or the empty reflow gap
@@ -123,11 +112,9 @@ private enum GridSlot: Identifiable {
     }
 }
 
-/// lays the favourites out in balanced rows (1 full-width, 2 half, 3 thirds …),
-/// never below `minTileWidth`, at most `maxPerRow` per row, splitting into the
-/// fewest rows and spreading evenly across them. one container for every tile,
-/// so a slot order change animates each tile gliding to its new spot — across
-/// rows included — instead of cross-fading between fixed positions
+/// balanced rows: the fewest rows that keep tiles at `minTileWidth` or wider and
+/// at most `maxPerRow` each, filled evenly (five that fit four a row go 3+2).
+/// one container for every tile, so a reorder glides tiles across rows
 private struct BalancedTileLayout: Layout {
     var spacing: CGFloat
     var tileHeight: CGFloat
@@ -192,8 +179,6 @@ private struct EssentialTile: View {
         favicon
             .frame(maxWidth: .infinity)
             .frame(height: metrics.essentialTileHeight)
-            // resting tiles are glass at half strength, so the row reads as a
-            // soft shelf rather than three buttons
             .background(
                 Color.clear
                     .chromeGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), lit: isSelected || showsHover)
@@ -202,6 +187,14 @@ private struct EssentialTile: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(accent.opacity(isSelected ? 0.9 : 0), lineWidth: 1.5)
             )
+            .overlay(alignment: .topTrailing) {
+                if let unread = tab.unread {
+                    UnreadBadge(badge: unread)
+                        .padding(4)
+                        .transition(.opacity)
+                }
+            }
+            .animation(Motion.hover, value: tab.unread)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .animation(Motion.hover, value: isHovering)
             .animation(Motion.pop, value: isSelected)
@@ -216,26 +209,43 @@ private struct EssentialTile: View {
                             rect: proxy.frame(in: .named(SidebarDragState.contentSpace)))])
                 }
             }
-            .onTapGesture {
-                tabManager.selectedTabID = tab.id
-                tabManager.isCommandBarVisible = false
-            }
+            .onTapGesture { select() }
             .onHover { isHovering = $0 }
-            .tooltip(tab.displayTitle)
-            .contextMenu {
-                Button {
-                    tabManager.toggleEssential(tab)
-                } label: {
-                    Label("Move to Tabs", systemImage: "pin.slash")
-                        .labelStyle(.titleAndIcon)
-                }
-                Button(role: .destructive) {
-                    tabManager.removeEssential(tab)
-                } label: {
-                    Label("Remove from Favourites", systemImage: "star.slash")
-                        .labelStyle(.titleAndIcon)
-                }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(tab.badgedTitle)
+            .accessibilityValue(accessibilityState)
+            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { select() }
+            .accessibilityActions { MenuEntryActions(entries: menuEntries) }
+            .focusable(interactions: .activate)
+            .onKeyPress(keys: [.return, .space]) { _ in
+                select()
+                return .handled
             }
+            .tooltip(tab.badgedTitle)
+            .contextMenu { MenuEntriesView(entries: menuEntries) }
+    }
+
+    private var menuEntries: [MenuEntry] {
+        [
+            .button("Move to Tabs", "pin.slash") { tabManager.toggleEssential(tab) },
+            .button("Remove from Favourites", "star.slash", role: .destructive) { tabManager.removeEssential(tab) },
+        ]
+    }
+
+    private func select() {
+        tabManager.selectedTabID = tab.id
+        tabManager.isCommandBarVisible = false
+    }
+
+    private var accessibilityState: String {
+        var parts = ["favourite"]
+        if isSelected { parts.append("selected") }
+        if let unread = tab.unread { parts.append(UnreadBadge.spoken(unread)) }
+        if tab.isMuted { parts.append("muted") }
+        else if tab.isPlayingMediaContent { parts.append("playing audio") }
+        if let host = (tab.url ?? tab.pendingURL)?.host() { parts.append(host) }
+        return parts.joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -253,5 +263,4 @@ private struct EssentialTile: View {
                 .frame(width: metrics.essentialFaviconSize, height: metrics.essentialFaviconSize)
         }
     }
-
 }

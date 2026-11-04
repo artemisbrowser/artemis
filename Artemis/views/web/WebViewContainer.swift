@@ -1,23 +1,16 @@
 import SwiftUI
 import WebKit
 
-/// a stable slot that owns where a tab's `WKWebView` lives in the main window.
-/// handing SwiftUI this container (rather than the raw web view) lets the
-/// mini-player borrow the live web view into a floating panel and hand it back
-/// without SwiftUI tearing the web view down — the slot just sits empty while
-/// the panel owns the view.
+/// a stable slot for a tab's `WKWebView` in a browser window; it sits empty while
+/// the mini-player borrows the view, so SwiftUI never tears the view down
 final class WebHostView: NSView {
-    /// the page this slot shows, for the still that stands in when another
-    /// window is holding the live web view
     weak var tab: BrowserTab?
     /// the last frame of the page, shown while another window has the real thing
     private let still = NSImageView()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        // the hosted page is deliberately allowed to be larger than this view
-        // while a resize is in flight (see `layout()`), so the overflow has to
-        // be clipped rather than drawn over the rest of the window
+        // the page may outgrow this view mid-resize (see `layout()`)
         clipsToBounds = true
         still.imageScaling = .scaleProportionallyUpOrDown
         still.autoresizingMask = [.width, .height]
@@ -29,12 +22,8 @@ final class WebHostView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used from a nib") }
 
-    /// put the web view back in this slot, unless the mini-player currently owns
-    /// it (`borrowed`), in which case the slot is left empty.
-    ///
-    /// A `WKWebView` is one view and can live in one window, so two windows on
-    /// the same page can't both show it live. The focused window takes it; the
-    /// other shows the last frame it had.
+    /// puts the web view in this slot unless the mini-player has it. a web view
+    /// lives in one window: the focused one takes it, others show its last frame
     func host(_ webView: WKWebView, borrowed: Bool) {
         guard !borrowed else {
             if webView.superview === self { webView.removeFromSuperview() }
@@ -42,18 +31,20 @@ final class WebHostView: NSView {
         }
         guard webView.superview !== self else { return }
         guard canTakeLiveView(webView) else { return showStill() }
+        // a page renders in its window's colour space. a named one reaches Core
+        // Animation as a number; a display's ICC profile is re-parsed per surface
+        if window?.colorSpace != .displayP3 { window?.colorSpace = .displayP3 }
         webView.removeFromSuperview()
         webView.frame = bounds
-        // the page's frame is managed in `layout()`, not by springs — see there
+        // the page's frame is managed in `layout()`
         webView.autoresizingMask = []
         addSubview(webView)
         hideStill()
         focusHostedWebView()
     }
 
-    /// free, already ours, or held by a browser window that isn't the focused
-    /// one. The mini-player's panel is not a browser window — it lends the view
-    /// out and hands it straight back, so its claim is never deferred to
+    /// free, already ours, or held by an unfocused browser window. the mini-player's
+    /// panel isn't a browser window, so its claim is never deferred to
     private func canTakeLiveView(_ webView: WKWebView) -> Bool {
         guard let window else { return false }
         guard let holder = webView.window, holder !== window else { return true }
@@ -67,8 +58,7 @@ final class WebHostView: NSView {
         if subview is WKWebView { showStill() }
     }
 
-    /// the still is only what this slot shows while another window has the page;
-    /// it is refreshed on re-render so a snapshot that lands late still appears
+    /// called on every re-render, so a snapshot that lands late still appears
     func showStill() {
         still.image = tab?.stillFrame
         still.frame = bounds
@@ -80,8 +70,7 @@ final class WebHostView: NSView {
         still.image = nil
     }
 
-    /// take the page back when this window comes forward, and keep a fresh still
-    /// for the window that is about to lose it
+    /// takes the page back when this window comes forward, and stills it when it goes back
     private func observeKeyWindow() {
         let center = NotificationCenter.default
         center.addObserver(
@@ -107,8 +96,7 @@ final class WebHostView: NSView {
         }
     }
 
-    /// only pages on screen in more than one window need a still — everywhere
-    /// else the slot either has the live view or nothing to stand in for
+    /// only pages on screen in more than one window need a still
     private func captureStill(of tab: BrowserTab) {
         let showing = BrowserWindows.shared.allManagers.filter { $0.isShowing(tab) }
         guard showing.count > 1 else { return }
@@ -130,23 +118,9 @@ final class WebHostView: NSView {
     /// true between the first layout of a run and the settle
     private var isResizing = false
 
-    /// Give the page a frame that *covers* the host while the host is being
-    /// animated, and the exact frame once it stops.
-    ///
-    /// Resizing a `WKWebView` is not a cheap operation dressed up as a frame
-    /// change: the page relayouts, repaints, and hands Core Animation a brand
-    /// new IOSurface — and attaching one costs a colour-space construction from
-    /// ICC data (ColorSync, an MD5 and a gamma curve check) every single time.
-    /// In a profile of the sidebar animation that chain was the heaviest thing
-    /// in the app, because a spring-driven sidebar changes the card's width
-    /// something like fifty times per toggle and every one of those frames paid
-    /// for it.
-    ///
-    /// A page that is *larger* than its host looks identical — the excess is
-    /// clipped — so during a run of size changes the page is left at whichever
-    /// size covers both where it was and where it's going, and reflows once, at
-    /// the end. The page slides with the card instead of reflowing under it,
-    /// which is also the nicer of the two.
+    /// gives the page a frame that covers the host while the host animates, and
+    /// the exact frame once it stops: each `WKWebView` resize is a full relayout
+    /// and a new IOSurface, and the clipped excess looks identical
     override func layout() {
         super.layout()
         guard let webView = subviews.first(where: { $0 is WKWebView }) as? WKWebView else { return }
@@ -155,13 +129,7 @@ final class WebHostView: NSView {
             return
         }
 
-        // A *shrinking* host was covered by this — the page stays at its old,
-        // larger size and nothing reflows. A growing one was not: the host
-        // overtook the page on every frame, so every frame set a new frame and
-        // paid the full relayout/IOSurface cost this exists to avoid. Grow in a
-        // couple of big steps instead — the page only has to cover the host, and
-        // the excess is clipped, so overshooting lets the next dozen frames land
-        // inside the page that is already there.
+        // a shrinking host keeps the larger page; a growing one is covered in steps
         let page = webView.frame.size
         let covering =
             isResizing
@@ -170,8 +138,6 @@ final class WebHostView: NSView {
                 height: page.height >= bounds.height
                     ? page.height : bounds.height * Self.growthStep)
             : bounds.size
-        // AppKit's origin is bottom-left; anchor the page to the *top* left so a
-        // taller-than-host page hangs off the bottom rather than hiding its head
         setPageFrame(webView, size: covering)
 
         isResizing = true
@@ -186,6 +152,7 @@ final class WebHostView: NSView {
         }
     }
 
+    /// anchored top-left in AppKit's bottom-left space, so a tall page overhangs the bottom
     private func setPageFrame(_ webView: WKWebView, size: CGSize) {
         let frame = CGRect(
             x: bounds.minX, y: bounds.maxY - size.height,
@@ -206,10 +173,7 @@ final class WebHostView: NSView {
         window.makeFirstResponder(webView)
     }
 
-    /// A slot with no window yet can't claim the page (it has no window to
-    /// compare against), so it claims here instead — the first moment it can.
-    /// Re-checking beats trusting the mount: the slot the page is coming *from*
-    /// is torn down in the same update pass
+    /// a slot can't claim the page until it has a window to compare against
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil, let tab { host(tab.webView, borrowed: tab.isMiniPlayerActive) }
@@ -220,11 +184,8 @@ final class WebHostView: NSView {
     var hostsLiveView: Bool { subviews.contains { $0 is WKWebView } }
 }
 
-/// hosts a tab's `WKWebView` in SwiftUI
-///
-/// the web view is owned by the tab (so it survives view rebuilds);
-/// callers must apply `.id(tab.id)` so SwiftUI swaps the hosted view
-/// when the selected tab changes
+/// hosts a tab's `WKWebView` in SwiftUI. the tab owns the web view; callers key
+/// this with `.id` on the tab and its `webViewGeneration`
 struct WebViewContainer: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
@@ -232,15 +193,8 @@ struct WebViewContainer: NSViewRepresentable {
     }
 
     let tab: BrowserTab
-    /// false for a page that is mounted but not being looked at (the pages held
-    /// behind the current one, and the neighbouring spaces' pages). `.opacity(0)`
-    /// is not enough: an invisible-but-unhidden `WKWebView` is still *visible* as
-    /// far as WebKit is concerned, so it keeps running `requestAnimationFrame`,
-    /// keeps painting, and keeps its full render pipeline warm — measurably, a
-    /// second page held that way cost more web-process CPU than re-attaching it
-    /// from scratch would have. Hiding the host makes AppKit send `viewDidHide`
-    /// down the subtree, which is what actually tells WebKit the page is not on
-    /// screen (the same signal a background Safari tab gets).
+    /// false for a page mounted but not looked at. only hiding the host tells
+    /// WebKit the page is off screen; at `.opacity(0)` it keeps rendering
     var isVisible = true
 
     func makeNSView(context: Context) -> WebHostView {
@@ -254,20 +208,145 @@ struct WebViewContainer: NSViewRepresentable {
 
     func updateNSView(_ nsView: WebHostView, context: Context) {
         nsView.tab = tab
-        // the mini-player hands the view back to whichever slot last asked for
-        // it; a slot showing a still isn't that slot
+        // the mini-player hands the view back to whichever slot last asked for it
         if nsView.hostsLiveView { tab.webHost = nsView } else { nsView.showStill() }
-        // reading `isMiniPlayerActive` here ties the slot to the flag: when the
-        // mini-player hands the view back, this re-runs and re-hosts the view.
+        // reading `isMiniPlayerActive` re-runs this when the mini-player hands the view back
         nsView.host(tab.webView, borrowed: tab.isMiniPlayerActive)
         let hidden = !isVisible && PerfFlags.hidesOffscreenPages
         if nsView.isHidden != hidden {
             nsView.isHidden = hidden
-            // coming back on screen is the same moment as being mounted, as far
-            // as focus goes: a page that isn't first responder reads
-            // `document.hasFocus()` as false, which is enough to make
-            // focus-gated video players refuse to start
+            // a page that isn't first responder reads `document.hasFocus()` as
+            // false, which focus-gated video players refuse to start on
             if !hidden { nsView.focusHostedWebView() }
         }
+    }
+}
+
+/// the card's mounted pages, one `WebHostView` each, in a single AppKit view.
+/// only the shown page and the one it fades in over are unhidden
+struct PageStack: NSViewRepresentable {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    let tabs: [BrowserTab]
+    let shownID: BrowserTab.ID?
+
+    func makeNSView(context: Context) -> PageStackView {
+        let view = PageStackView()
+        view.update(tabs: tabs, shownID: shownID)
+        return view
+    }
+
+    func updateNSView(_ view: PageStackView, context: Context) {
+        view.update(tabs: tabs, shownID: shownID)
+    }
+}
+
+final class PageStackView: NSView {
+    private var hosts: [BrowserTab.ID: (host: WebHostView, generation: Int)] = [:]
+    private var shownID: BrowserTab.ID?
+    /// held opaque under the incoming page until its fade lands
+    private var fadingID: BrowserTab.ID?
+    private var fadeToken = 0
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func update(tabs: [BrowserTab], shownID new: BrowserTab.ID?) {
+        let mounted = Set(tabs.map(\.id))
+        for (id, entry) in hosts where !mounted.contains(id) {
+            entry.host.removeFromSuperview()
+            hosts[id] = nil
+        }
+        let switched = new != shownID
+        if switched {
+            fadingID = shownID.flatMap { mounted.contains($0) ? $0 : nil }
+            shownID = new
+        }
+        for tab in tabs {
+            if let entry = hosts[tab.id], entry.generation == tab.webViewGeneration {
+                // the mini-player hands the view back to whichever slot last asked for it
+                if entry.host.hostsLiveView { tab.webHost = entry.host } else { entry.host.showStill() }
+                entry.host.host(tab.webView, borrowed: tab.isMiniPlayerActive)
+                continue
+            }
+            hosts[tab.id]?.host.removeFromSuperview()
+            let host = WebHostView(frame: bounds)
+            host.wantsLayer = true
+            host.tab = tab
+            tab.webHost = host
+            // hidden before it joins the window, so a warm page never starts out visible
+            host.isHidden = isHidden(tab.id)
+            addSubview(host)
+            host.host(tab.webView, borrowed: tab.isMiniPlayerActive)
+            hosts[tab.id] = (host, tab.webViewGeneration)
+        }
+        applyVisibility()
+        if switched { fade() }
+    }
+
+    private func isHidden(_ id: BrowserTab.ID) -> Bool {
+        id != shownID && id != fadingID && PerfFlags.hidesOffscreenPages
+    }
+
+    private func applyVisibility() {
+        for (id, entry) in hosts {
+            let host = entry.host
+            host.layer?.zPosition = id == shownID ? 2 : (id == fadingID ? 1 : 0)
+            host.alphaValue = id == shownID || id == fadingID ? 1 : 0
+            let hidden = isHidden(id)
+            guard host.isHidden != hidden else { continue }
+            host.isHidden = hidden
+            // a page that isn't first responder reads `document.hasFocus()` as
+            // false, which focus-gated video players refuse to start on
+            if !hidden { host.focusHostedWebView() }
+        }
+    }
+
+    /// the incoming page fades in over the outgoing one; with no incoming page
+    /// the outgoing one fades out instead
+    private func fade() {
+        fadeToken += 1
+        let token = fadeToken
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.duration = Motion.contentSwapDuration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, token == fadeToken else { return }
+            fadingID = nil
+            applyVisibility()
+        }
+        if let id = shownID, let layer = hosts[id]?.host.layer {
+            animation.fromValue = 0
+            animation.toValue = 1
+            layer.add(animation, forKey: "fade")
+        } else if let id = fadingID, let host = hosts[id]?.host {
+            animation.fromValue = 1
+            animation.toValue = 0
+            host.alphaValue = 0
+            host.layer?.add(animation, forKey: "fade")
+        }
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        for (host, _) in hosts.values where host.frame != bounds {
+            host.frame = bounds
+            host.needsLayout = true
+        }
+    }
+
+    /// only the shown page takes the pointer; the one fading out under it never does
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let id = shownID, let host = hosts[id]?.host, !host.isHidden else { return nil }
+        return host.hitTest(convert(point, from: superview))
     }
 }

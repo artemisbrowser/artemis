@@ -106,7 +106,7 @@ final class AgentBridge {
     ) {
         didSet { UserDefaults.standard.set(allowedSpaceIDs.map(\.uuidString), forKey: Self.spacesKey) }
     }
-    /// agent names (MCP `clientInfo.name`) the user has allowed
+    /// the `AgentSession.identity` values the user has allowed
     private(set) var approved = UserDefaults.standard.stringArray(forKey: approvedKey) ?? [] {
         didSet { UserDefaults.standard.set(approved, forKey: Self.approvedKey) }
     }
@@ -122,7 +122,7 @@ final class AgentBridge {
     private init() {}
 
     /// spaces an agent may reach: shared by the user, never locked
-    var reachableSpaces: [Space] {
+    private var reachableSpaces: [Space] {
         BrowserCore.shared.spaces.filter {
             allowedSpaceIDs.contains($0.id) && !SpaceLock.shared.isLocked($0)
         }

@@ -1,11 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// a "freeze-frame" theme preview: the real space you're editing is shown
-/// wearing the in-progress theme, with every interaction disabled so you can
-/// just look at the colour. pressing any key or mouse button returns to the
-/// editor. a transparent layer swallows hover/scroll/clicks from the real chrome
-/// underneath; a local event monitor catches the exit input.
+/// the real space wearing the in-progress theme, with every interaction swallowed;
+/// any key or mouse-button press returns to the editor
 struct GradientPreview: View {
     let onExit: () -> Void
     @State private var monitor: Any?

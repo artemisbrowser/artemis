@@ -46,6 +46,9 @@ enum WebNotificationPage {
           if (options.actions?.length) {
             throw new TypeError("Actions are only supported for persistent notifications.");
           }
+          if (options.renotify && !options.tag) {
+            throw new TypeError("Notifications that set renotify must also set a tag.");
+          }
           super();
           this.#o = {
             title: String(title), dir: options.dir ?? "auto", lang: String(options.lang ?? ""),
@@ -58,13 +61,11 @@ enum WebNotificationPage {
           };
           if (permission !== "granted") { later(this, "error"); return; }
           const tag = this.#o.tag;
-          // a tag names a slot: the newer notification takes the older one's place
-          if (tag) for (const [id, other] of live) {
-            if (other.tag === tag) { live.delete(id); send({ type: "close", id }); }
-          }
+          // a tag names a slot: the newer notification takes the older one's place, natively
+          if (tag) for (const [id, other] of live) if (other.tag === tag) live.delete(id);
           live.set(this.#id, this);
           send({ type: "create", id: this.#id, title: this.#o.title, body: this.#o.body,
-            silent: this.#o.silent === true });
+            silent: this.#o.silent === true, tag, renotify: this.#o.renotify });
         }
         close() {
           if (!live.delete(this.#id)) return;

@@ -1,12 +1,8 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// A key combination Artemis answers wherever you are, as long as it is running.
-///
-/// Carbon's `RegisterEventHotKey` needs no permission. AppKit's global event
-/// monitor needs the accessibility permission —
-/// the same grant that reads every keystroke in every app — which is not
-/// something a browser should be asking for to open its own launcher.
+/// a key combination Artemis answers system-wide while it runs, through Carbon's
+/// `RegisterEventHotKey`, which needs no accessibility permission
 @MainActor
 final class GlobalHotkey {
     static let shared = GlobalHotkey()
@@ -30,10 +26,6 @@ final class GlobalHotkey {
     }
 
     func register(_ combo: Combo, action: @escaping () -> Void) {
-        register(keyCode: combo.keyCode, modifiers: combo.modifiers, action: action)
-    }
-
-    private func register(keyCode: Int, modifiers: Int, action: @escaping () -> Void) {
         unregister()
         self.action = action
 
@@ -48,7 +40,7 @@ final class GlobalHotkey {
 
         let id = EventHotKeyID(signature: OSType(0x4152_544D), id: 1)  // 'ARTM'
         RegisterEventHotKey(
-            UInt32(keyCode), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &hotKey)
+            UInt32(combo.keyCode), UInt32(combo.modifiers), id, GetApplicationEventTarget(), 0, &hotKey)
     }
 
     func unregister() {

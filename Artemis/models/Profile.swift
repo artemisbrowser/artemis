@@ -34,6 +34,8 @@ final class Profile: Identifiable {
     @ObservationIgnored private(set) lazy var inputHistory = InputHistory(
         fileURL: file("input-history.json"))
     @ObservationIgnored private(set) lazy var pageIndex = FullTextIndex(fileURL: file("pagetext.sqlite"))
+    @ObservationIgnored private(set) lazy var translationRules = TranslationRules(
+        fileURL: file("translation-rules.json"))
 
     /// unset settings start from the app-wide ones, which are the default profile's
     init(
@@ -71,7 +73,6 @@ final class Profile: Identifiable {
         AppStorageLocation.directory.appendingPathComponent("Profiles", isDirectory: true)
             .appendingPathComponent(id.uuidString, isDirectory: true)
     }
-
 }
 
 /// resolves a profile to its live `WKWebsiteDataStore`, one instance per profile,
@@ -128,8 +129,8 @@ enum ProfileStore {
             ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
     }
 
-    /// drop a deleted profile's jar from disk. it fails while a web view or the
-    /// cached store object still uses it, hence the delay; `reconcile` is the backstop
+    /// drop a deleted profile's jar from disk, after a delay: removal fails while a
+    /// web view or the cached store still holds it. `reconcile` is the backstop
     static func destroy(_ id: UUID) {
         guard id != Profile.defaultID else { return }
         stores[id] = nil

@@ -11,6 +11,8 @@ struct PrivacySettings: View {
     @AppStorage(FingerprintNoise.enabledKey) private var fingerprintDefence = true
     @AppStorage(Reports.enabledKey) private var sendsErrorReports = false
     @AppStorage(Scripting.allowsJavaScriptKey) private var allowsScriptedJavaScript = false
+    @AppStorage(Scripting.showsIncognitoKey) private var showsIncognitoToScripts = true
+    @AppStorage(SpotlightIndex.enabledKey) private var showsInSpotlight = SpotlightIndex.enabledByDefault
 
     var body: some View {
         Form {
@@ -125,6 +127,17 @@ struct PrivacySettings: View {
                         "Allow JavaScript from Apple Events",
                         info: "Lets AppleScript and Shortcuts run code inside your pages. Only turn this on for scripts you trust.")
                 }
+                Toggle(isOn: $showsIncognitoToScripts) {
+                    InfoLabel(
+                        "Incognito tabs visible in AppleScript",
+                        info: "When off, scripts can't see or change incognito windows' tabs.")
+                }
+                Toggle(isOn: $showsInSpotlight) {
+                    InfoLabel(
+                        "Show spaces and tabs in Spotlight",
+                        info: "Spotlight can find your spaces and open tabs. Incognito and locked spaces never appear.")
+                }
+                .onChange(of: showsInSpotlight) { SpotlightIndex.enabledDidChange() }
             }
 
             Section("Reports") {
@@ -151,13 +164,5 @@ struct PrivacySettings: View {
 
     private var blockingBinding: Binding<Bool> {
         Binding(get: { blocker.isEnabled }, set: { blocker.isEnabled = $0 })
-    }
-}
-
-extension String {
-    /// "the last hour" → "The last hour", without touching the rest
-    var capitalizedFirst: String {
-        guard let first else { return self }
-        return first.uppercased() + dropFirst()
     }
 }

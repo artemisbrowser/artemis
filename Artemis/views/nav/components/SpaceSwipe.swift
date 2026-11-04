@@ -1,11 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// detects a horizontal two-finger trackpad swipe over the view it backs and
-/// reports it live: `onChanged` streams the cumulative horizontal translation
-/// (points, right positive) once the gesture locks horizontal, `onEnded` fires
-/// the final translation so the caller can snap or commit. only the moves of a
-/// horizontal-locked gesture are consumed, so vertical tab scrolling is unaffected
+/// a two-finger horizontal swipe over the backing view: `onChanged` streams the
+/// cumulative translation (points, right positive) once the axis locks horizontal,
+/// `onEnded` the final one. only a horizontal-locked gesture's moves are consumed
 struct SpaceSwipeDetector: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
@@ -28,7 +26,7 @@ struct SpaceSwipeDetector: NSViewRepresentable {
         view.onEnded = onEnded
     }
 
-    final class SwipeView: NSView {
+    private final class SwipeView: NSView {
         var onChanged: ((CGFloat) -> Void)?
         var onEnded: ((CGFloat) -> Void)?
 

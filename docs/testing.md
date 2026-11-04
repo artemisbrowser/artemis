@@ -23,15 +23,15 @@ The suite has finished only if the log ends with a `done` line. A log without on
 
 The log is appended to as the suite runs, so a hang or crash still leaves the results up to that point.
 
+To run only some groups, name them: `ARTEMIS_SELFTEST=reports,routing`. A group's name is its `test…` function's name without `test`, lowercased (`testWebNotifications` is `webnotifications`). The table in `SelfTest.run` lists them in order. Some groups rely on state an earlier one leaves behind, so a group that fails alone may pass after its predecessor.
+
+`tools/perflab.sh` builds a copy under its own bundle id and data folder, so a lab run never touches an installed Artemis. `PERF_CONFIG=Debug tools/perflab.sh` builds Debug instead of Release, which is much quicker when iterating on a test. Then start it with `tools/perflab.sh --run ARTEMIS_SELFTEST=<groups>`. A lab copy named `Artemis <ID>` writes its report to `~/Downloads/artemis-selftest-<ID>.log`, so lab runs and a run of your own never overwrite each other.
+
+Test pages use `.example` and `.test` hosts, never `.local`. A `.local` name is looked up on the local network, which makes macOS ask every new lab copy for Local Network access.
+
 **Where its data goes:** a build from source keeps its data in `~/Library/Application Support/Artemis`. The released app uses `~/Library/Application Support/app.artemisbrowser.Artemis`, so the suite never touches the browser you use day to day.
 
-**Signing:** the build is signed to run locally, which is all the suite needs. Picture in Picture is the one feature that won't work that way. To try it, re-sign the build with your own Apple Development certificate:
-
-```sh
-codesign --force --deep --sign "Apple Development" \
-  --entitlements .build/Build/Intermediates.noindex/Artemis.build/Debug/Artemis.build/Artemis.app.xcent \
-  --generate-entitlement-der .build/Build/Products/Debug/Artemis.app
-```
+**Signing:** the build is signed to run locally, which is all the suite needs.
 
 **Why run it directly rather than via `open`:** `open` launches through LaunchServices, which doesn't pass environment variables through.
 

@@ -1,11 +1,6 @@
 import AppKit
 import WebKit
 
-/// The web view class behind every tab. Turns a force click on a link into
-/// Peek, and appends extension items to the page's right-click menu: WebKit's runtime builds real `NSMenuItem`s for
-/// each loaded extension (`context.menuItems(for:)` — a password manager's
-/// "fill login", a blocker's "block element"), but embedders must splice them
-/// into the menu themselves. `willOpenMenu` is the only hook.
 /// an empty animation controller: claiming a force click without WebKit's
 /// preview. WebKit only accepts one that conforms to AppKit's (unexported)
 /// NSImmediateActionAnimationController, so the conformance is added at runtime
@@ -22,9 +17,11 @@ private final class PeekActionController: NSObject {
     }
 }
 
+/// the web view behind every tab: a force click on a link opens Peek, and the
+/// context menu gains extension items, which WebKit builds but an embedder must
+/// splice in itself from `willOpenMenu`
 final class ArtemisWebView: WKWebView {
-    /// the tab this view renders, for extension menu scoping (which page, which
-    /// frame). set by `BrowserTab.configureWebView`; weak — the tab owns us
+    /// set by `BrowserTab.configureWebView`; weak, since the tab owns the view
     weak var owningTab: BrowserTab?
     /// the link a force click is pressing on, claimed from WebKit's own
     /// force-click gesture so WebKit also drops the click that ends it

@@ -4,7 +4,7 @@ import Foundation
 /// disk-install path. AMO's JSON API is public; the Chrome update2 endpoint is unofficial and
 /// best-effort, with disk sideload as the fallback
 enum ExtensionStores {
-    enum StoreError: LocalizedError {
+    private enum StoreError: LocalizedError {
         case unrecognizedURL
         case resolveFailed(String)
         case downloadFailed(String)
@@ -19,16 +19,14 @@ enum ExtensionStores {
         }
     }
 
-    /// a Chrome build to claim when asking the update endpoint for a CRX. kept
-    /// reasonably current so the store doesn't refuse the request.
+    /// the Chrome build claimed to the update endpoint, which refuses outdated ones
     private static let chromeProductVersion = "131.0.0.0"
 
     /// store landing pages the "+" chooser opens for browsing
     static let chromeWebStoreHome = URL(string: "https://chromewebstore.google.com/")!
     static let firefoxAddonsHome = URL(string: "https://addons.mozilla.org/firefox/")!
 
-    /// is this URL a recognisable extension *item* page (not just the store)?
-    /// gates the store page's "Add to Artemis" button.
+    /// is this URL an extension's item page, not just the store?
     static func itemPageSource(for url: URL) -> ExtensionSource? {
         if chromeExtensionID(from: url) != nil { return .chrome }
         if firefoxSlug(from: url) != nil { return .firefox }
@@ -51,12 +49,11 @@ enum ExtensionStores {
     // MARK: - Chrome Web Store
 
     /// pull the 32-char extension id out of a chromewebstore.google.com URL
-    static func chromeExtensionID(from url: URL) -> String? {
+    private static func chromeExtensionID(from url: URL) -> String? {
         guard let host = url.host(), host.contains("chrome"), host.contains("google.com")
         else { return nil }
         // .../detail/<slug>/<id> or .../detail/<id>
-        let id = url.pathComponents.last { $0.range(of: "^[a-p]{32}$", options: .regularExpression) != nil }
-        return id
+        return url.pathComponents.last { $0.range(of: "^[a-p]{32}$", options: .regularExpression) != nil }
     }
 
     private static func resolveChromeCRX(id: String) async throws -> URL {
@@ -76,7 +73,7 @@ enum ExtensionStores {
     // MARK: - Firefox Add-ons (AMO)
 
     /// pull the add-on slug out of an addons.mozilla.org URL
-    static func firefoxSlug(from url: URL) -> String? {
+    private static func firefoxSlug(from url: URL) -> String? {
         guard let host = url.host(), host.contains("addons.mozilla.org") else { return nil }
         // .../addon/<slug>/...
         guard let i = url.pathComponents.firstIndex(of: "addon"),
@@ -123,9 +120,8 @@ enum ExtensionStores {
     }
 }
 
-/// a hand-picked extension the catalog screen offers for one-click install. kept
-/// to well-known, open-source add-ons verified to run on our WebExtensions
-/// runtime, so first-run UX isn't "go find a folder".
+/// a hand-picked extension the catalog screen offers for one-click install, verified to run on
+/// WebKit's WebExtensions runtime
 struct CatalogEntry: Identifiable {
     var id: String { storeURL }
     let name: String
@@ -133,7 +129,6 @@ struct CatalogEntry: Identifiable {
     let source: ExtensionSource
     let storeURL: String
 
-    /// starter set — Firefox AMO entries first since that path is the most stable
     static let curated: [CatalogEntry] = [
         CatalogEntry(
             name: "uBlock Origin",

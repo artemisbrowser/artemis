@@ -1,14 +1,7 @@
 import Foundation
 
-/// durable home for the browsing session.
-///
-/// this used to be a blob in `UserDefaults`. that was the single biggest
-/// daily-driver risk in the app: defaults are written by the system on its own
-/// schedule, are silently truncated on a bad shutdown, and have no second copy —
-/// one bad write and a year of spaces is gone. now it's an explicit file in the
-/// app container, written atomically with a rotating `.bak`, so a torn or
-/// undecodable file falls back to the last good one instead of booting you into
-/// an empty browser.
+/// durable home for the browsing session: `session.json`, written through
+/// `AppStorageLocation`'s rotating `.bak`
 enum SessionStore {
     static let fileURL = AppStorageLocation.file("session.json")
 
@@ -17,7 +10,7 @@ enum SessionStore {
     private static let legacyEssentialsKey = "essentialURLsV1"
     private static let legacySelectedSpaceKey = "selectedSpaceID"
 
-    /// load the session, migrating from the old UserDefaults blob the first time
+    /// the stored session, lifted out of the pre-file `UserDefaults` keys the first time
     static func load() -> BrowsingSession? {
         if let session = AppStorageLocation.loadDurable(BrowsingSession.self, from: fileURL) {
             return session
@@ -30,19 +23,18 @@ enum SessionStore {
         AppStorageLocation.writeDurableNow(data, to: fileURL)
     }
 
-    /// the ordinary save path: encode on the caller's thread (cheap — it's a few
-    /// hundred urls), then push the two file writes off the main thread. a
-    /// synchronous write here would land on every tab switch and navigation
+    /// the ordinary save path: encodes and writes off the main thread
     static func saveInBackground(_ session: BrowsingSession) {
         let url = fileURL
+        let takenAt = AppStorageLocation.snapshotTime()
         Task.detached(priority: .utility) {
             guard let data = try? JSONEncoder().encode(session) else { return }
-            AppStorageLocation.writeDurable(data, to: url)
+            AppStorageLocation.writeDurable(data, to: url, takenAt: takenAt)
         }
     }
 
-    /// one-time lift of the pre-file layout into `session.json`. the defaults keys
-    /// are cleared afterwards so there's exactly one source of truth
+    /// one-time lift of the pre-file layout into `session.json`; the defaults keys
+    /// are cleared afterwards
     private static func migrateFromDefaults() -> BrowsingSession? {
         let defaults = UserDefaults.standard
         guard let blob = defaults.data(forKey: legacySpacesKey),
@@ -53,7 +45,6 @@ enum SessionStore {
             spaces: spaces,
             essentialURLs: (defaults.array(forKey: legacyEssentialsKey) as? [String]) ?? [],
             selectedSpaceID: defaults.string(forKey: legacySelectedSpaceKey).flatMap(UUID.init))
-        session.version = 1
         session.migrateToProfiles()
         save(session)
         debugLog("session: migrated \(spaces.count) spaces from UserDefaults into session.json")

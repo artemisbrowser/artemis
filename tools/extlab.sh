@@ -13,7 +13,9 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Dev
 ID="${LAB_ID:-Lab}"
 LAB=".build/$ID/Artemis $ID.app"
 ENTITLEMENTS=".build/Build/Intermediates.noindex/Artemis.build/Debug/Artemis.build/Artemis.app.xcent"
-IDENTITY="${ARTEMIS_SIGN_IDENTITY:-$(cat "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/.signing-identity" 2>/dev/null || echo "Apple Development")}"
+# a worktree has no .signing-identity of its own, so fall back to the main checkout's
+IDENTITY="${ARTEMIS_SIGN_IDENTITY:-$(cd "$(dirname "$0")" && cat "$(git rev-parse --show-toplevel)/.signing-identity" 2>/dev/null \
+  || cat "$(git rev-parse --path-format=absolute --git-common-dir)/../.signing-identity" 2>/dev/null || echo "Apple Development")}"
 
 if [[ "${1-}" != "--launch" ]]; then
   xcodebuild -scheme Artemis -configuration Debug -derivedDataPath .build build \

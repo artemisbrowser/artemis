@@ -1,11 +1,8 @@
 import CoreGraphics
 import SwiftUI
 
-/// paints a mesh gradient by blending every point as a normalized
-/// inverse-distance weighting, so the colours mesh smoothly and none dominates.
-/// computed on the CPU into a small bitmap (the field is smooth, so a low-res
-/// image scaled up reads as crisp) — used for both the editor canvas and the
-/// full window background
+/// a mesh gradient: every point blended by normalised inverse-distance weighting,
+/// rendered on the CPU into a small bitmap that is scaled up
 struct MeshGradientView: View {
     var points: [MeshPoint]
     /// higher = tighter, more distinct colour regions; lower = softer blend
@@ -25,11 +22,8 @@ struct MeshGradientView: View {
     private static let cols = 110
     private static let rows = 74
 
-    // a rendered bitmap is identical for the same geometry+colours, so cache it.
-    // without this the CPU loop re-runs on every `body` pass — and a space swipe
-    // re-evaluates every space's backdrop per frame, which tanks the framerate.
-    // keyed on point positions/colours + sharpness only (not MeshPoint.id, which
-    // differs between loads of the same look)
+    // keyed on point positions/colours + sharpness, not MeshPoint.id, which
+    // differs between loads of the same look
     private static var cache: [Int: CGImage] = [:]
 
     private static func cacheKey(points: [MeshPoint], sharpness: Double) -> Int {

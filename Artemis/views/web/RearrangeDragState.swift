@@ -1,47 +1,34 @@
 import SwiftUI
 
-/// the named coordinate space the rearrange gesture, pane frames and overlay all
-/// share, so the cursor, the drop highlight and the ghost line up. `SplitBoxEdge`
-/// and `SplitDropTarget` live in the model (SplitGroup.swift).
+/// the coordinate space the rearrange gesture, pane frames and overlay all share
 let splitRearrangeSpace = "splitRearrangeSpace"
 
-/// shared state for dragging a pane around its split to re-tile it. the rearrange
-/// button on each pane feeds it (cursor + which pane), each `SplitPane` reports
-/// its frame into it, and the split container reads it to draw the grey drop
-/// highlight + the floating mini-rect ghost and to commit the drop on release.
-/// distinct from `SidebarDragState`: that one lives in the sidebar's coordinate
-/// space and carries a list slot; this is the content area and carries a node
-/// target.
+/// a pane, or a sidebar tab, being dragged around the content to re-tile its split.
+/// lives in `splitRearrangeSpace` and resolves to a tiling-tree target, where
+/// `SidebarDragState` resolves to a list slot
 @Observable
 final class RearrangeDragState {
-    /// sentinel tab the preview tree renders as the drop placeholder (never
-    /// persisted; only ever lives in the ephemeral preview tree)
+    /// the tab the preview tree renders as the drop placeholder; never persisted
     static let placeholderTab = UUID()
-    /// stable node ids for the placeholder leaf and any split that wraps a pane to
-    /// host it — so re-evaluating `previewRoot` every render keeps identity and
-    /// doesn't remount (blank) the surrounding panes
+    /// stable across renders of `previewRoot`, or the surrounding panes remount blank
     static let placeholderNodeID = UUID()
     static let placeholderWrapperID = UUID()
 
     /// the split being targeted, or nil when the content shows a single page
     /// (an incoming tab dropped there starts a fresh split)
     var group: SplitGroup?
-    /// the pane being dragged — an existing leaf (rearrange) or an incoming
-    /// sidebar tab (`incoming`) being dragged into the content
+    /// an existing leaf, or a sidebar tab when `incoming`
     var draggedID: BrowserTab.ID?
-    /// true when `draggedID` is a sidebar tab dragged in (not yet a pane)
     var incoming = false
-    /// over a single page (no split), the lone focused tab acts as the one pane to
-    /// split against
+    /// over a single page, the focused tab acts as the one pane to split against
     var singlePaneTab: BrowserTab.ID?
     /// the cursor in `splitRearrangeSpace`
     var cursor: CGPoint = .zero
     /// the split container's size, for the outer sliver and region geometry
     var containerSize: CGSize = .zero
 
-    /// thin outer strip, as a fraction of each container axis, that drops the dragged
-    /// pane at the whole split's edge. only with ≥2 other panes: a lone other pane's
-    /// own edges already reach the rim.
+    /// the outer strip, as a fraction of each container axis, that drops at the whole
+    /// split's edge; only with ≥2 other panes, since a lone pane's edges reach the rim
     private static let outerSliver: CGFloat = 0.06
 
     @ObservationIgnored private var zoneCache: Zones?
@@ -78,11 +65,8 @@ final class RearrangeDragState {
 
     // MARK: - Base layout (stable: independent of the cursor / placeholder)
 
-    /// the tree the panes lay out from while dragging, *without* the placeholder:
-    /// the dragged pane is removed so its slot is fully reclaimed and the rest
-    /// reflow to fill (an incoming tab isn't in the split, so it's left as-is). the
-    /// drag is driven by an NSEvent monitor, not the pane's gesture, so removing the
-    /// pane can't cancel it. nil when no split is shown.
+    /// the tree the panes lay out from while dragging, minus the dragged pane and
+    /// without the placeholder; nil when no split is shown
     func baseRoot() -> SplitNode? {
         guard let group else { return nil }
         if incoming { return group.root }
@@ -289,15 +273,13 @@ final class RearrangeDragState {
 
     // MARK: - Preview / display
 
-    /// the tree to render while dragging over `group`: the base layout with a
-    /// placeholder leaf inserted where the drop would land, so the real panes
-    /// reflow/resize around it. nil when this isn't the dragged group (render the
-    /// real `group.root`).
+    /// the base layout with a placeholder leaf where the drop would land; nil when
+    /// `group` isn't the one being dragged over
     func previewRoot(for group: SplitGroup) -> SplitNode? {
         guard isDragging, self.group?.id == group.id, let base = baseRoot() else { return nil }
         let balance = UserDefaults.standard.autoResizeSplitOnDrag
         func finish(_ node: SplitNode) -> SplitNode { balance ? node.balancedRatios() : node }
-        guard let target else { return finish(base) }  // no target → just the reflowed base
+        guard let target else { return finish(base) }
         let ph = Self.placeholderTab
         let leafID = Self.placeholderNodeID
         let wrapID = Self.placeholderWrapperID
@@ -315,8 +297,7 @@ final class RearrangeDragState {
         }
     }
 
-    /// the placeholder shows the drop inside a split; over a single page there's no
-    /// tree to reflow, so a grey region highlight stands in instead
+    /// the drop highlight over a single page, which has no tree for a placeholder
     var regionRect: CGRect? {
         guard group == nil, let target else { return nil }
         let w = containerSize.width, h = containerSize.height
@@ -328,8 +309,7 @@ final class RearrangeDragState {
         }
     }
 
-    /// the floating mini-rect ghost is shown only when no in-layout placeholder is:
-    /// over a single page, or over a split before a target is resolved
+    /// the floating ghost stands in whenever no in-layout placeholder shows the drop
     var showsFloatingGhost: Bool { group == nil || target == nil }
 
     /// the drop to apply on release, or nil if the cursor isn't over a valid target

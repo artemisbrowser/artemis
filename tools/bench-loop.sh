@@ -1,7 +1,7 @@
 #!/bin/bash
-# A single interaction, repeated for a minute — a long, steady sample for the
-# cases where the full script's few seconds per phase are all noise.
-# Usage: tools/bench-loop.sh <tab|space|sidebar> <label> [PERF_OFF] [live]
+# Repeat one ARTEMIS_BENCH_LOOP interaction (a case in Bench.swift) for a minute,
+# then print it joined with the outside sampler.
+# Usage: tools/bench-loop.sh <loop> <label> [PERF_OFF] [live]
 set -u
 cd "$(dirname "$0")/.."
 loop="$1"; label="$2"; off="${3:-}"; mode="${4:-1}"

@@ -77,7 +77,7 @@ final class LoginKeys: NSView {
     }
 
     /// WebKit's frame handle (SPI), else where the frame is
-    private static func key(_ frame: WKFrameInfo) -> AnyHashable {
+    static func key(_ frame: WKFrameInfo) -> AnyHashable {
         let handle = Selector(("_handle"))
         if frame.responds(to: handle), let id = frame.perform(handle)?.takeUnretainedValue() as? NSObject { return id }
         return "\(frame.isMainFrame) \(frame.request.url?.absoluteString ?? "")"

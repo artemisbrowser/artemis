@@ -28,11 +28,8 @@ enum PeekControlsCorner: String, CaseIterable, Identifiable {
     static let storageKey = "peekControlsCorner"
 }
 
-/// Peek / Glance — a floating preview of a ⇧-clicked link over the current page.
-/// Just the page in a rounded rectangle, with a stack of liquid-glass buttons in
-/// a corner: close, open as a tab, or split it beside the current tab. ESC or a
-/// click on the dimmed backdrop dismisses it. The preview is a throwaway web view
-/// (`TabManager.peekTab`) born in the current space's container, so logins carry.
+/// a floating preview of a ⇧-clicked link over the current page. the preview
+/// (`TabManager.peekTab`) is born in the current space's container, so logins carry
 struct PeekView: View {
     @Environment(TabManager.self) private var tabManager
     @AppStorage(PeekControlsCorner.storageKey) private var cornerRaw = PeekControlsCorner.topTrailing.rawValue
@@ -43,7 +40,7 @@ struct PeekView: View {
 
     var body: some View {
         ZStack {
-            // dim backdrop; a click anywhere off the panel dismisses
+            // a click anywhere off the panel dismisses
             Color.black.opacity(0.32)
                 .contentShape(Rectangle())
                 .onTapGesture { tabManager.closePeek() }
@@ -52,7 +49,7 @@ struct PeekView: View {
                 .frame(maxWidth: 1120, maxHeight: 820)
                 .padding(56)
         }
-        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+        .transition(Motion.grow(from: 0.97))
         .onAppear { startEscMonitor() }
         .onDisappear { stopEscMonitor() }
     }
@@ -74,7 +71,6 @@ struct PeekView: View {
                 .strokeBorder(.white.opacity(0.12), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.4), radius: 30, y: 12)
-        // the controls sit just outside the panel, anchored to the chosen corner
         .overlay(alignment: corner.alignment) {
             controls.offset(controlsOffset)
         }
@@ -94,8 +90,7 @@ struct PeekView: View {
         }
     }
 
-    /// push the control stack outside the panel — left of left corners, right of
-    /// right ones; vertical anchoring (top/bottom) comes from the overlay alignment
+    /// pushes the control stack outside the panel; the overlay alignment anchors it vertically
     private var controlsOffset: CGSize {
         let dx: CGFloat = 42  // button (30) + gap, clears the panel edge
         switch corner {
@@ -104,14 +99,13 @@ struct PeekView: View {
         }
     }
 
-    // ESC dismiss — a local key monitor is reliable over a WKWebView, where SwiftUI
-    // key handling doesn't get a look in (same approach as the split focus monitor)
+    // a local key monitor: SwiftUI key handling never sees keys over a WKWebView
     private func startEscMonitor() {
         stopEscMonitor()
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 {  // Esc
                 tabManager.closePeek()
-                return nil  // consume it
+                return nil
             }
             return event
         }

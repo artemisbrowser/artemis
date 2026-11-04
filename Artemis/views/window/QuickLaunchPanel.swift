@@ -1,13 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// ⌘⌥N from anywhere: a small panel in the corner of the screen that takes a
-/// url or a search and opens it in a Scout window. It never touches the
-/// browser's tabs — what you type here is a glance, the same as a link arriving
-/// from another app.
+/// ⌘⌥N from anywhere: a corner panel that opens a url or a search in a Scout
+/// window, never in the browser's tabs
 @MainActor
 enum QuickLaunch {
     private static var panel: NSPanel?
+    private static var resignObserver: NSObjectProtocol?
 
     /// how far the panel sits from the top-right corner of the screen
     private static let margin: CGFloat = 24
@@ -17,7 +16,7 @@ enum QuickLaunch {
         if panel != nil { close() } else { show() }
     }
 
-    static func show() {
+    private static func show() {
         let window = LauncherPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -37,17 +36,15 @@ enum QuickLaunch {
         window.setFrameOrigin(corner())
         panel = window
 
-        // a non-activating panel takes the keyboard without pulling the app to
-        // the front, which is what a launcher wants from another app. Activating
-        // when Artemis is *already* frontmost hands key straight back to the
-        // browser window, and the panel closes on the spot
+        // activating while Artemis is already frontmost hands key straight back
+        // to the browser window, and the panel closes on the spot
         if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
         window.makeKeyAndOrderFront(nil)
         // after the focus settles: the shuffle of becoming key is itself a
         // resign for whatever held it, and it lands before the panel is up
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             guard panel === window else { return }
-            NotificationCenter.default.addObserver(
+            resignObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didResignKeyNotification, object: window, queue: .main
             ) { _ in
                 MainActor.assumeIsolated { close() }
@@ -55,7 +52,9 @@ enum QuickLaunch {
         }
     }
 
-    static func close() {
+    private static func close() {
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
         panel?.orderOut(nil)
         panel = nil
     }
@@ -93,12 +92,12 @@ private struct QuickLaunchView: View {
     @State private var input = ""
     @State private var matches: [HistoryEntry] = []
     @State private var selection = 0
+    @FocusState private var isFocused: Bool
 
     /// the trail of whichever profile the browser is showing
     private var history: HistoryStore {
         (BrowserWindows.shared.browserScope?.currentProfile ?? BrowserCore.shared.defaultProfile).history
     }
-    @FocusState private var isFocused: Bool
 
     /// enough to be useful in a glance, few enough to read at once
     private static let limit = 5
@@ -106,13 +105,13 @@ private struct QuickLaunchView: View {
     private var rows: [Row] {
         var out: [Row] = []
         if !input.trimmingCharacters(in: .whitespaces).isEmpty {
-            out.append(Row(title: input, detail: nil, host: nil, url: nil))
+            out.append(Row(title: input, host: nil, url: nil))
         }
         out.append(
             contentsOf: matches.prefix(Self.limit).map {
                 Row(
                     title: $0.title.isEmpty ? ($0.url.host() ?? $0.url.absoluteString) : $0.title,
-                    detail: $0.url.host(), host: $0.url.host(), url: $0.url)
+                    host: $0.url.host(), url: $0.url)
             })
         return out
     }
@@ -162,6 +161,7 @@ private struct QuickLaunchView: View {
                     .background(Circle().fill(.primary.opacity(0.08)))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 20)
         .frame(height: 62)
@@ -195,7 +195,6 @@ private struct QuickLaunchView: View {
 
     struct Row {
         let title: String
-        let detail: String?
         let host: String?
         let url: URL?
     }
@@ -212,8 +211,8 @@ private struct QuickLaunchRow: View {
             Text(row.title)
                 .font(.system(size: 14, weight: .medium))
                 .lineLimit(1)
-            if let detail = row.detail {
-                Text("— \(detail)")
+            if let host = row.host {
+                Text("— \(host)")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

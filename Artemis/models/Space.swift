@@ -21,10 +21,8 @@ final class Space: Identifiable {
     var pinnedEntries: [SidebarEntry] = []
     var todayEntries: [SidebarEntry] = []
 
-    /// the split views in this space — each tiles 2–4 of its tabs together and
-    /// shows as one grouped block in the sidebar. a tab belongs to at most one
-    /// group; the group's members are kept contiguous in `tabs` so the block
-    /// renders as a single run
+    /// a tab belongs to at most one group, and a group's members stay contiguous
+    /// in `tabs` so the sidebar draws it as one row
     var splitGroups: [SplitGroup] = []
 
     /// the identity this space browses as — its cookies, favourites, history and
@@ -55,7 +53,7 @@ final class Space: Identifiable {
         tabs.first { $0.id == selectedTabID }
     }
 
-    /// the split group a tab belongs to, if any (a tab is in at most one)
+    /// the split group a tab belongs to, if any
     func splitGroup(containing id: BrowserTab.ID) -> SplitGroup? {
         splitGroups.first { $0.contains(id) }
     }

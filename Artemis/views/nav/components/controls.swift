@@ -77,13 +77,10 @@ struct NavigationControls: View {
 /// … dropdown shown when the sidebar is too narrow for every button
 private struct CompactNavMenu: View {
     @Environment(TabManager.self) private var tabManager
-    private var isSidebarCollapsed: Bool { tabManager.isSidebarCollapsed }
     var onToggleSidebar: (() -> Void)?
     @State private var isHovering = false
 
     var body: some View {
-        // displayedContentTab so back/forward/reload track the shown page in
-        // lockstep with a space switch, matching the url field
         let tab = tabManager.displayedContentTab
 
         Menu {
@@ -106,7 +103,7 @@ private struct CompactNavMenu: View {
                 onToggleSidebar?()
             } label: {
                 Label(
-                    isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar",
+                    tabManager.isSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar",
                     systemImage: "sidebar.left"
                 )
                 .labelStyle(.titleAndIcon)

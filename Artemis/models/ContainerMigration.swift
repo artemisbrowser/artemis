@@ -1,8 +1,7 @@
 import Foundation
 
-/// Artemis ran in the App Sandbox until 0.9.0, so its data sits in the app's
-/// container. The first run outside it copies that data to where an unsandboxed
-/// app keeps it; the container stays untouched as a backup.
+/// copies a sandboxed install's data out of its App Sandbox container to where an
+/// unsandboxed app keeps it, once; the container stays untouched as a backup
 nonisolated enum ContainerMigration {
     /// runs before anything reads settings or stores: the first stored property of ArtemisApp
     static func run() {

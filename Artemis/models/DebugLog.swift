@@ -1,11 +1,10 @@
 import Foundation
 
-/// dev-only file logger (sandbox container tmp); read from outside via
-/// ~/Library/Containers/dev.findles.Artemis/Data/tmp/artemis-debug.log
 nonisolated private let isDebugLoggingEnabled =
     ProcessInfo.processInfo.environment["ARTEMIS_DEBUG"] != nil
         || ProcessInfo.processInfo.environment["ARTEMIS_TEST_URL"] != nil
 
+/// appends to $TMPDIR/artemis-debug.log; a no-op unless ARTEMIS_DEBUG or ARTEMIS_TEST_URL is set
 nonisolated func debugLog(_ message: String) {
     guard isDebugLoggingEnabled else { return }
     let line = "\(Date()) \(message)\n"

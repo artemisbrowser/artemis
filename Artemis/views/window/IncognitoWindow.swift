@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Opening an incognito window from anywhere — a menu, the command bar, the
-/// profile panel. Each window browses in a jar of its own that goes when it closes.
+/// opens an incognito window from anywhere; each browses in a jar of its own that
+/// goes when it closes
 @MainActor
 enum IncognitoWindow {
     static let id = "incognito"
@@ -9,7 +9,7 @@ enum IncognitoWindow {
     /// the scene opener, captured from the first browser window that appears
     static var openWindow: OpenWindowAction?
     /// whose history the next window reads for suggestions
-    static var pendingParent: Profile.ID?
+    fileprivate static var pendingParent: Profile.ID?
 
     static func open() {
         pendingParent = BrowserWindows.shared.browserScope?.currentProfile.id
@@ -32,7 +32,7 @@ struct IncognitoWindowRoot: View {
 }
 
 @MainActor
-final class IncognitoManagerBox {
+private final class IncognitoManagerBox {
     private var manager: TabManager?
 
     func resolve() -> TabManager {

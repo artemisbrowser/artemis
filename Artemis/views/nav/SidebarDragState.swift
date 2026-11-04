@@ -1,14 +1,5 @@
 import SwiftUI
 
-/// shared state for the sidebar's one unified drag system. both tab rows and
-/// favourite tiles feed it, so a tab can be dragged up into the favourites grid
-/// and a favourite dragged back down into the tabs, with a single floating ghost
-/// that morphs between the two shapes as it crosses the boundary.
-///
-/// the gesture lives on each draggable view but reports into one sidebar-wide
-/// coordinate space (`contentSpace`), so the ghost and drop indicators — drawn
-/// at the sidebar-content level, not clipped inside the scroll view — line up
-/// with both zones.
 /// the edge of the content area a dragged tab is hovering, for drag-to-split.
 /// the content area sets this live as the cursor moves over it during a sidebar
 /// drag; the sidebar's drop commit reads it to tile instead of reorder
@@ -16,6 +7,9 @@ enum ContentDropZone: Equatable {
     case left, right, top, bottom
 }
 
+/// the sidebar's one drag, fed by tab rows and favourite tiles alike. every
+/// gesture reports into `contentSpace`, where the ghost and drop indicators draw
+/// above the scroll view's clip
 @Observable
 final class SidebarDragState {
     /// the shared coordinate space the gesture, frames and overlay all use
@@ -54,9 +48,8 @@ final class SidebarDragState {
     /// the overlay sidebar floats above the web card, so geometry alone isn't enough
     @ObservationIgnored var sidebarFrame: CGRect = .zero
 
-    /// frames of the space icons at the sidebar's foot, in `contentSpace`.
-    /// published while the switcher is on screen so a tab dragged over one can be
-    /// dropped *into that space* — the cross-space move Arc never shipped
+    /// frames of the space icons at the sidebar's foot, in `contentSpace`, while
+    /// the switcher is on screen, so a tab dropped on one moves into that space
     @ObservationIgnored var spaceDropFrames: [UUID: CGRect] = [:]
 
     var isDragging: Bool { tab != nil || folder != nil }
@@ -127,11 +120,8 @@ final class SidebarDragState {
     }
 }
 
-/// the favourites grid's balanced-row geometry, computed analytically rather
-/// than read back from the (reflowing) tile frames. one source of truth for
-/// both the real layout and the drag math, so the ghost width and the drop
-/// index always agree with where the tiles actually sit — and neither feeds
-/// back on the live frames, which is what made dragging glitch near the rows.
+/// the favourites grid's balanced-row geometry, computed rather than read back
+/// from the reflowing tile frames: one source for the layout and the drag math
 struct EssentialsGridMath {
     /// at most this many favourites share a row
     static let maxPerRow = 5

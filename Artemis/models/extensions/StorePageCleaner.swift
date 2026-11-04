@@ -1,8 +1,7 @@
 import WebKit
 
-/// On Chrome Web Store and Firefox Add-ons pages: hides the "use a different
-/// browser" nags and turns each item page's own install button into "Add to
-/// Artemis", which installs through the normal consent flow.
+/// on Chrome Web Store and Firefox Add-ons pages, hides the "use a different browser" nags and
+/// turns each item page's install button into "Add to Artemis", through the normal consent flow
 @MainActor
 final class StorePageCleaner: NSObject, WKScriptMessageHandler {
     private static let shared = StorePageCleaner()

@@ -3,9 +3,7 @@ import SwiftUI
 /// shown in the web card when a load fails
 struct ErrorPage: View {
     let tab: BrowserTab
-    /// the card's ink, not the system's: this is drawn on the space's own card
-    /// base, so following the system appearance put near-black text on a dark
-    /// card whenever macOS was in Light mode
+    /// the card's ink, not the system's: this is drawn on the space's card base
     @Environment(\.chromeInk) private var ink
 
     private static let certificateWarning =
@@ -13,12 +11,13 @@ struct ErrorPage: View {
         + "someone could be impersonating the site."
 
     var body: some View {
+        let crashed = tab.loadError == BrowserTab.crashLoopError
         VStack(spacing: 12) {
-            Image(systemName: "wifi.exclamationmark")
+            Image(systemName: crashed ? "exclamationmark.triangle" : "wifi.exclamationmark")
                 .font(.system(size: 40))
                 .foregroundStyle(ink.opacity(0.6))
 
-            Text("Couldn't load page")
+            Text(crashed ? "This page keeps crashing" : "Couldn't load page")
                 .font(.title2)
                 .fontWeight(.semibold)
                 .foregroundStyle(ink)
@@ -41,15 +40,13 @@ struct ErrorPage: View {
             }
 
             HStack(spacing: 10) {
-                Button("Try Again") {
+                Button(crashed ? "Reload" : "Try Again") {
                     tab.retry()
                 }
                 .controlSize(.large)
                 .tooltip("Reload this page")
 
-                // a certificate the system refuses is the one failure worth
-                // offering a way past — see the host's own certificate, then
-                // decide. Accepting is scoped to that one certificate
+                // the only failure with a way past; accepting trusts that one certificate
                 if tab.canOverrideCertificate {
                     Button("Show Certificate") {
                         let host = tab.lastAttemptedURL?.host() ?? ""

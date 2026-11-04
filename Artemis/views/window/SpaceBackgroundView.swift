@@ -1,20 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// paints a space's backdrop: solid color, linear gradient, or live glass
-/// (desktop vibrancy), with an optional film-grain overlay on top.
-///
-/// switching spaces cross-fades the colour. the catch: the window is
-/// non-opaque (for glass), so a plain cross-fade — both layers part-way
-/// translucent at once — briefly shows the desktop through. instead we hold
-/// the outgoing backdrop fully opaque beneath and fade only the incoming one
-/// in over it, so there's always an opaque floor and the fade reads as one
-/// colour melting into the next
-struct SpaceBackgroundView: View {
+/// one space's backdrop. an appearance change holds the outgoing fill opaque beneath
+/// and fades only the incoming one in: the window is non-opaque, so a plain
+/// cross-fade would show the desktop through
+private struct SpaceBackgroundView: View {
     var appearance: SpaceAppearance
 
-    // the outgoing backdrop, kept opaque under the incoming one for the length
-    // of a switch fade, then dropped once it's fully covered
+    /// the outgoing backdrop, dropped once the incoming one fully covers it
     @State private var previous: SpaceAppearance?
     @State private var fade: Double = 1
     @State private var fadeToken = 0
@@ -29,9 +22,8 @@ struct SpaceBackgroundView: View {
                 .opacity(previous == nil ? 1 : fade)
         }
         .ignoresSafeArea()
-        // fade fill/colour/preset switches, but never mesh drags — they keep
-        // the same signature, so they apply instantly instead of firing a
-        // 0.35s fade every frame and tanking the framerate
+        // fill/colour/preset switches fade; mesh drags keep the same signature
+        // and apply instantly
         .onChange(of: appearance) { old, new in
             guard old.transitionSignature != new.transitionSignature else { return }
             fadeToken += 1
@@ -48,42 +40,17 @@ struct SpaceBackgroundView: View {
     }
 }
 
-/// the window backdrop, cross-faded across spaces by the carousel position so
-/// the colour shifts *as* the spaces slide rather than after they land.
-///
-/// every space is stacked as its own layer with a stable identity, and the
-/// transition is carried purely by each layer's `.opacity`. that's deliberate:
-/// `.opacity` is an animatable modifier, so a `withAnimation` change to these
-/// stable-identity layers (the release-snap, a click-switch) animates the fade
-/// frame-by-frame on its own — we don't depend on `body` re-running per frame
-/// (it isn't, during an animation it runs once at the final position). a raw
-/// finger-drag isn't animated, so `body` re-runs live per frame and the fade
-/// tracks the drag 1:1.
-///
-/// the window is non-opaque (for glass). a colour layer is opaque, so colour↔
-/// colour keeps an opaque floor at all times: every layer at or below the floor
-/// index stays opaque and the next fades in by the fraction. but a glass layer
-/// isn't a colour — it's a live frost over the desktop — so it can't be stacked
-/// and alpha-crossfaded: two of them doubled the blur + dimming and popped on
-/// settle. instead one shared `GlassSubstrate` (the actual frost) is mounted
-/// beneath, only while a glass space is in view, and each space's layer carries
-/// just its dimming scrim. with glass in view the two participating layers
-/// plain-crossfade over that single substrate; a colour layer stays opaque and
-/// hides the substrate until it fades, a glass layer is a thin scrim that lets
-/// it through
+/// the window backdrop, cross-faded across spaces by the carousel position: one
+/// stable-identity layer per space, faded by `.opacity`. colour layers keep an
+/// opaque floor; glass layers are scrims over one shared `GlassSubstrate`
 struct SpaceBackdrop: View, Animatable {
     var spaces: [Space]
     var position: Double
     /// glass frosts the page beneath (the floating sidebar) instead of the desktop behind the window
     var overPage = false
 
-    // a raw finger-drag changes `position` outside any animation, so `body`
-    // re-runs live per frame and the fade tracks the drag 1:1. a click / keyboard
-    // switch sets it inside `withAnimation`, where only animatable data is
-    // interpolated — so we expose `position` as `animatableData`. that makes
-    // SwiftUI step it frame-by-frame (re-running `body` each step) instead of
-    // jumping to the final value, so the colour glides in lockstep with the
-    // sidebar filmstrip rather than snapping while the panels slide
+    // `withAnimation` interpolates only animatable data: exposing `position`
+    // re-runs `body` per frame of a click switch instead of jumping to the end
     var animatableData: Double {
         get { position }
         set { position = newValue }
@@ -226,19 +193,27 @@ struct WindowTransparency: NSViewRepresentable {
     /// concentric rounding is derived from
     var onWindow: ((NSWindow) -> Void)? = nil
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
+    func makeNSView(context: Context) -> Host {
+        let view = Host()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: Host, context: Context) {
+        nsView.onWindow = onWindow
+        guard let window = nsView.window else { return }
+        onWindow?(window)
+    }
+
+    final class Host: NSView {
+        var onWindow: ((NSWindow) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
             window.isOpaque = false
             window.backgroundColor = .clear
             onWindow?(window)
         }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        guard let window = nsView.window else { return }
-        onWindow?(window)
     }
 }

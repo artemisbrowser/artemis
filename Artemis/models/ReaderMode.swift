@@ -1,25 +1,17 @@
 import Foundation
 
-/// Reader: strips a page down to its article and re-renders it as clean,
-/// readable typography.
-///
-/// Safari's reader is a private WebKit component with no API, so this is our own
-/// extraction — the same heuristic Readability made standard: score block
-/// elements by how much real prose they hold versus how much link/markup noise,
-/// take the best subtree, then rebuild it with only the tags that carry meaning.
-///
-/// The extraction runs on the page's serialized HTML rather than in the page, so
-/// hostile script can't interfere with it and the result is deterministic enough
-/// to unit-test.
+/// Readability-style article extraction over a page's serialized HTML: the block
+/// with the most prose per unit of markup, rebuilt from meaningful tags only.
+/// approximate by design; regex-based, never a DOM parse
 nonisolated enum ReaderMode {
     struct Article {
         var title: String
-        /// sanitized body HTML — headings, paragraphs, lists, quotes, images
+        /// sanitized body HTML: `keptTags` only, `href`/`src`/`alt` only
         var html: String
         var url: URL
-        /// rough reading time, shown under the title
         var wordCount: Int
 
+        /// at 220 words a minute, never under 1
         var readingMinutes: Int { max(1, Int((Double(wordCount) / 220).rounded())) }
     }
 
@@ -35,13 +27,12 @@ nonisolated enum ReaderMode {
         "pre", "code", "em", "strong", "b", "i", "a", "img", "figure", "figcaption", "br", "hr",
     ]
 
-    /// pull the article out of a page, or nil when there isn't one worth showing
+    /// nil below 120 words, which is a landing page or app shell, not an article
     static func extract(html: String, url: URL) -> Article? {
         let title = firstMatch(in: html, pattern: "<title[^>]*>(.*?)</title>")
             .map(decodeEntities)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         var body = html
-        // drop wholesale-junk elements, contents and all
         for tag in junkTags {
             body = remove(tag: tag, from: body)
         }
@@ -52,8 +43,6 @@ nonisolated enum ReaderMode {
         let cleaned = sanitize(candidate)
         let text = stripTags(cleaned)
         let words = text.split(whereSeparator: { $0.isWhitespace }).count
-        // below this it isn't an article — it's a landing page or an app shell,
-        // and a reader view of it would be worse than the page
         guard words >= 120 else { return nil }
 
         let heading = firstMatch(in: candidate, pattern: "<h1[^>]*>(.*?)</h1>")
@@ -76,8 +65,7 @@ nonisolated enum ReaderMode {
                     best = (score, block)
                 }
             }
-            // an explicit <article> that scores at all wins outright — semantic
-            // markup beats any heuristic guess
+            // an <article> that scores at all wins outright
             if tag == "article", let best, best.score > 0 { return best.html }
         }
         return best?.html
@@ -100,7 +88,6 @@ nonisolated enum ReaderMode {
 
     // MARK: - Cleaning
 
-    /// keep only the tags that carry meaning, and only the attributes that do
     private static func sanitize(_ html: String) -> String {
         var out = ""
         var index = html.startIndex
@@ -118,20 +105,16 @@ nonisolated enum ReaderMode {
             index = html.index(after: close)
         }
         out += html[index...]
-        // collapse the whitespace the tag removal leaves behind
         return replace("(\\s*\n\\s*){2,}", in: out, with: "\n")
     }
 
-    /// re-emit a kept tag carrying only safe attributes (`href`, `src`, `alt`) —
-    /// this is what stops layout classes and inline styles following the content
-    /// into the reader and undoing its typography
+    /// the kept tag with only `href`, `src` and `alt`, minus `javascript:` urls
     private static func rebuild(tag: String, name: String) -> String {
         if tag.hasPrefix("/") { return "</\(name)>" }
         var attributes = ""
         for attribute in ["href", "src", "alt"] {
             if let value = firstMatch(in: tag, pattern: "\(attribute)\\s*=\\s*[\"']([^\"']*)[\"']"),
                 !value.isEmpty,
-                // javascript: urls have no place in a stripped-down reader
                 !value.lowercased().hasPrefix("javascript:") {
                 attributes += " \(attribute)=\"\(value)\""
             }
@@ -142,8 +125,7 @@ nonisolated enum ReaderMode {
 
     // MARK: - Rendering
 
-    /// the reader document. deliberately styled here rather than in the app so it
-    /// prints and saves as it looks, and adapts to the system appearance
+    /// a self-contained document, styled inline for light and dark
     static func page(for article: Article) -> String {
         """
         <!doctype html><html><head><meta charset="utf-8">
@@ -182,11 +164,104 @@ nonisolated enum ReaderMode {
         """
     }
 
+    // MARK: - Markdown
+
+    /// the article's sanitised html as Markdown, links and images absolute
+    static func markdown(for article: Article) -> String {
+        // a link, quote or code block collects into its own buffer, wrapped as it closes
+        var buffers = [""]
+        var hrefs: [String?] = []
+        var lists: [(ordered: Bool, count: Int)] = []
+        var inPre = 0
+        func emit(_ text: String) { buffers[buffers.count - 1] += text }
+        func block() { if !buffers[buffers.count - 1].isEmpty { emit("\n\n") } }
+        func pop() -> String { buffers.count > 1 ? buffers.removeLast() : "" }
+        func absolute(_ raw: String?) -> String? {
+            raw.flatMap { URL(string: $0, relativeTo: article.url)?.absoluteString }
+        }
+        func text(_ raw: Substring) {
+            let decoded = decodeEntities(String(raw))
+            if inPre > 0 { return emit(decoded) }
+            var collapsed = replace("\\s+", in: decoded, with: " ")
+            let last = buffers[buffers.count - 1].last
+            if last == nil || last == " " || last == "\n" { collapsed = String(collapsed.drop { $0 == " " }) }
+            emit(collapsed)
+        }
+
+        let html = article.html
+        var index = html.startIndex
+        while let open = html[index...].firstIndex(of: "<") {
+            text(html[index..<open])
+            guard let close = html[open...].firstIndex(of: ">") else { break }
+            index = html.index(after: close)
+            let tag = String(html[html.index(after: open)..<close])
+            let closing = tag.hasPrefix("/")
+            let name = tag.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+                .prefix { !$0.isWhitespace && $0 != "/" }.lowercased()
+            switch name {
+            case "h1", "h2", "h3", "h4", "h5", "h6":
+                block()
+                if !closing { emit(String(repeating: "#", count: Int(name.dropFirst()) ?? 1) + " ") }
+            case "p", "figure", "figcaption":
+                if lists.isEmpty { block() }
+            case "br":
+                emit("\n")
+            case "hr":
+                block()
+                emit("---\n\n")
+            case "ul", "ol":
+                if closing { _ = lists.popLast() } else { lists.append((name == "ol", 0)) }
+                if closing ? lists.isEmpty : lists.count == 1 { block() }
+            case "li" where !closing && !lists.isEmpty:
+                lists[lists.count - 1].count += 1
+                let item = lists[lists.count - 1]
+                emit("\n" + String(repeating: "  ", count: lists.count - 1) + (item.ordered ? "\(item.count). " : "- "))
+            case "blockquote", "pre":
+                if !closing {
+                    block()
+                    buffers.append("")
+                    if name == "pre" { inPre += 1 }
+                    continue
+                }
+                let body = pop().trimmingCharacters(in: .whitespacesAndNewlines)
+                if name == "pre" {
+                    inPre = max(inPre - 1, 0)
+                    emit("```\n\(body)\n```")
+                } else {
+                    emit(body.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
+                        .joined(separator: "\n"))
+                }
+                block()
+            case "code" where inPre == 0:
+                emit("`")
+            case "strong", "b":
+                emit("**")
+            case "em", "i":
+                emit("*")
+            case "a":
+                if !closing {
+                    hrefs.append(firstMatch(in: tag, pattern: "href=\"([^\"]*)\""))
+                    buffers.append("")
+                    continue
+                }
+                let label = pop().trimmingCharacters(in: .whitespaces)
+                let href = absolute(hrefs.popLast() ?? nil)
+                emit(href.map { label.isEmpty ? "" : "[\(label)](\($0))" } ?? label)
+            case "img":
+                if let src = absolute(firstMatch(in: tag, pattern: "src=\"([^\"]*)\"")) {
+                    emit("![\(firstMatch(in: tag, pattern: "alt=\"([^\"]*)\"") ?? "")](\(src))")
+                }
+            default:
+                break
+            }
+        }
+        text(html[index...])
+        while buffers.count > 1 { buffers[buffers.count - 2] += buffers.removeLast() }
+        let tidy = replace("[ \\t]+\n", in: buffers[0], with: "\n")
+        return replace("\n{3,}", in: tidy, with: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Small string helpers
-    //
-    // deliberately regex/scanner based rather than a DOM parse: this runs on
-    // every reader toggle and only ever needs to be approximately right, and
-    // pulling in a parser for it would cost more than it returns
 
     private static func blocks(of tag: String, in html: String) -> [String] {
         var out: [String] = []
@@ -197,7 +272,7 @@ nonisolated enum ReaderMode {
             else { break }
             out.append(String(html[open.lowerBound..<close.upperBound]))
             searchStart = open.upperBound
-            if out.count > 400 { break }  // pathological markup guard
+            if out.count > 400 { break }
         }
         return out
     }
@@ -206,7 +281,7 @@ nonisolated enum ReaderMode {
         replace("<\(tag)\\b[^>]*>.*?</\(tag)>", in: html, with: "")
     }
 
-    static func stripTags(_ html: String) -> String {
+    private static func stripTags(_ html: String) -> String {
         decodeEntities(replace("<[^>]+>", in: html, with: " "))
     }
 

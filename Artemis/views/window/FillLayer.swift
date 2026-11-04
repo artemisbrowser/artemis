@@ -11,12 +11,10 @@ struct FillLayer: View {
         let _ = Bench.tick("FillLayer")
         ZStack {
             fill
-            // glass never takes grain — its editor hides the slider, but a stale
-            // value can linger from a gradient/preset the space was before, so
-            // gate on fill type here rather than trusting the stored number
+            // glass never takes grain, though a stale value can survive a fill change
             if appearance.fill != .glass, appearance.grain > 0.001 {
                 NoiseTexture()
-                    // slider 100% maps to the old 20% — anything above was overkill
+                    // slider 100% is 20% grain
                     .opacity(appearance.grain * 0.2)
                     .blendMode(.overlay)
                     .allowsHitTesting(false)

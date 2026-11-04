@@ -1,8 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// a small colour swatch that opens our own HSB picker in a popover — replaces
-/// the system `ColorPicker`, which looks out of place against the glass chrome
+/// a colour swatch that opens `ColorPickerPanel` in a popover
 struct ColorSwatchPicker: View {
     @Binding var color: Color
     var size: CGFloat = 26
@@ -25,14 +24,12 @@ struct ColorSwatchPicker: View {
     }
 }
 
-/// our colour picker: a current-colour header with quick actions (randomise,
-/// copy, eyedropper), a saturation/brightness field, a hue rail, a format
-/// selector (HEX / RGB / HSL / HSV) with an editable value, and a Fine-tune row
-/// of gradient sliders for the chosen format's channels. liquid-glass chrome
+/// an HSB colour picker: saturation/brightness field, hue rail, an editable
+/// value in the chosen format, and per-channel sliders for that format
 struct ColorPickerPanel: View {
     @Binding var color: Color
 
-    enum Fmt: String, CaseIterable { case hex = "HEX", rgb = "RGB", hsl = "HSL", hsv = "HSV" }
+    private enum Fmt: String, CaseIterable { case hex = "HEX", rgb = "RGB", hsl = "HSL", hsv = "HSV" }
 
     @State private var hue = 0.0
     @State private var sat = 1.0
@@ -48,7 +45,7 @@ struct ColorPickerPanel: View {
             svField
             hueRail
             formatRow
-            // hex is just a notation, not channels to tune — no fine-tune for it
+            // hex has no channels to tune
             if format != .hex {
                 Divider().opacity(0.4)
                 fineTune
@@ -71,7 +68,7 @@ struct ColorPickerPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(value)
                     .font(.system(size: 15, weight: .bold).monospaced())
-                    .contentTransition(.numericText())  // slot-machine roll on jumps
+                    .contentTransition(.numericText())
                     .lineLimit(1).minimumScaleFactor(0.7)
                 Text("Current colour").font(.system(size: 11)).foregroundStyle(.secondary)
             }
@@ -188,13 +185,12 @@ struct ColorPickerPanel: View {
 
     // MARK: Fine tune
 
-    @ViewBuilder
     private var fineTune: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Fine tune").font(.system(size: 14, weight: .semibold))
             switch format {
             case .hex:
-                EmptyView()  // hidden above; hex has no channels to tune
+                EmptyView()
             case .rgb:
                 let (r, g, b) = rgbD()
                 fineSlider("R", r * 255, 0...255, "\(Int(round(r * 255)))",
@@ -281,8 +277,7 @@ struct ColorPickerPanel: View {
     }
 
     private func randomise() {
-        // discrete jump → animate so the numbers roll (drags call push() directly,
-        // staying instant so the knob never lags)
+        // only discrete jumps animate; drags stay instant so the knob tracks the pointer
         withAnimation(.snappy(duration: 0.4)) {
             hue = .random(in: 0...1); sat = .random(in: 0.45...1); bri = .random(in: 0.5...1)
             push()

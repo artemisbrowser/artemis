@@ -1,21 +1,12 @@
 import SwiftUI
 
-/// "meet.google.com wants to use your camera and microphone."
-///
-/// Anchored to the top-leading corner of the page, where the site's own content
-/// is, rather than floating in the middle of the window: the question is about
-/// the page, and a modal sheet over the whole browser would be both heavier than
-/// the decision deserves and easy to mistake for something the *browser* wants.
-///
-/// It deliberately has no dismiss affordance. WebKit is holding a decision
-/// handler for this request and it has to be answered; the two buttons are the
-/// only ways out, and closing the tab answers it with a refusal.
+/// "meet.google.com wants to use your camera and microphone", over the page that
+/// asked. no dismiss: WebKit's decision handler must be answered by a button, or
+/// refused when the tab closes
 struct PermissionPrompt: View {
     @Environment(TabManager.self) private var tabManager
     let request: PermissionRequest
 
-    /// on by default — being asked the same question on every page load is how
-    /// browsers train people to click Allow without reading
     @State private var remember = true
 
     private var host: String {
@@ -63,8 +54,7 @@ struct PermissionPrompt: View {
         .frame(width: 340, alignment: .leading)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
         .shadow(color: .black.opacity(0.35), radius: 20, y: 6)
-        // a fresh question gets a fresh checkbox, and never inherits the last
-        // site's answer
+        // a fresh question never inherits the last one's checkbox
         .id(request.id)
     }
 }

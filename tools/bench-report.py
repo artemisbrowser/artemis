@@ -3,15 +3,8 @@
 
     tools/bench-report.py ~/Downloads/artemis-bench-before.log /tmp/sample-before.csv
 
-The in-app log knows the phase boundaries, its own CPU, its footprint and how
-many frames were late. The sampler knows what the WebKit children and the
-WindowServer cost during the same window. Neither half is the whole picture: a
-"fix" that moves work out of the app process and into the compositor is not a
-fix, and only the join shows that.
-
-CPU is diffed per process and then summed, because WebKit content processes are
-started and killed during a run — summing a category first and diffing after
-makes an exiting process look like negative CPU.
+CPU is diffed per process and then summed: content processes start and exit
+mid-run, so diffing a category's sum would count an exit as negative CPU.
 """
 import csv
 import sys

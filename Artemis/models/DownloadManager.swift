@@ -16,10 +16,8 @@ final class DownloadItem: NSObject, Identifiable {
     private(set) var destination: URL?
     private(set) var errorText: String?
 
-    /// A better name for this file, worked out on-device from the page it came
-    /// from — offered, never applied. A browser that renames your files behind
-    /// your back is a browser you stop trusting, and the model is occasionally
-    /// wrong in ways only you can see.
+    /// a better name worked out on-device from the source page: offered, and
+    /// applied only by `applySuggestedName`
     private(set) var suggestedName: String?
     /// what it was called before you accepted a suggestion, so it can go back
     private(set) var previousName: String?
@@ -113,14 +111,12 @@ final class DownloadItem: NSObject, Identifiable {
             guard let name = await Intelligence.shared.filename(
                 for: current, pageTitle: sourceTitle, host: sourceHost)
             else { return }
-            // a suggestion identical to what it's already called is not a
-            // suggestion, it's a notification
             guard let self, name != current else { return }
             suggestedName = name
         }
     }
 
-    /// accept the suggestion: this is the only place the file actually moves
+    /// the only place a suggestion moves the file
     func applySuggestedName() {
         guard let suggestedName, let destination else { return }
         let target = Self.uniqueURL(for: destination.deletingLastPathComponent()
@@ -137,7 +133,7 @@ final class DownloadItem: NSObject, Identifiable {
         }
     }
 
-    /// put it back, for when the suggestion looked better than it was
+    /// move it back to the name it had before `applySuggestedName`
     func undoRename() {
         guard let previousName, let destination else { return }
         let target = Self.uniqueURL(for: destination.deletingLastPathComponent()
@@ -217,9 +213,7 @@ extension DownloadItem: WKDownloadDelegate {
         debugLog("download FAILED: \(error as NSError) userInfo: \((error as NSError).userInfo)")
         discardPartial()
 
-        // -999 we didn't ask for = WebKit discarding a duplicate request
-        // (sites often fire a navigation and a scripted fetch for one click);
-        // safari hides these, so do we
+        // a -999 we didn't ask for is WebKit dropping a duplicate of another download
         if (error as NSError).code == NSURLErrorCancelled, state != .cancelled {
             DownloadManager.shared.remove(self)
             return

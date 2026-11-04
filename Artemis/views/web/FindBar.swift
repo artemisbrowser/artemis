@@ -1,9 +1,7 @@
 import SwiftUI
 import WebKit
 
-/// find-in-page bar, floated over the web card (⌘F)
-///
-/// searches as you type; shows current/total matches
+/// find-in-page bar over the web card (⌘F): searches as you type, shows current/total matches
 struct FindBar: View {
     let tab: BrowserTab
     @Environment(TabManager.self) private var tabManager
@@ -12,9 +10,7 @@ struct FindBar: View {
     @State private var currentMatch = 0
     @FocusState private var isFocused: Bool
 
-    /// Find, or ask a question about the page. One bar rather than two, because
-    /// they're the same intent — "what does this page say about X" — arriving at
-    /// different levels of precision.
+    /// the bar asks a question about the page instead of finding text
     @State private var isAsking = false
     @State private var answer: String?
     @State private var isThinking = false
@@ -123,8 +119,7 @@ struct FindBar: View {
         .padding(.vertical, 8)
     }
 
-    /// the answer, and — just as important — where it came from. an answer with
-    /// no provenance is a rumour
+    /// the answer and where on the page it came from
     private var answerPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()

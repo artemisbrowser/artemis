@@ -1,13 +1,7 @@
 import SwiftUI
 
-/// Which space a site belongs to.
-///
-/// The rule is a glob over `host/path` — `*.github.com/acme/*` — matched with
-/// the host and the path kept apart, so a `*` in the host can never swallow a
-/// slash and match the domain out of somebody else's path.
-///
-/// A space signs in as its profile, so routing a site to spaces in two profiles
-/// is what makes the same site two different logins.
+/// which space a site opens in. the pattern is matched with host and path kept
+/// apart, so a `*` in the host never swallows a slash
 struct RoutingRule: Codable, Identifiable, Equatable {
     var id: UUID
     /// glob over `host/path`, e.g. `*.github.com` or `mail.google.com/u/1/*`
@@ -34,23 +28,19 @@ struct RoutingRule: Codable, Identifiable, Equatable {
     func matches(_ url: URL) -> Bool {
         guard let host = url.host()?.lowercased(), !pattern.isEmpty else { return false }
         let trimmed = pattern.trimmingCharacters(in: .whitespaces).lowercased()
-        // the pattern's first slash separates the two, so neither glob can reach
-        // across into the other
         let cut = trimmed.firstIndex(of: "/")
         let hostPattern = cut.map { String(trimmed[trimmed.startIndex ..< $0]) } ?? trimmed
         let pathPattern = cut.map { String(trimmed[$0...]) }
-        // `*.example.com` covers example.com as well: the split between a
-        // domain and its subdomains is not one anybody means to draw, and it is
-        // the convention every filter list already uses
+        // `*.example.com` also covers example.com itself
         let bare = hostPattern.hasPrefix("*.") ? String(hostPattern.dropFirst(2)) : nil
         guard Self.glob(hostPattern, matches: host) || bare == host else { return false }
         guard let pathPattern else { return true }  // no path given → any path
         return Self.glob(pathPattern, matches: url.path().isEmpty ? "/" : url.path().lowercased())
     }
 
-    /// `*` stands for any run of characters, including none. Everything else is
+    /// `*` stands for any run of characters, including none. everything else is
     /// literal, and both ends are anchored
-    static func glob(_ pattern: String, matches text: String) -> Bool {
+    private static func glob(_ pattern: String, matches text: String) -> Bool {
         let parts = pattern.components(separatedBy: "*")
         guard parts.count > 1 else { return pattern == text }
         guard text.hasPrefix(parts[0]) else { return false }
@@ -65,8 +55,8 @@ struct RoutingRule: Codable, Identifiable, Equatable {
     }
 }
 
-/// A drafted rule, with the evidence offered for it and the verdict of checking
-/// that evidence in code — the one pass that cannot be wrong about itself.
+/// a drafted rule, with the example urls offered for it and the verdict of
+/// checking them against the pattern
 struct RoutingProposal {
     /// who wrote it: the on-device model, or the plain reading of the sentence
     /// that runs when the model is unavailable
@@ -102,10 +92,8 @@ enum ExternalLinkRouting: String, CaseIterable, Identifiable, Codable {
 }
 
 extension RoutingRule {
-    /// Read a rule out of a sentence without a model: find a space by name, find
-    /// a site by looking for something domain-shaped, and build the glob. It is
-    /// what runs when Apple's on-device model is unavailable, which — being an
-    /// OS-managed asset — is not something the app can fix or wait out.
+    /// a rule read out of a sentence without the model: a space found by name,
+    /// a site by its domain-shaped word. the fallback when the model is unavailable
     static func suggest(from sentence: String, spaces: [String]) -> RoutingProposal? {
         let text = sentence.lowercased()
         guard !text.isEmpty else { return nil }
@@ -151,8 +139,7 @@ extension RoutingRule {
 }
 
 extension UserDefaults {
-    /// what a routed link from another app does. Scout keeps it by default —
-    /// a link from elsewhere is a glance, and the rule only says where it would land
+    /// what a routed link from another app does; Scout by default
     var externalLinkRouting: ExternalLinkRouting {
         ExternalLinkRouting(rawValue: string(forKey: "externalLinkRouting") ?? "") ?? .scout
     }
@@ -166,7 +153,7 @@ final class RoutingStore {
 
     private(set) var rules: [RoutingRule] = []
 
-    /// injectable so the suite can drill recovery without touching the real file
+    /// `fileURL` is for the test suite
     private let fileURL: URL
     private var saveTask: Task<Void, Never>?
 
@@ -187,12 +174,6 @@ final class RoutingStore {
         scheduleSave()
     }
 
-    func update(_ rule: RoutingRule) {
-        guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
-        rules[index] = rule
-        scheduleSave()
-    }
-
     func remove(_ rule: RoutingRule) {
         rules.removeAll { $0.id == rule.id }
         scheduleSave()
@@ -203,29 +184,30 @@ final class RoutingStore {
         scheduleSave()
     }
 
-    /// a deleted space takes its rules with it. Called before the container is
-    /// destroyed, so a rule can't fire into a jar that is being torn down
+    /// a deleted space takes its rules with it, written through at once
     func forget(spaceID: UUID) {
         guard rules.contains(where: { $0.spaceID == spaceID }) else { return }
         rules.removeAll { $0.spaceID == spaceID }
         saveNow()
     }
 
-    func scheduleSave() {
+    private func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             let snapshot = rules
+            let takenAt = AppStorageLocation.snapshotTime()
             let url = fileURL
             await Task.detached(priority: .utility) {
                 guard let data = try? JSONEncoder().encode(snapshot) else { return }
-                AppStorageLocation.writeDurable(data, to: url)
+                AppStorageLocation.writeDurable(data, to: url, takenAt: takenAt)
             }.value
         }
     }
 
     func saveNow() {
+        saveTask?.cancel()
         guard let data = try? JSONEncoder().encode(rules) else { return }
         AppStorageLocation.writeDurableNow(data, to: fileURL)
     }

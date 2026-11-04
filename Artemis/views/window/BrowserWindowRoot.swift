@@ -1,9 +1,7 @@
 import SwiftUI
 
-/// One browser window: its own `TabManager` (its space, its selection, its find
-/// bar) over the shared `BrowserCore`, and its own tooltip layer — the bubble
-/// draws in a panel of its own, so a second window needs a second one or the tip
-/// follows the wrong pointer.
+/// one browser window: its own `TabManager` over the shared `BrowserCore`, and its
+/// own tooltip layer, whose bubble draws in a per-window panel
 struct BrowserWindowRoot: View {
     @Environment(\.openWindow) private var openWindow
     @State private var box = ManagerBox()
@@ -22,7 +20,7 @@ struct BrowserWindowRoot: View {
 /// initial value is rebuilt on every struct init, so the manager is made on first
 /// body instead — only the retained box is ever asked
 @MainActor
-final class ManagerBox {
+private final class ManagerBox {
     private var manager: TabManager?
 
     func resolve() -> TabManager {

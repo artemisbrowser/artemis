@@ -1,9 +1,6 @@
 import Foundation
 
-/// One WebKit content-blocking rule, in the JSON shape `WKContentRuleListStore`
-/// compiles. Built through Codable rather than string concatenation so a stray
-/// quote in a filter list can't produce invalid JSON (which fails the *whole*
-/// list, not one rule).
+/// one WebKit content-blocking rule, in the JSON shape `WKContentRuleListStore` compiles
 nonisolated struct ContentRule: Encodable {
     struct Trigger: Encodable {
         var urlFilter: String
@@ -33,25 +30,12 @@ nonisolated struct ContentRule: Encodable {
     var action: Action
 }
 
-/// Converts Adblock Plus filter syntax (EasyList, EasyPrivacy, and anything else
-/// in that format) into WebKit content-blocking rules.
-///
-/// This is what takes Artemis from "a curated list of obvious ad domains" to
-/// uBlock-grade blocking without shipping an extension: the rules compile to
-/// WebKit bytecode and run in the networking process, so they're faster than any
-/// JS blocker and can't be defeated by page script.
-///
-/// It deliberately converts a *conservative subset*. WebKit rejects an entire
-/// compiled list if a single rule is malformed, so anything whose semantics don't
-/// map cleanly — regex-literal filters, `$csp`/`$redirect`/`$removeparam`
-/// rewriting, procedural cosmetic selectors — is dropped rather than
-/// approximated. Dropped counts are reported so the honesty is visible in
-/// Settings instead of hidden.
+/// converts Adblock Plus filter syntax (EasyList, EasyPrivacy, …) into WebKit content-blocking
+/// rules. one malformed rule fails a whole compiled list, so a filter without a clean WebKit
+/// mapping is dropped and counted, never approximated
 nonisolated enum AdblockConverter {
-    /// WebKit's hard ceiling is 150k rules per compiled list; staying well under
-    /// keeps compile time and memory sane, and lists are installed together
-    /// anyway, so chunking costs nothing
-    static let rulesPerChunk = 30_000
+    /// rules per compiled list, well under WebKit's hard ceiling of 150k
+    private static let rulesPerChunk = 30_000
 
     struct Result {
         /// each element is one list's worth of JSON, ready to compile
@@ -87,9 +71,8 @@ nonisolated enum AdblockConverter {
         "script", "image", "style-sheet", "font", "media", "raw", "document", "svg-document",
     ]
 
-    /// options whose whole point is rewriting or exempting in ways WebKit's
-    /// declarative model has no equivalent for — the rule is skipped entirely
-    /// rather than silently becoming a plain block
+    /// options with no WebKit equivalent; a rule carrying one is dropped, never
+    /// reduced to a plain block
     private static let unsupportedOptions: Set<String> = [
         "csp", "redirect", "redirect-rule", "rewrite", "removeparam", "replace", "badfilter",
         "generichide", "elemhide", "specifichide", "ehide", "ghide", "inline-script",
@@ -101,17 +84,13 @@ nonisolated enum AdblockConverter {
     /// `!#if` tokens that hold for uBlock running on Safari; every other token is false
     private static let platformTokens: Set<String> = ["env_safari", "cap_user_stylesheet"]
 
-    /// convert whole filter lists into compilable rule chunks.
-    ///
-    /// `extraExceptions` are Artemis' own site fixes, appended after everything
-    /// else (see `ContentBlocker.siteFixes`).
+    /// convert whole filter lists into compilable rule chunks, with `extraExceptions`
+    /// appended after everything else
     static func convert(_ sources: [String], extraExceptions: [ContentRule] = []) -> Result {
         var blocks: [ContentRule] = []
         var cosmetics = Cosmetics()
         var exceptions: [ContentRule] = []
         var dropped = 0
-        // the same filter appears in several lists; compiling it twice is pure
-        // cost, so dedupe on the raw line
         var seen = Set<String>()
 
         let lists = sources.map(preprocessed)
@@ -134,10 +113,8 @@ nonisolated enum AdblockConverter {
 
         let (generic, specific) = cosmetics.rules(dropped: &dropped)
 
-        // order is semantic: WebKit applies rules top-down, so every
-        // `ignore-previous-rules` exception must sit after the block and hide
-        // rules it is meant to override, and only within one compiled list. so
-        // each chunk carries its whole exception tail rather than sharing a chunk
+        // WebKit applies rules top-down within one compiled list, so every chunk
+        // ends with the whole `ignore-previous-rules` tail that overrides it
         let tail = exceptions + extraExceptions
         let groups = [
             (blocks, tail),
@@ -160,9 +137,8 @@ nonisolated enum AdblockConverter {
         return result
     }
 
-    /// the hosts a list blocks outright (`||host^`, no path, no `domain=`). used to attribute a
-    /// blocked request to the list that recognised it, which is how a block is
-    /// reported as a tracker rather than an ad
+    /// the hosts a list blocks outright (`||host^`, no path, no `domain=`), for attributing
+    /// a blocked request to the list that recognised it
     static func blockedHosts(in source: String) -> Set<String> {
         var hosts: Set<String> = []
         for rawLine in source.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -196,7 +172,7 @@ nonisolated enum AdblockConverter {
 
     /// the list's filter lines, with uBlock's `!#if` blocks resolved and
     /// comments and headers gone
-    static func preprocessed(_ text: String) -> [String] {
+    private static func preprocessed(_ text: String) -> [String] {
         var conditions: [Bool] = []
         var lines: [String] = []
         for rawLine in text.split(whereSeparator: \.isNewline) {
@@ -413,7 +389,7 @@ nonisolated enum AdblockConverter {
             ":spath(",
         ]
         if procedural.contains(where: selector.contains) { return false }
-        // a stray unbalanced quote/bracket poisons the whole compiled list
+        // an unbalanced bracket fails the whole compiled list
         return selector.filter { $0 == "(" }.count == selector.filter { $0 == ")" }.count
             && selector.filter { $0 == "[" }.count == selector.filter { $0 == "]" }.count
     }
@@ -429,21 +405,16 @@ nonisolated enum AdblockConverter {
             body.removeFirst(2)
         }
 
-        // split trailing `$options`, being careful not to cut inside a pattern
         var optionText = ""
         if let index = optionsSeparator(in: body) {
             optionText = String(body[body.index(after: index)...])
             body = String(body[body.startIndex..<index])
         }
 
-        // regex-literal filters use a syntax WebKit's engine doesn't share; a
-        // mismatch here fails the entire list, so they're not worth the risk
+        // regex-literal filters use a syntax WebKit's engine doesn't share
         guard !body.hasPrefix("/") || !body.hasSuffix("/") else { return nil }
-        guard !body.isEmpty else { return nil }
-
-        var trigger = ContentRule.Trigger(urlFilter: "")
-        guard let filter = urlFilter(from: body) else { return nil }
-        trigger.urlFilter = filter
+        guard !body.isEmpty, let filter = urlFilter(from: body) else { return nil }
+        var trigger = ContentRule.Trigger(urlFilter: filter)
 
         var types: Set<String> = []
         var excludedTypes: Set<String> = []
@@ -486,14 +457,9 @@ nonisolated enum AdblockConverter {
             case let name where unsupportedOptions.contains(name)
                 || name.contains("=") && !name.hasPrefix("domain="):
                 return nil
-            case let name where typeMap[name] != nil:
-                if negated {
-                    excludedTypes.insert(typeMap[name]!)
-                } else {
-                    types.insert(typeMap[name]!)
-                }
             default:
-                return nil  // unknown option: safer to drop than to over-block
+                guard let type = typeMap[name] else { return nil }
+                if negated { excludedTypes.insert(type) } else { types.insert(type) }
             }
         }
 
@@ -510,17 +476,9 @@ nonisolated enum AdblockConverter {
         )
     }
 
-    /// index of the `$` that starts the options section, or nil when there isn't
-    /// one. `$` is also legal inside a url pattern, so this only splits when what
-    /// follows *opens like an option* — the first token, up to `,` or `=`, has to
-    /// look like an option name.
-    ///
-    /// deliberately lenient about the rest of the tail: `$csp=script-src none`
-    /// contains a space, and if that failed to register as options the whole
-    /// `csp=…` text would be glued onto the url pattern and the rule would
-    /// silently become a plain block of a url nobody requests. splitting it lets
-    /// the option parser see `csp=` and drop the rule, which is the correct
-    /// outcome
+    /// index of the `$` that opens the options, or nil. `$` is legal in a url pattern, so only a
+    /// tail whose first token (up to `,` or `=`) looks like an option name splits; the rest of
+    /// the tail is unchecked so `$csp=script-src none` still reaches the option parser
     private static func optionsSeparator(in body: String) -> String.Index? {
         guard let index = body.lastIndex(of: "$") else { return nil }
         let tail = body[body.index(after: index)...]
@@ -573,8 +531,7 @@ nonisolated enum AdblockConverter {
 
         // WebKit's url-filter is ASCII-only and fails the whole list otherwise
         guard !out.isEmpty, out != ".*", out.count < 1000, out.allSatisfy(\.isASCII) else { return nil }
-        // last line of defence: if the platform regex engine won't take it,
-        // WebKit's certainly won't, and one bad rule fails the whole list
+        // a pattern NSRegularExpression rejects would fail WebKit's whole list
         guard (try? NSRegularExpression(pattern: out)) != nil else { return nil }
         return out
     }

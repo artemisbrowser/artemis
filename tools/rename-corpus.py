@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """Build the URL list the tab-rename corpus is captured from.
 
-Writes one URL per line to ~/Downloads/artemis-corpus-urls.txt, where
-`ARTEMIS_DIAG=corpus` picks it up (the app is sandboxed; Downloads is the
-one place both sides can reach).
-
-The point of the list is *spread*, not size. A thousand news articles would
-say nothing a hundred don't, while the pages that actually break tab naming
-are the awkward ones: titles that are a bare word ("Pricing"), titles that
-are the site's name and nothing else, single-page apps that set their title
-from script, consent walls, non-Latin scripts, and pages whose title is a
-sentence. Every category below is here because it fails differently.
+Writes `category<TAB>url` lines to ~/Downloads/artemis-corpus-urls.txt, where
+`ARTEMIS_DIAG=corpus` picks them up. The list aims for spread, not size: each
+category breaks tab naming differently.
 """
 
 import os
 
-# Hard cases first — these are the ones that decide whether a prompt is good.
+# Titles that are a bare word or the site's name alone.
 VAGUE_TITLES = [
     "https://stripe.com/pricing",
     "https://www.notion.com/pricing",
@@ -245,8 +238,7 @@ CATEGORIES = {
     "utility": UTILITY,
 }
 
-# Wikipedia gives cheap breadth across subjects without repeating a template:
-# every article is a different domain of knowledge with a real, specific title.
+# Wikipedia articles: specific titles across unrelated subjects.
 WIKI_SUBJECTS = [
     "Antikythera_mechanism", "Bioluminescence", "Cuneiform", "Deep_sea_mining",
     "Ecliptic", "Fermentation", "Gothic_architecture", "Hydrothermal_vent",
@@ -279,13 +271,12 @@ GITHUB_REPOS = [
 
 
 def build() -> list[tuple[str, str]]:
-    """(category, url), so failures can be read per class rather than in bulk."""
+    """(category, url) pairs, deduplicated by url in first-seen order"""
     rows: list[tuple[str, str]] = []
     for name, group in CATEGORIES.items():
         rows += [(name, url) for url in group]
     rows += [("wikipedia", f"https://en.wikipedia.org/wiki/{s}") for s in WIKI_SUBJECTS]
     rows += [("github", f"https://github.com/{r}") for r in GITHUB_REPOS]
-    # keep order stable and drop any accidental duplicates
     seen: set[str] = set()
     unique = []
     for category, url in rows:

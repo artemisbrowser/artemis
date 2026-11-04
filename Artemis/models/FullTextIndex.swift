@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-/// One page's worth of indexed text, as a search result.
+/// one indexed page, as a search result
 struct PageTextHit: Identifiable, Sendable {
     var url: URL
     var title: String
@@ -12,28 +12,11 @@ struct PageTextHit: Identifiable, Sendable {
     var id: String { url.absoluteString }
 }
 
-/// A local full-text index of the pages you've read.
-///
-/// Browser history answers "what was that page called". This answers "I read
-/// something last week that said…", which is the question people actually have
-/// and which no mainstream browser will answer, because doing it their way means
-/// shipping your reading to a server. Doing it here means a SQLite FTS5 table in
-/// Artemis' own container that never leaves the machine — the one shape of this
-/// feature a privacy-first browser can offer and a cloud-first one can't.
-///
-/// Off by default. Indexing what you read is a real escalation over recording
-/// where you went, so it's a decision the user makes rather than a default they
-/// discover.
-///
-/// An actor because every operation touches SQLite and none of it belongs on the
-/// main thread — extraction runs on page load, which is exactly when the main
-/// thread is busiest.
+/// an on-device SQLite FTS5 index of the text of pages read, one row per url.
+/// opt-in, off by default; the database opens lazily on first use
 actor FullTextIndex {
-    /// AppStorage key for the opt-in
     static let enabledKey = "indexPageText"
-    /// how many pages the index keeps before the oldest are dropped. 20k pages
-    /// of text is a few hundred megabytes at the very worst and a year of
-    /// ordinary browsing
+    /// the oldest pages beyond this are dropped
     private static let pageLimit = 20_000
 
     private var db: OpaquePointer?
@@ -63,12 +46,9 @@ actor FullTextIndex {
             return nil
         }
         db = handle
-        // WAL so a search never waits behind an insert, and a page of text
-        // written while you're reading can't stall the UI
         exec("PRAGMA journal_mode = WAL;")
         exec("PRAGMA synchronous = NORMAL;")
-        // `url` and `visited` are carried but not indexed — they're how a hit
-        // gets turned back into something you can open, not something to match
+        // `visited` is seconds since 1970, stored as text
         exec(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5(
@@ -90,9 +70,7 @@ actor FullTextIndex {
 
     // MARK: - Writing
 
-    /// index (or re-index) one page. Re-visiting a page replaces its row rather
-    /// than adding a second one, so the index is "pages you've read", not "times
-    /// you've loaded something"
+    /// replaces any earlier row for the same url
     func record(url: URL, title: String, body: String) {
         guard let db = open() else { return }
         let trimmed = String(body.prefix(200_000))
@@ -120,10 +98,8 @@ actor FullTextIndex {
         pruneIfNeeded()
     }
 
-    /// keep the newest `pageLimit` pages. cheap to check, rare to act on
     private func pruneIfNeeded() {
-        guard let db, count() > Self.pageLimit else { return }
-        _ = db
+        guard count() > Self.pageLimit else { return }
         exec(
             """
             DELETE FROM pages WHERE rowid NOT IN (
@@ -137,8 +113,7 @@ actor FullTextIndex {
     func search(_ query: String, limit: Int = 5) -> [PageTextHit] {
         guard let db = open(), let match = Self.ftsQuery(for: query) else { return [] }
         var statement: OpaquePointer?
-        // bm25 ranks title matches above body matches; the weights are the
-        // column order (url, title, body, visited)
+        // bm25 weights follow column order (url, title, body, visited)
         let sql = """
             SELECT url, title, visited, snippet(pages, 2, '', '', '…', 14)
             FROM pages WHERE pages MATCH ?
@@ -177,9 +152,9 @@ actor FullTextIndex {
         return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
     }
 
-    /// bytes on disk, for the settings pane — "it's all local" deserves a number
+    /// bytes on disk, database plus write-ahead log
     func sizeOnDisk() -> Int {
-        let files = [fileURL, fileURL.appendingPathExtension("wal")]
+        let files = [fileURL, URL(fileURLWithPath: fileURL.path + "-wal")]
         return files.reduce(0) { total, url in
             total + ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
@@ -200,8 +175,7 @@ actor FullTextIndex {
         exec("VACUUM;")
     }
 
-    /// drop everything indexed since `date` — the ranged half of Clear Browsing
-    /// Data, so clearing the last hour of history clears the last hour of text
+    /// drops everything indexed since `date`
     func clear(since date: Date) {
         guard open() != nil else { return }
         exec("DELETE FROM pages WHERE CAST(visited AS REAL) >= \(date.timeIntervalSince1970);")
@@ -213,13 +187,9 @@ actor FullTextIndex {
         sqlite3_bind_text(statement, index, value, -1, Self.transient)
     }
 
-    /// Turn what the user typed into an FTS5 query.
-    ///
-    /// User input can't go in raw: FTS5 has its own syntax and a stray quote or
-    /// `NEAR` is a syntax error, not a search. Each word becomes a quoted term
-    /// (so punctuation is harmless), and the last one gets a prefix `*` so
-    /// results appear while you're still typing it.
-    nonisolated static func ftsQuery(for input: String) -> String? {
+    /// each word of two or more alphanumerics quoted, the last as a prefix; raw input
+    /// would be FTS5 syntax, where a stray quote or `NEAR` is an error
+    private nonisolated static func ftsQuery(for input: String) -> String? {
         let words = input
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count > 1 }

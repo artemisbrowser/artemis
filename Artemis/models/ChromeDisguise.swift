@@ -1,11 +1,9 @@
 import Foundation
 import WebKit
 
-/// Per-site "Pretend to be Chrome", opt-in only: an opted-in host gets Chrome's
-/// platform's user agent on its main-frame navigations, and the page-world script gives
-/// such a page a matching `navigator.userAgentData` and `vendor`.
-/// Google's sign-in hosts are never eligible: Google refuses sign-in there from
-/// browsers it can tell are disguised.
+/// per-site, opt-in "Pretend to be Chrome": Chrome's user agent on main-frame
+/// navigations, plus a matching `navigator.userAgentData` and `vendor`. Google's
+/// sign-in hosts are never eligible: Google refuses a browser it detects disguised
 enum ChromeDisguise {
     private static let hostsKey = "chromeDisguiseHostsV1"
     /// incognito opt-ins, which never reach disk

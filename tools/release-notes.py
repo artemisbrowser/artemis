@@ -13,7 +13,7 @@ STYLE = (
 def inline(text):
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(text, quote=False))
 
-out, items = [], []
+out = []
 for block in open(sys.argv[1]).read().strip().split("\n\n"):
     lines = block.strip().splitlines()
     if all(l.startswith("- ") for l in lines):

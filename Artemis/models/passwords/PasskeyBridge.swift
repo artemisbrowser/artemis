@@ -1,6 +1,5 @@
 import AppKit
 import CryptoKit
-import LocalAuthentication
 import WebKit
 
 /// WebAuthn `publicKey` requests from top-level documents, answered by `Passkeys` in place of
@@ -28,6 +27,8 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var finished: [BrowserTab.ID: Date] = [:]
     private var busy: Set<BrowserTab.ID> = []
     private var monitor: Any?
+    /// UV is claimed only while the passwords policy asks the owner at all; the gesture is always UP
+    private static var verifies: Bool { OwnerUnlock.Kind.passwords.policy != .never }
 
     static func install(into controller: WKUserContentController) {
         controller.addScriptMessageHandler(shared, contentWorld: .page, name: PasskeyPage.messageName)
@@ -92,7 +93,7 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             let handle = (user["id"] as? String).flatMap(Data.init(base64URL:)), (1...64).contains(handle.count)
         else { return .refused(prompted: false) }
         let name = PasskeyPage.clean(user["name"] as? String ?? "")
-        guard await Self.verify("create a passkey for \(rpID) as \u{201C}\(name)\u{201D}") else {
+        guard await OwnerUnlock.authenticate(.passwords, "create a passkey for \(rpID) as \u{201C}\(name)\u{201D}") else {
             return .refused(prompted: true)
         }
         let store = PasswordStore.shared
@@ -112,7 +113,8 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
                     enclave: key.enclave, profileID: PasswordStore.stored(tab.loginProfile)),
                 key: key.blob)
         else { return .refused(prompted: true) }
-        let authData = Passkeys.authenticatorData(rpID: rpID, credential: (id, key.publicKey.rawRepresentation))
+        let authData = Passkeys.authenticatorData(
+            rpID: rpID, verified: Self.verifies, credential: (id, key.publicKey.rawRepresentation))
         return .done([
             "id": id.base64URL, "clientDataJSON": clientData.base64URL,
             "attestationObject": Passkeys.attestationObject(authData).base64URL,
@@ -131,9 +133,10 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             return .refused(prompted: true)
         }
         guard let passkey = candidates.count == 1 ? candidates[0] : await Self.choose(candidates, rpID, tab),
-            await Self.verify("sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}")
+            await OwnerUnlock.authenticate(
+                .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}")
         else { return .refused(prompted: true) }
-        let authData = Passkeys.authenticatorData(rpID: rpID)
+        let authData = Passkeys.authenticatorData(rpID: rpID, verified: Self.verifies)
         guard let blob = store.passkeyKey(passkey),
             let signature = try? Passkeys.sign(
                 authData: authData, clientData: clientData, blob: blob, enclave: passkey.enclave)
@@ -143,11 +146,6 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             "authenticatorData": authData.base64URL, "signature": signature.base64URL,
             "userHandle": passkey.userHandle,
         ])
-    }
-
-    /// Touch ID or the account password, every ceremony
-    private static func verify(_ reason: String) async -> Bool {
-        (try? await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
     }
 
     private static func inform(_ tab: BrowserTab, _ text: String) async {

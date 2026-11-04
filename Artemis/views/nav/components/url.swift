@@ -38,10 +38,15 @@ struct UrlField: View {
                 .lineLimit(1)
                 .contentTransition(.opacity)
                 .frame(maxWidth: inToolbar ? nil : .infinity, alignment: .leading)
+                .accessibilityLabel("Address")
+                .accessibilityValue(tab?.url?.absoluteString ?? "")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { tabManager.editAddress() }
             if !inToolbar, let tab {
                 ReaderButton(tab: tab)
                 PageTranslationButton(tab: tab)
                 PasswordKeyButton(tab: tab)
+                AutofillOfferButton(tab: tab)
             }
             PinnedExtensionsBar()
             if !inToolbar {
@@ -117,6 +122,7 @@ struct PageActions: View {
                 ReaderButton(tab: tab)
                 PageTranslationButton(tab: tab)
                 PasswordKeyButton(tab: tab)
+                AutofillOfferButton(tab: tab)
             }
             SiteSettingsButton(tab: tab)
         }
@@ -131,45 +137,51 @@ struct PageActions: View {
 private struct ReaderButton: View {
     @Environment(\.chromeInk) private var ink
     let tab: BrowserTab
-    @State private var isHovering = false
 
     var body: some View {
         if tab.isReaderMode {
             Button {
                 Task { await tab.toggleReader() }
             } label: {
-                Image(systemName: tab.isReaderMode ? "doc.plaintext.fill" : "doc.plaintext")
+                Image(systemName: "doc.plaintext.fill")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(ink.opacity(tab.isReaderMode ? 0.95 : (isHovering ? 0.9 : 0.55)))
+                    .foregroundStyle(ink.opacity(0.95))
                     .frame(width: 22, height: 22)
-                    .background(
-                        UrlBarHighlight(fill: ink.opacity(tab.isReaderMode ? 0.16 : (isHovering ? 0.13 : 0))))
+                    .background(UrlBarHighlight(fill: ink.opacity(0.16)))
                     .contentShape(.capsule)
-                    .animation(Motion.hover, value: isHovering)
             }
             .buttonStyle(.plain)
-            .onHover { isHovering = $0 }
-            .tooltip(tab.isReaderMode ? "Hide Reader" : "Show Reader", keys: ["⌘", "⇧", "R"])
-            .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            .tooltip("Hide Reader", keys: ["⌘", "⇧", "R"])
+            .transition(Motion.grow(from: 0.8))
         }
     }
 }
 
-/// present only while a page translation the user asked for is running, shown or
-/// failed; it offers the way back to the original and carries any error
+/// present only while a page translation is running, shown or failed. it offers the way
+/// back to the original, the language to translate into and the rules, and carries any error
 private struct PageTranslationButton: View {
     @Environment(\.chromeInk) private var ink
     let tab: BrowserTab
     @State private var isHovering = false
     @State private var isShowingPanel = false
+    @State private var targets: [Locale.Language] = []
 
     private var status: String {
         switch tab.pageTranslation {
         case .idle: ""
-        case .translating(let progress): "Translating on device… \(Int(progress * 100))%"
+        case .detecting: "Translating on device…"
+        case .translating(_, _, let progress): "Translating on device… \(Int(progress * 100))%"
         case .translated(let from, let to):
             "Translated on device from \(PageTranslation.name(of: from)) to \(PageTranslation.name(of: to))"
         case .failed(let message): message
+        }
+    }
+
+    private var progress: Double? {
+        switch tab.pageTranslation {
+        case .detecting: 0
+        case .translating(_, _, let progress): progress
+        default: nil
         }
     }
 
@@ -179,7 +191,7 @@ private struct PageTranslationButton: View {
                 isShowingPanel.toggle()
             } label: {
                 Group {
-                    if case .translating(let progress) = tab.pageTranslation {
+                    if let progress {
                         ProgressView(value: progress)
                             .progressViewStyle(.circular)
                             .controlSize(.mini)
@@ -199,21 +211,48 @@ private struct PageTranslationButton: View {
             .onHover { isHovering = $0 }
             .tooltip(status, keys: tab.pageTranslation.isActive ? ["⌥", "⌘", "T"] : [])
             .holdsSidebar(while: isShowingPanel)
-            .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(status)
-                        .font(.system(size: 13))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button(tab.pageTranslation.isActive ? "Show Original" : "Dismiss") {
-                        isShowingPanel = false
-                        tab.showOriginal()
-                    }
-                }
-                .padding(12)
-                .frame(width: 240, alignment: .leading)
-            }
-            .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) { panel }
+            .transition(Motion.grow(from: 0.8))
         }
+    }
+
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(status)
+                .font(.system(size: 13))
+                .fixedSize(horizontal: false, vertical: true)
+            if let languages = tab.pageTranslation.languages {
+                Picker("Translate to", selection: target(languages.to)) {
+                    ForEach(targets, id: \.self) { Text(PageTranslation.name(of: $0)).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .disabled(targets.isEmpty)
+                // incognito obeys the rules but never makes them
+                if !tab.isPrivate, let rules = tab.translationRules {
+                    Toggle(
+                        "Always translate \(PageTranslation.name(of: languages.from))",
+                        isOn: Binding(
+                            get: { rules.alwaysTranslates(languages.from) },
+                            set: { tab.setAlwaysTranslates(languages.from, $0) }))
+                    Toggle(
+                        "Never translate this site",
+                        isOn: Binding(get: { rules.neverTranslates(tab.url) }, set: { tab.setNeverTranslatesSite($0) }))
+                }
+            }
+            Button(tab.pageTranslation.isActive ? "Show Original" : "Dismiss") {
+                isShowingPanel = false
+                tab.showOriginal()
+            }
+        }
+        .padding(12)
+        .frame(width: 260, alignment: .leading)
+        .task { targets = await PageTranslation.targetLanguages() }
+    }
+
+    private func target(_ current: Locale.Language) -> Binding<Locale.Language> {
+        Binding(
+            get: { targets.first { PageTranslation.sameTarget($0, current) } ?? current },
+            set: { language in Task { await tab.translatePage(to: language) } })
     }
 }
 
@@ -249,8 +288,85 @@ private struct PasswordKeyButton: View {
             .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) {
                 PasswordPanel(tab: tab, target: target) { isShowingPanel = false }
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            .transition(Motion.grow(from: 0.8))
         }
+    }
+}
+
+/// present only while a submitted address or card waits on an answer; its popover opens once, as the
+/// direct answer to the submit
+private struct AutofillOfferButton: View {
+    let tab: BrowserTab
+    @State private var isShowingPanel = false
+
+    var body: some View {
+        if let offer = tab.autofillOffer {
+            Button {
+                isShowingPanel.toggle()
+            } label: {
+                Image(systemName: offer.card == nil ? "house.fill" : "creditcard.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    // a waiting offer stays lit
+                    .modifier(ChromeButtonFace(isHovering: true, boxSize: 22, inUrlBar: true))
+            }
+            .buttonStyle(.plain)
+            .tooltip(offer.card == nil ? "Save address" : "Save card")
+            .task(id: offer.id) {
+                guard tab.autofillOffer?.shown == false else { return }
+                tab.autofillOffer?.shown = true
+                isShowingPanel = true
+            }
+            .holdsSidebar(while: isShowingPanel)
+            .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) {
+                AutofillOfferPanel(tab: tab, offer: offer) { isShowingPanel = false }
+            }
+            .transition(Motion.grow(from: 0.8))
+        }
+    }
+}
+
+private struct AutofillOfferPanel: View {
+    let tab: BrowserTab
+    let offer: AutofillOffer
+    let close: () -> Void
+
+    private var title: String {
+        let verb = offer.updatesAddress || offer.updatesCard ? "Update" : "Save"
+        return switch (offer.address, offer.card) {
+        case (.some, .some): "\(verb) this address and card?"
+        case (.some, nil): "\(verb) this address?"
+        default: "\(verb) this card?"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 13, weight: .semibold))
+            if let address = offer.address {
+                Text([address.name, address.summary].filter { !$0.isEmpty }.joined(separator: "\n"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            if let card = offer.card {
+                Text("\(card.label), expires \(card.expiry)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("Not Now") {
+                    tab.autofillOffer = nil
+                    close()
+                }
+                Button(offer.updatesAddress || offer.updatesCard ? "Update" : "Save") {
+                    Autofill.shared.accept(in: tab)
+                    close()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .frame(width: 280, alignment: .leading)
     }
 }
 
@@ -319,7 +435,7 @@ private struct PasswordPanel: View {
                                     ? nil : { copy(login.username, "Username copied", from: login) }),
                                 ("Copy Password", {
                                     Task {
-                                        guard await PasswordStore.shared.authenticate("copy the password for \(login.host)"),
+                                        guard await OwnerUnlock.authenticate(.passwords, "copy the password for \(login.host)"),
                                             let password = PasswordStore.shared.password(for: login)
                                         else { return }
                                         copy(password, "Password copied", from: login)
@@ -402,7 +518,6 @@ struct CopyURLButton: View {
         .opacity(url == nil ? 0.4 : 1)
         .tooltip(copied ? "Copied!" : "Copy URL")
         .accessibilityLabel("Copy URL")
-        // revert the checkmark back to the copy icon a beat after a copy
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .seconds(1.2))
@@ -417,8 +532,7 @@ private struct SiteSettingsButton: View {
     let tab: BrowserTab?
     @State private var isHovering = false
     @State private var isShowingPanel = false
-    // an extension that asked to show its popup programmatically (chrome.action
-    // .openPopup); presented from this button as a sensible toolbar anchor
+    /// the popup an extension opened itself (`chrome.action.openPopup`), anchored here
     @State private var programmaticPopup: WKWebExtension.Action?
     @State private var showProgrammaticPopup = false
 
@@ -435,7 +549,6 @@ private struct SiteSettingsButton: View {
         .onHover { isHovering = $0 }
         .tooltip("Site settings")
         .accessibilityLabel("Site settings")
-        // keep a peeked overlay sidebar alive while the popover is open
         .holdsSidebar(while: isShowingPanel)
         .popover(isPresented: $isShowingPanel, arrowEdge: .bottom) {
             // popovers don't always inherit @Observable environment on macOS;
@@ -478,8 +591,8 @@ private struct TwoKnobs: Shape {
     }
 }
 
-/// contents of the site-settings popover: a connection-security row on the
-/// left and a … menu (clear cookies / cache) on the right
+/// the site-settings popover: extensions, connection security and data clearing,
+/// site permissions and the Chrome disguise
 private struct SiteSettingsPanel: View {
     @Environment(\.dismiss) private var dismiss
     let tab: BrowserTab?
@@ -491,8 +604,6 @@ private struct SiteSettingsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // extensions live here, arc-style — added above the existing
-            // connection-security row without disturbing it
             ExtensionsDropdownSection()
 
             Divider().overlay(.primary.opacity(0.08))
@@ -515,8 +626,7 @@ private struct SiteSettingsPanel: View {
 
     private var connectionRow: some View {
         HStack(spacing: 10) {
-            // connection-security state, arc-style — opens the native
-            // certificate-trust panel for the page's server trust
+            // opens the native certificate-trust panel for the page's server trust
             Button {
                 let trust = tab?.webView.serverTrust
                 dismiss()
@@ -549,15 +659,13 @@ private struct SiteSettingsPanel: View {
 
             Spacer(minLength: 0)
 
-            // a real Button (not a Menu) so the hover highlight fires — SwiftUI's
-            // Menu swallows pointer tracking, so .onHover never reaches its label.
-            // the actions live in a small popover opened from it
+            // a Button and popover, not a Menu: Menu swallows pointer tracking,
+            // so .onHover never reaches its label
             Button {
                 showActions = true
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 13, weight: .semibold))
-                    // idle grey → brighten on hover, like the sidebar icon buttons
                     .foregroundStyle(.primary.opacity(menuHover ? 0.9 : 0.55))
                     .frame(width: 30, height: 30)
                     .background(
@@ -590,7 +698,7 @@ private struct SiteSettingsPanel: View {
     }
 
     /// clears `types` for the tab's site (its host and parent domains) in the tab's own
-    /// container only, then reloads the page so it stops using what was cleared
+    /// data store only, then reloads the page so it stops using what was cleared
     @MainActor
     static func clear(_ types: Set<String>, of tab: BrowserTab) async {
         guard let host = tab.url?.host()?.lowercased() else { return }
@@ -685,8 +793,6 @@ private struct ChromeDisguiseRow: View {
     }
 }
 
-/// a single action row in the site-settings … popover: icon + title with the
-/// same hover highlight as the rest of the sidebar's buttons
 /// one action row in a small sidebar popover
 struct PopoverActionRow: View {
     let title: String

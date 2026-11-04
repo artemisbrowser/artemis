@@ -160,7 +160,7 @@ enum AgentStdio {
         ["type": "string", "description": description]
     }
 
-    static let tools: [[String: Any]] = [
+    private static let tools: [[String: Any]] = [
         tool("list_spaces", "List the Artemis spaces the user has shared with agents."),
         tool(
             "list_tabs", "List tabs (id, space, title, url, isPinned, selected) in shared spaces.",

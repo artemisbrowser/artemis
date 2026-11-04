@@ -3,38 +3,23 @@ import QuartzCore
 import SwiftUI
 import WebKit
 
-/// Dev-only performance harness.
-///
-/// `ARTEMIS_BENCH=1` drives the *running* app through a fixed script — open
-/// tabs, sit idle, switch tabs, switch spaces, toggle the sidebar — and records
-/// what each phase cost: CPU seconds burned by the app process, its physical
-/// memory footprint, how many frames the compositor actually delivered (and how
-/// many were late), and how many SwiftUI bodies were evaluated.
-///
-/// It exists because "feels faster" is not a measurement. Every optimisation in
-/// the app is supposed to move a number here; if it doesn't, it isn't worth the
-/// complexity. The report goes to `~/Downloads/artemis-bench.log` for the same
-/// reason the self-test's does — the app is sandboxed and that's the only path
-/// a terminal outside the container can read.
-///
-/// Body counts come from `Bench.tick(_:)` calls sprinkled through the hot views.
-/// They're inert (one atomic load) unless the harness is running.
+/// dev-only performance harness: `ARTEMIS_BENCH=1` drives the running app through a fixed
+/// script and logs each phase's CPU, footprint, frames and SwiftUI body counts to
+/// `artemis-bench-<ARTEMIS_BENCH_LABEL>.log` in Downloads (or `ARTEMIS_BENCH_DIR`)
 @MainActor
 enum Bench {
     static var isRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_BENCH"] != nil
     }
 
-    /// a label for this run, so two logs can be diffed by name
     private static var runLabel: String {
         ProcessInfo.processInfo.environment["ARTEMIS_BENCH_LABEL"] ?? "run"
     }
 
     // MARK: - View body counters
 
-    /// flipped on only while the harness runs, so `tick` costs a bool load in
-    /// normal use
-    nonisolated(unsafe) static var isCounting = false
+    /// on only while the harness runs, so `tick` costs a bool load in normal use
+    nonisolated(unsafe) private static var isCounting = false
     nonisolated(unsafe) private static var counts: [String: Int] = [:]
     nonisolated(unsafe) private static let countLock = NSLock()
 
@@ -82,9 +67,7 @@ enum Bench {
 
     // MARK: - Frame timing
 
-    /// counts display-link callbacks and how many arrived late, which is the
-    /// only honest read on "is the UI smooth" — a body count can be small and
-    /// still miss vsync if each body is expensive
+    /// counts display-link callbacks and how many arrived late
     @MainActor
     private final class FrameCounter: NSObject {
         private var link: CADisplayLink?
@@ -115,7 +98,6 @@ enum Bench {
             let now = link.timestamp
             if last > 0 {
                 let delta = now - last
-                // adapt the budget to the panel's real refresh rate
                 if link.duration > 0 { budget = link.duration * 1.5 }
                 if delta > budget { longFrames += 1 }
             }
@@ -211,8 +193,7 @@ enum Bench {
 
     // MARK: - The script
 
-    /// live sites, used only with `ARTEMIS_BENCH=live`. realistic, but useless
-    /// as a regression signal — see `BenchPage`
+    /// loaded only with `ARTEMIS_BENCH=live`; their count is the default tab count
     private static let sites = [
         "https://en.wikipedia.org/wiki/Web_browser",
         "https://news.ycombinator.com/",
@@ -231,7 +212,8 @@ enum Bench {
     /// open the fixture tabs and wait for them to settle
     private static func openTabs(_ manager: TabManager) async -> [BrowserTab] {
         var tabs: [BrowserTab] = []
-        let count = Int(ProcessInfo.processInfo.environment["ARTEMIS_BENCH_TABS"] ?? "") ?? sites.count
+        // the tab loops alternate between two tabs
+        let count = max(Int(ProcessInfo.processInfo.environment["ARTEMIS_BENCH_TABS"] ?? "") ?? sites.count, 2)
         for index in 0..<count {
             let site = sites[index % sites.count]
             let tab = manager.newTab()
@@ -240,7 +222,7 @@ enum Bench {
             } else {
                 tab.webView.loadHTMLString(
                     BenchPage.html(index: index),
-                    baseURL: URL(string: "https://bench.artemis.local/page\(index)"))
+                    baseURL: URL(string: "https://bench.artemis.example/page\(index)"))
             }
             tabs.append(tab)
             try? await Task.sleep(for: .milliseconds(300))
@@ -254,10 +236,7 @@ enum Bench {
 
     // MARK: - Launch marks
 
-    /// Coarse "when did this happen, relative to exec" marks for the launch
-    /// path. Always recorded (they cost a timestamp each) because the launch
-    /// path is the one place a profiler is least useful: by the time you can
-    /// attach to the process, the part you wanted is over.
+    /// launch milestones in seconds since exec, recorded on every launch
     nonisolated(unsafe) private static var marks: [(String, Double)] = []
     nonisolated(unsafe) private static let markLock = NSLock()
 
@@ -267,10 +246,9 @@ enum Bench {
     /// only the first time is the launch milestone
     nonisolated static func markOnce(_ name: String) {
         markLock.lock()
-        let seen = markedOnce.contains(name)
-        markedOnce.insert(name)
+        let isFirst = markedOnce.insert(name).inserted
         markLock.unlock()
-        guard !seen else { return }
+        guard isFirst else { return }
         mark(name)
     }
 
@@ -283,18 +261,14 @@ enum Bench {
 
     // MARK: - Launch
 
-    /// `ARTEMIS_BENCH=launch`: report how long it took from `exec` to a window
-    /// on screen, then quit. Timed from the kernel's record of when the process
-    /// started rather than from `main`, so dynamic linking, the runtime's own
-    /// start-up and every `init` before the first frame are all inside the
-    /// number — which is the part a person actually waits through.
+    /// `ARTEMIS_BENCH=launch`: log the time from exec to a window on screen, then quit;
+    /// timed from the kernel's process start, so dyld and static inits count
     static var isLaunchRequested: Bool {
         ProcessInfo.processInfo.environment["ARTEMIS_BENCH"] == "launch"
     }
 
     static func reportLaunch() async {
-        // one turn of the run loop after the first frame, so the window is
-        // genuinely up rather than merely scheduled
+        // lets the first frame reach the screen rather than merely be scheduled
         try? await Task.sleep(for: .milliseconds(50))
         let elapsed = processStartInterval()
         lines = [
@@ -321,7 +295,7 @@ enum Bench {
     }
 
     /// seconds since this process was exec'd, from the kernel's process table
-    nonisolated static func processStartInterval() -> Double {
+    nonisolated private static func processStartInterval() -> Double {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
@@ -333,22 +307,17 @@ enum Bench {
 
     // MARK: - Mechanism probes
 
-    /// Aggregate CPU over a minute turned out to be a poor way to judge a
-    /// change: on a live machine two runs of the *same* build differ by 2x, and
-    /// the effects worth shipping are smaller than that. These probes ask the
-    /// page itself what happened instead, which is both exact and instant.
+    /// asks the pages themselves how many frames they ran: the background one
+    /// should have stopped, the foreground one must not have
     private static func probes(manager: TabManager, bench: Space, other: Space) async {
         lines.append("mechanism probes")
         lines.append(String(repeating: "-", count: 78))
 
-        // every one of these readings is a page visibility question, and a window
-        // that isn't frontmost is hidden to WebKit no matter what the app does —
-        // so take the front first, or the probe measures the window manager
+        // WebKit hides every page of a window that isn't frontmost
         takeFront()
         try? await Task.sleep(for: .milliseconds(800))
 
-        // 1. a page in a neighbouring space is kept mounted so a swipe doesn't
-        // have to mount it mid-gesture. it must not still be *running*.
+        // a neighbouring space's page stays mounted, but must not keep running
         manager.selectSpace(bench)
         try? await Task.sleep(for: .seconds(2))
         guard let background = other.selectedTab ?? other.tabs.first else {
@@ -363,8 +332,6 @@ enum Bench {
             format: "background page over 5s: %d frames, visibilityState=%@",
             after - before, state as NSString))
 
-        // 2. and the page you're actually looking at must be running normally —
-        // a fix that quietly freezes the foreground would look great here
         guard let foreground = bench.selectedTab else { return }
         let fgBefore = await ticks(foreground)
         try? await Task.sleep(for: .seconds(5))
@@ -400,22 +367,26 @@ enum Bench {
 
         takeFront()
         try? await Task.sleep(for: .seconds(2))
+        // one size on the fastest panel, so a 60Hz main display can't cap the run
+        if let screen = NSScreen.screens.max(by: { $0.maximumFramesPerSecond < $1.maximumFramesPerSecond }),
+            let window = SelfTest.mainWindow()
+        {
+            let area = screen.visibleFrame
+            let size = CGSize(width: min(1400, area.width), height: min(860, area.height))
+            window.setFrame(
+                CGRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2,
+                    width: size.width, height: size.height),
+                display: true)
+            lines.append("screen \(screen.localizedName) \(screen.maximumFramesPerSecond)Hz")
+        }
 
-        // App Nap will throttle a background app's timers by roughly 10x, which
-        // silently turns a 6-second phase into a 60-second one and makes two
-        // runs incomparable for reasons that have nothing to do with the code.
-        // Hold an activity for the length of the run.
+        // App Nap throttles a background app's timers ~10x; hold it off for the run
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled, .latencyCritical],
             reason: "artemis bench")
         defer { ProcessInfo.processInfo.endActivity(activity) }
 
         let counter = FrameCounter()
-        // The counter rides a CADisplayLink on the window's view. Starting it
-        // only `if let` meant that a run which began before the window existed
-        // metered nothing and reported `frames 0` for every phase — a silent
-        // zero that reads like a clean result. Wait for the window, and say so
-        // in the report if it never arrives, so the numbers can't lie quietly.
         var counterView: NSView?
         for _ in 0..<40 {
             if let view = SelfTest.mainWindow()?.contentView {
@@ -431,13 +402,8 @@ enum Bench {
         }
         isCounting = true
 
-        // whatever the user happens to have installed must not decide the
-        // numbers: an extension's content scripts run in every page the bench
-        // opens, and a VPN extension's background page is a whole extra web
-        // process. `ARTEMIS_BENCH_EXTENSIONS=1` measures with them on
-        // `isMasterEnabled` is a persisted setting, so this has to be handed
-        // back however the run ends — leaving a user's extensions switched off
-        // after a benchmark would be a fine way to lose an afternoon
+        // extensions are off unless `ARTEMIS_BENCH_EXTENSIONS=1`; `isMasterEnabled`
+        // is persisted, so every exit path restores it before terminating
         let extensionsWereEnabled = ExtensionManager.shared.isMasterEnabled
         defer { ExtensionManager.shared.isMasterEnabled = extensionsWereEnabled }
         if ProcessInfo.processInfo.environment["ARTEMIS_BENCH_EXTENSIONS"] == nil {
@@ -446,8 +412,7 @@ enum Bench {
             lines.append("")
         }
 
-        // the blocker compiles 130k rules on a background task at first launch;
-        // measuring through that times the machine, not the UI
+        // first launch compiles the blocker's rules in the background
         await ContentBlocker.shared.waitForIdle()
         try? await Task.sleep(for: .seconds(1))
 
@@ -461,14 +426,21 @@ enum Bench {
         manager.selectSpace(bench)
         try? await Task.sleep(for: .milliseconds(500))
 
-        // ARTEMIS_BENCH_LOOP=<phase> repeats one interaction for a minute so a
-        // profiler (`sample Artemis`) has something steady to attach to —
-        // phase timings say *which* interaction is slow, a sampled stack says why
+        // `ARTEMIS_BENCH_LOOP=<case>` repeats one interaction for a minute, steady
+        // enough for a profiler to attach to
         if let loop = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_LOOP"] {
             let tabs = await openTabs(manager)
+            let split = loop == "split" ? manager.createSplit(Array(tabs.prefix(2))) : nil
+            try? await Task.sleep(for: .seconds(1))
             let defaults = UserDefaults.standard
             var newTabs: [BrowserTab] = []
             var stepDirection = 1
+            // the selected space's index; turns `stepDirection` around at either end
+            @discardableResult func bounce() -> Int {
+                let at = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
+                if at == manager.spaces.count - 1 { stepDirection = -1 } else if at == 0 { stepDirection = 1 }
+                return at
+            }
             // ARTEMIS_BENCH_SYNC: lay out and draw each step at once and time it, so a
             // step's main-thread cost is measured even with no display to drive frames
             let sync = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_SYNC"] != nil
@@ -483,18 +455,14 @@ enum Bench {
                     let stepStart = CACurrentMediaTime()
                     switch loop {
                     case "tab": manager.selectedTabID = tabs[i % tabs.count].id
-                    // the pattern people actually have: flipping between the two
-                    // pages they're working with, not a round-robin of eight
+                    // flipping between two pages
                     case "tab2": manager.selectedTabID = tabs[i % 2].id
                     case "space": manager.selectSpace(i.isMultiple(of: 2) ? home : bench)
                     // ⌘⌥→ along the row of spaces and back: each switch is to a neighbour
                     case "step":
-                        let at = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
-                        if at == manager.spaces.count - 1 { stepDirection = -1 } else if at == 0 { stepDirection = 1 }
+                        bounce()
                         manager.cycleSpace(by: stepDirection)
-                    // the click path animates; a two-finger swipe writes the
-                    // position by hand once per scroll event, so it flushes the
-                    // graph tens of times per gesture instead of once
+                    // a two-finger swipe writes the position by hand once per scroll event
                     case "swipe":
                         let from = manager.spacePagePosition
                         let to = Double(
@@ -509,33 +477,22 @@ enum Bench {
                         manager.selectSpace(i.isMultiple(of: 2) ? home : bench, animatePosition: false)
                     // the switch alone, to the neighbour, with no motion
                     case "commit":
-                        let at = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
-                        if at == manager.spaces.count - 1 { stepDirection = -1 } else if at == 0 { stepDirection = 1 }
+                        let at = bounce()
                         manager.spacePagePosition = Double(at + stepDirection)
                         manager.backdropPosition = manager.spacePagePosition
                         manager.selectSpace(at: at + stepDirection, animatePosition: false)
-                    // a quick flick to the neighbour, along every space and back,
-                    // the next one starting while the last is still settling
-                    case "flick":
-                        let at = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
-                        if at == manager.spaces.count - 1 { stepDirection = -1 } else if at == 0 { stepDirection = 1 }
-                        for step in 1...12 {
-                            manager.spacePagePosition = Double(at) + Double(stepDirection) * Double(step) / 12
+                    // a hand swipe to the neighbour, along every space and back; a flick is
+                    // shorter, and the next one starts while the last is still settling
+                    case "swipeall", "flick":
+                        let at = bounce()
+                        let frameCount = loop == "flick" ? 12 : 24
+                        for step in 1...frameCount {
+                            manager.spacePagePosition =
+                                Double(at) + Double(stepDirection) * Double(step) / Double(frameCount)
                             manager.backdropPosition = manager.spacePagePosition
                             try? await Task.sleep(for: .milliseconds(8))
                         }
                         manager.selectSpace(at: at + stepDirection, animatePosition: false)
-                    // a hand swipe to the neighbour, along every space and back
-                    case "swipeall":
-                        let at = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
-                        if at == manager.spaces.count - 1 { stepDirection = -1 } else if at == 0 { stepDirection = 1 }
-                        let to = at + stepDirection
-                        for step in 1...24 {
-                            manager.spacePagePosition = Double(at) + Double(stepDirection) * Double(step) / 24
-                            manager.backdropPosition = manager.spacePagePosition
-                            try? await Task.sleep(for: .milliseconds(8))
-                        }
-                        manager.selectSpace(at: to, animatePosition: false)
                     // the swipe's per-frame half alone: out toward a neighbour and
                     // back, never committing a switch
                     case "glide":
@@ -547,6 +504,20 @@ enum Bench {
                             manager.backdropPosition = manager.spacePagePosition
                             try? await Task.sleep(for: .milliseconds(8))
                         }
+                    // a divider dragged a quarter of the way across and back, one
+                    // resize per mouse event like `SplitDivider`
+                    case "split":
+                        guard let split,
+                            let divider = split.root.dividers(
+                                in: CGRect(x: 0, y: 0, width: 1000, height: 1000), gap: splitPaneGap
+                            ).first
+                        else { break }
+                        for step in 1...24 {
+                            split.resize(
+                                path: divider.path, boundary: divider.boundary, by: step <= 12 ? 0.02 : -0.02)
+                            try? await Task.sleep(for: .milliseconds(8))
+                        }
+                        manager.commitSplitLayout(split)
                     // nothing at all: what the app burns with its tabs open and no one at it
                     case "idle": break
                     case "sidebar":
@@ -565,7 +536,7 @@ enum Bench {
                         let opened = manager.newTab()
                         opened.webView.loadHTMLString(
                             BenchPage.html(index: i % 8),
-                            baseURL: URL(string: "https://bench.artemis.local/new\(i)"))
+                            baseURL: URL(string: "https://bench.artemis.example/new\(i)"))
                         if let stale = newTabs.popLast() { manager.close(stale) }
                         newTabs.append(opened)
                     default: break
@@ -578,10 +549,7 @@ enum Bench {
                     }
                     i += 1
                     steps = i
-                    // an app that drifts out of the foreground stops being asked
-                    // to draw at all, which silently turns a loop that should
-                    // cost 45 CPU-seconds into one that costs 7. take the front
-                    // back regularly rather than trusting it to stay there
+                    // an app out of the foreground isn't asked to draw at all
                     if i.isMultiple(of: 10) {
                         takeFront()
                     }
@@ -624,13 +592,13 @@ enum Bench {
             tabs = await openTabs(manager)
         }
 
-        // a second space, so the warm-neighbour mount path is exercised — that's
-        // where a background page is kept mounted and could keep rendering
+        // a second space exercises the warm-neighbour mount, where a background
+        // page stays mounted and could keep rendering
         let other = manager.createSpace(
             name: "Bench2", icon: "gauge", appearance: SpacePreset.all[2].appearance,
             profileID: Profile.defaultID)
         other.selectedTab?.webView.loadHTMLString(
-            BenchPage.html(index: 99), baseURL: URL(string: "https://bench.artemis.local/page99"))
+            BenchPage.html(index: 99), baseURL: URL(string: "https://bench.artemis.example/page99"))
         try? await Task.sleep(for: .seconds(3))
         await probes(manager: manager, bench: bench, other: other)
 
@@ -680,8 +648,6 @@ enum Bench {
         isCounting = false
         counter.stop()
 
-        // clean up: the bench space and its tabs go away, so the session the
-        // user comes back to is the one they left
         manager.selectSpace(home)
         manager.deleteSpace(bench)
         for stale in manager.spaces where stale.name == "Bench2" {
@@ -697,8 +663,6 @@ enum Bench {
     }
 
     private static func report() {
-        // a run that never got a display-link callback measured no smoothness at
-        // all; every frame column below is a silent zero, not a good result
         if results.allSatisfy({ $0.frames == 0 }) {
             lines.append("WARNING: 0 frames delivered all run — the frame columns are NOT valid")
             lines.append("")
@@ -724,8 +688,7 @@ enum Bench {
             }
         }
         lines.append("")
-        // machine-readable, for correlating with an outside sampler that can see
-        // the WebKit child processes and WindowServer (this process can't)
+        // tools/bench-report.py joins these rows with tools/bench-sample.sh
         lines.append("#csv phase,start,end,cpu,footprintMB,frames,late,bodies")
         for r in results {
             lines.append(String(

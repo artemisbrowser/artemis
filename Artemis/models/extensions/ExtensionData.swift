@@ -1,7 +1,7 @@
 import WebKit
 
-/// The browser-data namespaces' platform-free half: matching, shapes, website data and
-/// user-script files. Each platform's bridge answers from its own profiles with these
+/// the browser-data namespaces' platform-free half: matching, shapes, website data and
+/// user-script files. each platform's bridge answers from its own profiles with these
 nonisolated enum ExtensionData {
     /// WebKit drops the permission keys it doesn't implement, so the manifest is the record
     static func declares(_ permission: String, _ context: WKWebExtensionContext) -> Bool {
@@ -49,7 +49,7 @@ nonisolated enum ExtensionData {
     // MARK: - Browsing data
 
     /// passwords and form data stay: the vault is the user's, not an extension's to wipe
-    static let dataTypes: [String: [String]] = [
+    private static let dataTypes: [String: [String]] = [
         "appcache": [WKWebsiteDataTypeOfflineWebApplicationCache],
         "cache": [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeFetchCache],
         "cacheStorage": [WKWebsiteDataTypeFetchCache],

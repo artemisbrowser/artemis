@@ -1,14 +1,11 @@
 import Foundation
 
-/// query completions from the profile's search engine. off by default and never
-/// used in incognito: turning it on means every keystroke in the command bar
-/// leaves the machine.
+/// query completions from the profile's search engine. off by default and
+/// never used in incognito, since each keystroke is sent to the engine
 enum SearchSuggest {
     static let enabledKey = "searchSuggestionsEnabled"
 
-    /// engines whose completions we can ask for. the rest have no endpoint we
-    /// speak, and silently borrowing another engine's would send your typing to
-    /// a company you didn't choose
+    /// false when the engine has no endpoint; another engine's is never substituted
     static func supports(_ engine: SearchEngine) -> Bool { endpoint(engine) != nil }
 
     static func suggestions(
@@ -29,8 +26,7 @@ enum SearchSuggest {
             .map { $0 }
     }
 
-    /// its own session: no cookies, no cache, and a short leash, so a slow
-    /// endpoint can't outlive the keystroke that asked
+    /// cookieless and uncached; the timeout keeps a reply within one keystroke's life
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 2

@@ -1,22 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Whether Artemis is the browser macOS hands links to, and the one-click way to make it so.
+/// whether Artemis is the browser macOS hands links to, and the one-click way to make it so
 @MainActor
-enum DefaultBrowser {
-    static var isArtemis: Bool {
-        guard let handler = NSWorkspace.shared.urlForApplication(
-            toOpen: URL(string: "https://example.com")!)
-        else { return false }
-        return handler == Bundle.main.bundleURL
+private enum DefaultBrowser {
+    private static var handler: URL? {
+        NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
     }
 
+    static var isArtemis: Bool { handler == Bundle.main.bundleURL }
+
     static var currentName: String? {
-        guard let handler = NSWorkspace.shared.urlForApplication(
-            toOpen: URL(string: "https://example.com")!)
-        else { return nil }
-        return FileManager.default.displayName(atPath: handler.path)
-            .replacingOccurrences(of: ".app", with: "")
+        handler.map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
     }
 
     /// macOS asks the user to confirm before it changes the browser
@@ -27,6 +22,7 @@ enum DefaultBrowser {
 }
 
 struct GeneralSettings: View {
+    @Environment(TabManager.self) private var tabManager
     @AppStorage(TabManager.autoPictureInPictureKey) private var autoPictureInPicture = false
     @AppStorage(TabManager.hibernateAfterMinutesKey) private var hibernateAfterMinutes =
         TabManager.defaultHibernateAfterMinutes
@@ -61,6 +57,19 @@ struct GeneralSettings: View {
                             }
                         }
                     }
+                }
+            }
+
+            Section {
+                LabeledContent {
+                    Button("Import…") {
+                        BrowserImportModel.open(in: tabManager)
+                        BrowserWindows.shared.window(of: tabManager)?.makeKeyAndOrderFront(nil)
+                    }
+                } label: {
+                    InfoLabel(
+                        "Import from another browser",
+                        info: "Brings bookmarks, history, spaces and passwords into the profile you choose.")
                 }
             }
 
@@ -149,9 +158,8 @@ struct GeneralSettings: View {
     }
 }
 
-/// the per-site checklist of page buttons the mini-player may proxy as pills.
-/// catalog fills itself while the mini-player is used; toggles apply live (the
-/// player re-reads the allowlist every poll tick).
+/// the per-site checklist of page buttons the mini-player may proxy as pills; the
+/// player re-reads the allowlist every poll tick, so toggles apply live
 private struct PiPSiteButtonsList: View {
     @State private var catalog: [String: [String: Bool]] = [:]
 
@@ -183,8 +191,7 @@ private struct PiPSiteButtonsList: View {
             }
         }
         .onAppear { catalog = PiPSiteButtons.all() }
-        // the mini-player catalogs buttons while Settings sits open — refresh
-        // live so new finds appear without closing/reopening the window
+        // the mini-player catalogs buttons while Settings is open
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             let fresh = PiPSiteButtons.all()
             if fresh != catalog { catalog = fresh }

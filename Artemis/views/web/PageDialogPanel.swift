@@ -1,13 +1,7 @@
 import SwiftUI
 
-/// "example.com says …" — whatever question the page is blocked on.
-///
-/// Scoped to the page rather than the window: the sidebar, the command bar and
-/// every other tab stay live while one page waits for an answer, which is both
-/// what a tabbed browser owes you and what stops a page from holding the app.
-/// The scrim covers only the pane that asked, so in a split the other pane is
-/// still readable — and clicking it does nothing, because WebKit is holding a
-/// handler that has to be answered.
+/// "example.com says …": whatever question the page is blocked on. scoped to the
+/// pane that asked, so the rest of the window stays live while it waits
 struct PageDialogPanel: View {
     let tab: BrowserTab
     let request: PageDialogRequest
@@ -31,15 +25,13 @@ struct PageDialogPanel: View {
 
     private var detail: String {
         switch request.kind {
-        // never the page's own text: letting a page write this warning is
-        // letting it write the ransom note
+        // never the page's own text
         case .leaveConfirm: "Changes you made may not be saved."
         case .openExternal(_, let appName):
             appName.map { "\(site) wants to open this link in \($0)." }
                 ?? "\(site) wants to open this link in another app. Nothing on this Mac handles it."
         case .httpAuth(let realm):
-            // the realm is the server's own name for what it's protecting, and
-            // often the only clue which of several logins is wanted
+            // the realm is the server's name for what it protects
             realm.map { "The server says: \($0)" } ?? "This server is asking for a username and password."
         default: request.message
         }
@@ -150,9 +142,8 @@ struct PageDialogPanel: View {
 }
 
 extension View {
-    /// overlay whatever question `tab`'s page is blocked on. Applied by every
-    /// surface that hosts a web view — main card, split pane, Peek, Scout — so a
-    /// dialog can't be raised somewhere it would never be drawn.
+    /// overlays whatever question `tab`'s page is blocked on; every surface that
+    /// hosts a web view must apply it, or the dialog is never drawn
     func pageDialog(for tab: BrowserTab) -> some View {
         overlay {
             if let request = tab.pendingDialog {

@@ -8,7 +8,7 @@ import SwiftUI
 final class ProfilesNavigator {
     static let shared = ProfilesNavigator()
 
-    enum Page { case passwords, clearData }
+    enum Page { case passwords, autofill, clearData }
 
     var selected: Profile.ID?
     var page: Page?
@@ -34,6 +34,7 @@ extension ProfilesNavigator.Page {
     var title: String {
         switch self {
         case .passwords: "Passwords"
+        case .autofill: "Autofill"
         case .clearData: "Clear Browsing Data"
         }
     }
@@ -50,13 +51,17 @@ struct ProfilesSettings: View {
         case .passwords:
             PasswordsSettings(profileID: profile.id)
                 .id(profile.id)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .transition(Motion.slide(.trailing))
+        case .autofill:
+            AutofillSettings(profileID: profile.id)
+                .id(profile.id)
+                .transition(Motion.slide(.trailing))
         case .clearData:
             ClearBrowsingDataSettings(profile: profile)
                 .id(profile.id)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .transition(Motion.slide(.trailing))
         case nil:
-            overview(profile).transition(.move(edge: .leading).combined(with: .opacity))
+            overview(profile).transition(Motion.slide(.leading))
         }
     }
 
@@ -309,10 +314,15 @@ private struct ProfileDetail: View {
                 }
             }
 
+            TranslationSection(rules: profile.translationRules)
+
             Section("Your Data") {
                 DataRow(
                     title: "Passwords", detail: passwordSummary, symbol: "key.fill", tint: .green
                 ) { open(.passwords) }
+                DataRow(title: "Autofill", detail: autofillSummary, symbol: "creditcard.fill", tint: .blue) {
+                    open(.autofill)
+                }
                 DataRow(
                     title: "Clear Browsing Data",
                     detail: siteCount.map { $0 == 1 ? "1 site storing data" : "\($0) sites storing data" },
@@ -352,7 +362,7 @@ private struct ProfileDetail: View {
             })
     }
 
-    static func archiveLabel(_ hours: Double) -> String {
+    private static func archiveLabel(_ hours: Double) -> String {
         switch hours {
         case 0: "Never"
         case ..<24: "\(Int(hours)) hours"
@@ -372,6 +382,16 @@ private struct ProfileDetail: View {
         case (0, _): return keys == 1 ? "1 passkey" : "\(keys) passkeys"
         default: return "\(sites == 1 ? "1 website" : "\(sites) websites"), \(keys == 1 ? "1 passkey" : "\(keys) passkeys")"
         }
+    }
+
+    private var autofillSummary: String {
+        let store = AutofillStore.shared
+        let places = store.addresses(in: profile.id).count, cards = store.cards(in: profile.id).count
+        let parts = [
+            places == 0 ? nil : places == 1 ? "1 address" : "\(places) addresses",
+            cards == 0 ? nil : cards == 1 ? "1 card" : "\(cards) cards",
+        ].compactMap { $0 }
+        return parts.isEmpty ? "None saved" : parts.joined(separator: ", ")
     }
 
     private func open(_ page: ProfilesNavigator.Page) {
@@ -396,6 +416,41 @@ private struct ProfileDetail: View {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, trimmed != profile.name { tabManager.updateProfile(profile, name: trimmed) }
         isRenaming = false
+    }
+}
+
+/// the language pages translate into, and the rules made from the translate button
+private struct TranslationSection: View {
+    let rules: TranslationRules
+    @State private var targets: [Locale.Language] = []
+
+    var body: some View {
+        Section("Translation") {
+            Picker(
+                selection: Binding(
+                    get: { targets.first { PageTranslation.sameTarget($0, rules.target) } ?? rules.target },
+                    set: { rules.setTarget($0) })
+            ) {
+                ForEach(targets, id: \.self) { Text(PageTranslation.name(of: $0)).tag($0) }
+            } label: {
+                InfoLabel(
+                    "Translate pages to",
+                    info: "Pages are translated on this Mac. Rules are made from the translate button while a page is translated.")
+            }
+            ForEach(rules.languages, id: \.self) { code in
+                rule("Always translate \(PageTranslation.name(of: Locale.Language(identifier: code)))") {
+                    rules.setAlways(code, false)
+                }
+            }
+            ForEach(rules.sites, id: \.self) { site in
+                rule("Never translate \(site)") { rules.setNever(site, false) }
+            }
+        }
+        .task { targets = await PageTranslation.targetLanguages() }
+    }
+
+    private func rule(_ title: String, remove: @escaping () -> Void) -> some View {
+        LabeledContent(title) { Button("Remove", action: remove) }
     }
 }
 
@@ -488,7 +543,7 @@ private struct DataRow: View {
 
 /// the one confirmation every delete goes through, saying what goes with it
 @MainActor
-enum ProfileDeletion {
+private enum ProfileDeletion {
     static func confirm(_ profile: Profile, in tabManager: TabManager) -> Bool {
         let store = PasswordStore.shared
         let passwords = store.logins(in: profile.id).count + store.passkeys(in: profile.id).count
@@ -497,6 +552,10 @@ enum ProfileDeletion {
         var detail = "Its history, favourites, cookies and site data are deleted."
         if passwords > 0 {
             detail += passwords == 1 ? " So is 1 saved password." : " So are \(passwords) saved passwords and passkeys."
+        }
+        let autofill = AutofillStore.shared
+        if !autofill.addresses(in: profile.id).isEmpty || !autofill.cards(in: profile.id).isEmpty {
+            detail += " So are its saved addresses and cards."
         }
         if spaces > 0 {
             detail += spaces == 1 ? " Its space moves to \(home)." : " Its \(spaces) spaces move to \(home)."
@@ -541,6 +600,7 @@ struct ClearBrowsingDataSettings: View {
                 toggle("Cached files and images", .cache)
                 toggle("Archived tabs", .archive)
                 toggle("Indexed page text", .pageText)
+                toggle("Saved addresses and cards", .autofill)
                 if targets.contains(.siteData) {
                     Label("Signs \(profile.name) out of sites.", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -605,7 +665,7 @@ struct ClearBrowsingDataSettings: View {
     private var summary: String {
         let names: [(ClearTargets, String)] = [
             (.history, "history"), (.siteData, "cookies"), (.cache, "caches"), (.archive, "archived tabs"),
-            (.pageText, "page text"), (.downloads, "the downloads list"), (.zoom, "zoom levels"),
+            (.pageText, "page text"), (.autofill, "addresses and cards"), (.downloads, "the downloads list"), (.zoom, "zoom levels"),
             (.permissions, "site permissions"),
         ]
         let picked = names.filter { targets.contains($0.0) }.map(\.1)
@@ -626,5 +686,13 @@ struct ClearBrowsingDataSettings: View {
             clearedAt = Date()
             working = false
         }
+    }
+}
+
+private extension String {
+    /// "the last hour" → "The last hour", without touching the rest
+    var capitalizedFirst: String {
+        guard let first else { return self }
+        return first.uppercased() + dropFirst()
     }
 }

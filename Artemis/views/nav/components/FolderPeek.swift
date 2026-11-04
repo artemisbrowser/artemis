@@ -177,12 +177,9 @@ private struct FolderPeekRow: View {
         .padding(.vertical, subtitle == nil ? 6 : 5)
         .frame(maxWidth: .infinity)
         .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { pick(tab) }
         .onTapGesture { pick(tab) }
     }
-}
-
-extension AnyTransition {
-    /// a folder's children come out from under its header: they start a row
-    /// above, behind it, and the rows below make room as they drop
-    static let folderUnfurl = AnyTransition.move(edge: .top).combined(with: .opacity)
 }

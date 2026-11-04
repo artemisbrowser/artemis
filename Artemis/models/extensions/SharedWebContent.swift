@@ -1,10 +1,8 @@
 import WebKit
 
-/// The user-content controllers tabs share: one per profile, and one per profile
-/// for its incognito pages. A WebExtensionController injects its content scripts
-/// into every controller its pages use, so profiles can't share one without
-/// carrying one profile's extensions into another's pages. Artemis's own scripts
-/// and rule lists go in through `everywhere`, which also reaches controllers made later.
+/// the user-content controllers tabs share: one per profile plus one for its incognito pages. a
+/// WebExtensionController injects into every controller its pages use, so profiles never share
+/// one. Artemis's own scripts and rule lists go in through `everywhere`
 enum SharedWebContent {
     private static var profiles: [UUID: WKUserContentController] = [:]
     private static var privates: [UUID: WKUserContentController] = [:]

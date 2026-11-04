@@ -1,11 +1,7 @@
 import Foundation
 import WebKit
 
-/// What a site can ask Artemis for.
-///
-/// Deliberately small. These are the capabilities where the answer has to be a
-/// per-site decision the user makes once and Artemis remembers — not a global
-/// setting, and not something a page gets to have silently.
+/// a capability a site must ask for, answered once per site and remembered
 nonisolated enum SitePermission: String, Codable, CaseIterable, Identifiable, Sendable {
     case camera
     case microphone
@@ -48,11 +44,9 @@ nonisolated enum PermissionDecision: String, Codable, Sendable {
     case deny
 }
 
-/// One site's remembered answers.
+/// one site's remembered answers
 nonisolated struct SitePermissionRecord: Codable, Identifiable, Sendable {
-    /// scheme + host + port, e.g. `https://meet.google.com` — the same unit of
-    /// trust the web platform uses, so `https://evil.example` can't inherit an
-    /// answer given to `https://good.example`
+    /// scheme + host + non-default port, e.g. `https://meet.google.com`
     var origin: String
     var decisions: [SitePermission: PermissionDecision]
     var updated: Date
@@ -60,37 +54,27 @@ nonisolated struct SitePermissionRecord: Codable, Identifiable, Sendable {
     var id: String { origin }
 }
 
-/// Remembers which sites may use the camera, the microphone and your location.
-///
-/// Before this existed Artemis had no `WKUIDelegate` capture handler at all,
-/// which WebKit reads as "deny" — so `getUserMedia` failed on every site,
-/// silently, and video calls simply did not work in the browser. The store is
-/// the memory behind the prompt; `TabManager` owns the queue of live requests
-/// and `PermissionPrompt` is the face of it.
-///
-/// Incognito never touches disk, like every other store in the app.
+/// the remembered answers behind `PermissionPrompt`; `TabManager` queues the
+/// live requests. incognito answers stay in memory
 @MainActor
 @Observable
 final class SitePermissionStore {
     static let shared = SitePermissionStore()
 
     private(set) var records: [String: SitePermissionRecord] = [:]
-    /// answers given inside the burner space: kept only in memory, forgotten on
-    /// quit along with everything else about it
+    /// answers given in incognito, never written
     private var ephemeral: [String: SitePermissionRecord] = [:]
 
-    nonisolated private static let fileName = "permissions.json"
+    private static let fileName = "permissions.json"
 
-    /// `records` from `read()` skips the load, so a caller can decode off main
-    init(records: [String: SitePermissionRecord]? = nil) {
-        if let stored = records ?? Self.read() { self.records = stored }
+    private init() {
+        records =
+            AppStorageLocation.loadDurable(
+                [String: SitePermissionRecord].self, from: AppStorageLocation.file(Self.fileName)) ?? [:]
     }
 
-    nonisolated static func read() -> [String: SitePermissionRecord]? {
-        AppStorageLocation.loadDurable([String: SitePermissionRecord].self, from: AppStorageLocation.file(fileName))
-    }
-
-    /// the remembered answer, or nil if the site has never been asked
+    /// the remembered answer, or nil if the site has never been asked. incognito
+    /// answers take precedence over, then fall back to, the saved ones
     func decision(for origin: String, _ permission: SitePermission, ephemeral isEphemeral: Bool)
         -> PermissionDecision?
     {
@@ -154,22 +138,18 @@ final class SitePermissionStore {
 
     private func save() {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        let url = AppStorageLocation.file(Self.fileName)
-        Task.detached(priority: .utility) {
-            AppStorageLocation.writeDurable(data, to: url)
-        }
+        AppStorageLocation.writeDurable(data, to: AppStorageLocation.file(Self.fileName))
     }
 
-    /// write synchronously, for app termination — a detached write is killed
-    /// with the process, so an answer given moments before quitting is lost
+    /// write synchronously, for app termination, where a queued write dies
+    /// with the process
     func saveNow() {
         guard let data = try? JSONEncoder().encode(records) else { return }
         AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(Self.fileName))
     }
 
-    /// `https://host:port` for a security origin, which is what a decision is
-    /// keyed by. WebKit hands us the parts; the default port is left off so
-    /// `https://example.com` and `https://example.com:443` are one site
+    /// `scheme://host[:port]`, the key a decision is stored under; a default port
+    /// (or WebKit's 0 for none) is left off
     nonisolated static func originString(_ origin: WKSecurityOrigin) -> String {
         var text = "\(origin.protocol)://\(origin.host)"
         let isDefaultPort =

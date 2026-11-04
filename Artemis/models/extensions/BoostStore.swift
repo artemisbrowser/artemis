@@ -1,14 +1,9 @@
 import Foundation
 import WebKit
 
-/// owns the user's Boosts and injects the matching ones into each page as it
-/// finishes loading.
-///
-/// injection is per-page (via the tab's navigation finish), deliberately *not*
-/// through the shared `WKUserContentController` — that controller is also where
-/// the WebExtensions runtime installs extension content scripts, and its only
-/// removal API (`removeAllUserScripts`) would wipe those too. per-page eval
-/// keeps Boosts fully isolated from extensions.
+/// owns the user's Boosts and injects the matching ones into each page as it finishes loading.
+/// never through the shared `WKUserContentController`: its only removal API,
+/// `removeAllUserScripts`, also wipes extension content scripts
 @Observable
 @MainActor
 final class BoostStore {
@@ -26,7 +21,6 @@ final class BoostStore {
             boosts = stored
         } else if let data = UserDefaults.standard.data(forKey: Self.legacyKey),
             let decoded = try? JSONDecoder().decode([Boost].self, from: data) {
-            // lift the old defaults blob into a real file, then stop using it
             boosts = decoded
             if let encoded = try? JSONEncoder().encode(decoded) {
                 AppStorageLocation.writeDurable(encoded, to: file)
@@ -35,13 +29,6 @@ final class BoostStore {
         } else {
             boosts = []
         }
-    }
-
-    func add(host: String, css: String, js: String) {
-        let trimmed = host.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !trimmed.isEmpty else { return }
-        boosts.append(Boost(host: trimmed, css: css, js: js))
-        persist()
     }
 
     func remove(_ boost: Boost) {
@@ -63,18 +50,11 @@ final class BoostStore {
         persist()
     }
 
-    /// the Boost that already covers a host, if there is one — so "Boost this
-    /// site" edits the existing tweak instead of stacking a second one
-    func boost(forHost host: String?) -> Boost? {
-        guard let host = host?.lowercased() else { return nil }
-        return boosts.first { host == $0.host || host.hasSuffix("." + $0.host) }
-    }
-
     @discardableResult
-    func create(host: String, css: String = "", js: String = "") -> Boost? {
+    func create(host: String) -> Boost? {
         let trimmed = host.trimmingCharacters(in: .whitespaces).lowercased()
         guard !trimmed.isEmpty else { return nil }
-        let boost = Boost(host: trimmed, css: css, js: js)
+        let boost = Boost(host: trimmed)
         boosts.append(boost)
         persist()
         return boost
@@ -96,16 +76,10 @@ final class BoostStore {
         AppStorageLocation.writeDurableNow(data, to: fileURL)
     }
 
-    /// inject every enabled Boost whose host matches the page (exact host or a
-    /// subdomain of it). called from the tab's navigation-finish.
+    /// inject every enabled Boost whose host is the page's host or a parent of it
     func inject(into webView: WKWebView, url: URL?) {
         guard let host = url?.host()?.lowercased() else { return }
-        let matches = boosts.filter {
-            $0.isEnabled && (host == $0.host || host.hasSuffix("." + $0.host))
-        }
-        guard !matches.isEmpty else { return }
-
-        for boost in matches {
+        for boost in boosts where boost.isEnabled && (host == boost.host || host.hasSuffix("." + boost.host)) {
             if !boost.css.isEmpty {
                 let js = """
                 (function(){var s=document.createElement("style");\

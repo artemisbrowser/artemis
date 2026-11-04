@@ -34,9 +34,10 @@ struct PasswordsSettings: View {
             .first(where: { $0.domain == domain })
         {
             PasswordSiteDetail(site: site, back: { withAnimation(Motion.panel) { openSite = nil } })
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .transition(Motion.slide(.trailing))
         } else {
-            list.transition(.move(edge: .leading).combined(with: .opacity))
+            // a site that empties drops its unlock, so new logins there ask again
+            list.transition(Motion.slide(.leading)).onAppear { openSite = nil }
         }
     }
 
@@ -69,7 +70,7 @@ struct PasswordsSettings: View {
                 ForEach(sites) { site in
                     PasswordSiteRow(site: site) {
                         Task {
-                            guard await store.authenticate("view your saved logins for \(site.domain)") else { return }
+                            guard await OwnerUnlock.authenticate(.passwords, "view your saved logins for \(site.domain)") else { return }
                             withAnimation(Motion.panel) { openSite = site.domain }
                         }
                     }
@@ -91,7 +92,7 @@ struct PasswordsSettings: View {
                     LabeledContent {
                         Button("Edit") {
                             Task {
-                                guard await store.authenticate("edit your suggested password") else { return }
+                                guard await OwnerUnlock.authenticate(.passwords, "edit your suggested password") else { return }
                                 editingRecipe = recipe
                             }
                         }
@@ -126,6 +127,13 @@ struct PasswordsSettings: View {
                 }
             } header: {
                 InfoLabel("Options", info: "These apply to every profile.")
+            }
+
+            Section {
+                UnlockPicker(
+                    .passwords, info: "Covers filling, viewing and copying passwords and codes, and signing in with passkeys.")
+            } header: {
+                UnlockHeader()
             }
 
             if !store.neverSave.isEmpty {
@@ -165,7 +173,7 @@ struct PasswordsSettings: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.message = "Choose a password export (.csv)."
-        // the sandbox reliably reaches Downloads; a picked file in iCloud-synced Documents can be refused
+        // a picked file in iCloud-synced Documents can be refused (EPERM); Downloads is reliably readable
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].resolvingSymlinksInPath()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let text: String
@@ -210,7 +218,7 @@ struct PasswordsSettings: View {
         alert.addButton(withTitle: "Export…")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,
-            await store.authenticate("export your saved passwords")
+            await OwnerUnlock.authenticate(.passwords, "export your saved passwords")
         else { return }
         let rows = logins.compactMap { login in
             store.password(for: login).map {
@@ -225,7 +233,7 @@ struct PasswordsSettings: View {
 }
 
 @MainActor
-private func confirmDelete(_ title: String, _ detail: String) -> Bool {
+func confirmDelete(_ title: String, _ detail: String) -> Bool {
     let alert = NSAlert()
     alert.messageText = title
     alert.informativeText = detail
@@ -423,7 +431,7 @@ private struct CopyValue: View {
     var shown: String?
     var monospaced = false
     var hovering: Binding<Bool>?
-    /// asks for Touch ID first once the store's unlock window has lapsed
+    /// asks the device owner first, as the passwords unlock policy says
     var secret = false
     /// dots in place of the value while true; nil for a value that is never masked
     var masked: Bool?
@@ -433,7 +441,7 @@ private struct CopyValue: View {
     var body: some View {
         Button {
             Task {
-                if secret, !(await PasswordStore.shared.authenticate("copy this password")) { return }
+                if secret, !(await OwnerUnlock.authenticate(.passwords, "copy this password")) { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(value, forType: .string)
                 withAnimation(Motion.fade) { copied = true }
@@ -441,7 +449,6 @@ private struct CopyValue: View {
                 withAnimation(Motion.fade) { copied = false }
             }
         } label: {
-            // both stay laid out, so the pill keeps one size while they crossfade
             // every state stays laid out, so the pill never changes size under the cursor
             ZStack {
                 if let masked {
@@ -617,10 +624,11 @@ private struct AccountCard: View {
                 LabeledContent("Username") { Text("No username").foregroundStyle(.secondary) }
             }
             if let password {
+                // this page opened through a check, so it shows passwords until the Mac locks or sleeps
                 LabeledContent("Password") {
                     CopyValue(
                         value: password, monospaced: true, hovering: $passwordHovered, secret: true,
-                        masked: !(passwordHovered && store.isUnlocked))
+                        masked: !(passwordHovered && (OwnerUnlock.unlockedAt != nil || OwnerUnlock.isUnlocked(.passwords))))
                 }
             }
             if let oneTimeCode {
@@ -633,7 +641,7 @@ private struct AccountCard: View {
                     }
                 }
             }
-            ForEach(account.passkeys) { passkey in
+            ForEach(account.passkeys) { _ in
                 LabeledContent("Passkey") {
                     Label("On this Mac", systemImage: "person.badge.key.fill").foregroundStyle(.secondary)
                 }
@@ -685,9 +693,9 @@ private struct AccountCard: View {
                             Button("Remove", systemImage: "minus.circle.fill") {
                                 draftNames.removeAll { $0.id == name.id }
                             }
-                                .labelStyle(.iconOnly)
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(.red)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.red)
                         }
                     }
                 }
@@ -891,6 +899,7 @@ private struct PasswordRecipeEditor: View {
                                 Image(systemName: showsRoot ? "eye.slash" : "eye")
                             }
                             .buttonStyle(.borderless)
+                            .accessibilityLabel(showsRoot ? "Hide root" : "Show root")
                         }
                         .labelsHidden()
                         .font(.system(.body, design: .monospaced))
@@ -985,8 +994,8 @@ private struct PasswordRecipeEditor: View {
 extension PasswordStore {
     static let shared = PasswordStore { BrowserCore.shared.profile($0) != nil }
 
-    /// Writes plain-text passwords where the person picks inside Downloads, the one folder
-    /// the sandbox lets Artemis write; the file is left readable by its owner only.
+    /// writes plain-text passwords to a file the person picks inside Downloads, readable
+    /// by its owner only; anywhere outside Downloads is refused
     func writePlaintext(_ csv: String, suggesting name: String, count: Int) -> String {
         guard
             let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first?

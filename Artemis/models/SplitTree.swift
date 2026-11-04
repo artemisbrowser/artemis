@@ -2,12 +2,9 @@ import CoreGraphics
 import Foundation
 import Observation
 
-/// one node of a split's tiling tree: either a `leaf` (a single tab's pane) or a
-/// `split` that lays its `children` out along an `axis`, each child taking a
-/// fraction (`ratio`) of the axis. value type — a mutation rebuilds the affected
-/// branch and the owning `SplitGroup` reassigns its `root`. each node carries a
-/// stable `id` so SwiftUI moves a subtree (and its hosted web view) on a
-/// restructure instead of tearing it down.
+/// one node of a split's tiling tree: a `leaf` pane, or a `split` sharing its axis
+/// among `children` by `ratio`. a node's `id` survives restructuring, so SwiftUI
+/// moves a subtree and its web view rather than remounting it
 indirect enum SplitNode: Identifiable {
     case leaf(id: UUID, tab: UUID)
     case split(id: UUID, axis: SplitOrientation, children: [Child])
@@ -28,8 +25,7 @@ indirect enum SplitNode: Identifiable {
 
     // MARK: - Projections
 
-    /// the tabs of every leaf, left→right / top→bottom (in-order traversal). the
-    /// sidebar and most of `TabManager` read a split through this flat list.
+    /// the tabs of every leaf, left→right / top→bottom
     var leafTabIDs: [UUID] {
         switch self {
         case .leaf(_, let tab): [tab]
@@ -46,12 +42,10 @@ indirect enum SplitNode: Identifiable {
 
     func contains(_ tab: UUID) -> Bool { leafTabIDs.contains(tab) }
 
-    var firstLeafTab: UUID? { leafTabIDs.first }
-
     // MARK: - Structural builders
 
-    /// a flat single-axis split of `tabIDs` (the legacy linear layout). a single
-    /// tab returns a bare leaf — a split always holds at least two children.
+    /// a flat single-axis split of `tabIDs`; a single tab is a bare leaf, since a
+    /// split always holds at least two children
     static func linear(
         tabIDs: [UUID], axis: SplitOrientation, ratios: [Double]? = nil
     ) -> SplitNode {
@@ -66,14 +60,14 @@ indirect enum SplitNode: Identifiable {
     }
 
     /// equal slices for `count` children
-    static func balanced(count: Int) -> [Double] {
+    private static func balanced(count: Int) -> [Double] {
         guard count > 0 else { return [] }
         return Array(repeating: 1.0 / Double(count), count: count)
     }
 
     /// clamp each ratio to `minRatio` and renormalize to sum 1; falls back to a
     /// balanced split when the input is the wrong length or degenerate
-    static func normalizedRatios(_ proposed: [Double]?, count: Int) -> [Double] {
+    private static func normalizedRatios(_ proposed: [Double]?, count: Int) -> [Double] {
         guard count > 0 else { return [] }
         guard let p = proposed, p.count == count else { return balanced(count: count) }
         let floored = p.map { max($0, SplitGroup.minRatio) }
@@ -83,9 +77,8 @@ indirect enum SplitNode: Identifiable {
 
     // MARK: - Mutations (return a rebuilt node; ids preserved where they survive)
 
-    /// drop the leaf for `tab` from this subtree, or nil if this whole node *is*
-    /// that leaf. split nodes left with a single child / no leaves are not
-    /// collapsed here — that's `normalized`'s job, run once after a removal.
+    /// drop the leaf for `tab` from this subtree, or nil if nothing is left.
+    /// single-child splits are left for `normalized` to collapse
     func removingLeaf(_ tab: UUID) -> SplitNode? {
         switch self {
         case .leaf(_, let t):
@@ -99,9 +92,7 @@ indirect enum SplitNode: Identifiable {
         }
     }
 
-    /// equalize every split node's children to 1/n — "as even as possible" at each
-    /// level (e.g. 3-across-top each take a third of the top half). structure +
-    /// node ids untouched.
+    /// every split node's children at 1/n each; structure and ids untouched
     func balancedRatios() -> SplitNode {
         guard case .split(let id, let axis, let children) = self else { return self }
         let n = children.count
@@ -111,13 +102,11 @@ indirect enum SplitNode: Identifiable {
         return .split(id: id, axis: axis, children: kids)
     }
 
-    /// collapse single-child splits into their child, splice a child split that
-    /// shares its parent's axis up into the parent (so "3 across" stays flat and
-    /// dividers don't jump), and renormalize each node's ratios. bottom-up.
+    /// bottom-up: collapse single-child splits, splice a child split sharing its
+    /// parent's axis into the parent, and renormalize each node's ratios
     static func normalized(_ node: SplitNode) -> SplitNode {
         guard case .split(let id, let axis, let children) = node else { return node }
 
-        // normalize children first (bottom-up)
         let norm = children.map { Child(node: normalized($0.node), ratio: $0.ratio) }
         if norm.count == 1 { return norm[0].node }  // absorb the split's slot
 
@@ -141,13 +130,9 @@ indirect enum SplitNode: Identifiable {
         return .split(id: id, axis: axis, children: result)
     }
 
-    /// insert a `dragged` leaf next to the `target` leaf, splitting along `axis`.
-    /// if the target already sits in a same-axis split it joins as a sibling
-    /// (sharing the target's slot); otherwise the target is wrapped in a new
-    /// perpendicular split. `before` puts the new pane on the leading/top side.
-    /// `leafID`/`wrapperID` default to fresh UUIDs for a real commit; the *preview*
-    /// passes stable constants so re-evaluating it every render doesn't churn node
-    /// identity (which would remount — and blank — the real panes around it).
+    /// put `dragged` beside `target` along `axis`, sharing the target's slot in a
+    /// same-axis split or wrapping it in a new one. a preview passes constant
+    /// `leafID`/`wrapperID` so re-rendering it never remounts the real panes
     func insertingLeaf(
         _ dragged: UUID, beside target: UUID,
         axis: SplitOrientation, before: Bool,
@@ -181,7 +166,6 @@ indirect enum SplitNode: Identifiable {
                 }
                 return .split(id: id, axis: nodeAxis, children: newKids)
             }
-            // not a direct child here — recurse
             let recursed = children.map {
                 Child(
                     node: $0.node.insertingLeaf(
@@ -193,9 +177,8 @@ indirect enum SplitNode: Identifiable {
         }
     }
 
-    /// insert `dragged` as a new pane along an outer edge of this whole subtree
-    /// (used at the root). pure (no normalize). `leafID`/`wrapperID` default fresh;
-    /// the preview passes stable constants (see `insertingLeaf(beside:)`).
+    /// put `dragged` along an outer edge of this whole subtree, unnormalized.
+    /// ids as in `insertingLeaf(_:beside:axis:before:leafID:wrapperID:)`
     func insertingLeaf(
         _ dragged: UUID, atOuterEdgeAxis axis: SplitOrientation, before: Bool,
         leafID: UUID = UUID(), wrapperID: UUID = UUID()
@@ -214,71 +197,59 @@ indirect enum SplitNode: Identifiable {
         return .split(id: wrapperID, axis: axis, children: before ? [dl, me] : [me, dl])
     }
 
-    /// analytic pane frames, mirroring the render layout (same gap + sum-normalized
-    /// ratios). the panes are positioned from these (a flat, stable layer that never
-    /// re-parents a `WKWebView`), and the drop hit-test reads them too — a *stable*
-    /// reference that doesn't feed back on live frames (the favourites-grid lesson).
+    /// each child's rect along `axis`, `gap` apart, and the axis length the
+    /// children share once the gaps are taken out
+    private static func layout(
+        _ children: [Child], along axis: SplitOrientation, in rect: CGRect, gap: CGFloat
+    ) -> (rects: [CGRect], available: CGFloat) {
+        let isCols = axis == .columns
+        let n = children.count
+        let total = isCols ? rect.width : rect.height
+        let available = max(total - gap * CGFloat(max(n - 1, 0)), 1)
+        let sum = children.reduce(0) { $0 + $1.ratio }
+        var rects: [CGRect] = []
+        var pos = isCols ? rect.minX : rect.minY
+        for child in children {
+            let frac = sum > 0 ? child.ratio / sum : 1.0 / Double(max(n, 1))
+            let len = available * frac
+            rects.append(
+                isCols
+                    ? CGRect(x: pos, y: rect.minY, width: len, height: rect.height)
+                    : CGRect(x: rect.minX, y: pos, width: rect.width, height: len))
+            pos += len + gap
+        }
+        return (rects, available)
+    }
+
+    /// pane frames computed from the tree, not read back from live views, so the
+    /// pane layer and the drop hit-test never feed back on layout
     func paneFrames(in rect: CGRect, gap: CGFloat) -> [PaneFrame] {
         switch self {
         case .leaf(_, let tab):
             return [PaneFrame(tab: tab, rect: rect)]
         case .split(_, let axis, let children):
-            let isCols = axis == .columns
-            let n = children.count
-            let total = isCols ? rect.width : rect.height
-            let avail = max(total - gap * CGFloat(max(n - 1, 0)), 1)
-            let sum = children.reduce(0) { $0 + $1.ratio }
-            var out: [PaneFrame] = []
-            var pos = isCols ? rect.minX : rect.minY
-            for child in children {
-                let frac = sum > 0 ? child.ratio / sum : 1.0 / Double(max(n, 1))
-                let len = avail * frac
-                let r =
-                    isCols
-                    ? CGRect(x: pos, y: rect.minY, width: len, height: rect.height)
-                    : CGRect(x: rect.minX, y: pos, width: rect.width, height: len)
-                out.append(contentsOf: child.node.paneFrames(in: r, gap: gap))
-                pos += len + gap
-            }
-            return out
+            let rects = Self.layout(children, along: axis, in: rect, gap: gap).rects
+            return zip(children, rects).flatMap { child, r in child.node.paneFrames(in: r, gap: gap) }
         }
     }
 
-    /// analytic divider rects (the gaps between siblings at every depth), each with
-    /// the node path + boundary it resizes and the axis length to convert a point
-    /// drag into a ratio. mirrors `paneFrames`'s layout so dividers sit in the gaps.
+    /// the divider in every gap between siblings at every depth, laid out as
+    /// `paneFrames` lays out the panes
     func dividers(in rect: CGRect, gap: CGFloat, path: [Int] = []) -> [SplitDividerInfo] {
         guard case .split(_, let axis, let children) = self else { return [] }
-        let isCols = axis == .columns
-        let n = children.count
-        let total = isCols ? rect.width : rect.height
-        let avail = max(total - gap * CGFloat(max(n - 1, 0)), 1)
-        let sum = children.reduce(0) { $0 + $1.ratio }
-
+        let (rects, available) = Self.layout(children, along: axis, in: rect, gap: gap)
         var result: [SplitDividerInfo] = []
-        var rects: [CGRect] = []
-        var pos = isCols ? rect.minX : rect.minY
         for (i, child) in children.enumerated() {
-            let frac = sum > 0 ? child.ratio / sum : 1.0 / Double(max(n, 1))
-            let len = avail * frac
-            let r =
-                isCols
-                ? CGRect(x: pos, y: rect.minY, width: len, height: rect.height)
-                : CGRect(x: rect.minX, y: pos, width: rect.width, height: len)
-            rects.append(r)
-            result += child.node.dividers(in: r, gap: gap, path: path + [i])
-            pos += len + gap
+            result += child.node.dividers(in: rects[i], gap: gap, path: path + [i])
         }
-        // a divider sits in each gap between adjacent children of THIS node
-        for i in 0 ..< max(n - 1, 0) {
-            let a = rects[i]
+        for (i, a) in rects.dropLast().enumerated() {
             let dRect =
-                isCols
+                axis == .columns
                 ? CGRect(x: a.maxX, y: rect.minY, width: gap, height: rect.height)
                 : CGRect(x: rect.minX, y: a.maxY, width: rect.width, height: gap)
             result.append(
                 SplitDividerInfo(
-                    path: path, boundary: i, axis: axis, rect: dRect, axisLength: avail))
+                    path: path, boundary: i, axis: axis, rect: dRect, axisLength: available))
         }
         return result
     }
@@ -303,28 +274,23 @@ indirect enum SplitNode: Identifiable {
     }
 }
 
-/// a split view: 2–4 tabs tiled together in the content area and shown as one
-/// grouped block in the sidebar. the arrangement is a `root` tiling tree; the
-/// group's focused pane is the space's `selectedTabID` (always one of the leaves
-/// while the split is shown).
-///
-/// linking: when `linkSourceID` is set, plain link clicks in that pane open in the
-/// *next* leaf (in-order) instead of navigating in place. nil = every pane navigates itself.
+/// a split view: 2–4 tabs tiled by the `root` tree. while it shows, the space's
+/// `selectedTabID` is one of its leaves
 @Observable
 final class SplitGroup: Identifiable {
     let id: UUID
-    /// the tiling tree. every mutation reassigns this whole value.
-    var root: SplitNode
+    /// reassigning drops a divider drag that was resizing the old tree
+    var root: SplitNode {
+        didSet { if resizingRoot != nil { resizingRoot = nil } }
+    }
     /// the pane whose plain link clicks open elsewhere, or nil when independent
     var linkSourceID: UUID?
     /// the explicit pane those links open in (chosen via the link-target picker)
     var linkTargetID: UUID?
-    /// the pane that was focused last time this split was shown, so re-opening it
-    /// from the sidebar restores that pane rather than jumping to the first
+    /// the pane focused when this split last showed, restored on reopening it
     var lastFocusedID: UUID?
 
-    /// a split needs at least two panes; the owning space dissolves it the moment
-    /// it drops below two
+    /// the owning space dissolves a split that drops below this
     static let minPanes = 2
     static let maxPanes = 4
     /// no pane may shrink below this fraction of its axis, so one can't vanish
@@ -363,8 +329,7 @@ final class SplitGroup: Identifiable {
     var leafCount: Int { root.leafCount }
     func contains(_ id: UUID) -> Bool { root.contains(id) }
 
-    /// the root's axis when it's a split (else a sensible default) — the axis a
-    /// sidebar reorder flattens to, and the orientation the sidebar block shows
+    /// the root split's axis, `.columns` for a bare leaf
     var primaryAxis: SplitOrientation {
         if case .split(_, let axis, _) = root { return axis }
         return .columns
@@ -382,7 +347,6 @@ final class SplitGroup: Identifiable {
     func removeLeaf(_ id: UUID) {
         guard let pruned = root.removingLeaf(id) else { return }
         root = SplitNode.normalized(pruned)
-        // linking breaks if either end leaves
         if linkSourceID == id || linkTargetID == id {
             linkSourceID = nil
             linkTargetID = nil
@@ -401,26 +365,10 @@ final class SplitGroup: Identifiable {
     /// split the whole group along an outer edge, dropping `dragged` on that side
     /// so it spans across everything else
     func insertLeaf(_ dragged: UUID, atOuterEdge axis: SplitOrientation, before: Bool) {
-        let newRoot: SplitNode
-        if case .split(let id, let rAxis, let children) = root, rAxis == axis {
-            let n = children.count
-            let newRatio = 1.0 / Double(n + 1)
-            let scale = Double(n) / Double(n + 1)
-            var scaled = children.map { SplitNode.Child(node: $0.node, ratio: $0.ratio * scale) }
-            let dl = SplitNode.Child(node: .leaf(id: UUID(), tab: dragged), ratio: newRatio)
-            if before { scaled.insert(dl, at: 0) } else { scaled.append(dl) }
-            newRoot = .split(id: id, axis: axis, children: scaled)
-        } else {
-            let dl = SplitNode.Child(node: .leaf(id: UUID(), tab: dragged), ratio: 0.5)
-            let rootChild = SplitNode.Child(node: root, ratio: 0.5)
-            newRoot = .split(
-                id: UUID(), axis: axis, children: before ? [dl, rootChild] : [rootChild, dl])
-        }
-        root = SplitNode.normalized(newRoot)
+        root = SplitNode.normalized(root.insertingLeaf(dragged, atOuterEdgeAxis: axis, before: before))
     }
 
-    /// add a pane as a new top-level child of the root, at `index` among them
-    /// (default: end) — the sidebar/merge "add to split" entry point
+    /// add a pane as a top-level child of the root, at `index` (default: the end)
     func appendLeaf(_ id: UUID, at index: Int? = nil) {
         guard !contains(id) else { return }
         if case .split(let rid, let axis, let children) = root {
@@ -432,38 +380,45 @@ final class SplitGroup: Identifiable {
             scaled.insert(
                 SplitNode.Child(node: .leaf(id: UUID(), tab: id), ratio: newRatio), at: slot)
             root = SplitNode.normalized(.split(id: rid, axis: axis, children: scaled))
-        } else if let only = root.firstLeafTab {
+        } else if let only = root.leafTabIDs.first {
             root = SplitNode.linear(tabIDs: [only, id], axis: primaryAxis)
         }
     }
 
-    /// rebuild the layout as one flat single-axis split in the given pane order —
-    /// what a sidebar reorder (an inherently 1-D gesture) lands on
+    /// rebuild the layout as one flat split along `primaryAxis`, in `order`
     func flatten(order: [UUID]) {
         let ids = order.filter { contains($0) }
         guard ids.count >= SplitGroup.minPanes else { return }
         root = SplitNode.linear(tabIDs: ids, axis: primaryAxis)
     }
 
+    /// a divider drag's tree, until it ends; only layout reads it, never `root`'s readers
+    private(set) var resizingRoot: SplitNode?
+
+    /// what the panes are laid out from
+    var layoutRoot: SplitNode { resizingRoot ?? root }
+
     /// adjust the divider at `boundary` inside the split node addressed by `path`
     func resize(path: [Int], boundary: Int, by delta: Double) {
-        root = root.resizing(path: path[...], boundary: boundary, by: delta)
+        resizingRoot = layoutRoot.resizing(path: path[...], boundary: boundary, by: delta)
+    }
+
+    /// the drag is over: its ratios become the layout
+    func endResize() {
+        if let resizingRoot { root = resizingRoot }
     }
 }
 
-/// a pane's analytic frame in the split container's space — the panes are
-/// positioned from these and the drop hit-test reads them. `id` is the tab, stable
-/// across renders so the flat pane layer's `ForEach` never remounts a pane.
+/// a pane's frame in the split container's space. `id` is the tab, so the pane
+/// layer's `ForEach` never remounts a pane
 struct PaneFrame: Identifiable, Equatable {
     let tab: UUID
     let rect: CGRect
     var id: UUID { tab }
 }
 
-/// one resizable divider, computed analytically from the tree: where it sits, the
-/// node path + boundary it adjusts, and the axis length to turn a point drag into
-/// a ratio delta. `id` is stable across renders (path + boundary) so the divider
-/// view isn't remounted as the layout reflows.
+/// one resizable divider: the node `path` + `boundary` it adjusts, and the
+/// `axisLength` in points that turns a drag into a ratio delta
 struct SplitDividerInfo: Identifiable {
     let path: [Int]
     let boundary: Int
@@ -483,9 +438,8 @@ enum SplitBoxEdge: Hashable {
     var before: Bool { self == .left || self == .top }
 }
 
-/// where a content tiling drop would land, computed by the rearrange overlay from
-/// the cursor: split a pane along an edge, or split the whole group's outer edge.
-/// every spot on a pane resolves to its nearest edge (no neutral centre).
+/// where a tiling drop would land. every point on a pane resolves to its
+/// nearest edge; there is no neutral centre
 enum SplitDropTarget: Hashable {
     /// split the given pane along an edge, dropping the dragged pane in that half
     case paneEdge(leaf: UUID, edge: SplitBoxEdge)
@@ -501,9 +455,7 @@ enum SplitDropTarget: Hashable {
     }
 }
 
-/// the outcome of a drag-to-rearrange drop, computed by the rearrange overlay and
-/// applied through `TabManager.rearrangeSplit`. `besideLeaf` splits a pane,
-/// `outerEdge` splits the whole group along an outer edge.
+/// a drag-to-rearrange drop, applied through `TabManager.rearrangeSplit`
 enum SplitRearrange {
     case besideLeaf(dragged: UUID, target: UUID, axis: SplitOrientation, before: Bool)
     case outerEdge(dragged: UUID, axis: SplitOrientation, before: Bool)
@@ -521,7 +473,7 @@ enum SplitRearrange {
 
 extension SplitNodeData {
     /// resolve leaves back to live tab ids, dropping any that have gone stale
-    func toNode(resolve: (UUID?, Int) -> UUID?) -> SplitNode? {
+    fileprivate func toNode(resolve: (UUID?, Int) -> UUID?) -> SplitNode? {
         switch self {
         case .leaf(let id, let idx):
             guard let tab = resolve(id, idx) else { return nil }

@@ -2,16 +2,9 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// private WKWebView SPI. on macOS WebKit derives `document.visibilityState`
-/// from the view's *window occlusion* — so when our floating mini-player panel
-/// gets occluded (the user tabs to another app and its window covers the panel),
-/// WebKit flips the borrowed page to `hidden` and SUSPENDS its media: the
-/// `<video>` freezes mid-play (paused=false, readyState=4, but the clock stops
-/// and never resumes without a reload). turning occlusion detection off keeps the
-/// borrowed page permanently "visible" while the mini-player owns it, so playback
-/// never suspends. restored to the default (on) when the view returns to the
-/// browser, where throttling genuinely-occluded background tabs is desirable.
-/// reached via typed `unsafeBitCast`, guarded with `responds(to:)`.
+/// private WKWebView SPI. WebKit derives `document.visibilityState` from window
+/// occlusion, and an occluded panel's video freezes for good; off while the
+/// mini-player owns the view, back on when the browser has it
 @objc private protocol WKWebViewOcclusionSPI {
     func _setWindowOcclusionDetectionEnabled(_ enabled: Bool)
 }
@@ -22,50 +15,31 @@ import WebKit
     func _doAfterNextPresentationUpdate(_ updateBlock: @escaping () -> Void)
 }
 
-/// one caption/subtitle track exposed by the page, surfaced in our own picker
+/// one caption track the page exposes
 struct CaptionTrack: Identifiable, Equatable {
     let id: String
     let label: String
 }
 
-/// Artemis' own floating mini-player — a borderless panel that *borrows the live
-/// web view* and isolates the video, so it can do what the system PiP window
-/// can't: sit anywhere on screen (no corner-snap), wear our own liquid-glass
-/// transport (never the site's controls), carry a "return to the browser"
-/// button, and drive captions through a custom picker that renders the site's
-/// own subtitles.
-///
-/// per-site behaviour lives in the injected JS (`applyJS`): known streaming
-/// players (YouTube/Netflix/Prime/Disney/Hulu) promote their *player container*
-/// and hide only the chrome — keeping their caption overlay visible — and expose
-/// their native caption-track API; everything else isolates the bare `<video>`
-/// and falls back to native `textTracks`.
-///
-/// replaces the native-PiP entry points (`BrowserTab.togglePictureInPicture` and
-/// friends stay intact but unwired — flip `TabManager` back to revert). because
-/// it reparents the *actual* `WKWebView`, playback/state/logins carry over with
-/// zero reload; the tab's main-window slot (`WebHostView`) sits empty until the
-/// view is handed back.
+/// the floating mini-player: a borderless panel that borrows the tab's live web
+/// view and isolates its video, so playback carries over with no reload. the
+/// tab's `WebHostView` sits empty until the view is handed back
 @Observable
 final class MiniPlayer {
-    /// `@AppStorage` key + default for the mini-player corner radius (0 = square,
-    /// up to Apple-level rounding), adjustable in Settings → General
     static let cornerRadiusKey = "pipCornerRadius"
     static let defaultCornerRadius = 16.0
-    /// remembers the panel's last on-screen frame (as a string), restored next open
+    /// the panel's last on-screen frame, restored next open
     static let frameKey = "pipPanelFrame"
     /// the same for call mode, which keeps its own size and spot
     static let callFrameKey = "pipCallFrame"
     /// call mode: the glass frame's inset around the page, and the control row
     static let callInset: CGFloat = 8
     static let callControlsHeight: CGFloat = 52
-    /// how much of a call site's own control bar to crop off the page's bottom,
-    /// since our glass row replaces it
+    /// how much of a call site's own control bar to crop off the page's bottom
     private static let callBarCrop: [String: CGFloat] = ["meet.google.com": 80]
-    /// whether captions are drawn in our liquid-glass overlay (true) or left to
-    /// the website's own renderer (false)
+    /// captions drawn in our overlay (true) or by the website (false)
     static let customCaptionsKey = "pipCustomCaptions"
-    /// how far the centre ⟲/⟳ buttons jump, in seconds (Settings → General)
+    /// how far the centre ⟲/⟳ buttons jump, in seconds
     static let skipSecondsKey = "pipSkipSeconds"
     static let defaultSkipSeconds = 10.0
 
@@ -79,11 +53,10 @@ final class MiniPlayer {
     @ObservationIgnored private var seekTarget: (time: Double, until: Date)?
     @ObservationIgnored private var frameObservers: [NSObjectProtocol] = []
     @ObservationIgnored private(set) weak var tab: BrowserTab?
-    /// reveals + fronts the tab in the browser when the return button is hit.
     @ObservationIgnored var onReturnToBrowser: ((BrowserTab) -> Void)?
 
     @ObservationIgnored private var pollTimer: Timer?
-    /// a faster, lightweight timer just for caption text (low latency)
+    /// a faster timer for caption text alone
     @ObservationIgnored private var captionTimer: Timer?
     @ObservationIgnored private var aspectApplied = false
 
@@ -94,19 +67,16 @@ final class MiniPlayer {
     private(set) var duration = 0.0
     private(set) var muted = false
     private(set) var volume = 1.0
-    /// true while the user drags the scrubber — pauses position updates
+    /// pauses position updates
     var isScrubbing = false
-    /// true while the user drags the volume slider — pauses volume readback
+    /// pauses volume readback
     var isAdjustingVolume = false
-    /// true while the pointer is anywhere over the panel — reveals the chrome.
-    /// driven by a tracking area (not mouse capture), so it never blocks clicks.
+    /// the pointer is over the panel; set from a tracking area, so it never blocks clicks
     var chromeHovering = false
-    /// true while an ad is playing (YouTube) — seeking is blocked, so the ±skip
-    /// buttons and the scrubber are disabled
+    /// an ad is playing, which blocks seeking
     private(set) var adActive = false
-    /// true while a real, clickable ad-skip control is up. we show our own glass
-    /// Skip button in the bottom bar and move YouTube's (invisible) button under
-    /// it, so the click that falls through our button lands on theirs — trusted.
+    /// the site's ad-skip control is up; it is pinned, invisible, under our Skip
+    /// button so the click falls through to it as a trusted event
     private(set) var isSkippable = false
     private(set) var skipLabel = "Skip"
 
@@ -115,21 +85,17 @@ final class MiniPlayer {
     private(set) var captionTracks: [CaptionTrack] = []
     /// id of the live track, "" when off
     private(set) var activeCaptionID = ""
-    /// the caption text to draw right now (scraped from the site / native cues),
-    /// rendered in our own liquid-glass overlay
+    /// the caption text our overlay draws right now
     private(set) var captionText = ""
     var hasCaptions: Bool { captionCount > 0 }
     var captionsOn: Bool { !activeCaptionID.isEmpty }
 
-    /// page buttons (e.g. Prime "Skip Recap") the user allowed for this site AND
-    /// the page is showing right now — rendered as native glass pills that proxy
-    /// a real click into the page (our drag layer eats all page mouse events, so
-    /// the site's own button could never be clicked directly)
+    /// page buttons (e.g. "Skip Recap") allowed for this site and showing now; the
+    /// drag layer eats page clicks, so pills proxy them into the page
     private(set) var pageButtons: [String] = []
 
     var isActive: Bool { panel != nil }
-    /// a call (the tab holds the camera or microphone): the panel shows the whole
-    /// live page under a title strip, so the site's own call controls work
+    /// the tab holds the camera or microphone: the panel shows the whole page above our call controls
     private(set) var isCall = false
     /// a short-form feed (Shorts, Reels, TikTok): the panel gets up / down
     /// controls and can move on by itself when a video comes round
@@ -172,10 +138,9 @@ final class MiniPlayer {
         close(returnToBrowser: false)
     }
 
-    /// the close (✕) button: tear down the float AND pause the video (a call is
-    /// left running; hanging up is the site's own button)
+    /// the ✕ button: closes and pauses, but leaves a call running
     func dismiss() { close(returnToBrowser: false, pauseVideo: !isCall) }
-    /// the return button: hand the page back to the browser, still playing
+    /// hands the page back to the browser, still playing
     func returnToBrowser() { close(returnToBrowser: true) }
 
     // MARK: - Open / close
@@ -193,14 +158,10 @@ final class MiniPlayer {
         webView.removeFromSuperview()
 
         let content = PiPContentView(frame: NSRect(origin: .zero, size: size))
-        // hover drives the chrome; a tracking area (not mouse capture) so page
-        // clicks are never blocked
         content.onHover = { [weak self] in self?.chromeHovering = $0 }
         let root: NSView
         let page: NSView
         if isCall {
-            // a small dark frosted glass frame; the page sits rounded inside it
-            // above our glass control row
             let glass = NSGlassEffectView(frame: content.frame)
             glass.appearance = NSAppearance(named: .darkAqua)
             glass.cornerRadius = 22
@@ -225,7 +186,6 @@ final class MiniPlayer {
         } else {
             content.wantsLayer = true
             content.layer?.backgroundColor = NSColor.black.cgColor
-            // round the whole panel (webview + chrome) per the saved setting
             let radius = UserDefaults.standard.object(forKey: Self.cornerRadiusKey) as? Double
                 ?? Self.defaultCornerRadius
             content.layer?.cornerRadius = radius
@@ -237,8 +197,6 @@ final class MiniPlayer {
             page = webView
         }
         webView.autoresizingMask = [.width, .height]
-        // keep the borrowed page "visible" to WebKit even when the panel is
-        // occluded behind another app, so its media never gets suspended
         setOcclusionDetection(false, on: webView)
 
         let chrome = NSHostingView(rootView: MiniPlayerChrome(player: self))
@@ -260,6 +218,8 @@ final class MiniPlayer {
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        // a named colour space, as in `WebHostView.host`, is cheap per surface
+        panel.colorSpace = .displayP3
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -276,7 +236,6 @@ final class MiniPlayer {
             guard let self, let panel else { return }
             self.motion.animate(panel, to: target, velocity: velocity)
         }
-        // restore the last placement, clamped onto a visible screen
         let frameKey = isCall ? Self.callFrameKey : Self.frameKey
         var target = panel.frame
         if let saved = UserDefaults.standard.string(forKey: frameKey) {
@@ -286,14 +245,12 @@ final class MiniPlayer {
                 target = r
             }
         }
-        // invisible until there's something to show: a video panel waits for the
-        // isolation (else the whole page flashes inside it) and its shape
+        // a video panel stays invisible until isolation, or the whole page flashes in it
         panel.alphaValue = 0
         panel.setFrame(target, display: false)
         panel.orderFrontRegardless()
         self.panel = panel
         if isCall { PanelMotion.appear(panel) }
-        // persist placement whenever the user moves or resizes it
         let save: (Notification) -> Void = { [weak self, weak panel] _ in
             guard let self, let panel, !self.motion.isRunning else { return }
             UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: frameKey)
@@ -307,7 +264,6 @@ final class MiniPlayer {
         if isCall { startCallPolling() } else { isolateVideo() }
     }
 
-    /// live-update the panel corner radius from Settings while it's open
     func setCornerRadius(_ radius: Double) {
         guard !isCall, let content = panel?.contentView else { return }
         content.layer?.cornerRadius = radius
@@ -324,12 +280,9 @@ final class MiniPlayer {
         guard let tab else { panel?.close(); panel = nil; return }
         let webView = tab.webView
 
-        // hand occlusion-driven visibility back to WebKit — the view is returning
-        // to the browser, where occluded background tabs *should* throttle
         setOcclusionDetection(true, on: webView)
 
-        // pause first (while the video is still live) when closing via ✕; the
-        // return button leaves it playing
+        // pause while the video is still live
         if pauseVideo {
             webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.pause()",
                 completionHandler: nil)
@@ -350,9 +303,7 @@ final class MiniPlayer {
         if returnToBrowser { onReturnToBrowser?(tab) }
     }
 
-    /// toggle WebKit's window-occlusion → page-visibility coupling for the
-    /// borrowed web view (see `WKWebViewOcclusionSPI`). off while the mini-player
-    /// owns it; on when it goes back to the browser.
+    /// see `WKWebViewOcclusionSPI`
     private func setOcclusionDetection(_ enabled: Bool, on webView: WKWebView) {
         guard webView.responds(to: Selector(("_setWindowOcclusionDetectionEnabled:")))
         else { return }
@@ -410,9 +361,8 @@ final class MiniPlayer {
         eval("window.__artemisPip && window.__artemisPip.setVolume(\(value))")
     }
 
-    /// pull the latest track list + active id, for the caption picker. some
-    /// players (YouTube) only populate the list a beat after the captions module
-    /// loads, so retry a few times until something shows up.
+    /// retries while the list is empty: some players fill it only a beat after
+    /// their captions module loads
     func refreshCaptionTracks(retries: Int = 6) {
         tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.ccList()") {
             [weak self] result, _ in
@@ -435,29 +385,27 @@ final class MiniPlayer {
         }
     }
 
-    /// pick a track in our UI; the page renders its own captions. "" turns off.
+    /// "" turns captions off
     func selectCaption(_ id: String) {
         activeCaptionID = id
         let arg = id.isEmpty ? "''" : "'\(id.jsEscaped)'"
         eval("window.__artemisPip && window.__artemisPip.ccSelect(\(arg))")
     }
 
-    /// tap on an allowed-button pill → click the matching visible page button
-    /// in-page. fine for ordinary site buttons; the trust-gated YouTube ad-skip
-    /// is handled by moving the real button under our Skip button (`setSkipTarget`).
+    /// clicks the visible page button an allowed pill stands for; a click that must
+    /// be trusted goes through `setSkipTarget` instead
     func clickPageButton(_ label: String) {
         eval("window.__artemisPip && window.__artemisPip.clickAllowed('\(label.jsEscaped)')")
     }
 
-    /// report where our bottom-bar overlay button is on screen (CSS px == panel
-    /// points) so the JS pins the real, invisible site button right under it. the
-    /// physical click falls through our visuals-only button onto theirs — trusted.
+    /// pins the site's invisible skip button under ours (CSS px == panel points), so
+    /// the physical click falls through to it as a trusted event
     func setSkipTarget(_ rect: CGRect) {
         eval("window.__artemisPip && window.__artemisPip.setSkipTarget("
             + "\(Int(rect.minX)), \(Int(rect.minY)), \(Int(rect.width)), \(Int(rect.height)))")
     }
 
-    /// the catalog key for the current site (hostname sans "www.")
+    /// the catalog key for the current site: its host without "www."
     private var siteHost: String? {
         guard var h = tab?.webView.url?.host else { return nil }
         if h.hasPrefix("www.") { h.removeFirst(4) }
@@ -497,8 +445,7 @@ final class MiniPlayer {
         }
     }
 
-    /// the feed scrolling: the old video leaves past one edge as the new one
-    /// arrives from the other (next comes up from below)
+    /// the old video leaves past one edge as the new one arrives from the other
     private func slide(from still: NSView, to webView: NSView, direction: Int) {
         let rest = webView.frame.origin
         let travel = webView.frame.height * CGFloat(direction)
@@ -566,8 +513,7 @@ final class MiniPlayer {
         }
     }
 
-    /// flip the mic or camera with the site's own button, else WebKit's capture
-    /// mute (the site then can't show it, but nobody hears or sees you)
+    /// the site's own button where it has one, else WebKit's capture mute
     func toggleCall(_ kind: String) {
         guard let webView = tab?.webView else { return }
         webView.evaluateJavaScript("window.__artemisCall && window.__artemisCall.toggle('\(kind)')") {
@@ -628,8 +574,7 @@ final class MiniPlayer {
         }
     }
 
-    /// fit the still-invisible panel to the video's shape in one resize, so the
-    /// page reflows once rather than every frame of an animation
+    /// fits the still-invisible panel to the video's shape in one resize
     private func shapeToVideo(then done: @escaping () -> Void) {
         tab?.webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.state()") {
             [weak self] result, _ in
@@ -653,7 +598,6 @@ final class MiniPlayer {
         unsafeBitCast(webView, to: WKWebViewPresentationSPI.self)._doAfterNextPresentationUpdate(done)
     }
 
-    /// push the current custom-vs-website caption style into the page
     func applyCaptionRender() {
         let custom = UserDefaults.standard.object(forKey: Self.customCaptionsKey) as? Bool ?? true
         eval("window.__artemisPip && window.__artemisPip.setCaptionRender(\(custom))")
@@ -667,7 +611,6 @@ final class MiniPlayer {
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
 
-        // captions on a tighter loop so they don't lag the video
         captionTimer?.invalidate()
         let cap = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.pollCaption()
@@ -683,10 +626,8 @@ final class MiniPlayer {
         }
     }
 
-    /// scan the page's labelled buttons: every new label is remembered in the
-    /// per-site catalog (surfaced as a checklist in Settings → General); labels
-    /// the user has allowed AND the page currently shows become pills. reading
-    /// the allowlist every tick means a Settings toggle applies live.
+    /// catalogs every labelled page button per site; the allowed ones showing now
+    /// become pills, read each tick so a Settings toggle applies live
     private func pollButtons() {
         guard let webView = tab?.webView, let host = siteHost else { return }
         webView.evaluateJavaScript("window.__artemisPip && window.__artemisPip.buttons()") {
@@ -747,10 +688,8 @@ private extension String {
 
 // MARK: - Chrome overlay
 
-/// the floating-panel overlay. a full-window native drag layer sits underneath
-/// (1:1 window dragging via `NSWindow.performDrag`); a liquid-glass transport,
-/// glass close/return buttons, and the caption picker float on top, fading in on
-/// hover. while hidden the controls stop hit-testing so the whole window drags.
+/// the panel's controls over a full-window drag layer; while hidden they stop
+/// hit-testing so the whole window drags
 private struct MiniPlayerChrome: View {
     @Bindable var player: MiniPlayer
     @AppStorage(MiniPlayer.cornerRadiusKey) private var cornerRadius = MiniPlayer.defaultCornerRadius
@@ -759,8 +698,6 @@ private struct MiniPlayerChrome: View {
     @AppStorage("pipShowRemaining") private var showRemaining = false
     @State private var showCaptions = false
 
-    /// hover comes from the panel's tracking area (via the controller), not a
-    /// mouse-capturing overlay — so page clicks are never blocked
     private var visible: Bool { player.chromeHovering || showCaptions }
 
     var body: some View {
@@ -773,16 +710,12 @@ private struct MiniPlayerChrome: View {
 
     private var videoChrome: some View {
         ZStack(alignment: .bottomTrailing) {
-            // the video dims under the controls so white glyphs always read
             LinearGradient(
                 colors: [.black.opacity(0.45), .black.opacity(0.2), .black.opacity(0.5)],
                 startPoint: .top, endPoint: .bottom)
                 .opacity(visible ? 1 : 0)
                 .allowsHitTesting(false)
 
-            // our own caption render (only in custom style — in website style the
-            // site draws its own). always shown, non-interactive, lifted clear of
-            // the transport when the controls are up
             if customCaptions, !player.captionText.isEmpty {
                 GeometryReader { geo in
                     VStack {
@@ -795,14 +728,12 @@ private struct MiniPlayerChrome: View {
                 .allowsHitTesting(false)
             }
 
-            // centre transport: skip-back / play-pause / skip-forward on glass;
-            // a short-form feed adds previous / next above and below
             VStack(spacing: 10) {
                 if player.isShortForm {
                     CenterButton(symbol: "chevron.up", label: "Previous video", size: 16) { player.stepShort(-1) }
                 }
                 HStack(spacing: 34) {
-                    // ads block seeking — hide the ±skip during one, keep play/pause
+                    // ads block seeking
                     CenterButton(
                         symbol: Self.skipSymbol(forward: false, seconds: skipSeconds),
                         label: "Back \(skipSeconds) seconds", size: 20
@@ -846,16 +777,12 @@ private struct MiniPlayerChrome: View {
         .animation(.easeInOut(duration: 0.18), value: visible)
         .animation(.easeInOut(duration: 0.1), value: player.captionText)
         .animation(.easeInOut(duration: 0.18), value: player.pageButtons)
-        // close the caption menu when the pointer leaves the panel
         .onChange(of: player.chromeHovering) { _, hovering in
             if !hovering { showCaptions = false }
         }
-        // keep the panel corners in sync with the setting, live
         .onChange(of: cornerRadius) { _, r in player.setCornerRadius(r) }
     }
 
-    /// Apple-style captions in liquid glass: white text on a glass slab, centered
-    /// near the bottom, clamped to two lines, hugging the text up to `maxWidth`
     private func captionBubble(maxWidth: CGFloat) -> some View {
         Text(Self.clampLines(player.captionText, 2))
             .font(.system(size: 15, weight: .semibold))
@@ -870,7 +797,7 @@ private struct MiniPlayerChrome: View {
             .glassEffect(.regular, in: .rect(cornerRadius: 9))
     }
 
-    /// keep only the last `n` lines (captions read bottom-up), trimmed
+    /// the last `n` lines, since captions read bottom-up
     static func clampLines(_ s: String, _ n: Int) -> String {
         let lines = s.split(whereSeparator: \.isNewline)
         if lines.count <= n { return s.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -887,8 +814,6 @@ private struct MiniPlayerChrome: View {
         }
     }
 
-    /// the bottom row on one glass capsule: times + slider (+ compact
-    /// volume/captions); play/skip live in the centre cluster
     private var bottomBar: some View {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
@@ -903,11 +828,7 @@ private struct MiniPlayerChrome: View {
                 timeLabel(Self.clock(player.duration), opacity: 0.6)
             }
 
-            // our glass ad-skip / jump-ahead button takes the right end while
-            // YouTube offers one — volume/captions step aside. it's visuals-only;
-            // the real (invisible) YouTube button is pinned right under it, so the
-            // click falls through onto theirs (trusted). then allowed site buttons
-            // (Skip Recap…), else the normal volume/captions.
+            // the site's skip button is pinned under ours, so the click lands on it trusted
             if player.isSkippable {
                 OverlayButton(label: player.skipLabel, systemImage: "forward.end.fill") { rect in
                     player.setSkipTarget(rect)
@@ -990,7 +911,6 @@ private struct MiniPlayerChrome: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 
-    /// Custom (our liquid-glass render) vs Website (the site's own captions)
     private var stylePicker: some View {
         HStack(spacing: 4) {
             styleChip("Custom", custom: true)
@@ -1031,21 +951,11 @@ private struct MiniPlayerChrome: View {
     }
 }
 
-/// the precise scrubber. dragging horizontally seeks; pulling the cursor away
-/// vertically slows the scrub rate (Apple-style fine scrubbing) so you can land
-/// on an exact frame. a glassy track with a white progress fill + knob.
-/// the time scrubber — the EXACT native `Slider` used by the volume control, with
-/// precise seeking layered on top as a high-priority drag: horizontal drag seeks;
-/// pulling the cursor away vertically slows the rate, so a straight drag spans the
-/// whole video while pulling up/down lets you land on an exact second. the native
-/// slider still renders (knob follows via the binding); our gesture just supplies
-/// the input.
+/// the time scrubber: while held it shows its own value, so polls can't move it
 private struct TimeSlider: View {
     @Bindable var player: MiniPlayer
     @State private var scrubTime = 0.0
 
-    /// the system slider, like the volume's: its thumb turns to glass while held.
-    /// while dragging it shows its own value; polls can't move it
     var body: some View {
         Slider(
             value: Binding(
@@ -1064,13 +974,12 @@ private struct TimeSlider: View {
             .controlSize(.mini)
             .tint(.white)
             .frame(minWidth: 80)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue("\(MiniPlayerChrome.clock(player.currentTime)) of \(MiniPlayerChrome.clock(player.duration))")
     }
 }
 
-/// the volume control: a speaker button that, on hover, grows a second liquid-
-/// glass capsule to its left with an inline slider — the capsule encompasses the
-/// button so the whole thing reads as one expanding glass pill. a short grace
-/// delay on exit keeps it open while the cursor crosses from button to slider.
+/// a speaker button that grows a glass capsule with a slider on hover
 private struct VolumeControl: View {
     @Bindable var player: MiniPlayer
     @State private var hovering = false
@@ -1088,7 +997,13 @@ private struct VolumeControl: View {
     }
 
     var body: some View {
+        // the slider only appears on hover, so the button adjusts the level too
         ChromeButton(symbol: icon, label: player.muted ? "Unmute" : "Mute") { player.toggleMute() }
+            .accessibilityValue("Volume \(Int((level.wrappedValue * 100).rounded())) percent")
+            .accessibilityAdjustableAction { direction in
+                let step = direction == .increment ? 0.1 : -0.1
+                player.setVolume(min(max(level.wrappedValue + step, 0), 1))
+            }
             .onHover { setHover($0) }
             .overlay(alignment: .trailing) {
                 if hovering {
@@ -1099,11 +1014,10 @@ private struct VolumeControl: View {
                         .frame(width: 84)
                         .controlSize(.mini)
                         .tint(.white)
+                        .accessibilityLabel("Volume")
                         ChromeButton(symbol: icon, label: player.muted ? "Unmute" : "Mute") { player.toggleMute() }
                     }
-                    // no trailing padding: keeps the capsule's speaker exactly
-                    // over the base speaker (ChromeButton has its own inset), so
-                    // the icon doesn't jump left when the capsule appears
+                    // no trailing padding, so the capsule's speaker sits exactly over the base one
                     .padding(.leading, 14)
                     .padding(.vertical, 4)
                     .glassEffect(.regular, in: .capsule)
@@ -1115,8 +1029,7 @@ private struct VolumeControl: View {
             .animation(.easeInOut(duration: 0.16), value: hovering)
     }
 
-    /// keep the capsule alive across the button→slider gap: enter cancels any
-    /// pending hide; exit schedules one a beat later
+    /// hides a beat after exit, so the capsule survives the button→slider gap
     private func setHover(_ inside: Bool) {
         hideTask?.cancel()
         if inside {
@@ -1191,12 +1104,10 @@ private struct CallButton: View {
     }
 }
 
-/// a white transport glyph for the centre cluster, on a liquid-glass circle;
-/// brightens on hover
+/// a transport glyph for the centre cluster, on a glass circle
 private struct CenterButton: View {
     let symbol: String
-    /// the mini-player floats in its own panel, where the custom tooltip (and the
-    /// accessibility label it supplies) isn't mounted
+    /// the spoken name: the panel has no tooltip layer to supply one
     var label: String
     var size: CGFloat
     let action: () -> Void
@@ -1244,12 +1155,8 @@ private struct PageButtonPill: View {
     }
 }
 
-/// our glass overlay button (ad-skip / jump-ahead), in the bottom bar. it's
-/// VISUALS ONLY: a physical click passes straight through the chrome into the web
-/// view, where the site's real (invisible) button has been CSS-pinned exactly
-/// under it — so the page gets a genuine TRUSTED click on its own control (JS
-/// `.click()` is `isTrusted:false` and YouTube's skip/jump ignore it). reports
-/// its on-screen rect so the JS keeps the real button lined up.
+/// visuals only: a click passes through to the site's invisible button pinned under
+/// it, since sites ignore an untrusted `.click()`. reports its rect to keep that aligned
 private struct OverlayButton: View {
     let label: String
     let systemImage: String
@@ -1301,12 +1208,10 @@ private struct CaptionRow: View {
     }
 }
 
-/// a white glyph control for the mini-player chrome. brightens on hover; `glass`
-/// wraps it in its own liquid-glass circle (used for the top buttons that float
-/// over the video rather than living inside the transport pill).
+/// a glyph control for the mini-player chrome; `glass` gives it its own glass circle
 private struct ChromeButton: View {
     let symbol: String
-    /// spoken name — the mini-player is its own panel, with no tooltip overlay
+    /// the spoken name: the panel has no tooltip layer to supply one
     var label: String
     var size: CGFloat = 13
     var glass: Bool = false
@@ -1335,14 +1240,9 @@ private struct GlassCircle: ViewModifier {
     }
 }
 
-/// the mini-player's floating panel. plain event dispatch (so our SwiftUI
-/// controls get their clicks AND real clicks reach the web view as TRUSTED DOM
-/// events). window management, all resolved by geometry in `sendEvent` (an
-/// NSHostingView can't distinguish a control from empty space via hitTest):
-///   • drag from the top strip (titlebar-style) — or ⌘-drag from anywhere
-///   • resize from a generous margin around every edge/corner (aspect-locked)
-/// `canBecomeKey` is overridden because a non-activating panel that can't become
-/// key silently drops web-content clicks.
+/// the mini-player's panel. drag and resize are resolved by geometry in `sendEvent`,
+/// so clicks still reach the web view as trusted events; it must be able to become
+/// key, or web-content clicks are silently dropped
 final class PiPPanel: NSPanel {
     /// where a click-drag moves the panel (window coords); clicks there still
     /// reach the controls on release. default: the top band
@@ -1357,7 +1257,7 @@ final class PiPPanel: NSPanel {
     /// a flicked release: where to settle (a screen corner) and the release
     /// speed as a fraction of that distance per second
     var onFling: ((NSRect, Double) -> Void)?
-    /// how far from an edge still grabs the resize (was ~4px OS default)
+    /// how far from an edge still grabs the resize
     private let resizeMargin: CGFloat = 14
 
     private var pendingDown: NSEvent?
@@ -1373,8 +1273,7 @@ final class PiPPanel: NSPanel {
             let p = event.locationInWindow
             if event.modifierFlags.contains(.command) { drag(); return }
             if let edge = resizeEdge(at: p) { startResize(edge, from: event); return }
-            // drag from the handle; withhold so a click on a button there still
-            // works (forwarded on release)
+            // withheld, and forwarded on release, so a button on the handle still clicks
             if isDragHandle?(p) ?? (p.y > (contentView?.bounds.height ?? 0) - 46) {
                 pendingDown = event; dragStart = p; dragging = false
                 return
@@ -1406,10 +1305,8 @@ final class PiPPanel: NSPanel {
         }
     }
 
-    /// two fingers move the panel as dragging does, the cursor riding along so
-    /// it keeps its spot on the panel; a flick settles it in a corner and leaves
-    /// the cursor where it is. the system's momentum is ignored, the fling
-    /// replaces it
+    /// two fingers move the panel with the cursor riding along; a flick settles it
+    /// in a corner instead of the system's momentum
     private func swipe(_ e: NSEvent) {
         guard e.momentumPhase.isEmpty else { return }
         if e.phase.contains(.began) {
@@ -1444,8 +1341,6 @@ final class PiPPanel: NSPanel {
         setFrame(NSRect(x: frame.midX - w / 2, y: frame.midY - h / 2, width: w, height: h), display: true)
     }
 
-    /// follow the pointer; a fast release glides on into the nearest screen
-    /// corner (iPhone-PiP style), a slow one stays where it was dropped
     private func drag() {
         onGestureBegan?()
         let startFrame = frame
@@ -1497,9 +1392,8 @@ final class PiPPanel: NSPanel {
         return NSRect(origin: o, size: r.size)
     }
 
-    /// `r` given the video's `aspect`, keeping its area (a portrait Short
-    /// stands up instead of growing tall) and the corner nearest the screen's
-    /// corner, then kept on screen
+    /// `r` at the video's `aspect`, keeping its area and the corner nearest the
+    /// screen's, then kept on screen
     func reshaped(_ r: NSRect, aspect: CGFloat) -> NSRect {
         let w = (r.width * r.height * aspect).squareRoot().rounded()
         let h = (w / aspect).rounded()
@@ -1526,8 +1420,7 @@ final class PiPPanel: NSPanel {
         return e.isEmpty ? nil : e
     }
 
-    /// aspect-locked manual resize loop (the OS resize border is too thin). the
-    /// grabbed corner moves; the opposite corner stays put.
+    /// the grabbed corner moves; the opposite one stays put
     private func startResize(_ edge: Edge, from down: NSEvent) {
         let start = frame
         let startMouse = NSEvent.mouseLocation
@@ -1548,15 +1441,15 @@ final class PiPPanel: NSPanel {
             else if edge.contains(.bottom) { w = (start.height - dy) * aspect }
             w = min(max(w, minW), maxW)
             var h = w / aspect
-            if !locksAspect {  // each axis follows its own edge
+            if !locksAspect {
                 h = start.height
                 if edge.contains(.top) { h = start.height + dy } else if edge.contains(.bottom) { h = start.height - dy }
                 h = max(h, contentMinSize.height)
                 if !edge.contains(.left), !edge.contains(.right) { w = start.width }
             }
             var origin = start.origin
-            origin.x = edge.contains(.left) ? start.maxX - w : start.origin.x  // fixed opposite edge
-            origin.y = edge.contains(.top) ? start.origin.y : start.maxY - h   // top-anchored unless dragging top
+            origin.x = edge.contains(.left) ? start.maxX - w : start.origin.x
+            origin.y = edge.contains(.top) ? start.origin.y : start.maxY - h
             setFrame(NSRect(origin: origin, size: NSSize(width: w, height: h)), display: true)
         }
         keepOnScreen()
@@ -1628,9 +1521,7 @@ final class PanelMotion: NSObject {
     }
 }
 
-/// the panel's content view. reports hover via a **tracking area** — which fires
-/// from geometry independently of hit-testing, so revealing the chrome never
-/// blocks a click from reaching the web view.
+/// reports hover from a tracking area, which never takes a click from the web view
 final class PiPContentView: NSView {
     var onHover: ((Bool) -> Void)?
 
@@ -1648,10 +1539,8 @@ final class PiPContentView: NSView {
 
 // MARK: - Per-site button allowlist store
 
-/// per-site catalog of page buttons seen while the mini-player was open, with an
-/// allowed flag each. shape in UserDefaults: [host: [label: allowed]]. new labels
-/// arrive unchecked; Settings → General shows the checklist; the mini-player
-/// reads `allowed` every poll tick so toggles apply live.
+/// page buttons seen per site in the mini-player, each with an allowed flag:
+/// [host: [label: allowed]] in UserDefaults
 enum PiPSiteButtons {
     static let key = "pipSiteButtons"
 
@@ -1659,7 +1548,7 @@ enum PiPSiteButtons {
         UserDefaults.standard.dictionary(forKey: key) as? [String: [String: Bool]] ?? [:]
     }
 
-    /// remember any new labels for the site (unchecked by default)
+    /// new labels arrive unallowed
     static func merge(host: String, labels: [String]) {
         guard !labels.isEmpty else { return }
         var catalog = all()
@@ -1697,11 +1586,8 @@ enum PiPSiteButtons {
 // MARK: - Injected JavaScript engine
 
 extension MiniPlayer {
-    /// the whole per-site engine: installs `window.__artemisPip` (idempotent) and
-    /// runs `apply()`. profiles are matched by hostname substring (no regex, to
-    /// keep the Swift string literal free of backslash escaping). known players
-    /// promote their container + hide chrome (captions kept); everything else
-    /// isolates the bare video.
+    /// installs `window.__artemisPip` once and runs `apply()`. the literal isn't raw:
+    /// a backslash in the script must be escaped
     fileprivate static let applyJS = """
     (function () {
       if (window.__artemisPip) return window.__artemisPip.apply();
@@ -1719,13 +1605,9 @@ extension MiniPlayer {
         cap: ['.ytp-caption-window-container', '.caption-window'],
         // the player's only children left showing
         keep: ['.html5-video-container', '.ytp-caption-window-container', '.video-ads', '.ytp-ad-module'],
-        // never sweep the ad skip control — hiding its container made Skip
-        // unclickable (a display:none'd button can't take a real click, and
-        // YouTube ignores untrusted JS clicks). also keep "Jump ahead" alive +
-        // clickable so it can be an allow-listed pill.
+        // never swept: a display:none'd button can't take the real click a skip needs
         alive: ['.ytp-skip-ad', '.ytp-skip-ad-button', '.ytp-ad-skip-button', '.ytp-ad-skip-button-modern'],
-        // don't catalogue these as page buttons — they're content/markers, not
-        // actionable controls (chapter/section titles show up as role=button)
+        // role=button content, not controls: kept out of the button catalog
         noScan: ['.ytp-chapter-title', '.ytp-chapters-container', '.ytp-progress-bar-container',
                  '.ytp-progress-bar', '[class*="chapter" i]', '.ytp-time-display'],
         hide: ['.ytp-chrome-bottom', '.ytp-chrome-top', '.ytp-gradient-bottom', '.ytp-gradient-top',
@@ -1759,12 +1641,9 @@ extension MiniPlayer {
                '.atvwebplayersdk-nextupcard-button', '.atvwebplayersdk-timeindicator-text',
                '.atvwebplayersdk-subtitle-text', '.atvwebplayersdk-title-text',
                '.atvwebplayersdk-skipelement-button',
-               // catch-all: Prime's control overlay leaks for a few seconds at
-               // PiP start (hashed classes the list above misses) — hide every
-               // overlay child except caption/subtitle renderers
+               // every overlay child but the captions: its hashed classes evade the list above
                '.atvwebplayersdk-overlays-container > *:not([class*="captions" i]):not([class*="subtitle" i])'],
-        // X-Ray (cast/songs/trivia) is full of role=button rows — keep the
-        // whole panel out of the button catalog
+        // X-Ray's role=button rows are content, not controls
         noScan: ['[class*="xray" i]', '[id*="xray" i]', '.atvwebplayersdk-infobar-container'],
         cc: null
       };
@@ -1786,9 +1665,7 @@ extension MiniPlayer {
         cc: null
       };
 
-      // Max + Apple TV+ + everything else: no reliable container/caption overlay,
-      // so isolate the bare video (Apple renders captions in the video's shadow
-      // DOM, so they ride along; Max loses its overlay captions).
+      // null: isolate the bare video, losing any captions drawn outside it
       function profile() {
         if (has('youtube.com') || has('youtu.be')) return YT;
         if (has('netflix.com')) return NF;
@@ -1865,14 +1742,11 @@ extension MiniPlayer {
             + 'max-width:none !important;max-height:none !important;object-fit:contain !important;';
           var css = '';
           if (p.hide) css += p.hide.join(',') + '{display:none !important;}';
-          // anything else the player draws over the video (its newer overlays
-          // reappear on every resize, then auto-hide: a flash)
+          // anything else the player draws over the video
           if (p.keep) css += p.root.map(function (r) {
             return r + ' > :not(' + p.keep.join('):not(') + ')';
           }).join(',') + '{opacity:0 !important;pointer-events:none !important;}';
-          // `alive` elements stay in the page (clickable, hit-testable) but
-          // invisible — our own glass pill proxies clicks to them. display:none
-          // would make them unclickable; opacity:0 keeps them live.
+          // `alive` elements stay clickable under our pills: opacity, never display:none
           if (p.alive && p.alive.length) css += p.alive.join(',') + '{opacity:0 !important;pointer-events:auto !important;}';
           styleEl('__artemis_pip_hide').textContent = css;
         } else {
@@ -1884,13 +1758,12 @@ extension MiniPlayer {
 
         document.documentElement.style.overflow = 'hidden';
         styleEl('__artemis_pip_native').textContent = 'video::-webkit-media-controls{display:none !important;}';
-        setCaptionRender(true);  // default to our custom render; Swift may flip it
+        setCaptionRender(true);
         try { sweep(); } catch (e) {}
         return true;
       }
 
-      // custom style → keep the site's caption text flowing but invisible (we
-      // scrape + redraw it); website style → let the site draw its own captions
+      // custom: the site's captions keep flowing, invisible, for us to redraw
       function setCaptionRender(custom) {
         st.capCustom = !!custom;
         var v = st.video;
@@ -1900,11 +1773,10 @@ extension MiniPlayer {
           else { if (m === 'hidden') v.textTracks[i].mode = 'showing'; }
         }
         var sels = (st.prof && st.prof.cap) || [];
-        // class-level hide (covers nodes created later)
+        // class-level, so it covers nodes created later
         styleEl('__artemis_pip_cap').textContent =
           (custom && sels.length) ? (sels.join(',') + '{opacity:0 !important;}') : '';
-        // switching back to website style: drop the inline hide we forced on the
-        // live caption nodes (see capText)
+        // drop the inline hide capText forces on live caption nodes
         if (!custom) for (var k = 0; k < sels.length; k++) {
           var els = qa(sels[k]); for (var j = 0; j < els.length; j++) els[j].style.removeProperty('opacity');
         }
@@ -1920,14 +1792,12 @@ extension MiniPlayer {
             else w.el.style.removeProperty('display');
           } catch (e) {}
         }
-        // undo the skip-button lift
         if (st.lifted) for (var lf = 0; lf < st.lifted.length; lf++) {
           try {
             st.lifted[lf].setAttribute('style', st.lifted[lf].__artemisLift || '');
             st.lifted[lf].__artemisLift = null;
           } catch (e) {}
         }
-        // restore native track modes we changed
         if (st.video && st.video.textTracks && st.ttModes)
           for (var ti = 0; ti < st.ttModes.length; ti++)
             if (st.video.textTracks[ti]) st.video.textTracks[ti].mode = st.ttModes[ti];
@@ -1944,11 +1814,8 @@ extension MiniPlayer {
 
       function stripTags(s) { return (s || '').replace(/<[^>]+>/g, '').trim(); }
 
-      // the caption text to draw right now. in custom style we FIRST suppress
-      // both layers the site can draw with — native cues (browser-rendered) and
-      // the site's own DOM overlay — every tick, *before* reading, so neither can
-      // show alongside ours (YouTube exposes native cues AND a DOM overlay, so an
-      // early return on cues used to leave the DOM overlay visible).
+      // the caption text to draw now. in custom style both of the site's layers,
+      // native cues and its DOM overlay, are suppressed every tick before reading
       function capText() {
         var v = st.video;
         var sels = (st.prof && st.prof.cap) || [];
@@ -1962,8 +1829,7 @@ extension MiniPlayer {
           }
         }
 
-        // text: prefer the site's rendered overlay (matches what it would show),
-        // fall back to native cues
+        // the site's rendered overlay first, then native cues
         for (var k = 0; k < sels.length; k++) {
           var el = q(sels[k]);
           if (el) {
@@ -1987,11 +1853,9 @@ extension MiniPlayer {
         return nativeCC(function () { return st.video; });
       }
 
-      // ---- overlay sweep. static hide lists can't name every banner (age
-      // rating, flashing-lights advisory, hashed-class overlays), so in root
-      // mode hide EVERY child of the player root that isn't on the video's
-      // ancestor chain and isn't caption-related. re-run on the buttons() tick
-      // because sites mount these late; everything restored on remove().
+      // ---- overlay sweep: in root mode, hides every player-root child off the
+      // video's ancestor chain that holds no captions or `alive` element. re-run
+      // each buttons() tick for late mounts; remove() restores everything
       function capLike(el) {
         var c = String((el.getAttribute && el.getAttribute('class')) || '').toLowerCase();
         if (c.indexOf('caption') !== -1 || c.indexOf('subtitle') !== -1 || c.indexOf('timedtext') !== -1) return true;
@@ -2006,8 +1870,7 @@ extension MiniPlayer {
         for (var i = 0; i < sels.length; i++) { try { if (el.querySelector(sels[i])) return true; } catch (e) {} }
         return false;
       }
-      // profile `alive`: elements the sweep must NOT hide (e.g. YouTube's ad
-      // skip button — sweeping its `.video-ads` container made Skip unclickable)
+      // profile `alive`: elements the sweep must never hide
       function aliveLike(el) {
         var sels = (st.prof && st.prof.alive) || [];
         for (var i = 0; i < sels.length; i++) { try { if (el.matches && el.matches(sels[i])) return true; } catch (e) {} }
@@ -2024,8 +1887,7 @@ extension MiniPlayer {
         var chain = [], n = st.video.parentElement;
         while (n && n !== st.root) { chain.push(n); n = n.parentElement; }
         if (n !== st.root) return;
-        // un-hide previously swept containers that now hold an `alive` element
-        // (ad UI mounts late — its container was swept before the ad began)
+        // un-hide swept containers that have since gained an `alive` element
         for (var s = st.swept.length - 1; s >= 0; s--) {
           var w = st.swept[s];
           if (!aliveLike(w.el) && !hasAliveInside(w.el)) continue;
@@ -2052,12 +1914,9 @@ extension MiniPlayer {
         walk(st.root);
       }
 
-      // ---- site-button allowlist. every labelled button in the player is
-      // catalogued (Swift keeps the per-site allow flags); allowed ones become
-      // native pills that proxy a real click back in via clickAllowed. matching
-      // is by label, not selector — Prime randomises its class names, labels
-      // survive. display:none'd buttons are still found (querySelectorAll walks
-      // the DOM) and innerText falls back to textContent for unrendered nodes.
+      // ---- site-button allowlist, matched by label since some sites randomise
+      // class names. display:none'd buttons are still found, with innerText
+      // falling back to textContent
       function btnLabel(el) {
         var s = el.getAttribute('aria-label') || el.innerText || el.textContent || '';
         return s.replace(/\\s+/g, ' ').trim();
@@ -2065,8 +1924,6 @@ extension MiniPlayer {
       function btnCandidates() {
         var scope = st.root || document;
         var els; try { els = Array.prototype.slice.call(scope.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]')); } catch (e) { els = []; }
-        // profile noScan: containers whose buttons are content, not player
-        // controls (Prime X-Ray cast/song rows are role=button)
         var ex = (st.prof && st.prof.noScan) ? st.prof.noScan.join(',') : '';
         if (ex) els = els.filter(function (el) {
           try { return !el.closest(ex); } catch (e) { return true; }
@@ -2076,11 +1933,8 @@ extension MiniPlayer {
       function stash(el) {
         if (el.__artemisLift == null) { el.__artemisLift = el.getAttribute('style') || ''; st.lifted.push(el); }
       }
-      // pin the real site button (ad-skip / jump-ahead) under OUR pill in the
-      // bottom bar and make it clickable there: position:fixed at the target
-      // rect, and up its ancestor chain force pointer-events:auto + a near-max
-      // z-index (the video otherwise paints on top) and clear transforms so
-      // `fixed` is viewport-relative. all restored on remove() via st.lifted.
+      // pins the site button fixed at our pill's rect. its ancestors drop transforms,
+      // so `fixed` is viewport-relative, and rise above the video; remove() restores them
       function pinUnder(el, t) {
         st.lifted = st.lifted || [];
         if (!el || !t) return;
@@ -2105,10 +1959,8 @@ extension MiniPlayer {
       }
       function moveSkip() { var sk = findSkip(); if (sk) pinUnder(sk.el, window.__artemisSkipTarget); }
 
-      // the real, laid-out control matching `sels` (kept alive + opacity:0 by the
-      // hide CSS). null until it materialises with real layout size. NOT
-      // offsetParent (it's null once WE set position:fixed → would flicker the
-      // button away the tick after we move it) — use computed display/visibility.
+      // the laid-out control matching `sels`, or null until it has a real size.
+      // not offsetParent, which goes null once pinUnder sets position:fixed
       function findControl(sels, fallback) {
         if (!st.prof || !st.prof.alive) return null;
         for (var i = 0; i < sels.length; i++) {
@@ -2135,8 +1987,7 @@ extension MiniPlayer {
           var l = btnLabel(els[i]);
           if (!l || l.length > 40) continue;
           var k = l.toLowerCase();
-          // ad-skip has its own bottom-bar button (moveSkip), so keep it out of
-          // the generic pill row (the scan also catches YouTube's hidden ghost)
+          // ad-skip has its own bottom-bar button (moveSkip)
           if (st.prof && st.prof.alive && k.indexOf('skip') !== -1) continue;
           if (seen[k]) continue;
           seen[k] = 1; out.push(l);
@@ -2150,13 +2001,9 @@ extension MiniPlayer {
         state: function () {
           var v = st.video; if (!v) return null;
           var active = ''; try { active = ccImpl().active() || ''; } catch (e) {}
-          // an ad is playing (YouTube marks the player root) — seeking is blocked
           var ad = false;
           try { ad = !!(st.root && st.root.classList &&
             (st.root.classList.contains('ad-showing') || st.root.classList.contains('ad-interrupting'))); } catch (e) {}
-          // is a real, clickable skip control up? if so Swift shows our bottom-bar
-          // Skip button and reports its rect; each tick we move the real button
-          // under it (see moveSkip) so the click falls through onto it — trusted.
           var sk = null; try { sk = findSkip(); } catch (e) {}
           try { moveSkip(); } catch (e) {}
           return { ad: ad,
@@ -2166,12 +2013,10 @@ extension MiniPlayer {
             volume: (v.muted ? 0 : (v.volume == null ? 1 : v.volume)),
             w: v.videoWidth || 0, h: v.videoHeight || 0, ccActive: active };
         },
-        // Swift pushes each bottom-bar overlay button's on-screen rect (CSS px);
-        // moveSkip re-pins the real button under it each tick
+        // our skip button's rect in CSS px; moveSkip re-pins the real one under it each tick
         setSkipTarget: function (x, y, w, h) {
           window.__artemisSkipTarget = (w > 0 && h > 0) ? { x: x, y: y, w: w, h: h } : null;
         },
-        // polled on its own fast timer for low-latency captions
         caption: function () { try { return capText(); } catch (e) { return ''; } },
         setCaptionRender: function (custom) { try { setCaptionRender(!!custom); } catch (e) {} },
         toggle: function () { var v = st.video; if (!v) return; if (v.paused) v.play(); else v.pause(); },
@@ -2187,8 +2032,7 @@ extension MiniPlayer {
         ccSelect: function (id) {
           try { var c = ccImpl(); if (!id) { if (c.off) c.off(); } else c.select(id); } catch (e) {}
         },
-        // labels of buttons the page has up right now; DOM scan throttled ~1s
-        // (Swift polls at 4Hz)
+        // the labels of buttons up right now; Swift polls at 4Hz, the scan runs ~1Hz
         buttons: function () {
           if (!st.video) return [];
           var now = Date.now();
@@ -2205,8 +2049,7 @@ extension MiniPlayer {
             for (var i = 0; i < els.length; i++) {
               if (btnLabel(els[i]).toLowerCase() !== k) continue;
               var el = els[i], r = el.getBoundingClientRect();
-              // prefer the VISIBLE one — the DOM often holds hidden ghost copies
-              // (rect 0×0) that swallow a click and do nothing
+              // the visible one: hidden 0×0 copies swallow a click and do nothing
               if (r.width > 1 && r.height > 1 && el.offsetParent !== null) {
                 match = el;
                 if (el.tagName === 'BUTTON') break;

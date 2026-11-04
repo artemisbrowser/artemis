@@ -2,10 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 extension BackupArchive {
-    /// keys carried across a backup. an explicit list, not "everything in
-    /// UserDefaults": restoring window frames, one-off UI flags or extension
-    /// grants from another machine causes more confusion than it saves
-    static let preferenceKeys: [String] = [
+    /// the settings a backup carries; window frames, one-off UI flags and
+    /// extension grants stay with the machine
+    fileprivate static let preferenceKeys: [String] = [
         TabManager.autoArchiveHoursKey,
         TabManager.autoPictureInPictureKey,
         TabManager.hibernateAfterMinutesKey,
@@ -45,10 +44,10 @@ extension BackupArchive {
     }
 }
 
-/// Save/open panels and the apply step for backups.
+/// save/open panels and the apply step for backups
 @MainActor
 enum BackupIO {
-    static let fileExtension = "artemisbackup"
+    private static let fileExtension = "artemisbackup"
 
     /// what a restore is allowed to touch
     struct RestoreOptions {
@@ -69,12 +68,15 @@ enum BackupIO {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(archive) else { return }
-        try? data.write(to: url, options: .atomic)
-        debugLog("backup: exported \(archive.session.spaces.count) spaces to \(url.lastPathComponent)")
+        do {
+            try encoder.encode(archive).write(to: url, options: .atomic)
+            debugLog("backup: exported \(archive.session.spaces.count) spaces to \(url.lastPathComponent)")
+        } catch {
+            alert("The backup couldn't be saved.", error)
+        }
     }
 
-    /// read a backup file the user picks; nil if it isn't one
+    /// read a backup file the user picks; nil if they cancel or it can't be read, which they're told
     static func chooseArchive() -> BackupArchive? {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -82,17 +84,28 @@ enum BackupIO {
         panel.allowedContentTypes = [.json, .data]
         panel.message = "Choose an Artemis backup file."
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].resolvingSymlinksInPath()
-        guard panel.runModal() == .OK, let url = panel.url,
-            let data = try? Data(contentsOf: url)
-        else { return nil }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(BackupArchive.self, from: data)
+        do {
+            return try decoder.decode(BackupArchive.self, from: Data(contentsOf: url))
+        } catch is DecodingError {
+            alert("\(url.lastPathComponent) isn't an Artemis backup.", nil)
+        } catch {
+            alert("\(url.lastPathComponent) couldn't be read.", error)
+        }
+        return nil
     }
 
-    /// apply a backup. spaces are *replaced*, not merged — merging two sets of
-    /// spaces produces a mess nobody wants; Boosts merge, since that's a shelf
-    /// where more is fine
+    private static func alert(_ message: String, _ error: Error?) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = error?.localizedDescription ?? ""
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    /// apply a backup: spaces are replaced, Boosts merged
     static func restore(
         _ archive: BackupArchive, options: RestoreOptions, into manager: TabManager
     ) {
@@ -100,17 +113,15 @@ enum BackupIO {
             for (key, value) in archive.preferences where BackupArchive.preferenceKeys.contains(key) {
                 UserDefaults.standard.set(value.raw, forKey: key)
             }
+            for (host, zoom) in archive.zoomLevels {
+                ZoomStore.shared.setZoom(zoom, for: URL(string: "https://\(host)/"))
+            }
         }
         if options.boosts {
             BoostStore.shared.merge(archive.boosts)
         }
-        for (host, zoom) in archive.zoomLevels {
-            ZoomStore.shared.setZoom(zoom, for: URL(string: "https://\(host)/"))
-        }
         if options.spaces {
-            // the session file is the source of truth on launch, so write it and
-            // restore from it — one code path, no second deserializer to keep in
-            // step with `makeSpace(from:)`
+            // restored through the session file, the same path as a launch
             SessionStore.save(archive.session)
             manager.reloadFromDisk()
         }

@@ -23,24 +23,11 @@ enum MediaCommand: String {
     case toggle, back, forward
 }
 
-/// Reports which tabs are playing audio or video, for the sidebar's speaker
-/// indicator, the mute control and the Now Playing card.
-///
-/// WebKit knows this internally (`_isPlayingAudio`) but that SPI is false for a
-/// *muted* video — which is exactly the tab you still want an (un)mute control
-/// on — and it isn't reliably KVO-observable. So playback state comes from the
-/// page instead: one persistent user script installed on the shared content
-/// controller listens for media events in every frame of every tab and posts a
-/// state change. Event-driven, so idle tabs cost nothing (no polling timer).
-///
-/// Frames report independently (a video is usually in an iframe), so each message
-/// carries its frame's url and the tab keeps the set of frames currently playing;
-/// the tab counts as playing while that set is non-empty.
-///
-/// The script runs in the page world: the `mediaSession` action handlers it
-/// captures (and invokes for `MediaCommand`) only exist there.
+/// per-frame playback state, keyed by frame url. `_isPlayingAudio` is false for
+/// a muted video, so a script reports instead; it must run in the page world,
+/// the only place the `mediaSession` handlers it captures and invokes exist
 final class MediaStateReporter: NSObject, WKScriptMessageHandler {
-    static let messageName = "artemisMediaState"
+    private static let messageName = "artemisMediaState"
 
     /// (webView that sent it, its frame, frame key, is that frame playing, its controllable media)
     private let onChange: (WKWebView, WKFrameInfo, String, Bool, PageMedia?) -> Void

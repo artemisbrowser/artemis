@@ -11,7 +11,7 @@ struct Bang: Identifiable, Hashable, Codable {
     var id: String { trigger }
 
     /// the site's own root, used when the bang is typed with nothing after it
-    var homeURL: URL? {
+    private var homeURL: URL? {
         guard let url = URL(string: template.replacingOccurrences(of: "{q}", with: "")),
             let scheme = url.scheme, let host = url.host()
         else { return nil }
@@ -29,7 +29,7 @@ struct Bang: Identifiable, Hashable, Codable {
 
 enum Bangs {
     static let enabledKey = "bangsEnabled"
-    static let customKey = "customBangsV1"
+    private static let customKey = "customBangsV1"
 
     /// everything but the characters that would end the query parameter
     static let queryAllowed = CharacterSet(
@@ -39,8 +39,8 @@ enum Bangs {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
     }
 
-    /// yours first, so a custom `!gh` beats the built-in one
-    static var all: [Bang] { custom + builtin }
+    /// custom first, so a custom `!gh` beats the built-in one
+    private static var all: [Bang] { custom + builtin }
 
     static var custom: [Bang] {
         guard let data = UserDefaults.standard.data(forKey: customKey),
@@ -99,8 +99,7 @@ enum Bangs {
         return String(trimmed.dropFirst()).lowercased()
     }
 
-    /// DuckDuckGo resolves any of its thousands of bangs server-side, which is
-    /// where a trigger we don't carry locally has to go
+    /// DuckDuckGo, which resolves every bang server-side, for a trigger not carried here
     static func fallbackURL(trigger: String, query: String) -> URL? {
         let phrase = "!\(trigger) \(query)".trimmingCharacters(in: .whitespaces)
         guard let escaped = phrase.addingPercentEncoding(withAllowedCharacters: queryAllowed)

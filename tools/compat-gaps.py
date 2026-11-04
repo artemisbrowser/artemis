@@ -19,7 +19,7 @@ text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
 text = re.sub(r"//[^\n]*", "", text)
 
 def blocks(body, keyword):
-    """yield (name, inner text) for each `export <keyword> Name {...}` at this level"""
+    """yield (name, inner text, start, end) for each `export <keyword> Name {...}`"""
     for m in re.finditer(r"export (?:declare )?" + keyword + r" ([\w.]+)\s*\{", body):
         depth, i = 1, m.end()
         while depth:

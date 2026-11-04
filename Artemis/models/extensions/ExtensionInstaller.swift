@@ -1,13 +1,7 @@
 import Foundation
 
-/// normalizes every install source to a file URL that `WKWebExtension` can load
-/// — either a directory holding `manifest.json` or a ZIP archive containing one
-/// (WebKit accepts both). everything lands under
-/// `Application Support/Artemis/Extensions/<id>/` so it survives relaunches.
-///
-/// the trick that makes this small: `.xpi` is already a plain ZIP and `.crx` is
-/// a ZIP behind a short binary header, so we never need a ZIP decoder — we hand
-/// the archive straight to WebKit (after de-heading a CRX).
+/// stores every install source under `Extensions/<id>/` as a file URL `WKWebExtension` loads:
+/// a directory holding `manifest.json`, or a zip (an `.xpi` as-is, a `.crx` without its header)
 nonisolated enum ExtensionInstaller {
     enum InstallError: LocalizedError {
         case notReadable
@@ -34,16 +28,13 @@ nonisolated enum ExtensionInstaller {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil)
         else { return nil }
-        // a copied unpacked extension keeps its own folder structure; a copied
-        // archive lands as the single `extension.zip`
         if let archive = entries.first(where: { $0.lastPathComponent == "extension.zip" }) {
             return archive
         }
-        // unpacked: the resource base is the folder that directly holds manifest.json
         return manifestRoot(under: dir)
     }
 
-    /// copy a sideloaded source (folder, .zip, .xpi, or .crx) into our storage,
+    /// copy a sideloaded source (folder, .zip, .xpi, or .crx) into storage,
     /// returning the new stored id and the resource URL to load from
     static func install(from source: URL) throws -> (id: String, resourceURL: URL) {
         let fm = FileManager.default
@@ -54,17 +45,15 @@ nonisolated enum ExtensionInstaller {
                 .flatMap(webStoreID(ofCRX:)) : nil
         let id = storeID.flatMap { fm.fileExists(atPath: storageRoot.appendingPathComponent($0).path) ? nil : $0 }
             ?? UUID().uuidString.lowercased()
-        let dest = storageRoot.appendingPathComponent(id, isDirectory: true)
-        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else {
             throw InstallError.notReadable
         }
+        let dest = storageRoot.appendingPathComponent(id, isDirectory: true)
+        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
 
         do {
             if isDir.boolValue {
-                // unpacked folder → copy its contents in, then find the manifest root
                 let entries = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
                 for entry in entries {
                     try fm.copyItem(at: entry, to: dest.appendingPathComponent(entry.lastPathComponent))
@@ -72,7 +61,6 @@ nonisolated enum ExtensionInstaller {
                 guard let root = manifestRoot(under: dest) else { throw InstallError.noManifest }
                 return (id, root)
             } else {
-                // archive → store a plain .zip WebKit can open (de-head a CRX first)
                 let data = try Data(contentsOf: source)
                 let kind = source.pathExtension.lowercased()
                 let zip = kind == "crx" ? try stripCRXHeader(data) : data
@@ -101,8 +89,7 @@ nonisolated enum ExtensionInstaller {
 
     // MARK: - Helpers
 
-    /// some packed extensions nest everything one folder deep; walk down until we
-    /// find the directory that actually contains manifest.json
+    /// the directory holding manifest.json, at `dir` or inside a chain of single wrapping folders
     static func manifestRoot(under dir: URL) -> URL? {
         let fm = FileManager.default
         if fm.fileExists(atPath: dir.appendingPathComponent("manifest.json").path) {
@@ -112,7 +99,6 @@ nonisolated enum ExtensionInstaller {
             at: dir, includingPropertiesForKeys: [.isDirectoryKey])
         else { return nil }
         let subdirs = entries.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-        // a single wrapping folder is the common case (e.g. zipped "my-ext/")
         if subdirs.count == 1 {
             return manifestRoot(under: subdirs[0])
         }
@@ -167,14 +153,10 @@ nonisolated enum ExtensionInstaller {
         return nil
     }
 
-    /// a `.crx` is a ZIP behind a small binary header (CRX2/CRX3). rather than
-    /// parse the header formats, slice from the first ZIP local-file signature
-    /// (`PK\x03\x04`), which is robust across both versions
+    /// a `.crx` is a zip behind a CRX2 or CRX3 header; the zip starts at the first
+    /// local-file signature (`PK\x03\x04`)
     private static func stripCRXHeader(_ data: Data) throws -> Data {
-        // already a bare ZIP?
-        if data.starts(with: [0x50, 0x4B, 0x03, 0x04]) { return data }
-        let magic: [UInt8] = [0x50, 0x4B, 0x03, 0x04]
-        guard let range = data.range(of: Data(magic)) else { throw InstallError.notReadable }
+        guard let range = data.range(of: Data([0x50, 0x4B, 0x03, 0x04])) else { throw InstallError.notReadable }
         return data.subdata(in: range.lowerBound..<data.endIndex)
     }
 }

@@ -43,9 +43,9 @@ struct WindowDragStrip: NSViewRepresentable {
     }
 }
 
-/// Where a page reaches the window's top edge. A left press there is held back:
+/// where a page reaches the window's top edge. a left press there is held back:
 /// moved past `slop` it drags the window and the page never sees it; let go
-/// first, the press and its release reach the page untouched.
+/// first, the press and its release reach the page untouched
 struct PageDragBand: NSViewRepresentable {
     /// from the window's top edge: an 8pt band was missed by half a point
     static let height: CGFloat = 14

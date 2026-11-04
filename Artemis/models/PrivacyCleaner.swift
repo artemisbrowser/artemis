@@ -1,6 +1,6 @@
 import WebKit
 
-/// what a clear touches. history, site data, cache, archive and page text are
+/// what a clear touches. history, site data, cache, archive, page text and autofill are
 /// the chosen profile's; the downloads list, zoom and permissions are shared by all.
 struct ClearTargets: OptionSet {
     let rawValue: Int
@@ -13,6 +13,8 @@ struct ClearTargets: OptionSet {
     static let zoom = ClearTargets(rawValue: 1 << 5)
     static let permissions = ClearTargets(rawValue: 1 << 6)
     static let pageText = ClearTargets(rawValue: 1 << 7)
+    /// saved addresses and cards, card numbers included
+    static let autofill = ClearTargets(rawValue: 1 << 8)
 
     /// what belongs to every profile at once
     static let shared: ClearTargets = [.downloads, .zoom, .permissions]
@@ -70,16 +72,15 @@ enum PrivacyCleaner {
         _ targets: ClearTargets, range: ClearRange, in profile: Profile, manager: TabManager
     ) async {
         let since = range.since
+        SpotlightIndex.forget(.profile(profile.id))
 
         if targets.contains(.history) {
             profile.history.clear(since: since)
-            // what the command bar learned you meant by "gi" is a record of where
-            // you went. it isn't timestamped, so a full clear takes all of it
-            if range == .all { profile.inputHistory.clear() }
-            // the per-tab session blobs carry form contents and each tab's own
-            // back/forward list — history by another name. They aren't
-            // timestamped, so it's all of the profile's or none
+            await Intelligence.shared.reset()
+            // the command bar's learned inputs and each tab's back/forward blob
+            // are history too, but untimestamped: only a full clear takes them
             if range == .all {
+                profile.inputHistory.clear()
                 for space in manager.spaces where space.profileID == profile.id {
                     for tab in space.tabs { TabStateStore.remove(tab.id) }
                 }
@@ -87,22 +88,15 @@ enum PrivacyCleaner {
         }
         if targets.contains(.archive) { profile.archive.clear(since: since) }
         if targets.contains(.downloads) { DownloadManager.shared.clearFinished() }
-        // zoom levels aren't timestamped — a partial clear would be a lie, so the
-        // whole per-site table goes or nothing does
+        // zoom and the per-site consents aren't timestamped: any range clears them all
         if targets.contains(.zoom) { ZoomStore.shared.clear() }
-        // permissions aren't timestamped either, and half-forgetting which sites
-        // may use your camera would be worse than not offering it
         if targets.contains(.permissions) {
             SitePermissionStore.shared.forgetAll()
-            // which sites may hand a link to another app, and whose certificate
-            // you chose to accept, are the same kind of per-site consent —
-            // clearing one without the others is a lie
             ExternalSchemes.forgetAll()
             CertificateTrust.forgetAll()
         }
-        // the page-text index *is* timestamped, so a ranged clear is honest here
-        // (`.all` is `.distantPast`, which sweeps the lot)
         if targets.contains(.pageText) { await profile.pageIndex.clear(since: since) }
+        if targets.contains(.autofill) { AutofillStore.shared.deleteAll(in: profile.id, since: since) }
 
         var types: Set<String> = []
         if targets.contains(.siteData) { types.formUnion(storageTypes) }
@@ -113,9 +107,8 @@ enum PrivacyCleaner {
         debugLog("privacy: cleared \(types.count) data types since \(since) in \(profile.name)")
     }
 
-    /// how many sites hold data in a profile's jar — the "23 sites" line under
-    /// the button. a count, not a size: WebKit only reports byte sizes for some
-    /// record types, so a total would be quietly wrong
+    /// how many sites hold data in a profile's jar. a count, not a size: WebKit
+    /// reports byte sizes for only some record types
     static func siteRecordCount(in profile: Profile) async -> Int {
         let records = await profile.dataStore.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
         return Set(records.map(\.displayName)).count

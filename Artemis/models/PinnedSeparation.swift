@@ -6,7 +6,7 @@ import Foundation
 /// the pinned slot.
 enum PinnedSeparationKeep: String, CaseIterable, Identifiable {
     /// the pinned tab snaps back to its anchor and stays pinned; the page you
-    /// navigated to splits off (the original behaviour)
+    /// navigated to splits off
     case pinnedStays
     /// the page you navigated to stays pinned (re-anchored in place); the
     /// original pinned url splits off into its own tab

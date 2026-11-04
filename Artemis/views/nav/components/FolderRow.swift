@@ -18,9 +18,8 @@ enum FolderTabCount: String, CaseIterable, Identifiable {
     }
 }
 
-/// a folder's header row in the sidebar: a disclosure chevron, the name, and the
-/// number of tabs filed under it. Clicking folds it; its children draw indented
-/// beneath, and folders are made from the context menus rather than by a drag.
+/// a folder's header row in the sidebar: its mark, its name and the number of
+/// tabs filed under it. clicking folds it; its children draw indented beneath
 struct FolderRow: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.sidebarMetrics) private var metrics
@@ -92,6 +91,29 @@ struct FolderRow: View {
         onHoverChanged?(false)
     }
 
+    /// the context menu, which VoiceOver also offers as actions
+    private var menuEntries: [MenuEntry] {
+        var entries: [MenuEntry] = [.button("Rename Folder…", "pencil") { beginRename() }]
+        if tabManager.currentSpace.canNestFolder(in: .folder(folder.id)) {
+            entries.append(.button("New Folder Inside", "folder.badge.plus") {
+                tabManager.newFolder(in: .folder(folder.id), at: 0)
+                tabManager.setExpanded(folder, true)
+            })
+        }
+        return entries + [
+            .divider,
+            .button("Ungroup Folder", "folder.badge.minus") { tabManager.ungroup(folder) },
+            .button(
+                tabCount == 0 ? "Delete Folder" : "Close Folder and \(tabCount) Tabs", "xmark", role: .destructive
+            ) { tabManager.closeFolder(folder) },
+        ]
+    }
+
+    private func toggle() {
+        guard !isEditing else { return }
+        withAnimation(Motion.pop) { tabManager.setExpanded(folder, !folder.isExpanded) }
+    }
+
     private func commitRename() {
         guard isEditing else { return }
         isEditing = false
@@ -130,47 +152,30 @@ struct FolderRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(folder.name)
         .accessibilityValue("\(tabCount) tabs, \(folder.isExpanded ? "expanded" : "collapsed")")
-        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits([.isButton, .isHeader])
+        .accessibilityAction { toggle() }
+        .accessibilityAction(named: folder.isExpanded ? "Collapse" : "Expand") { toggle() }
+        .accessibilityActions { MenuEntryActions(entries: menuEntries) }
+        .focusable(interactions: .activate)
+        .onKeyPress(keys: [.return, .space]) { _ in
+            toggle()
+            return .handled
+        }
         .onHover {
             isHovering = $0
             onHoverChanged?($0)
         }
-        .onTapGesture {
-            guard !isEditing else { return }
-            withAnimation(Motion.pop) { tabManager.setExpanded(folder, !folder.isExpanded) }
-        }
-        .contextMenu {
-            Button {
-                beginRename()
-            } label: {
-                Label("Rename Folder…", systemImage: "pencil").labelStyle(.titleAndIcon)
-            }
-            if tabManager.currentSpace.canNestFolder(in: .folder(folder.id)) {
-                Button {
-                    tabManager.newFolder(in: .folder(folder.id), at: 0)
-                    tabManager.setExpanded(folder, true)
-                } label: {
-                    Label("New Folder Inside", systemImage: "folder.badge.plus")
-                        .labelStyle(.titleAndIcon)
-                }
-            }
-            Divider()
-            Button {
-                tabManager.ungroup(folder)
-            } label: {
-                Label("Ungroup Folder", systemImage: "folder.badge.minus").labelStyle(.titleAndIcon)
-            }
-            Button(role: .destructive) {
-                tabManager.closeFolder(folder)
-            } label: {
-                Label(
-                    tabCount == 0 ? "Delete Folder" : "Close Folder and \(tabCount) Tabs",
-                    systemImage: "xmark").labelStyle(.titleAndIcon)
-            }
-        }
+        .onTapGesture { toggle() }
+        .contextMenu { MenuEntriesView(entries: menuEntries) }
         .animation(Motion.hover, value: showsHover)
         .animation(Motion.hover, value: isDropTarget)
     }
+}
+
+extension AnyTransition {
+    /// a folder's children come out from under its header: they start a row
+    /// above, behind it, and the rows below make room as they drop
+    static var folderUnfurl: AnyTransition { Motion.slide(.top) }
 }
 
 /// the folder's row, floating under the cursor while it's dragged
@@ -200,7 +205,7 @@ struct FolderDragGhost: View {
 /// the folder mark: a back panel carrying the tab, and a front panel over it.
 /// opening swings the two apart about the crease they share while the camera
 /// turns to the pose the mark was modelled in
-struct FolderMark: View {
+private struct FolderMark: View {
     var open: Double
     var color: Color
     /// the folded folder holds the tab you are on
@@ -211,16 +216,15 @@ struct FolderMark: View {
 
     var body: some View {
         let t = min(max(open, 0), 1)
-        // each panel is filled, then rimmed on top: an opaque stroke over the
-        // translucent back reads as one band rather than two
+        // each panel's rim strokes over its own fill, so the opaque edge over the
+        // translucent back reads as one band
         let edge = color.mix(with: .white, by: folderEdgeLift)
         ZStack {
             FolderBack(open: t).fill(color.opacity(folderBackOpacity))
             FolderBack(open: t).stroke(edge, lineWidth: folderEdgeWidth)
             FolderFront(open: t).fill(color)
             FolderFront(open: t).stroke(edge, lineWidth: folderEdgeWidth)
-            // the star rides the front face, and goes as the folder opens: an
-            // open folder shows its tabs outright
+            // the star rides the front face and fades out as the folder opens
             FolderStar(open: t).fill(edge).opacity(marked ? 1 - t : 0)
         }
         .frame(width: Self.size.width, height: Self.size.height)
@@ -228,8 +232,7 @@ struct FolderMark: View {
     }
 }
 
-/// where the camera stands when the folder is fully open. closed is head-on,
-/// so the mark at rest is the plain rectangle it draws today
+/// where the camera stands when the folder is fully open; closed is head-on
 private let folderAzimuth = Angle.degrees(-35)
 private let folderElevation = Angle.degrees(-1)
 private let folderDistance: CGFloat = 300
@@ -253,7 +256,6 @@ private let folderRadius: CGFloat = 0.15
 private let folderBodyTop: CGFloat = 0.16
 private let folderTabWidth: CGFloat = 0.55
 private let folderTabTop: CGFloat = 0
-private let folderTabBottom: CGFloat = 0.50
 private let folderBackOpacity: Double = 0.6
 /// the star's reach and waist, in mark widths, and how far its points are taken
 /// off being sharp
@@ -266,10 +268,9 @@ private let folderEdgeLift: Double = 0.45
 /// segments per rounded corner
 private let folderCornerSteps = 7
 
-/// the mark's two panels as real geometry: each outline is rounded in its own
-/// plane and then projected, so the near corner foreshortens sharper than the
-/// far one. the back's bounds are held to their closed rect, so opening never
-/// changes the size of the glyph
+/// the mark's panels as real geometry: each outline is rounded in its own plane,
+/// then projected. the back's bounds are held to their closed rect, so opening
+/// never changes the size of the glyph
 private struct FolderPanels {
     let back: [CGPoint]
     let front: [CGPoint]
@@ -424,13 +425,7 @@ private struct FolderBack: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        let ring = FolderPanels(open: open, in: rect).back
-        guard !ring.isEmpty else { return Path() }
-        var p = Path()
-        p.move(to: ring[0])
-        p.addLines(Array(ring.dropFirst()))
-        p.closeSubpath()
-        return p
+        closedPath(FolderPanels(open: open, in: rect).back)
     }
 }
 
@@ -444,13 +439,7 @@ private struct FolderStar: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        let ring = FolderPanels(open: open, in: rect).star
-        guard !ring.isEmpty else { return Path() }
-        var p = Path()
-        p.move(to: ring[0])
-        p.addLines(Array(ring.dropFirst()))
-        p.closeSubpath()
-        return p
+        closedPath(FolderPanels(open: open, in: rect).star)
     }
 }
 
@@ -464,12 +453,15 @@ private struct FolderFront: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        let ring = FolderPanels(open: open, in: rect).front
-        guard !ring.isEmpty else { return Path() }
-        var p = Path()
-        p.move(to: ring[0])
-        p.addLines(Array(ring.dropFirst()))
-        p.closeSubpath()
-        return p
+        closedPath(FolderPanels(open: open, in: rect).front)
     }
+}
+
+private func closedPath(_ ring: [CGPoint]) -> Path {
+    var p = Path()
+    guard !ring.isEmpty else { return p }
+    p.move(to: ring[0])
+    p.addLines(Array(ring.dropFirst()))
+    p.closeSubpath()
+    return p
 }

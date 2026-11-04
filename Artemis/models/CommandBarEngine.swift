@@ -96,7 +96,7 @@ struct CommandItem: Identifiable {
     }
 
     /// what the bar learns this input meant, so the same keys land here again
-    var learningKey: String? {
+    fileprivate var learningKey: String? {
         switch kind {
         case .action(let action): "action:" + action.id
         case .space(let space): "space:" + space.id.uuidString
@@ -106,9 +106,7 @@ struct CommandItem: Identifiable {
     }
 }
 
-/// builds and runs the command bar's results. one scoring scale across every
-/// source, so a tab, a page from history and a command compete for the top row
-/// rather than being stacked category after category.
+/// builds and runs the command bar's results, every source ranked on one scale
 @MainActor
 struct CommandBarEngine {
     let manager: TabManager
@@ -139,9 +137,8 @@ struct CommandBarEngine {
 
         if scope == nil, let modes = scopePicker(trimmed) { return modes }
 
-        // row 0 is always what you typed, read literally: fired if it's a bang,
-        // opened if it's an address, searched otherwise. nothing the bar merely
-        // matched can take that row
+        // row 0 is always the input read literally: a bang, an address, else a
+        // search. nothing the bar merely matched can take that row
         var head: [CommandItem] = []
         if scope == nil {
             if Bangs.isEnabled, let partial = Bangs.partial(trimmed) {
@@ -179,8 +176,7 @@ struct CommandBarEngine {
 
         var ranked = rank(trimmed, scope: scope, textHits: textHits)
         let headURLs = head.compactMap(\.url)
-        // an open tab stays listed even when you typed its address: switching to
-        // it is a different act from opening it again
+        // an open tab stays listed even when its address is row 0
         ranked.removeAll { item in
             if case .tab = item.kind { return false }
             return headURLs.contains { sameTarget($0, item.url) }
@@ -188,8 +184,8 @@ struct CommandBarEngine {
 
         guard scope == nil else { return deduped(head + ranked.prefix(24)) }
 
-        // suggestions arrive late, so they only ever fill the rows below what's
-        // already shown: the list grows, it never reshuffles under the cursor
+        // suggestions arrive late, so they only fill rows below what's shown:
+        // the list grows, it never reshuffles under the cursor
         let matched = ranked.prefix(5)
         var tail: [CommandItem] = []
         // an address in row 0 is never also offered as a search
@@ -202,7 +198,7 @@ struct CommandBarEngine {
     /// rows the unscoped bar shows; it never scrolls
     static let rowLimit = 8
 
-    /// rows are keyed by id in the list; two of the same id is a broken list
+    /// the list is keyed by id, so ids must be unique
     private func deduped(_ items: [CommandItem]) -> [CommandItem] {
         var seen: Set<String> = []
         return items.filter { seen.insert($0.id).inserted }
@@ -277,8 +273,8 @@ struct CommandBarEngine {
                         ranges: (title?.score ?? -1) >= best ? (title?.ranges ?? []) : []))
             }
             scored.sort { $0.score > $1.score }
-            // cover every match, not just the ones that fit: a page whose tab was
-            // cut would otherwise come back as a history row that opens it again
+            // every matching tab, not just the listed ones, so a cut tab never
+            // returns as a history row
             openURLs = Set(scored.compactMap { $0.url?.absoluteString })
             out += scored.prefix(8)
         }
@@ -337,9 +333,7 @@ struct CommandBarEngine {
                 let keyword = action.keywords
                     .compactMap { CommandMatcher.match(needle, $0.lowercased())?.score }.max()
                 let best = max(title?.score ?? -1, keyword ?? -1)
-                // outside the actions scope a command has to match a whole run
-                // of letters, not a scatter of them, or every action shows up
-                // under every query
+                // outside the actions scope a command needs a contiguous match
                 guard best >= (scope == .actions ? 0 : CommandMatcher.Tier.substring)
                 else { continue }
                 let boost = boosts["action:" + action.id] ?? 0
@@ -367,9 +361,8 @@ struct CommandBarEngine {
 
     // MARK: - Autofill
 
-    /// the host the bar would finish for you. only fires on an unambiguous,
-    /// well-worn host: completing to a page you saw once is worse than not
-    /// completing at all
+    /// the host the bar would finish the input into; only a well-worn host
+    /// clearly ahead of any other with the same prefix
     func autofill(for input: String) -> CommandAutofill? {
         let typed = input.lowercased()
         guard typed.count >= 2, !typed.contains(" "), !typed.contains("://"), !typed.hasPrefix("!"),
@@ -406,7 +399,6 @@ struct CommandBarEngine {
             offer(host, 6)
         }
 
-        // worn in, and clearly ahead of the next host that starts the same way
         guard let winner = best, winner.frecency >= 2, winner.frecency >= 1.5 * runnerUp
         else { return nil }
         return CommandAutofill(
@@ -416,7 +408,7 @@ struct CommandBarEngine {
     // MARK: - Running
 
     func run(_ item: CommandItem, input: String, launch: CommandLaunch) {
-        learn(item, input: input)
+        if let key = item.learningKey { habits?.record(input: input, key: key) }
         switch item.kind {
         case .tab(let tab):
             if launch == .beside { manager.openBeside(tab) } else { manager.focus(tab) }
@@ -444,12 +436,6 @@ struct CommandBarEngine {
         case .scope:
             break
         }
-    }
-
-    /// incognito leaves no trace, and that includes what the bar learned
-    private func learn(_ item: CommandItem, input: String) {
-        guard let key = item.learningKey else { return }
-        habits?.record(input: input, key: key)
     }
 
     private func open(_ url: URL, _ launch: CommandLaunch) {
@@ -524,10 +510,10 @@ struct CommandBarEngine {
     }
 
     /// head and tail rows sit where they're put; only `rank` reads a score
-    private func openItem(_ url: URL, title: String? = nil) -> CommandItem {
+    private func openItem(_ url: URL) -> CommandItem {
         CommandItem(
             id: "url-\(url.absoluteString)", kind: .openURL(url),
-            title: title ?? url.absoluteString, hint: "", ranges: [], score: 0)
+            title: url.absoluteString, hint: "", ranges: [], score: 0)
     }
 
     private func searchItem(_ query: String) -> CommandItem {
@@ -544,7 +530,7 @@ struct CommandBarEngine {
 
     /// host and path, the way a person reads an address: no scheme, www,
     /// query or trailing slash
-    static func address(_ url: URL) -> String {
+    private static func address(_ url: URL) -> String {
         guard var host = url.host() else { return url.absoluteString }
         if host.hasPrefix("www.") { host.removeFirst(4) }
         let path = url.path()
@@ -555,7 +541,7 @@ struct CommandBarEngine {
 
     /// every command the bar can run. tab-scoped ones drop out when there's no
     /// tab, so the list never offers something that would do nothing
-    var actions: [CommandAction] {
+    private var actions: [CommandAction] {
         var out: [CommandAction] = [
             CommandAction(
                 id: "new-space", title: "New Space…", symbol: "plus.square.on.square",
@@ -595,8 +581,12 @@ struct CommandBarEngine {
                     }
                 }),
             CommandAction(
+                id: "import", title: "Import from Browser…", symbol: "square.and.arrow.down",
+                keywords: ["bookmarks", "history", "passwords", "move", "migrate", "chrome", "safari", "firefox", "zen"],
+                run: { BrowserImportModel.open(in: manager) }),
+            CommandAction(
                 id: "settings", title: "Settings", symbol: "gearshape",
-                keywords: ["preferences", "config", "options"], run: { openSettings() }),
+                keywords: ["preferences", "config", "options"], run: { SettingsView.open() }),
             CommandAction(
                 id: "passwords", title: "Passwords", symbol: "key",
                 keywords: ["logins", "passkeys", "keychain", "credentials", "accounts"],
@@ -660,6 +650,23 @@ struct CommandBarEngine {
                     title: tab.pageTranslation.isActive ? "Show Original" : "Translate Page",
                     symbol: "translate", keywords: ["language", "on device", "foreign", "original"],
                     run: { Task { await tab.toggleTranslation() } }))
+        }
+        if !tab.isPrivate, let languages = tab.pageTranslation.languages, let rules = tab.translationRules {
+            let language = PageTranslation.name(of: languages.from)
+            let always = rules.alwaysTranslates(languages.from)
+            out.append(
+                CommandAction(
+                    id: "translate-always",
+                    title: always ? "Stop Always Translating \(language)" : "Always Translate \(language)",
+                    symbol: "translate", keywords: ["language", "automatic", "rule"],
+                    run: { tab.setAlwaysTranslates(languages.from, !always) }))
+            let never = rules.neverTranslates(tab.url)
+            out.append(
+                CommandAction(
+                    id: "translate-never",
+                    title: never ? "Allow Translating This Site" : "Never Translate This Site",
+                    symbol: "translate", keywords: ["language", "automatic", "rule"],
+                    run: { tab.setNeverTranslatesSite(!never) }))
         }
         out.append(
             CommandAction(
@@ -757,6 +764,4 @@ struct CommandBarEngine {
         UserDefaults.standard.set(mode, forKey: "libraryLastMode")
         manager.isLibraryOpen = true
     }
-
-    private func openSettings() { SettingsView.open() }
 }

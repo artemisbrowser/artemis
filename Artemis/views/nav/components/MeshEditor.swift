@@ -1,16 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// a mini mesh-gradient canvas: tap empty space to drop a colour blob, drag a
-/// blob to move it, tap one to select it (then ⌫ to remove or recolour via the
-/// swatch), with a Sharpness slider.
-///
-/// edits flow to the bound `appearance` live, but the SpaceEditor holds gradient
-/// changes buffered off the window (the eye previews, the tick commits), so the
-/// heavy full-window mesh stays off the per-frame path while dragging
+/// a mesh-gradient canvas: tap to drop a blob, drag one to move it, tap it to
+/// select, again to recolour, ⌫ to remove. edits reach `appearance` live; the
+/// SpaceEditor decides when they reach the window
 struct MeshEditor: View {
     @Binding var appearance: SpaceAppearance
-    /// the canvas height — short and wide for the Scout bar, tall for spaces
     var canvasHeight: CGFloat = 150
 
     @State private var draft: [MeshPoint] = []
@@ -33,8 +28,6 @@ struct MeshEditor: View {
         .onDisappear { stopKeyMonitor() }
         // a preset pick (or any external change) replaces the points — resync
         .onChange(of: appearance.meshPoints) { _, _ in loadDraft() }
-        // push canvas edits to the appearance live; the SpaceEditor decides when
-        // (preview / commit) they actually reach the window
         .onChange(of: draft) { commit() }
         .onChange(of: sharpness) { commit() }
     }
@@ -52,7 +45,6 @@ struct MeshEditor: View {
                 }
             }
             .contentShape(Rectangle())
-            // tap on empty canvas drops a new blob there
             .gesture(
                 SpatialTapGesture(coordinateSpace: .named(space))
                     .onEnded { addPoint(at: $0.location, in: size) }
@@ -82,9 +74,9 @@ struct MeshEditor: View {
             .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
             .scaleEffect(isSelected ? 1.25 : 1)
             .position(x: point.x * size.width, y: point.y * size.height)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isSelected)
-            // move by translation from the grab point — a plain tap (zero drag)
-            // never nudges the blob, no matter where in the circle you press
+            .animation(Motion.pop, value: isSelected)
+            // moves by translation from the grab point, so a plain tap never
+            // nudges the blob
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named(space))
                     .onChanged { value in
@@ -104,8 +96,7 @@ struct MeshEditor: View {
                     .onEnded { _ in
                         defer { dragOrigin = nil }
                         guard !didDrag else { return }
-                        // a tap: first selects, a second tap on the selected blob
-                        // opens its colour picker
+                        // a tap selects; a tap on the selected blob opens its picker
                         if selectedID == point.id { pickerID = point.id }
                         else { selectedID = point.id }
                     }
@@ -144,7 +135,6 @@ struct MeshEditor: View {
         sharpness = appearance.meshSharpness
     }
 
-    /// push the draft onto the appearance — this is what updates the window
     private func commit() {
         appearance.meshPoints = draft
         appearance.meshSharpness = sharpness
@@ -167,7 +157,6 @@ struct MeshEditor: View {
         draft[i].y = clamp(location.y / size.height)
     }
 
-    @discardableResult
     private func deleteSelected() -> Bool {
         guard let id = selectedID, let i = draft.firstIndex(where: { $0.id == id })
         else { return false }
@@ -178,10 +167,8 @@ struct MeshEditor: View {
 
     // MARK: Key monitor
 
-    /// `.onKeyPress` won't fire reliably for this canvas living inside a popover
-    /// (it never owns keyboard focus), so watch ⌫ / forward-delete directly.
-    /// guarded so it stays out of the way while a colour picker (with its hex
-    /// field) is open or any text field is being edited
+    /// a local monitor, since `.onKeyPress` misses a canvas inside a popover (it
+    /// never holds focus). stands aside while a picker is open or text is edited
     private func startKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -189,7 +176,7 @@ struct MeshEditor: View {
                   pickerID == nil, !isEditingText(),
                   deleteSelected()
             else { return event }
-            return nil  // consume — we handled it
+            return nil
         }
     }
 
@@ -198,17 +185,19 @@ struct MeshEditor: View {
     }
 
     private func isEditingText() -> Bool {
-        guard let r = NSApp.keyWindow?.firstResponder else { return false }
-        return r is NSText || r is NSTextView
+        NSApp.keyWindow?.firstResponder is NSText
     }
 
     // MARK: Selection plumbing
 
     private func colorBinding(for id: MeshPoint.ID) -> Binding<Color>? {
-        guard let i = draft.firstIndex(where: { $0.id == id }) else { return nil }
+        guard let start = draft.first(where: { $0.id == id })?.color.color else { return nil }
+        // looked up by id on each access: the points can be replaced under an open picker
         return Binding(
-            get: { draft[i].color.color },
-            set: { draft[i].color = RGBA($0) })
+            get: { draft.first { $0.id == id }?.color.color ?? start },
+            set: { color in
+                if let i = draft.firstIndex(where: { $0.id == id }) { draft[i].color = RGBA(color) }
+            })
     }
 
     private func clamp(_ v: CGFloat) -> Double { Double(min(max(v, 0), 1)) }

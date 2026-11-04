@@ -9,9 +9,8 @@ struct NowPlayingCard: View {
     @Environment(TabManager.self) private var tabManager
     @AppStorage(Self.enabledKey) private var isEnabled = true
 
-    /// tabs with media across every open space and the favourites, top-ranked
-    /// first. Incognito windows are left out: their artwork would load through
-    /// the shared, disk-backed URL cache
+    /// tabs with media in this window's unlocked spaces and the favourites that
+    /// no window or mini player is showing, top-ranked first
     private var sources: [(tab: BrowserTab, media: PageMedia)] {
         guard isEnabled else { return [] }
         let managers = BrowserWindows.shared.allManagers
@@ -33,7 +32,7 @@ struct NowPlayingCard: View {
         VStack(spacing: 6) {
             ForEach(sources, id: \.tab.id) { source in
                 Bar(tab: source.tab, media: source.media, space: tabManager.space(of: source.tab))
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                    .transition(Motion.grow(from: 0.96, anchor: .bottom))
             }
         }
         .padding(.bottom, sources.isEmpty ? 0 : 8)
@@ -74,6 +73,8 @@ private struct Bar: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(media.title.isEmpty ? tab.displayTitle : media.title)
+            .accessibilityValue(media.isPlaying ? "playing" : "paused")
             .tooltip("Go to Tab")
 
             SpaceGlyph(icon: space?.icon ?? "star.fill", size: 10)

@@ -1,11 +1,11 @@
 import Compression
 import Foundation
 
-/// Unpacks a .zip where there is no `ditto` to call (iOS): stored and deflated
-/// entries, found through the central directory, which holds the true sizes even
-/// when the local headers defer them to a data descriptor. No zip64
+/// unpacks a .zip where there is no `ditto` to call (iOS): stored and deflated entries, found
+/// through the central directory, which holds the true sizes even when the local headers defer
+/// them to a data descriptor. no zip64
 nonisolated enum ZipArchive {
-    enum Failure: Error {
+    private enum Failure: Error {
         case malformed
         case unsupported(method: UInt16)
     }

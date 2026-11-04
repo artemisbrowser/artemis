@@ -2,35 +2,67 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// AppleScript's view of the browser, as declared in Artemis.sdef. Tabs and
-/// spaces are addressed by id from the application, so a reference survives the
-/// window it was found through. A locked space shows scripts no tabs.
+/// AppleScript's and App Intents' view of the browser. Tabs and spaces are
+/// addressed by id, so a reference survives the window it was found through. A
+/// locked space shows no tabs; incognito shows to AppleScript unless a setting
+/// hides it, and never to App Intents.
 enum Scripting {
     static let allowsJavaScriptKey = "allowsJavaScriptFromAppleEvents"
+    static let showsIncognitoKey = "showsIncognitoToAppleEvents"
 
-    fileprivate static var spaces: [Space] {
-        BrowserCore.shared.spaces + BrowserWindows.shared.allManagers.compactMap(\.privateSpace)
+    static var showsIncognito: Bool {
+        UserDefaults.standard.object(forKey: showsIncognitoKey) as? Bool != false
     }
 
-    fileprivate static func tabs(of space: Space) -> [BrowserTab] {
-        SpaceLock.shared.isLocked(space) ? [] : space.tabs
+    static func spaces(incognito: Bool = showsIncognito) -> [Space] {
+        (BrowserCore.shared.spaces + BrowserWindows.shared.allManagers.compactMap(\.privateSpace))
+            .filter { incognito || !isIncognito($0) }
     }
 
-    fileprivate static var tabs: [BrowserTab] {
-        BrowserCore.shared.allEssentials + spaces.flatMap { tabs(of: $0) }
+    fileprivate static func isIncognito(_ space: Space) -> Bool {
+        BrowserWindows.shared.allManagers.contains { $0.kind == .incognito && $0.privateSpace === space }
     }
 
-    fileprivate static func space(of tab: BrowserTab) -> Space? {
-        spaces.first { $0.tabs.contains { $0 === tab } }
+    static func tabs(of space: Space, incognito: Bool = showsIncognito) -> [BrowserTab] {
+        guard !SpaceLock.shared.isLocked(space), incognito || !isIncognito(space) else { return [] }
+        return space.tabs.filter { incognito || !$0.isPrivate }
+    }
+
+    static func tabs(incognito: Bool = showsIncognito) -> [BrowserTab] {
+        BrowserCore.shared.allEssentials + spaces(incognito: incognito).flatMap { tabs(of: $0, incognito: incognito) }
+    }
+
+    static func space(of tab: BrowserTab) -> Space? {
+        spaces(incognito: true).first { $0.tabs.contains { $0 === tab } }
     }
 
     /// the window a Scout or incognito space belongs to, else the front browser window
-    fileprivate static func manager(for space: Space?) -> TabManager? {
+    static func manager(for space: Space?) -> TabManager? {
         let windows = BrowserWindows.shared
         if let space, let own = windows.allManagers.first(where: { $0.privateSpace?.id == space.id }) {
             return own
         }
         return windows.browserScope
+    }
+
+    /// a new browser window on `space`, or an incognito one; nil if none registered
+    static func openWindow(incognito: Bool, on space: Space.ID? = nil) async -> TabManager? {
+        let windows = BrowserWindows.shared
+        let known = Set(windows.allManagers.map(ObjectIdentifier.init))
+        if incognito {
+            IncognitoWindow.open()
+        } else {
+            windows.pendingSpaceID = space ?? windows.browserScope?.selectedSpaceID
+            IncognitoWindow.openWindow?(id: ArtemisApp.browserWindowID)
+        }
+        // a SwiftUI window registers a beat after it is asked for
+        for _ in 0..<60 {
+            if let made = windows.allManagers.first(where: { !known.contains(ObjectIdentifier($0)) }) {
+                return made
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return nil
     }
 
     nonisolated fileprivate static func specifier(key: String, id: UUID) -> NSScriptObjectSpecifier? {
@@ -83,8 +115,8 @@ enum Scripting {
 }
 
 extension NSApplication {
-    @objc var scriptSpaces: [ArtemisScriptSpace] { Scripting.spaces.map { ArtemisScriptSpace($0) } }
-    @objc var scriptTabs: [BrowserTab] { Scripting.tabs }
+    @objc var scriptSpaces: [ArtemisScriptSpace] { Scripting.spaces().map { ArtemisScriptSpace($0) } }
+    @objc var scriptTabs: [BrowserTab] { Scripting.tabs() }
 }
 
 extension NSWindow {
@@ -92,7 +124,7 @@ extension NSWindow {
 
     @objc var scriptActiveTab: BrowserTab? {
         guard let tab = scriptManager?.selectedTab else { return nil }
-        return Scripting.tabs.contains { $0 === tab } ? tab : nil
+        return Scripting.tabs().contains { $0 === tab } ? tab : nil
     }
 
     @objc var scriptActiveSpace: ArtemisScriptSpace? {
@@ -115,7 +147,7 @@ extension NSWindow {
     }
 
     @objc var scriptSpaces: [ArtemisScriptSpace] {
-        scriptManager?.allSpaces.map { ArtemisScriptSpace($0) } ?? []
+        scriptManager?.allSpaces.filter { Scripting.showsIncognito || !Scripting.isIncognito($0) }.map { ArtemisScriptSpace($0) } ?? []
     }
 }
 
@@ -247,11 +279,14 @@ final class ArtemisMakeCommand: NSCreateCommand {
     }
 
     private func makeTab() -> Any? {
-        let position = arguments?["Location"] as? NSPositionalSpecifier
-        position?.evaluate()
+        // `at window 2` names the window; `at end of tabs of window 2` names its tabs
+        let reference = (arguments?["Location"] as? NSPositionalSpecifier)?.objectSpecifier
+        let target = [reference, reference?.container].lazy
+            .compactMap { $0?.objectsByEvaluatingSpecifier }
+            .first { $0 is NSWindow || $0 is ArtemisScriptSpace }
         let manager: TabManager?
         let space: Space?
-        switch position?.insertionContainer {
+        switch target {
         case let window as NSWindow:
             manager = BrowserWindows.shared.manager(for: window)
             space = manager?.currentSpace
@@ -264,36 +299,24 @@ final class ArtemisMakeCommand: NSCreateCommand {
         }
         guard let manager, let space else { return Scripting.fail(self, "No browser window is open.") }
         guard !SpaceLock.shared.isLocked(space) else { return Scripting.fail(self, "That space is locked.") }
+        guard Scripting.showsIncognito || !Scripting.isIncognito(space) else {
+            return Scripting.fail(self, "Incognito windows are hidden from scripts. Show them in Artemis Settings → Privacy.")
+        }
         let tab = manager.newTab(select: space === manager.currentSpace, in: space)
         if let url = resolvedKeyDictionary["scriptURL"] as? String { tab.scriptURL = url }
         return tab.objectSpecifier
     }
 
     private func makeWindow() -> Any? {
-        let windows = BrowserWindows.shared
-        let known = Set(windows.allManagers.map(ObjectIdentifier.init))
-        if resolvedKeyDictionary["scriptMode"] as? NSNumber == Scripting.code("ArIn") {
-            IncognitoWindow.open()
-        } else {
-            windows.pendingSpaceID = windows.browserScope?.selectedSpaceID
-            IncognitoWindow.openWindow?(id: ArtemisApp.browserWindowID)
-        }
+        let incognito = resolvedKeyDictionary["scriptMode"] as? NSNumber == Scripting.code("ArIn")
         suspendExecution()
-        awaitWindow(after: known, attempts: 60)
-        return nil
-    }
-
-    /// a SwiftUI window registers a beat after it is asked for
-    private func awaitWindow(after known: Set<ObjectIdentifier>, attempts: Int) {
-        let windows = BrowserWindows.shared
-        if let manager = windows.allManagers.first(where: { !known.contains(ObjectIdentifier($0)) }) {
-            resumeExecution(withResult: windows.window(of: manager)?.objectSpecifier)
-        } else if attempts == 0 {
-            resumeExecution(withResult: Scripting.fail(self, "The window didn't open."))
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                self.awaitWindow(after: known, attempts: attempts - 1)
+        Task {
+            if let manager = await Scripting.openWindow(incognito: incognito) {
+                resumeExecution(withResult: BrowserWindows.shared.window(of: manager)?.objectSpecifier)
+            } else {
+                resumeExecution(withResult: Scripting.fail(self, "The window didn't open."))
             }
         }
+        return nil
     }
 }
