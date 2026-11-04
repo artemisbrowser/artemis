@@ -57,11 +57,8 @@ const VOICE = [
   ],
   [/look no further|say goodbye/i, "hype phrase"],
   [/\b(color|favorite|organiz|center|gray\b)/i, "American spelling"],
-  [/(?<!PolyForm Strict )\blicense\b/i, "licence is the noun"],
-  [
-    /\bfast\b|open source|notari[sz]|\bsync|apple silicon/i,
-    "claim the site never makes",
-  ],
+  [/(?<!Public )\blicense\b/i, "licence is the noun"],
+  [/\bfast\b|notari[sz]|\bsync|apple silicon/i, "claim the site never makes"],
   [
     /\b(iPhone|iPad|Intel|Safari|Chrome|Chromium|Firefox|Brave|Opera|Vivaldi|Edge(?! thickness)|Dia)\b/,
     "product or browser name",

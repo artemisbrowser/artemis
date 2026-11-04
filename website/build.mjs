@@ -448,7 +448,7 @@ export async function build(out) {
           "Fingerprint defence",
           "Built-in passwords",
         ],
-        license: "https://polyformproject.org/licenses/strict/1.0.0/",
+        license: "https://www.gnu.org/licenses/gpl-3.0.html",
         author: { "@type": "Person", name: "Fin" },
         url: `https://${cfg.DOMAIN}/`,
         image: ogImage,

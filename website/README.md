@@ -25,4 +25,4 @@ It works the same as the app: fork, branch, open a PR against `main`, and sign t
 
 ## Licence
 
-The website is covered by the same [licence](../LICENSE) as the app: PolyForm Strict 1.0.0, with permission to make changes for a pull request to this repo. You can't host your own copy of the site.
+The website is covered by the same [licence](../LICENSE) as the app, the GPL 3.0. The Artemis name and icon are trademarks, so a copy you host needs its own.

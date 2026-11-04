@@ -44,7 +44,7 @@ The website lives in [website/](website/) and takes PRs the same way. It has its
 
 ## The CLA
 
-Artemis is source-available, not open source (see [LICENSE](LICENSE)). So before we can merge anything you've written, you'll need to sign our [Contributor Licence Agreement](CLA.md). A bot will comment on your first PR. To sign, reply with:
+Artemis is open source under the GPL 3.0 (see [LICENSE](LICENSE)). Before we can merge anything you've written, you'll need to sign our [Contributor Licence Agreement](CLA.md). A bot will comment on your first PR. To sign, reply with:
 
 ```
 I have read the CLA Document and I hereby sign the CLA

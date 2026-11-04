@@ -370,7 +370,7 @@ const ACTIONS = [
     "mac",
     "i-shield",
   ),
-  peekRow("The licence", "Source-available", "licence", "i-doc"),
+  peekRow("The licence", "Open source", "licence", "i-doc"),
   {
     kind: "action",
     title: "Source code",

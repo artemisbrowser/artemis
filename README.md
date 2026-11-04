@@ -52,4 +52,6 @@ Found a bug? In Artemis, choose Help › Send Feedback… Want to help out? Have
 
 ## Licence
 
-Artemis is source-available under the [PolyForm Strict License 1.0.0](LICENSE). Use it for whatever you like, but you can't share copies or ship your own version. "Artemis" and its icon are trademarks.
+Artemis is open source under the [GNU General Public License 3.0](LICENSE). Copyright © 2026 Fin.
+
+"Artemis" and its icon are trademarks. The GPL doesn't cover them, so a version you ship needs its own name and icon.
