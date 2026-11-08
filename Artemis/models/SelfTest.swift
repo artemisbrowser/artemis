@@ -1191,6 +1191,7 @@ enum SelfTest {
             ("renameanimates", { await testRenameAnimates(manager: manager) }),
             ("pageloadbars", { await testPageLoadBars(manager: manager) }),
             ("sidebarmargins", { testSidebarMargins() }),
+            ("sidebarscroll", { await testSidebarScroll() }),
             ("sidebarresizehandle", { await testSidebarResizeHandle() }),
             ("performancebudgets", { await testPerformanceBudgets(manager: manager) }),
         ]
@@ -5565,6 +5566,32 @@ enum SelfTest {
             "media: Now Playing command bridge is installed",
             (try? await tab.webView.evaluateJavaScript("typeof window.__artemisMedia")) as? String
                 == "function")
+
+        // a Shorts swipe changes the url in place: the pause after it must still clear the tab
+        let swipe = """
+            var n = 8000, b = new Uint8Array(44 + n), d = new DataView(b.buffer);
+            [[0,'RIFF'],[8,'WAVEfmt '],[36,'data']].forEach(function(p){
+              for (var i = 0; i < p[1].length; i++) b[p[0] + i] = p[1].charCodeAt(i); });
+            d.setUint32(4, 36 + n, true); d.setUint32(16, 16, true); d.setUint16(20, 1, true);
+            d.setUint16(22, 1, true); d.setUint32(24, 8000, true); d.setUint32(28, 8000, true);
+            d.setUint16(32, 1, true); d.setUint16(34, 8, true); d.setUint32(40, n, true);
+            b.fill(128, 44);
+            var a = document.createElement('audio');
+            a.loop = true; a.src = URL.createObjectURL(new Blob([b], {type: 'audio/wav'}));
+            document.body.appendChild(a); window.__swipeAudio = a;
+            await a.play(); return true;
+            """
+        let started = (try? await tab.webView.callAsyncJavaScript(swipe, contentWorld: .page)) as? Bool == true
+        await settle { tab.isPlayingMediaContent && tab.media?.isPlaying == true }
+        let playing = tab.isPlayingMediaContent && tab.media?.isPlaying == true
+        _ = try? await tab.webView.evaluateJavaScript(
+            "history.pushState({}, '', '/shorts/next'); window.__swipeAudio.pause(); true")
+        await settle { !tab.isPlayingMediaContent && tab.media?.isPlaying != true }
+        record(
+            "media: a pause after a same-page url change clears the speaker and the bar",
+            started && playing && !tab.isPlayingMediaContent && tab.media?.isPlaying != true,
+            "started=\(started) playing=\(playing) now=\(tab.isPlayingMediaContent) bar=\(String(describing: tab.media?.isPlaying))")
+        _ = try? await tab.webView.evaluateJavaScript("window.__swipeAudio.remove(); true")
 
         // drive the state machine directly too, so the tab-level aggregation is
         // covered even if autoplay is refused by policy
@@ -14878,6 +14905,7 @@ enum SelfTest {
         let title = "AX Throwaway Tab \(run)"
         let tab = await open(title, select: true)
         let filed = await open("AX Filed Tab \(run)", select: false)
+        let badged = await open("(5) AX Today Tab \(run)", select: false)
         let folder = manager.newFolder(with: [filed])
         if let folder { manager.rename(folder, to: "AX Folder \(run)") }
         // a blank new tab raises the command bar, and SwiftUI leaves the pill it hides out of the tree
@@ -14981,6 +15009,13 @@ enum SelfTest {
         } else {
             record("a11y: the folder header is an element", false)
         }
+
+        let today = nodes.first { $0.name.hasSuffix("AX Today Tab \(run)") }
+        record(
+            "a11y: a badged today tab drops the (n) from its name and says the count",
+            today.map { !$0.name.contains("(5)") && $0.value.contains("5 unread") } == true,
+            today.map { "\($0.name) = \($0.value)" } ?? "no row")
+        manager.close(badged)
 
         if let tile = nodes.first(where: { $0.name.hasSuffix("AX Favourite \(run)") }) {
             record("a11y: a favourite says it is one", tile.value.contains("favourite"), tile.value)
@@ -15486,6 +15521,86 @@ enum SelfTest {
 
     /// the sidebar's content sits the same distance from both of its edges, at every
     /// window-rim thickness
+    /// the gutter scroller's source and a held drag's auto-scroll, on a hosted list of rows
+    private static func testSidebarScroll() async {
+        let rect = CGRect(x: 0, y: 100, width: 200, height: 400)
+        let zone = SidebarScroll.edgeZone, top = SidebarScroll.topSpeed
+        func speed(_ x: CGFloat, _ y: CGFloat) -> CGFloat { SidebarScroll.speed(at: CGPoint(x: x, y: y), in: rect) }
+        record("sidebarscroll: still in the middle and where a zone begins",
+            speed(100, 300) == 0 && speed(100, rect.maxY - zone) == 0)
+        record("sidebarscroll: full speed at the edge and past it", speed(100, rect.maxY) == top && speed(100, rect.maxY + 20) == top)
+        record("sidebarscroll: closer is faster", abs(speed(100, rect.maxY - zone / 2) - top / 4) < 0.01
+            && speed(100, rect.maxY - zone / 4) > speed(100, rect.maxY - zone / 2))
+        record("sidebarscroll: the top edge scrolls up", speed(100, rect.minY + 10) < 0)
+        record("sidebarscroll: nothing beside the list or far below it",
+            speed(rect.maxX + Sidebar.contentInset + 1, rect.maxY) == 0 && speed(100, rect.maxY + zone + 1) == 0)
+
+        let scroll = SidebarScroll()
+        let size = CGSize(width: 200, height: 400), gutter: CGFloat = 12
+        let host = NSHostingView(
+            // as in the sidebar: overlaid on the column, drawn out past it in the margin
+            rootView: ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(0..<60, id: \.self) { Text("row \($0)").frame(height: 30) }
+                }
+                .frame(maxWidth: .infinity)
+                .background { ScrollViewProbe(scroll: scroll) }
+            }
+            .scrollIndicators(.never)
+            .frame(width: size.width, height: size.height)
+            .overlay { GutterScroller(scroll: scroll, gutter: gutter) }
+            .padding(.trailing, gutter)
+            .environment(\.chromeInk, .white))
+        host.frame = NSRect(x: 0, y: 0, width: size.width + gutter, height: size.height)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -12000, y: -12000))
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        await settle(.seconds(2)) { scroll.metrics.content > 0 }
+        scroll.track = CGRect(origin: .zero, size: size)
+        let m = scroll.metrics
+        record("sidebarscroll: reads the list behind the ScrollView", m.content > 1500 && m.visible > 300 && m.offset == 0,
+            "content \(Int(m.content)) visible \(Int(m.visible))")
+
+        let drag = SidebarDragState()
+        var ticks = 0
+        drag.onMove = { point in scroll.follow(point) { ticks += 1 } }
+        drag.folder = TabFolder(name: "held")
+        drag.location = CGPoint(x: 100, y: size.height - 4)
+        await settle(.seconds(2)) { scroll.metrics.offset > 200 }
+        let moved = scroll.metrics.offset
+        record("sidebarscroll: a drag held at the bottom scrolls down", moved > 200 && ticks > 0,
+            "\(Int(moved)) pt in \(ticks) steps")
+        drag.location = CGPoint(x: 100, y: 200)
+        let held = scroll.metrics.offset
+        try? await Task.sleep(for: .milliseconds(200))
+        record("sidebarscroll: moving off the edge stops it", abs(scroll.metrics.offset - held) < 1)
+        drag.location = CGPoint(x: 100, y: 4)
+        await settle(.seconds(2)) { scroll.metrics.offset == 0 }
+        record("sidebarscroll: the top edge scrolls back up", scroll.metrics.offset == 0)
+        drag.location = CGPoint(x: 100, y: size.height - 4)
+        try? await Task.sleep(for: .milliseconds(100))
+        drag.clear()
+        let ended = scroll.metrics.offset
+        try? await Task.sleep(for: .milliseconds(200))
+        record("sidebarscroll: the drag ending stops it", ended > 0 && abs(scroll.metrics.offset - ended) < 1)
+        scroll.scroll(toOffset: 1e6)
+        record("sidebarscroll: the gutter thumb's scroll stops at the end", abs(scroll.metrics.offset - scroll.metrics.maxOffset) < 1)
+
+        try? await Task.sleep(for: .milliseconds(400))
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / host.bounds.width
+        // the thumb sits at the end of the track (bitmap y runs down); rows' text stays centred, left of this
+        let y = Int((size.height - 14) * scale)
+        let inked = (Int((size.width - 40) * scale)..<rep.pixelsWide).filter { (rep.colorAt(x: $0, y: y)?.alphaComponent ?? 0) > 0.05 }
+        let lo = inked.first.map { CGFloat($0) / scale } ?? -1, hi = inked.last.map { CGFloat($0 + 1) / scale } ?? -1
+        record("sidebarscroll: a thin thumb draws in the gutter, beside the rows",
+            lo >= size.width && hi <= size.width + gutter && hi - lo <= 4, "ink from \(lo) to \(hi) pt")
+    }
+
     private static func testSidebarMargins() {
         for rim in [0.0, 3, 6, 10, 16] {
             for collapsed in [false, true] {

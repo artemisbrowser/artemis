@@ -415,8 +415,8 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Media state
 
-    /// frames playing media, keyed by frame url; fed by `MediaStateReporter`
-    @ObservationIgnored private var playingFrames: Set<String> = []
+    /// frames playing media, keyed by `LoginKeys.key`; fed by `MediaStateReporter`
+    @ObservationIgnored private var playingFrames: Set<AnyHashable> = []
 
     /// any frame is playing audio or video; unlike `_isPlayingAudio`, true while muted
     private(set) var isPlayingMediaContent = false
@@ -425,7 +425,7 @@ final class BrowserTab: NSObject, Identifiable {
     private(set) var isMuted = false
 
     /// record a frame's playback state; recomputes the tab-level flag
-    func setFramePlaying(_ playing: Bool, frame: String) {
+    func setFramePlaying(_ playing: Bool, frame: AnyHashable) {
         if playing {
             playingFrames.insert(frame)
         } else {
@@ -445,14 +445,14 @@ final class BrowserTab: NSObject, Identifiable {
     func toggleMuted() { setMuted(!isMuted) }
 
     /// frames holding controllable media, keyed like `playingFrames`
-    @ObservationIgnored private var mediaFrames: [String: (info: WKFrameInfo, media: PageMedia)] = [:]
+    @ObservationIgnored private var mediaFrames: [AnyHashable: (info: WKFrameInfo, media: PageMedia)] = [:]
     /// the frame `media` came from, where `sendMediaCommand` goes
     @ObservationIgnored private var mediaFrame: WKFrameInfo?
     /// the media the sidebar's Now Playing card shows: this tab's top-ranked frame
     private(set) var media: PageMedia?
 
     /// record a frame's controllable media (nil once it has none); re-elects `media`
-    func setFrameMedia(_ media: PageMedia?, frame key: String, info: WKFrameInfo) {
+    func setFrameMedia(_ media: PageMedia?, frame key: AnyHashable, info: WKFrameInfo) {
         if var media {
             let old = mediaFrames[key]?.media
             media.startedAt = media.isPlaying && old?.isPlaying != true ? .now : old?.startedAt ?? .now

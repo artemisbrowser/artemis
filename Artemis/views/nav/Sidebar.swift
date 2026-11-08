@@ -93,6 +93,7 @@ struct Sidebar: View {
     /// they move on every frame of a swipe; their readers redraw on drag or peek
     /// changes
     @State private var measured = SidebarGeometry()
+    @State private var scroll = SidebarScroll()
     /// the pointer's last spot in the tab area, where a context-menu folder lands.
     /// an unobserved box: written on every mouse move, read only by the menu
     @State private var menuPoint = LastPoint()
@@ -302,9 +303,17 @@ struct Sidebar: View {
         // one coordinate space over favourites, tabs and the space icons: every
         // drag frame is reported into it, and the ghost and insertion line draw in it
         .coordinateSpace(.named(Self.contentSpace))
+        .overlay {
+            GutterScroller(
+                scroll: scroll, gutter: trailingInset + Self.rimContribution(rim: edgeInset, collapsed: isSidebarCollapsed))
+        }
         // what follows the cursor lives in a leaf of its own, so a drag re-runs
         // it rather than this whole body on every move
         .overlay { Live { dragOverlay } }
+        .onAppear {
+            // each step re-posts the pointer, so the drop line follows the rows scrolling under it
+            drag.onMove = { [scroll, drag] point in scroll.follow(point) { drag.location = drag.location } }
+        }
         .onChange(of: tabManager.renamingTab) { _, tab in
             if let tab {
                 renameDraft = tab.displayTitle
@@ -520,8 +529,12 @@ struct Sidebar: View {
                         .transition(row.depth > 0 ? .folderUnfurl : .identity)
                 }
             }
+            .background {
+                if live { ScrollViewProbe(scroll: scroll) }
+            }
         }
-        .scrollIndicators(.automatic)
+        // `GutterScroller` stands in, out in the margin
+        .scrollIndicators(.never)
         .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 0.5 } action: {
             _, scrolled in
             withAnimation(Motion.fade) {
@@ -563,8 +576,14 @@ struct Sidebar: View {
             if live {
                 GeometryReader { proxy in
                     Color.clear
-                        .onAppear { measured.tabContentRect = proxy.frame(in: .named(Self.contentSpace)) }
-                        .onChange(of: proxy.frame(in: .named(Self.contentSpace))) { _, f in measured.tabContentRect = f }
+                        .onAppear {
+                            measured.tabContentRect = proxy.frame(in: .named(Self.contentSpace))
+                            scroll.track = measured.tabContentRect
+                        }
+                        .onChange(of: proxy.frame(in: .named(Self.contentSpace))) { _, f in
+                            measured.tabContentRect = f
+                            scroll.track = f
+                        }
                 }
             }
         }
@@ -2164,12 +2183,10 @@ struct TabRow: View {
     }
     /// a pinned tab sitting somewhere other than its saved page
     private var offPinned: Bool { tab.isOffPinnedURL }
-    /// only a pinned row carries the unread badge
-    private var shownTitle: String { tab.isPinned ? tab.badgedTitle : tab.displayTitle }
-    /// a pinned page's own count, else a dot on a live folder's new item
+    private var shownTitle: String { tab.badgedTitle }
+    /// the page's own count, else a dot on a live folder's new item
     private var badge: AppBadge? {
-        if tab.isPinned, let unread = tab.unread { return unread }
-        return liveFolder?.isUnread(tab) == true ? .flag : nil
+        tab.unread ?? (liveFolder?.isUnread(tab) == true ? .flag : nil)
     }
     /// staged for a split via ⌘/⇧-click
     private var multiSelected: Bool { tabManager.selection.contains(tab.id) }
@@ -2682,9 +2699,8 @@ struct TabRow: View {
         .animation(Motion.hover, value: visible)
     }
 
-    /// a tab gets the speaker while it's playing, and keeps it while muted (else
-    /// muting would hide the only way to undo it)
-    private var showsAudioControl: Bool { tab.isPlayingMediaContent || tab.isMuted }
+    /// only while it plays, muted or not; a muted tab's speaker returns the moment it plays again
+    private var showsAudioControl: Bool { tab.isPlayingMediaContent }
 }
 
 /// a pinned tab's or favourite's mark beside its favicon while it is off its home: a slim
@@ -2700,7 +2716,7 @@ struct OffHomeSlash: View {
     }
 }
 
-/// a pinned tab's or favourite's unread mark: a count, or a dot for a bare flag
+/// a tab's or favourite's unread mark: a count in a circle, or a dot for a bare flag
 struct UnreadBadge: View {
     @Environment(\.chromeInk) private var ink
     let badge: AppBadge
@@ -2715,9 +2731,11 @@ struct UnreadBadge: View {
             Text(count > 99 ? "99+" : "\(count)")
                 .font(.system(size: 9.5, weight: .semibold).monospacedDigit())
                 .foregroundStyle(ink.opacity(0.75))
-                .padding(.horizontal, 4)
-                .frame(minWidth: 15, minHeight: 15)
-                .background(Capsule().fill(ink.opacity(0.13)))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.horizontal, 1.5)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(ink.opacity(0.13)))
         }
     }
 

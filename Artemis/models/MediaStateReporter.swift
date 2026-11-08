@@ -23,16 +23,16 @@ enum MediaCommand: String {
     case toggle, back, forward
 }
 
-/// per-frame playback state, keyed by frame url. `_isPlayingAudio` is false for
-/// a muted video, so a script reports instead; it must run in the page world,
-/// the only place the `mediaSession` handlers it captures and invokes exist
+/// per-frame playback state, keyed by frame identity so a Shorts swipe's url change keeps it.
+/// `_isPlayingAudio` is false for a muted video, so a script reports instead; it runs in the
+/// page world, the only place the `mediaSession` handlers it captures and invokes exist
 final class MediaStateReporter: NSObject, WKScriptMessageHandler {
     private static let messageName = "artemisMediaState"
 
     /// (webView that sent it, its frame, frame key, is that frame playing, its controllable media)
-    private let onChange: (WKWebView, WKFrameInfo, String, Bool, PageMedia?) -> Void
+    private let onChange: (WKWebView, WKFrameInfo, AnyHashable, Bool, PageMedia?) -> Void
 
-    init(onChange: @escaping (WKWebView, WKFrameInfo, String, Bool, PageMedia?) -> Void) {
+    init(onChange: @escaping (WKWebView, WKFrameInfo, AnyHashable, Bool, PageMedia?) -> Void) {
         self.onChange = onChange
     }
 
@@ -49,8 +49,7 @@ final class MediaStateReporter: NSObject, WKScriptMessageHandler {
             let body = message.body as? [String: Any],
             let playing = body["playing"] as? Bool
         else { return }
-        let frame = message.frameInfo.request.url?.absoluteString
-            ?? (message.frameInfo.isMainFrame ? "main" : "sub")
+        let frame = LoginKeys.key(message.frameInfo)
         let media = (body["session"] as? [String: Any]).map { s in
             PageMedia(
                 isPlaying: s["playing"] as? Bool ?? false,

@@ -26,8 +26,11 @@ final class SidebarDragState {
         didSet {
             let target = dropTarget(at: location)
             if target != spaceDropTarget { spaceDropTarget = target }
+            if isDragging { onMove?(location) }
         }
     }
+    /// each move of a drag, then nil as it ends; the sidebar's list scrolls from it
+    @ObservationIgnored var onMove: ((CGPoint?) -> Void)?
     /// the cursor's offset from the dragged item's top-left corner at pickup, so
     /// the ghost keeps the grab alignment (grab the left edge → ghost's left edge
     /// stays under the cursor) instead of snapping its centre to the cursor
@@ -89,10 +92,12 @@ final class SidebarDragState {
     }
 
     func end() {
+        onMove?(nil)
         dropTick &+= 1
     }
 
     func clear() {
+        onMove?(nil)
         tab = nil
         group = nil
         folder = nil

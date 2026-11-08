@@ -3,8 +3,8 @@
 
 import SwiftUI
 
-/// the sidebar's Now Playing bars: one per tab with media playing (or paused
-/// mid-track) that no window is showing. clicking one brings that tab forward
+/// the sidebar's Now Playing bars: one per tab playing media that no window is showing.
+/// clicking one brings that tab forward
 struct NowPlayingCard: View {
     static let enabledKey = "showNowPlayingInSidebar"
     private static let maxBars = 3
@@ -22,7 +22,7 @@ struct NowPlayingCard: View {
         let open = reach.filter { !SpaceLock.shared.isLocked($0) }
         return (open.flatMap(\.tabs) + tabManager.essentials)
             .compactMap { tab in
-                guard let media = tab.media, !tab.isMiniPlayerActive,
+                guard let media = tab.media, media.isPlaying, !tab.isMiniPlayerActive,
                     !managers.contains(where: { $0.isShowing(tab) })
                 else { return nil }
                 return (tab, media)
@@ -79,7 +79,6 @@ private struct Bar: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(media.title.isEmpty ? tab.displayTitle : media.title)
-            .accessibilityValue(media.isPlaying ? "playing" : "paused")
             .tooltip("Go to Tab")
 
             SpaceGlyph(icon: space?.icon ?? "star.fill", size: 10)
@@ -93,10 +92,10 @@ private struct Bar: View {
                 }
                 .tooltip(media.hasTracks ? "Previous Track" : "Back 10 Seconds")
             }
-            HoverIconButton(media.isPlaying ? "pause.fill" : "play.fill", size: 13, boxSize: 24) {
+            HoverIconButton("pause.fill", size: 13, boxSize: 24) {
                 tab.sendMediaCommand(.toggle)
             }
-            .tooltip(media.isPlaying ? "Pause" : "Play")
+            .tooltip("Pause")
             if width >= Self.seekWidth {
                 HoverIconButton(media.hasTracks ? "forward.fill" : "goforward.10", size: 11, boxSize: 24) {
                     tab.sendMediaCommand(.forward)

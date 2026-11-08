@@ -217,7 +217,7 @@ struct EssentialTile: View {
                             .offset(x: slashOffset)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         if let unread = tab.unread {
-                            UnreadBadge(badge: unread).hidden().padding(1.5).background(.black, in: Capsule())
+                            UnreadBadge(badge: unread).hidden().padding(1.5).background(.black, in: Circle())
                                 .padding(2.5).blendMode(.destinationOut)
                         }
                     }
