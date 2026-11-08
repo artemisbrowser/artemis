@@ -26,6 +26,8 @@ final class TabFolder: Identifiable {
     var name: String
     var isExpanded: Bool
     var children: [SidebarEntry]
+    /// set when the folder fills itself from a source
+    var live: LiveFolder?
 
     init(id: UUID = UUID(), name: String, isExpanded: Bool = true, children: [SidebarEntry] = []) {
         self.id = id

@@ -3,7 +3,7 @@
 
 import Foundation
 
-/// what both apps share of passkeys on pages: the script that answers `navigator.credentials`
+/// the page half of passkeys: the script that answers `navigator.credentials`
 /// for `publicKey` requests through a native handler, and how page-supplied names are shown
 enum PasskeyPage {
     static let messageName = "artemisPasskeys"

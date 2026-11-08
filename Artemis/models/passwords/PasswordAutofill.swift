@@ -140,6 +140,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         let store = PasswordStore.shared
         guard store.offersToSave, !tab.isPrivate, PasswordStore.isSecure(candidate.origin),
             PasswordStore.isSecure(candidate.topOrigin),
+            tab.offersCredentials(to: candidate.origin, under: candidate.topOrigin),
             let host = URL(string: candidate.origin)?.host(), !store.neverSave.contains(host)
         else { return }
         // the logins filling offers here, its www. twin's among them
@@ -184,14 +185,16 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     }
 
     func logins(in tab: BrowserTab) -> [SavedLogin] {
-        target(in: tab).map { PasswordStore.shared.matches(for: $0.origin, in: tab.loginProfile) } ?? []
+        guard let target = target(in: tab), tab.offersCredentials(to: target.origin) else { return [] }
+        return PasswordStore.shared.matches(for: target.origin, in: tab.loginProfile)
     }
 
     /// refused unless `login` is one this target's origin is offered
     @discardableResult
     func fill(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
         let store = PasswordStore.shared
-        guard store.matches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
+        guard tab.offersCredentials(to: target.origin),
+            store.matches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
             await OwnerUnlock.authenticate(.passwords, "fill your password for \(login.host)"),
             let password = store.password(for: login),
             await fill(username: login.username, password: password, into: target, in: tab)
@@ -207,6 +210,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     func fill(
         username: String, password: String, generated: Bool = false, into target: LoginTarget, in tab: BrowserTab
     ) async -> Bool {
+        guard tab.offersCredentials(to: target.origin) else { return false }
         if let frame = target.frame, !frame.isMainFrame, await !frameIsShown(target.origin, in: tab) {
             return false
         }
@@ -224,7 +228,8 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     @discardableResult
     func fillCode(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
         let store = PasswordStore.shared
-        guard store.codeMatches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
+        guard tab.offersCredentials(to: target.origin),
+            store.codeMatches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
             await OwnerUnlock.authenticate(.passwords, "fill your verification code for \(login.host)"),
             let code = store.oneTimeCode(for: login)?.code()
         else { return false }
@@ -241,7 +246,9 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     /// whether the field focused in `frame` gets the login list: a username field on a site with logins to offer
     func servesFocusedField(in frame: WKFrameInfo, origin: String, of tab: BrowserTab) async -> Bool {
         let store = PasswordStore.shared
-        guard store.fillsFromSuggestions, !store.matches(for: origin, in: tab.loginProfile).isEmpty else { return false }
+        guard store.fillsFromSuggestions, tab.offersCredentials(to: origin),
+            !store.matches(for: origin, in: tab.loginProfile).isEmpty
+        else { return false }
         let kind = try? await tab.webView.callAsyncJavaScript(
             "return globalThis.__artemisPasswords?.focusedKind() ?? null", in: frame, contentWorld: PasswordPage.world)
         return kind as? String == "username"
@@ -261,13 +268,13 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         return shown as? Bool == true
     }
 
-    /// which of `candidates` the field's `pattern` accepts, tested in one round trip in the page's
-    /// process, where WebKit can stop a runaway pattern; all of them without a pattern or an answer
+    /// which of `candidates` the field's `pattern` accepts, tested in the page's process, where the page can time
+    /// the test; all of them without a pattern or an answer, and a lone candidate, such as a recipe's, is never tested
     private func fitting(_ candidates: [String], _ rules: PasswordRules, in target: LoginTarget, of tab: BrowserTab)
         async -> [Bool]
     {
         let all = candidates.map { _ in true }
-        guard let pattern = rules.pattern, !candidates.isEmpty else { return all }
+        guard let pattern = rules.pattern, candidates.count > 1 else { return all }
         let fits = try? await tab.webView.callAsyncJavaScript(
             PasswordPage.patternFits, arguments: ["pattern": pattern, "candidates": candidates], in: target.frame, contentWorld: PasswordPage.world)
         return fits as? [Bool] ?? all
@@ -288,7 +295,8 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     private func suggest(_ body: [String: Any], into target: LoginTarget, in tab: BrowserTab) {
         ticket += 1
         let mine = ticket
-        guard PasswordStore.shared.fillsFromSuggestions, let kind = body["kind"] as? String,
+        guard PasswordStore.shared.fillsFromSuggestions, tab.offersCredentials(to: target.origin),
+            let kind = body["kind"] as? String,
             let box = body["rect"] as? [String: Any], tab.webView.window != nil
         else { return }
         let isNew = kind == "new"
@@ -312,12 +320,10 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
                 field.origin.x += offset.x
                 field.origin.y += offset.y
             }
-            let made = recipes.compactMap { recipe in recipe.password(for: host).map { (recipe.id, $0) } }
-            let fits = await fitting(made.map(\.1), rules, in: target, of: tab)
             guard ticket == mine else { return }
             let list = LoginSuggestions(
                 logins: logins, origin: target.origin, offersStrongPassword: offersStrong, fillsCodes: fillsCodes,
-                recipes: recipes, rules: rules, misfits: Set(zip(made, fits).filter { !$1 }.map(\.0.0)),
+                recipes: recipes, rules: rules,
                 pick: { login in
                     self.closeSuggestions()
                     Task {
@@ -408,7 +414,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     /// gone, or when `optional` and it has no field a key serves
     @discardableResult
     func trackKeys(in frame: WKFrameInfo?, origin: String, of tab: BrowserTab, optional: Bool = false) async -> Bool {
-        guard PasswordStore.shared.fillsFromSuggestions else { return false }
+        guard PasswordStore.shared.fillsFromSuggestions, tab.offersCredentials(to: origin) else { return false }
         // a new-password field has random passwords to offer outside incognito, else only a recipe's
         let offersNew = !tab.isPrivate || PasswordStore.shared.recipes(in: tab.loginProfile).contains(where: \.isUsable)
         let tracked = try? await tab.webView.callAsyncJavaScript(
@@ -496,8 +502,6 @@ struct LoginSuggestions: View {
     let fillsCodes: Bool
     let recipes: [PasswordRecipe]
     let rules: PasswordRules
-    /// recipes whose password the field's `pattern` turned away
-    let misfits: Set<PasswordRecipe.ID>
     let pick: (SavedLogin) -> Void
     /// fills the first candidate the field's `pattern` accepts, else the first
     let generate: ([String]) -> Void
@@ -521,8 +525,7 @@ struct LoginSuggestions: View {
             recipe.password(for: host).map { password in
                 Row(
                     icon: "key.horizontal.fill", title: recipe.name,
-                    detail: rules.problem(with: password)
-                        ?? (misfits.contains(recipe.id) ? "Not in the form this site asks for" : recipe.masked(for: host))
+                    detail: rules.problem(with: password) ?? recipe.masked(for: host)
                 ) { generate([password]) }
             }
         }

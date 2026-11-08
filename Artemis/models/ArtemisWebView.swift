@@ -3,6 +3,7 @@
 
 import AppKit
 import WebKit
+import SwiftUI
 
 /// an empty animation controller: claiming a force click without WebKit's
 /// preview. WebKit only accepts one that conforms to AppKit's (unexported)
@@ -85,8 +86,25 @@ final class ArtemisWebView: WKWebView {
     private(set) var lastPress: (point: NSPoint, at: Date)?
 
     override func mouseDown(with event: NSEvent) {
+        guard !isOverSidebar(event) else { return }
         lastPress = (event.locationInWindow, .now)
         super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard !isOverSidebar(event) else { return }
+        super.mouseUp(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard !isOverSidebar(event) else { return }
+        super.rightMouseDown(with: event)
+    }
+
+    /// SwiftUI hands a press the sidebar's host left unhandled on to the page under it
+    private func isOverSidebar(_ event: NSEvent) -> Bool {
+        guard let frame = window?.contentView?.superview, let hit = frame.hitTest(event.locationInWindow) else { return false }
+        return sequence(first: hit, next: \.superview).contains { $0 is PassthroughHostingView<AnyView> }
     }
 
     /// login keys stand aside while the page moves under them, before WebKit scrolls or zooms it

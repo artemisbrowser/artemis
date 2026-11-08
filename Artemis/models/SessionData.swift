@@ -11,9 +11,12 @@ nonisolated struct BrowsingSession: Codable {
     var version = 1
     var profiles: [ProfileData] = []
     var spaces: [SpaceData] = []
-    /// the default profile's favourites, kept at the top level for older builds
+    /// the default profile's favourites by their homes, kept at the top level for older builds
     var essentialURLs: [String] = []
     var selectedSpaceID: UUID?
+    /// false in a file from a build that kept typed names by url: it drops this key
+    /// with the names on the records, so `TabNameStore` hands its names over again
+    var namesOnTabs = true
 
     init(
         profiles: [ProfileData] = [], spaces: [SpaceData] = [], essentialURLs: [String] = [],
@@ -32,6 +35,7 @@ nonisolated struct BrowsingSession: Codable {
         spaces = try c.decodeIfPresent([Lossy<SpaceData>].self, forKey: .spaces)?.compactMap(\.value) ?? []
         essentialURLs = try c.decodeIfPresent([String].self, forKey: .essentialURLs) ?? []
         selectedSpaceID = try c.decodeIfPresent(UUID.self, forKey: .selectedSpaceID)
+        namesOnTabs = try c.decodeIfPresent(Bool.self, forKey: .namesOnTabs) ?? false
         migrateToProfiles()
     }
 
@@ -40,7 +44,7 @@ nonisolated struct BrowsingSession: Codable {
     /// space starts sharing logins it never shared
     mutating func migrateToProfiles() {
         if !profiles.contains(where: { $0.id == Profile.defaultID }) {
-            profiles.insert(.makeDefault(essentialURLs: essentialURLs), at: 0)
+            profiles.insert(.makeDefault(favourites: essentialURLs.map { TabRecord(url: $0, pinnedURL: $0) }), at: 0)
         }
         for i in spaces.indices where spaces[i].profileID == nil {
             guard let jar = spaces[i].legacyIsolatedJar else {
@@ -48,8 +52,7 @@ nonisolated struct BrowsingSession: Codable {
                 continue
             }
             if !profiles.contains(where: { $0.id == jar }) {
-                profiles.append(
-                    ProfileData(id: jar, name: spaces[i].name, icon: spaces[i].icon, essentialURLs: []))
+                profiles.append(ProfileData(id: jar, name: spaces[i].name, icon: spaces[i].icon))
             }
             spaces[i].profileID = jar
         }
@@ -73,17 +76,19 @@ private nonisolated struct Lossy<Element: Decodable>: Decodable {
 nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     var id: UUID
     var url: String
-    /// pinned tabs only: the page the tab is anchored to, which it can navigate
-    /// away from without losing its pin
+    /// pinned tabs and favourites only: the home the tab returns to, which it can
+    /// navigate away from without losing it
     var pinnedURL: String?
     var isPinned: Bool
     /// drives the auto-archive clock
     var lastAccessed: Date
     var keepsLoaded = false
+    /// the name you gave the tab
+    var name: String?
 
     init(
         id: UUID = UUID(), url: String, pinnedURL: String? = nil, isPinned: Bool = false,
-        lastAccessed: Date = Date(), keepsLoaded: Bool = false
+        lastAccessed: Date = Date(), keepsLoaded: Bool = false, name: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -91,6 +96,7 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
         self.isPinned = isPinned
         self.lastAccessed = lastAccessed
         self.keepsLoaded = keepsLoaded
+        self.name = name
     }
 
     init(from decoder: Decoder) throws {
@@ -101,10 +107,11 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         lastAccessed = try c.decodeIfPresent(Date.self, forKey: .lastAccessed) ?? Date()
         keepsLoaded = try c.decodeIfPresent(Bool.self, forKey: .keepsLoaded) ?? false
+        name = try? c.decodeIfPresent(String.self, forKey: .name)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, url, pinnedURL, isPinned, lastAccessed, keepsLoaded
+        case id, url, pinnedURL, isPinned, lastAccessed, keepsLoaded, name
     }
 }
 
@@ -117,13 +124,19 @@ nonisolated struct EntryData: Codable {
     var name: String?
     var expanded: Bool?
     var children: [EntryData]?
+    /// a live folder's source and items; a build that skips the key, or can't read it, has a plain folder
+    var live: LiveFolderData?
 
-    init(kind: String, id: UUID, name: String? = nil, expanded: Bool? = nil, children: [EntryData]? = nil) {
+    init(
+        kind: String, id: UUID, name: String? = nil, expanded: Bool? = nil, children: [EntryData]? = nil,
+        live: LiveFolderData? = nil
+    ) {
         self.kind = kind
         self.id = id
         self.name = name
         self.expanded = expanded
         self.children = children
+        self.live = live
     }
 
     init(from decoder: Decoder) throws {
@@ -133,9 +146,40 @@ nonisolated struct EntryData: Codable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         expanded = try c.decodeIfPresent(Bool.self, forKey: .expanded)
         children = try c.decodeIfPresent([EntryData].self, forKey: .children)
+        live = try? c.decodeIfPresent(LiveFolderData.self, forKey: .live)
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, id, name, expanded, children }
+    private enum CodingKeys: String, CodingKey { case kind, id, name, expanded, children, live }
+}
+
+/// a live folder as the session stores it. `sources` are `LiveSource` values, each
+/// as its own JSON text; `items` name the folder's tabs that stand for a source's rows
+nonisolated struct LiveFolderData: Codable, Equatable {
+    var sources: [String]
+    var items: [LiveItemData]
+    var dismissed: [String]
+    var fetched: Date?
+}
+
+// in an extension so the memberwise init survives; only `sources` is required
+nonisolated extension LiveFolderData {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sources = try c.decode([String].self, forKey: .sources)
+        items = (try? c.decode([Lossy<LiveItemData>].self, forKey: .items))?.compactMap(\.value) ?? []
+        dismissed = (try? c.decode([String].self, forKey: .dismissed)) ?? []
+        fetched = try? c.decodeIfPresent(Date.self, forKey: .fetched)
+    }
+}
+
+/// one tab a live folder made for a row: the row as it came, and what the user did with it
+nonisolated struct LiveItemData: Codable, Equatable {
+    var tab: UUID
+    var id: String
+    var link: URL
+    var title: String
+    var unread: Bool
+    var opened: Bool
 }
 
 /// codable snapshot of a space (urls only — web views are rebuilt lazily)
@@ -156,6 +200,8 @@ nonisolated struct SpaceData: Codable {
     var tabs: [TabRecord]
     /// v2: replaces v1's `selectedIndex`
     var selectedTabID: UUID?
+    /// the favourite the space showed over its own tab; absent → its own tab
+    var selectedEssentialID: UUID?
     /// v3: the sidebar tree. absent → a flat list, rebuilt from `tabs`. an empty
     /// folder persists here; a split below two panes does not
     var pinnedEntries: [EntryData]
@@ -167,7 +213,7 @@ nonisolated struct SpaceData: Codable {
         id: UUID, name: String, icon: String, appearance: SpaceAppearance,
         profileID: UUID? = nil,
         splitGroups: [SplitGroupData] = [], tabs: [TabRecord] = [], selectedTabID: UUID? = nil,
-        pinnedEntries: [EntryData] = [], todayEntries: [EntryData] = [],
+        selectedEssentialID: UUID? = nil, pinnedEntries: [EntryData] = [], todayEntries: [EntryData] = [],
         requiresUnlock: Bool = false, pinnedCollapsed: Bool = false
     ) {
         self.id = id
@@ -178,6 +224,7 @@ nonisolated struct SpaceData: Codable {
         self.splitGroups = splitGroups
         self.tabs = tabs
         self.selectedTabID = selectedTabID
+        self.selectedEssentialID = selectedEssentialID
         self.pinnedEntries = pinnedEntries
         self.todayEntries = todayEntries
         self.requiresUnlock = requiresUnlock
@@ -207,6 +254,7 @@ nonisolated struct SpaceData: Codable {
         todayEntries = (try? c.decode([EntryData].self, forKey: .todayEntries)) ?? []
         requiresUnlock = try c.decodeIfPresent(Bool.self, forKey: .requiresUnlock) ?? false
         pinnedCollapsed = try c.decodeIfPresent(Bool.self, forKey: .pinnedCollapsed) ?? false
+        selectedEssentialID = try c.decodeIfPresent(UUID.self, forKey: .selectedEssentialID)
 
         if let records = try c.decodeIfPresent([Lossy<TabRecord>].self, forKey: .tabs) {
             tabs = records.compactMap(\.value)
@@ -248,6 +296,7 @@ nonisolated struct SpaceData: Codable {
         try c.encode(appearance, forKey: .appearance)
         try c.encode(tabs, forKey: .tabs)
         try c.encodeIfPresent(selectedTabID, forKey: .selectedTabID)
+        try c.encodeIfPresent(selectedEssentialID, forKey: .selectedEssentialID)
         // the v1 mirror, derived from `tabs`
         let pinned = tabs.filter(\.isPinned)
         let today = tabs.filter { !$0.isPinned }
@@ -275,7 +324,7 @@ nonisolated struct SpaceData: Codable {
         case id, name, icon, appearance, themeIndex
         case pinnedURLs, pinnedAnchorURLs, todayURLs, todayLastAccessed, selectedIndex
         case profileID, containerMode, containerID, splitGroups
-        case tabs, selectedTabID
+        case tabs, selectedTabID, selectedEssentialID
         case pinnedEntries, todayEntries, requiresUnlock, pinnedCollapsed
     }
 }
@@ -285,16 +334,21 @@ nonisolated struct ProfileData: Codable {
     var id: UUID
     var name: String
     var icon: String
-    var essentialURLs: [String]
+    /// the favourites grid in order, each `pinnedURL` its home. `essentialURLs` (the homes)
+    /// and `essentialNames` are written from it for older builds, and read when it is absent
+    var favourites: [TabRecord] = []
     /// absent until set, and for the default profile, whose choices live in the app-wide keys
     var searchEngine: String?
     var searchSuggestions: Bool?
     var archiveAfterHours: Double?
 
-    static func makeDefault(essentialURLs: [String] = []) -> ProfileData {
-        ProfileData(
-            id: Profile.defaultID, name: "Default", icon: "person.crop.circle.fill",
-            essentialURLs: essentialURLs)
+    static func makeDefault(favourites: [TabRecord] = []) -> ProfileData {
+        ProfileData(id: Profile.defaultID, name: "Default", icon: "person.crop.circle.fill", favourites: favourites)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, icon, favourites, essentialURLs, essentialNames
+        case searchEngine, searchSuggestions, archiveAfterHours
     }
 }
 
@@ -306,10 +360,32 @@ nonisolated extension ProfileData {
         id = try c.decode(UUID.self, forKey: .id)
         name = (try? c.decode(String.self, forKey: .name)) ?? "Profile"
         icon = (try? c.decode(String.self, forKey: .icon)) ?? "person.crop.circle"
-        essentialURLs = (try? c.decode([String].self, forKey: .essentialURLs)) ?? []
+        if let records = try? c.decode([Lossy<TabRecord>].self, forKey: .favourites) {
+            favourites = records.compactMap(\.value)
+        } else {
+            // an older build's file: its favourites never had ids, and their page is their home
+            let urls = (try? c.decode([String].self, forKey: .essentialURLs)) ?? []
+            let names = (try? c.decode([String?].self, forKey: .essentialNames)) ?? []
+            favourites = urls.enumerated().map { i, url in
+                TabRecord(url: url, pinnedURL: url, name: names.indices.contains(i) ? names[i] : nil)
+            }
+        }
         searchEngine = try? c.decodeIfPresent(String.self, forKey: .searchEngine)
         searchSuggestions = try? c.decodeIfPresent(Bool.self, forKey: .searchSuggestions)
         archiveAfterHours = try? c.decodeIfPresent(Double.self, forKey: .archiveAfterHours)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(icon, forKey: .icon)
+        try c.encode(favourites, forKey: .favourites)
+        try c.encode(favourites.map { $0.pinnedURL ?? $0.url }, forKey: .essentialURLs)
+        try c.encode(favourites.map(\.name), forKey: .essentialNames)
+        try c.encodeIfPresent(searchEngine, forKey: .searchEngine)
+        try c.encodeIfPresent(searchSuggestions, forKey: .searchSuggestions)
+        try c.encodeIfPresent(archiveAfterHours, forKey: .archiveAfterHours)
     }
 }
 
@@ -502,12 +578,15 @@ nonisolated struct SpaceAppearance: Codable, Equatable {
     var colors: [RGBA] = SpaceAppearance.defaultColors
     var angle: Double = 135  // gradient direction, degrees (legacy linear)
     var grain: Double = 0  // film-grain overlay, 0...1
-    var glassBlur: Double = 0.6  // 0 = light frost … 1 = heavy frost
+    // glass frost, 0 = clear (the desktop shows through) … 1 = heavy frost
+    var backgroundFrost: Double = 0.6
+    var sidebarFrost: Double = 0.6
     var meshPoints: [MeshPoint] = []  // gradient fill paints these as a mesh
     var meshSharpness: Double = 4  // mesh blend tightness (2 soft … 10 distinct)
 
     enum CodingKeys: String, CodingKey {
-        case fill, colors, angle, grain, glassBlur, meshPoints, meshSharpness
+        case fill, colors, angle, grain, meshPoints, meshSharpness, sidebarFrost
+        case backgroundFrost = "glassBlur"
     }
 }
 
@@ -519,9 +598,16 @@ nonisolated extension SpaceAppearance {
         colors = try c.decodeIfPresent([RGBA].self, forKey: .colors) ?? Self.defaultColors
         angle = try c.decodeIfPresent(Double.self, forKey: .angle) ?? 135
         grain = try c.decodeIfPresent(Double.self, forKey: .grain) ?? 0
-        glassBlur = try c.decodeIfPresent(Double.self, forKey: .glassBlur) ?? 0.6
+        backgroundFrost = try c.decodeIfPresent(Double.self, forKey: .backgroundFrost) ?? 0.6
+        sidebarFrost = try c.decodeIfPresent(Double.self, forKey: .sidebarFrost) ?? backgroundFrost
         meshPoints = try c.decodeIfPresent([MeshPoint].self, forKey: .meshPoints) ?? []
         meshSharpness = try c.decodeIfPresent(Double.self, forKey: .meshSharpness) ?? 4
+    }
+
+    /// the one frost level older readers know
+    var glassBlur: Double {
+        get { backgroundFrost }
+        set { backgroundFrost = newValue }
     }
 }
 

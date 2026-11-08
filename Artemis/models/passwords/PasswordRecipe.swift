@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import AppKit
 import CryptoKit
+import Foundation
 
 /// a suggested password the person's own way: a root they remember plus part of each site's name
 nonisolated struct PasswordRecipe: Codable, Identifiable, Hashable {
@@ -289,10 +289,10 @@ enum PasswordStrength: Int, Comparable {
         c.isLowercase ? 26 : c.isUppercase ? 26 : c.isNumber ? 10 : 33
     }
 
-    /// the system dictionary knows it
+    /// `isInDictionary`, asked once per word for each `words`
     private static func isWord(_ word: String, _ words: Words) -> Bool {
         if let known = words.known[word] { return known }
-        let known = NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location == NSNotFound
+        let known = isInDictionary(word)
         words.known[word] = known
         return known
     }

@@ -9,7 +9,7 @@ import WebKit
 /// persists the session (urls only; web views rebuild lazily)
 @Observable
 final class TabManager {
-    /// state every window shares: spaces, favourites, history, the undo stacks
+    /// state every window shares: spaces, favourites, history, the closed tabs
     @ObservationIgnored let core: BrowserCore
 
     var spaces: [Space] {
@@ -71,9 +71,51 @@ final class TabManager {
             currentProfile.essentials = newValue
         }
     }
+    /// the favourite this window shows over each space's own tab. A window starts
+    /// from what each space last showed in any window, then keeps its own
+    private var essentialBySpace: [Space.ID: BrowserTab.ID] = [:]
+
+    /// the favourite this window shows in `space` in place of the space's own tab
+    func essential(in space: Space) -> BrowserTab? {
+        guard kind != .incognito, let id = essentialBySpace[space.id] else { return nil }
+        return core.profile(of: space).essentials.first { $0.id == id }
+    }
+
     /// when set, this favourite is the active tab, overriding the current
     /// space's own selection for the url bar and web view
-    private(set) var activeEssentialID: BrowserTab.ID?
+    var activeEssentialID: BrowserTab.ID? { essential(in: currentSpace)?.id }
+
+    /// `space`, the current one by default, shows favourite `id`, or its own tab when nil
+    /// or when `id` is not one of its profile's favourites
+    private func showEssential(_ id: BrowserTab.ID?, in space: Space? = nil) {
+        let space = space ?? currentSpace
+        let id = id.flatMap { id in core.profile(of: space).essentials.first { $0.id == id }?.id }
+        if let shown = essential(in: space), shown.id != id { shown.touch() }
+        if essentialBySpace[space.id] != id { essentialBySpace[space.id] = id }
+        space.selectedEssentialID = id
+    }
+
+    /// `tabs` stopped being favourites or went home: no space in any window lands on them
+    private func forgetEssentials(_ tabs: [BrowserTab]) {
+        let ids = Set(tabs.map(\.id))
+        for space in spaces where space.selectedEssentialID.map(ids.contains) == true {
+            space.selectedEssentialID = nil
+        }
+        for manager in mainWindows {
+            let shown = manager.essentialBySpace[manager.currentSpace.id]
+            manager.essentialBySpace = manager.essentialBySpace.filter { !ids.contains($0.value) }
+            guard let shown, ids.contains(shown) else { continue }
+            tabs.first { $0.id == shown }?.touch()
+            manager.prepareCurrentSpace()
+        }
+    }
+
+    /// what each space last showed in any window, for a window starting out
+    private var rememberedEssentials: [Space.ID: BrowserTab.ID] {
+        Dictionary(
+            spaces.compactMap { space in space.selectedEssentialID.map { (space.id, $0) } },
+            uniquingKeysWith: { first, _ in first })
+    }
 
     var history: HistoryStore { currentProfile.history }
     /// auto-archive: stale Today tabs are closed for you and land here
@@ -92,6 +134,16 @@ final class TabManager {
     }
     private static let closedTabLimit = 25
 
+    /// this window's ⌘Z for sidebar acts. text fields, pages and Settings undo on
+    /// their window's own stack instead
+    @ObservationIgnored let undo: UndoManager = {
+        let undo = UndoManager()
+        undo.levelsOfUndo = 40
+        return undo
+    }()
+    /// above zero while a layout change is recorded or put back: nested calls join it
+    @ObservationIgnored private var layoutDepth = 0
+
     /// pending camera, microphone and location requests, any number at once; each
     /// carries a WebKit handler that must be called exactly once
     var permissionQueue: [PermissionRequest] {
@@ -106,10 +158,13 @@ final class TabManager {
         didSet {
             guard oldValue, !isCommandBarVisible else { return }
             commandBarEditsAddress = false
+            commandBarSeed = nil
             // the keyboard the bar's field held goes back to the page
             DispatchQueue.main.async { [weak self] in self?.selectedTab?.webHost?.focusHostedWebView() }
         }
     }
+    /// typed into the new-tab bar, as if the user had typed it; dropped when the bar closes
+    var commandBarSeed: String?
     /// the ⌘T bar is open on the page's address, the toolbar's stand-in for
     /// the pill growing into it
     var commandBarEditsAddress = false
@@ -134,6 +189,8 @@ final class TabManager {
     var browserImport: BrowserImportModel?
     /// the Send Feedback sheet, or nil when it isn't up
     var feedback: FeedbackDraft?
+    /// the New Live Folder sheet, or nil when it isn't up
+    var liveFolderDraft: LiveFolderDraft?
     /// the ⇧-click Peek preview, belonging to no space; nil when closed
     var peekTab: BrowserTab?
     /// the link under the pointer, for the status capsule
@@ -226,6 +283,9 @@ final class TabManager {
     /// when on, leaving a tab playing video pops it into Picture in Picture, and
     /// returning to it closes the PiP
     static let autoPictureInPictureKey = "autoPictureInPicture"
+    /// two-finger swipes go back and forward, on unless turned off
+    static let swipeNavigationKey = "swipeNavigation"
+    static var swipesNavigate: Bool { UserDefaults.standard.object(forKey: swipeNavigationKey) as? Bool ?? true }
 
     static let defaultIcons = [
         "circle.fill", "star.fill", "bolt.fill", "leaf.fill",
@@ -242,7 +302,10 @@ final class TabManager {
         guard !core.isLoaded else {
             selectedSpaceID = space ?? core.persistedSpaceID ?? core.spaces[0].id
             // a Scout or incognito window replaces this the moment it opens its own space
-            if kind == .main { prepareCurrentSpace() }
+            if kind == .main {
+                essentialBySpace = rememberedEssentials
+                prepareCurrentSpace()
+            }
             return
         }
         core.isLoaded = true
@@ -286,6 +349,7 @@ final class TabManager {
         core.persistedSpaceID = selected
         profiles = loadedProfiles
         spaces = loadedSpaces
+        essentialBySpace = rememberedEssentials
 
         for space in spaces { for tab in space.tabs { wire(tab) } }
         for tab in core.allEssentials {
@@ -309,8 +373,11 @@ final class TabManager {
             // closing a tab and the next save leaves its file behind
             TabStateStore.sweep(keeping: Set(spaces.flatMap(\.tabs).map(\.id)))
             // a pinned tab names every page it visits: keep only the names for where tabs are
-            TabNameStore.shared.clearAllGenerated(
-                keeping: (spaces.flatMap(\.tabs) + core.allEssentials).flatMap { [$0.pendingURL, $0.pinnedURL] })
+            let restored = spaces.flatMap(\.tabs) + core.allEssentials
+            TabNameStore.shared.clearAllGenerated(keeping: restored.flatMap { [$0.pendingURL, $0.pinnedURL] })
+            if session?.namesOnTabs != true {
+                TabNameStore.shared.handOverCustomNames(to: restored, archives: profiles.map(\.archive))
+            }
         }
         Bench.mark("TabManager: profiles reconciled")
         startArchiveSweeps()
@@ -347,6 +414,7 @@ final class TabManager {
             PasswordAutofill.install(into: ucc)
             Autofill.install(into: ucc)
             PasskeyBridge.install(into: ucc)
+            EditingFocusReporter.install(into: ucc)
         }
         mediaStateReporter = media
 
@@ -373,13 +441,18 @@ final class TabManager {
             updateSpace(space, appearance: revert)
         }
         (resumeGradientEdit, previewRevert, gradientPreview) = (nil, nil, nil)
-        if kind != .main { discardPrivateSpace() }
+        if kind != .main {
+            discardPrivateSpace()
+            undo.removeAllActions()
+            UndoRoute.shared.refresh()
+        }
         settleTask?.cancel()
     }
 
-    /// switch to `tab`'s space, select it and front its window
+    /// switch to `tab`'s space, select it and front its window, with no bar over it
     func revealTab(_ tab: BrowserTab) {
         focus(tab)
+        isCommandBarVisible = false
         NSApp.activate(ignoringOtherApps: true)
         let window = BrowserWindows.shared.window(of: self)
             ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
@@ -445,31 +518,70 @@ final class TabManager {
         }
     }
 
-    /// with auto-PiP on, leaving Artemis pops the focused window's playing video
-    /// into Picture in Picture and returning closes it
+    /// with auto-PiP on, another app or desktop hiding a window pops its playing video
+    /// into the mini-player; the window showing again, or Artemis coming back, closes it
     private func observeAppFocusForPiP() {
         let center = NotificationCenter.default
         let player = miniPlayer
-        // `queue: nil` runs synchronously as the app resigns active, ahead of the
-        // window transition, so PiP is parked before the next app's window shows
+        // only once the window is out of view, never for a switch that leaves the page in view.
+        // occlusion can land before the app resigns, and a desktop swipe may not resign it at all
         center.addObserver(
-            forName: NSApplication.willResignActiveNotification, object: nil, queue: nil
-        ) { _ in
-            guard UserDefaults.standard.bool(forKey: Self.autoPictureInPictureKey),
-                let tab = BrowserWindows.shared.current?.selectedTab,
-                // a space asking for Touch ID locks as Artemis goes, so its page stays put
-                tab.manager?.space(of: tab)?.requiresUnlock != true
-            else { return }
-            player.enterIfPlaying(tab)
+            forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
+        ) { note in
+            MainActor.assumeIsolated {
+                guard let window = note.object as? NSWindow else { return }
+                if window.occlusionState.contains(.visible) {
+                    if NSApp.isActive, window.isOnActiveSpace {
+                        player.windowDidShow(selecting: BrowserWindows.shared.manager(for: window)?.selectedTab)
+                    }
+                } else {
+                    let now = CACurrentMediaTime()
+                    Self.hiddenAt = Self.hiddenAt.filter { now - $0.value < 1 }
+                    Self.hiddenAt[ObjectIdentifier(window)] = now
+                    Self.parkVideo(of: window, in: player)
+                }
+            }
+        }
+        for (source, name) in [
+            (center, NSApplication.didResignActiveNotification),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.activeSpaceDidChangeNotification),
+        ] {
+            source.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    let now = CACurrentMediaTime()
+                    for window in NSApp.windows where now - (Self.hiddenAt[ObjectIdentifier(window)] ?? 0) < 1 {
+                        Self.parkVideo(of: window, in: player)
+                    }
+                }
+            }
         }
         center.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
-            guard UserDefaults.standard.bool(forKey: Self.autoPictureInPictureKey),
-                let tab = BrowserWindows.shared.current?.selectedTab
-            else { return }
-            player.exitIfActive(for: tab)
+            MainActor.assumeIsolated {
+                player.artemisDidBecomeActive()
+                guard UserDefaults.standard.bool(forKey: Self.autoPictureInPictureKey),
+                    let tab = BrowserWindows.shared.current?.selectedTab
+                else { return }
+                player.exitIfActive(for: tab)
+            }
         }
+    }
+
+    /// when each window last went out of view: a resign or desktop sweep parks only one that
+    /// just went, never one Artemis hid itself before
+    private static var hiddenAt: [ObjectIdentifier: CFTimeInterval] = [:]
+
+    /// `window` is out of view behind another app or on another desktop: its video moves out
+    private static func parkVideo(of window: NSWindow, in player: MiniPlayer) {
+        guard UserDefaults.standard.bool(forKey: autoPictureInPictureKey), !window.isMiniaturized,
+            !window.occlusionState.contains(.visible), !NSApp.isActive || !window.isOnActiveSpace,
+            let manager = BrowserWindows.shared.manager(for: window), manager.kind == .main,
+            let tab = manager.selectedTab,
+            // a space asking for Touch ID locks as Artemis goes, so its page stays put
+            manager.space(of: tab)?.requiresUnlock != true
+        else { return }
+        player.enterAsHidden(tab)
     }
 
     var currentSpace: Space {
@@ -518,8 +630,9 @@ final class TabManager {
         return tab
     }
 
-    /// make this an incognito window: one space nobody else sees, over a jar of
-    /// its own. `parent` lends its history to the command bar, read-only
+    /// make this an incognito window: one space nobody else sees, over a jar of its
+    /// own, empty until its ⌘T bar opens a page. `parent` lends its history to the
+    /// command bar, read-only
     func openIncognitoSpace(parent: Profile) {
         let space = Space(
             name: "Incognito", icon: "eyeglasses", appearance: .incognito, profileID: parent.id)
@@ -529,7 +642,7 @@ final class TabManager {
         incognitoStore = ProfileStore.makePrivate(parent: parent.id)
         privateSpace = space
         selectedSpaceID = space.id
-        newTab()
+        ExtensionManager.shared.openPrivateWindow(of: self)
     }
 
     /// closing a Scout or incognito window takes its space, its pages and its jar with it
@@ -602,10 +715,7 @@ final class TabManager {
     /// the active favourite, else the current space's selected tab: what the url
     /// bar and web view show
     var selectedTab: BrowserTab? {
-        if let id = activeEssentialID, let essential = essentials.first(where: { $0.id == id }) {
-            return essential
-        }
-        return selectedTab(in: currentSpace)
+        essential(in: currentSpace) ?? selectedTab(in: currentSpace)
     }
 
     /// what *this window* has chosen in each space. Two windows can sit on the
@@ -623,6 +733,11 @@ final class TabManager {
     }
 
     func selectedTabID(in space: Space) -> BrowserTab.ID? { selectedTab(in: space)?.id }
+
+    /// the page this window shows in `space`: its favourite, else its own tab
+    func shownPage(in space: Space) -> BrowserTab? {
+        essential(in: space) ?? selectedTab(in: space) ?? space.firstOpenTab
+    }
 
     /// this window is now showing `id` in `space`. The space keeps it too, so a
     /// new window opens where you last were and the session restores it
@@ -642,16 +757,25 @@ final class TabManager {
         set {
             let previous = selectedTab
             if previous?.id != newValue { closeAddressEdit() }
+            // the tab being left was in use until now
+            previous?.touch()
             let autoPiP = UserDefaults.standard.bool(forKey: Self.autoPictureInPictureKey)
             // before the switch: WebKit only lets the foreground video enter PiP
             if autoPiP, let previous, previous.id != newValue {
                 miniPlayer.enterIfPlaying(previous)
             }
             if let newValue, essentials.contains(where: { $0.id == newValue }) {
-                activeEssentialID = newValue
+                showEssential(newValue)
             } else {
-                activeEssentialID = nil
+                showEssential(nil)
                 setSelectedTab(newValue, in: currentSpace)
+                // a live folder's item is the user's once looked at
+                if let newValue {
+                    for folder in currentSpace.folders where folder.live?.items[newValue]?.opened == false {
+                        folder.live?.items[newValue]?.opened = true
+                        folder.live?.items[newValue]?.unread = false
+                    }
+                }
                 // remember the focused pane so re-opening the split restores it
                 if let newValue, let group = currentSpace.splitGroup(containing: newValue) {
                     group.lastFocusedID = newValue
@@ -659,7 +783,7 @@ final class TabManager {
             }
             // warm the focused tab — and, if it's a split, every pane of it
             activateSplit(for: selectedTab)
-            selectedTab?.touch()  // viewing a tab resets its auto-archive clock
+            selectedTab?.touch()
             settleSelection()
             // returning to a tab floating in PiP closes the PiP
             if autoPiP, previous?.id != selectedTab?.id, let active = selectedTab {
@@ -708,6 +832,7 @@ final class TabManager {
 
     /// the command bar, empty, for a new tab: ⌘T or the sidebar's New Tab row
     func openNewTabBar() {
+        guard kind != .scout else { return }
         addressBarOrigin = nil
         commandBarEditsAddress = false
         isCommandBarVisible = true
@@ -755,7 +880,7 @@ final class TabManager {
         if let url {
             tab.load(url)
         } else if select, configuration == nil {
-            urlFieldFocusRequest += 1
+            openNewTabBar()
         }
         return tab
     }
@@ -772,39 +897,36 @@ final class TabManager {
 
     /// `wakesSuccessor` false leaves the tab chosen in its place asleep: a batch
     /// wakes whatever it leaves selected once, at the end
-    func close(_ tab: BrowserTab, undoGroup: UUID? = nil, wakesSuccessor: Bool = true) {
-        // a favourite isn't "closed" — closing its view just drops back to the
-        // space's own tab, leaving the favourite in the grid
-        if tab.isEssential {
-            if activeEssentialID == tab.id {
-                activeEssentialID = nil
-                prepareCurrentSpace()
-            }
-            return
-        }
+    func close(_ tab: BrowserTab, act: ClosedAct? = nil, wakesSuccessor: Bool = true) {
+        // a favourite stays in the grid: closing it sends it back to its home
+        if tab.isEssential { return closeAndKeepPinned(tab) }
+        if tab.id == selectedTab?.id { closeAddressEdit() }
         let space = self.space(of: tab) ?? currentSpace
         guard let index = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         // if it's a pane, note a surviving group member to fall back onto, then
         // detach it so closing the focused pane keeps the split on screen
         let survivingPane = space.splitGroup(containing: tab.id)?.tabIDs.first { $0 != tab.id }
+        rememberClosed(tab, from: space, act: act ?? ClosedAct(name: tab.isPinned ? "Archive Pinned Tab" : "Close Tab"))
         detachFromSplit(tab)
-        rememberClosed(tab, from: space, undoGroup: undoGroup)
         // ✕ on a pinned tab archives it (incognito excepted: no disk)
         if tab.isPinned, !tab.isPrivate,
             let url = tab.pinnedURL ?? tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
         {
-            core.profile(of: space).archive.add(url: url, title: tab.displayTitle, spaceName: space.name)
+            core.profile(of: space).archive.add(
+                id: tab.id, url: url, title: tab.displayTitle, spaceName: space.name, name: tab.customName)
         }
         space.tabs.remove(at: index)
         space.normalizeTree()
         SpotlightIndex.forget(.items([tab.id]))
         letGo(of: tab)
         if space.selectedTabID == tab.id {
-            // prefer a remaining pane of the same split, else the nearest tab
+            // prefer a remaining pane of the same split, else the nearest open tab: a dormant pin is
+            // nothing to land on
             if let survivingPane, space.splitGroup(containing: survivingPane) != nil {
                 space.selectedTabID = survivingPane
             } else {
-                space.selectedTabID = space.tabs.isEmpty ? nil : space.tabs[min(index, space.tabs.count - 1)].id
+                let open = space.tabs.enumerated().filter { !$0.element.isDormantPin }
+                space.selectedTabID = open.min { abs($0.offset - index) < abs($1.offset - index) }?.element.id
             }
             if wakesSuccessor { space.selectedTab?.activateIfNeeded() }
             settleSelection()
@@ -820,6 +942,9 @@ final class TabManager {
     /// pinned when it landed in the pinned section
     @discardableResult
     func addTab(from url: URL, to container: SidebarContainer, at index: Int) -> BrowserTab {
+        // a new tab is no move to take back
+        layoutDepth += 1
+        defer { layoutDepth -= 1 }
         let tab = newTab(url: url, select: false)
         moveTab(tab, to: container, at: index)
         return tab
@@ -842,10 +967,10 @@ final class TabManager {
 
     /// `close` / `closeAndKeepPinned` once the page's `beforeunload` allows it. A page whose
     /// prompt appears is brought on screen (see `BrowserTab`); one that never answers closes after 3s
-    func requestClose(_ tab: BrowserTab, keepingPin: Bool = false) {
+    func requestClose(_ tab: BrowserTab, keepingPin: Bool = false, act: ClosedAct? = nil) {
         let close = { [weak self, weak tab] in
             guard let self, let tab else { return }
-            if keepingPin { closeAndKeepPinned(tab) } else { self.close(tab) }
+            if keepingPin { closeAndKeepPinned(tab) } else { self.close(tab, act: act) }
         }
         if tab.tryClose() { return close() }
         tab.onConfirmedClose = close
@@ -859,14 +984,16 @@ final class TabManager {
     /// every pane of a split; `keepingPin` sleeps a pinned split's open panes
     /// at their pins and leaves the split whole
     func requestClose(_ group: SplitGroup, keepingPin: Bool = false) {
-        for pane in currentSpace.tabs(in: group) where !keepingPin || pane.pendingURL == nil {
-            requestClose(pane, keepingPin: keepingPin)
+        let panes = currentSpace.tabs(in: group)
+        let act = ClosedAct(name: panes.first?.isPinned == true ? "Archive Pinned Split" : "Close Split")
+        for pane in panes where !keepingPin || !pane.isDormantPin {
+            requestClose(pane, keepingPin: keepingPin, act: act)
         }
     }
 
     /// ⌘⇧P: pop the focused tab's video into the mini-player, or put it back
     func togglePictureInPicture() {
-        guard let tab = selectedTab else { return }
+        guard let tab = unlockedContentTab else { return }
         miniPlayer.toggle(tab)
     }
 
@@ -880,7 +1007,7 @@ final class TabManager {
             return
         }
         guard tab.isPinned || tab.isEssential else { return }
-        guard TabNameStore.shared.custom(for: url) == nil else {
+        guard tab.customName == nil else {
             tidyBreadcrumb("skip (custom name set) \(url.host() ?? "?")")
             return
         }
@@ -989,15 +1116,43 @@ final class TabManager {
         guard !tab.isPrivate else { return }
         let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return usePageTitle(for: tab) }
-        TabNameStore.shared.setCustom(trimmed, for: tab.url ?? tab.pendingURL)
+        guard trimmed != tab.customName else { return }
+        registerName(of: tab, as: "Rename Tab")
+        tab.customName = trimmed
+        scheduleSave()
     }
 
     /// drop both names for this tab and show the page's own title again
     func usePageTitle(for tab: BrowserTab) {
         guard !tab.isPrivate else { return }
-        let url = tab.url ?? tab.pendingURL
-        TabNameStore.shared.setCustom(nil, for: url)
-        TabNameStore.shared.clearGenerated(for: url)
+        let page = tab.url ?? tab.pendingURL
+        guard tab.customName != nil || TabNameStore.shared.generated(for: page) != nil else { return }
+        registerName(of: tab, as: "Use Page Title")
+        tab.customName = nil
+        TabNameStore.shared.clearGenerated(for: page)
+        scheduleSave()
+    }
+
+    /// ⌘Z for a tab's names: puts back both, and registers the rename again as the redo
+    private func registerName(of tab: BrowserTab, as action: String) {
+        let old = tab.customName
+        let page = tab.url ?? tab.pendingURL
+        let generated = TabNameStore.shared.generated(for: page).map { ($0, TabNameStore.shared.generatedFrom(for: page)) }
+        // by id: a close and its undo bring the tab back as a new object
+        let id = tab.id
+        undo.registerUndo(withTarget: self) { manager in
+            guard let tab = manager.allTabs.first(where: { $0.id == id }) else { return }
+            let new = tab.customName
+            manager.undo.registerUndo(withTarget: manager) { manager in
+                guard let tab = manager.allTabs.first(where: { $0.id == id }) else { return }
+                if let new { manager.rename(tab, to: new) } else { manager.usePageTitle(for: tab) }
+            }
+            manager.undo.setActionName(action)
+            tab.customName = old
+            if let generated { TabNameStore.shared.setGenerated(generated.0, from: generated.1, for: page) }
+            manager.scheduleSave()
+        }
+        undo.setActionName(action)
     }
 
     // MARK: - Full-text index
@@ -1017,43 +1172,111 @@ final class TabManager {
 
     // MARK: - Recently closed
 
-    /// put a tab on the undo stack on its way out
-    private func rememberClosed(_ tab: BrowserTab, from space: Space, undoGroup: UUID? = nil) {
+    /// put a tab on the closed stack on its way out, as part of `act`, before it leaves its split.
+    /// no space means a favourite leaving its profile's grid
+    private func rememberClosed(_ tab: BrowserTab, from space: Space?, act: ClosedAct) {
         // incognito leaves no trace, the undo stack included
         guard !tab.isPrivate else { return }
         guard let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL else { return }
+        if let group = space?.splitGroup(containing: tab.id), !act.splits.contains(where: { $0.id == group.id }) {
+            act.splits.append(
+                .init(id: group.id, root: group.root, linkSourceID: group.linkSourceID, linkTargetID: group.linkTargetID))
+        }
+        let grid = space == nil ? profiles.first { $0.essentials.contains { $0.id == tab.id } } : nil
+        let gridHome = grid.flatMap { grid in
+            currentSpace.profileID == grid.id ? currentSpace : spaces.first { $0.profileID == grid.id }
+        }
+        guard let home = space ?? gridHome ?? spaces.first
+        else { return }
         // read the slot while the tree still holds the tab — the caller removes
         // it right after
-        let container = space.parent(of: .tab(tab.id))
-        let slot = container.flatMap { space.entries(in: $0).firstIndex(of: .tab(tab.id)) } ?? 0
+        let container = space?.parent(of: .tab(tab.id))
+        let slot = grid.map { $0.essentials.firstIndex { $0.id == tab.id } ?? 0 }
+            ?? container.flatMap { home.entries(in: $0).firstIndex(of: .tab(tab.id)) } ?? 0
         closedTabs.insert(
             ClosedTab(
+                id: tab.id,
                 url: url,
                 title: tab.title.isEmpty ? url.host() ?? url.absoluteString : tab.title,
-                spaceID: space.id,
+                spaceID: home.id,
                 folderID: { if case .folder(let id) = container { id } else { nil } }(),
                 folderName: {
-                    if case .folder(let id) = container { space.folder(id)?.name } else { nil }
+                    if case .folder(let id) = container { home.folder(id)?.name } else { nil }
                 }(),
                 index: slot,
                 isPinned: tab.isPinned,
                 pinnedURL: tab.pinnedURL,
+                customName: tab.customName,
                 // WebKit's session blob: reopening replays the page's back/forward
                 // list and scroll position instead of starting a fresh load
                 interactionState: tab.persistableInteractionState,
                 closedAt: Date(),
-                undoGroup: undoGroup),
+                act: act,
+                profileID: grid?.id),
             at: 0)
+        if !act.isRegistered { registerReopen(act) }
         // the stack drops whole acts, oldest first, and never the one in progress
-        while closedTabs.count > Self.closedTabLimit, let last = closedTabs.last,
-            undoGroup == nil || last.undoGroup != undoGroup
-        {
-            guard let group = last.undoGroup else {
-                closedTabs.removeLast()
-                continue
+        while closedTabs.count > Self.closedTabLimit, let last = closedTabs.last, last.act !== act {
+            closedTabs.removeAll { $0.act === last.act }
+            closedFolders.removeAll { $0.act === last.act }
+            forget(last.act)
+        }
+    }
+
+    /// ⌘Z for a close: reopens the whole act, unless ⇧⌘T got there first
+    private func registerReopen(_ act: ClosedAct) {
+        act.isRegistered = true
+        // the handler holds the act: an undo manager never retains its target
+        undo.registerUndo(withTarget: act) { [weak self, act] _ in self?.reopen(act: act) }
+        undo.setActionName(act.name)
+    }
+
+    /// a reopened or trimmed act leaves every window's ⌘Z
+    private func forget(_ act: ClosedAct) {
+        guard act.isRegistered else { return }
+        for stack in everyUndoStack {
+            // a stack mid-undo drops entries once it is done; one dropped inside an open group
+            // leaves an empty Undo behind, so that waits for the group to close
+            if stack.isUndoing || stack.isRedoing {
+                DispatchQueue.main.async { stack.removeAllActions(withTarget: act) }
+            } else if stack.groupingLevel > 0 {
+                Task {
+                    if stack.groupingLevel > 0 {
+                        for await _ in NotificationCenter.default.notifications(
+                            named: .NSUndoManagerDidCloseUndoGroup, object: stack)
+                        where stack.groupingLevel == 0 { break }
+                    }
+                    stack.removeAllActions(withTarget: act)
+                    UndoRoute.shared.refresh()
+                }
+            } else {
+                stack.removeAllActions(withTarget: act)
             }
-            closedTabs.removeAll { $0.undoGroup == group }
-            closedFolders.removeAll { $0.undoGroup == group }
+        }
+        UndoRoute.shared.refresh()
+    }
+
+    /// every window's ⌘Z stack, and the one the next window takes
+    private var everyUndoStack: [UndoManager] {
+        ([self] + BrowserWindows.shared.allManagers + [BrowserWindows.shared.seed].compactMap { $0 }).map(\.undo)
+    }
+
+    /// empty every window's ⌘Z, Settings' included: what it held no longer matches the spaces or
+    /// profiles, or names pages a clear took
+    func clearAllUndo() {
+        for stack in everyUndoStack { stack.removeAllActions() }
+        for window in NSApp.windows { window.undoManager?.removeAllActions(withTarget: ProfilesNavigator.shared) }
+        UndoRoute.shared.refresh()
+    }
+
+    /// drop the closed tabs and folders that match, and any act they leave empty
+    func forgetClosed(where matches: (_ spaceID: Space.ID, _ closedAt: Date) -> Bool) {
+        let acts = closedTabs.filter { matches($0.spaceID, $0.closedAt) }.map(\.act)
+            + closedFolders.filter { matches($0.spaceID, $0.closedAt) }.map(\.act)
+        closedTabs.removeAll { matches($0.spaceID, $0.closedAt) }
+        closedFolders.removeAll { matches($0.spaceID, $0.closedAt) }
+        for act in acts where !closedTabs.contains(where: { $0.act === act }) && !closedFolders.contains(where: { $0.act === act }) {
+            forget(act)
         }
     }
 
@@ -1069,42 +1292,129 @@ final class TabManager {
     var reopensFolderNext: Bool {
         guard let folder = closedFolders.first else { return false }
         return folder.closedAt >= (closedTabs.first?.closedAt ?? .distantPast)
-            && closedTabs.first?.undoGroup != folder.undoGroup
+            && closedTabs.first?.act !== folder.act
     }
 
-    /// ⇧⌘T: bring back the tab you just closed, in the space and at the position
-    /// it was closed from
+    /// ⇧⌘T: bring back what you just closed, in the space and at the position it
+    /// was closed from
     @discardableResult
     func reopenLastClosedTab() -> BrowserTab? {
         // a folder deleted with nothing in it has no tab to come back with
-        if reopensFolderNext, !closedFolders.isEmpty {
-            restore(closedFolders.removeFirst())
-            return nil
-        }
-        guard let newest = closedTabs.first else { return nil }
-        // tabs closed together come back together
-        guard let group = newest.undoGroup else { return reopen(closedTabs.removeFirst()) }
-        // the folders they were filed in go back first, so they have somewhere to land
-        if let shape = closedFolders.first(where: { $0.undoGroup == group }) {
-            restore(shape)
-            closedFolders.removeAll { $0.undoGroup == group }
-        }
-        // newest first: each slot was read once the act's earlier closes had left,
-        // so only the reverse order puts every tab back beside its old neighbours
-        return closedTabs.filter { $0.undoGroup == group }.compactMap(reopen).last
+        if reopensFolderNext, let folder = closedFolders.first { return reopen(act: folder.act) }
+        return closedTabs.first.flatMap { reopen(act: $0.act) }
     }
 
+    /// bring back every tab and folder `act` closed. it leaves ⌘Z either way, and
+    /// ⌘Z then closes them again
+    @discardableResult
+    private func reopen(act: ClosedAct) -> BrowserTab? {
+        let shape = closedFolders.first { $0.act === act }
+        let records = closedTabs.filter { $0.act === act }
+        guard shape != nil || !records.isEmpty else { return nil }
+        // the folders they were filed in go back first, so they have somewhere to land
+        if let shape { restore(shape) }
+        closedFolders.removeAll { $0.act === act }
+        // newest first: each slot was read once the act's earlier closes had left,
+        // so only the reverse order puts every tab back beside its old neighbours
+        let reopened = records.compactMap(reopenTab)
+        for split in act.splits { retile(split) }
+        forget(act)
+        let name = undo.isUndoing || undo.isRedoing ? act.name : shape == nil ? "Reopen Closed Tab" : "Reopen Closed Folder"
+        let ids = reopened.map(\.id)
+        let folder = shape?.nodes.first?.id
+        let archives = act.archives
+        undo.registerUndo(withTarget: self) { manager in
+            manager.closeAgain(ids, folder: folder, as: ClosedAct(name: name, archives: archives))
+        }
+        undo.setActionName(name)
+        return reopened.last
+    }
+
+    /// a split a close took panes from, tiled again over whichever of its panes are open
+    private func retile(_ split: ClosedAct.Split) {
+        guard let space = allSpaces.first(where: { space in space.tabs.contains { split.root.contains($0.id) } })
+        else { return }
+        let group = space.splitGroups.first { $0.id == split.id } ?? SplitGroup(id: split.id, root: split.root)
+        group.root = split.root
+        group.linkSourceID = split.linkSourceID
+        group.linkTargetID = split.linkTargetID
+        // a pane gone since, or tiled elsewhere since, stays out
+        for id in group.tabIDs
+        where !space.tabs.contains(where: { $0.id == id })
+            || space.splitGroups.contains(where: { $0 !== group && $0.contains(id) })
+        {
+            group.removeLeaf(id)
+        }
+        space.splitGroups.removeAll { $0 === group }
+        if group.leafCount >= SplitGroup.minPanes { space.splitGroups.append(group) }
+        regroupContiguous(in: space)
+        scheduleSave()
+    }
+
+    /// what a reopen brought back, closed again as one act: the folder when there was one
+    private func closeAgain(_ ids: [BrowserTab.ID], folder: TabFolder.ID?, as act: ClosedAct) {
+        if let folder, let held = allSpaces.lazy.compactMap({ $0.folder(folder) }).first {
+            return closeFolder(held, act: act)
+        }
+        let tabs = allTabs.filter { ids.contains($0.id) }
+        for tab in tabs where tab.isEssential { removeEssential(tab, act: act) }
+        for space in allSpaces {
+            let doomed = tabs.filter { tab in space.tabs.contains { $0 === tab } }
+            guard !doomed.isEmpty else { continue }
+            if act.archives {
+                archiveAndClose(doomed, in: space, act: act)
+            } else {
+                for tab in doomed { close(tab, act: act, wakesSuccessor: false) }
+            }
+        }
+        prepareCurrentSpace()
+    }
+
+    /// reopen one closed tab, whatever act it was part of
     @discardableResult
     func reopen(_ closed: ClosedTab) -> BrowserTab? {
+        let tab = reopenTab(closed)
+        if !closedTabs.contains(where: { $0.act === closed.act }), !closedFolders.contains(where: { $0.act === closed.act }) {
+            forget(closed.act)
+        }
+        return tab
+    }
+
+    private func reopenTab(_ closed: ClosedTab) -> BrowserTab? {
         closedTabs.removeAll { $0.id == closed.id }
+        // the tab takes its own id back, so what ⌘Z holds about where it sat still names it
+        let id = allTabs.contains { $0.id == closed.id } ? UUID() : closed.id
+        if let profileID = closed.profileID {
+            guard let profile = core.profile(profileID) else { return nil }
+            let tab = BrowserTab(id: id, restoring: closed.url, pinned: false, dataStore: profile.dataStore)
+            tab.isEssential = true
+            tab.pinnedURL = closed.pinnedURL ?? closed.url
+            tab.customName = closed.customName
+            tab.adopt(restoredTitle: closed.title)
+            tab.adopt(interactionState: closed.interactionState)
+            wire(tab)
+            tab.prefetchFavicon()
+            profile.essentials.insert(tab, at: min(closed.index, profile.essentials.count))
+            ExtensionManager.shared.tabDidOpen(tab)
+            // back in the space it was removed from, while that space is still its profile's
+            if currentSpace.profileID != profileID,
+                let home = spaces.first(where: { $0.id == closed.spaceID && $0.profileID == profileID })
+            {
+                selectSpace(home)
+            }
+            focus(tab)
+            scheduleSave()
+            return tab
+        }
         // the space it came from, unless that space is gone too
         let space = spaces.first { $0.id == closed.spaceID } ?? currentSpace
         if space.id != selectedSpaceID { selectSpace(space) }
 
         let tab = BrowserTab(
-            configuration: BrowserTab.defaultConfiguration(dataStore: dataStore(for: space)))
+            id: id, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore(for: space)))
         tab.isPinned = closed.isPinned
         tab.pinnedURL = closed.pinnedURL
+        tab.customName = closed.customName
         wire(tab)
         space.tabs.append(tab)
         // back into the folder it was filed in, rebuilding that folder if the
@@ -1120,6 +1430,8 @@ final class TabManager {
         }
         space.insertEntry(.tab(tab.id), into: container, at: closed.index)
         space.normalizeTree()
+        // what the close filed in the archive is open again
+        core.profile(of: space).archive.forget { $0.id == closed.id }
         ExtensionManager.shared.tabDidOpen(tab)
         selectedTabID = tab.id
 
@@ -1158,20 +1470,31 @@ final class TabManager {
             || core.allEssentials.contains { $0.id == id }
     }
 
+    /// the remembered answer to all of `permissions`; one "no" is a no, so a page that asked
+    /// for camera *and* microphone doesn't get half of it
+    private static func remembered(
+        _ permissions: [SitePermission], origin: String, ephemeral: Bool
+    ) -> PermissionDecision? {
+        let decisions = permissions.map { SitePermissionStore.shared.decision(for: origin, $0, ephemeral: ephemeral) }
+        guard decisions.allSatisfy({ $0 != nil }) else { return nil }
+        return decisions.contains(.deny) ? .deny : .allow
+    }
+
     /// A page asked for something. Answer from memory if this site has been
-    /// asked before, otherwise put the question to the user.
+    /// asked before, otherwise put the question to the user; a question already
+    /// waiting from the same page gets the one answer
     func requestPermission(
         _ permissions: [SitePermission], origin: String, tab: BrowserTab?,
         decide: @escaping (PermissionDecision) -> Void
     ) {
-        let store = SitePermissionStore.shared
         let isEphemeral = tab?.isPrivate ?? false
-        let remembered = permissions.map { store.decision(for: origin, $0, ephemeral: isEphemeral) }
-        if remembered.allSatisfy({ $0 != nil }) {
-            // one "no" is a no: a page that asked for camera *and* microphone
-            // doesn't get half of it
-            decide(remembered.contains(.deny) ? .deny : .allow)
-            return
+        if let decision = Self.remembered(permissions, origin: origin, ephemeral: isEphemeral) {
+            return decide(decision)
+        }
+        if let waiting = permissionQueue.first(where: {
+            $0.tabID == tab?.id && $0.origin == origin && $0.permissions == permissions
+        }) {
+            return waiting.alsoAnswer(decide)
         }
         permissionQueue.append(
             PermissionRequest(
@@ -1191,13 +1514,24 @@ final class TabManager {
             }
         }
         request.answer(decision)
+        guard remember else { return }
+        // the site's other waiting questions that this answer now settles
+        let settled = permissionQueue.compactMap { queued in
+            Self.remembered(queued.permissions, origin: queued.origin, ephemeral: queued.isEphemeral).map { (queued, $0) }
+        }
+        permissionQueue.removeAll { queued in settled.contains { $0.0 === queued } }
+        for (queued, decision) in settled { queued.answer(decision) }
     }
 
     /// what a tab removed for good still holds: pending permission and dialog callbacks,
     /// the mini-player, its saved page state, extensions' view of it, any window's selection
-    private func letGo(of tab: BrowserTab) {
+    func letGo(of tab: BrowserTab) {
         abandonQuestions(of: tab)
         miniPlayer.exitIfActive(for: tab)
+        // a closed page can outlive its tab (a view still fading out holds it): it must fall silent now
+        tab.webView.pauseAllMediaPlayback(completionHandler: nil)
+        tab.webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
+        tab.stopLoading()
         TabStateStore.remove(tab.id)
         ExtensionManager.shared.tabDidClose(tab)
         for manager in BrowserWindows.shared.allManagers { manager.forgetSelection(of: tab.id) }
@@ -1332,8 +1666,7 @@ final class TabManager {
     /// the app forward
     func adoptIntoBrowser(_ url: URL, into space: Space) {
         if space.id != selectedSpaceID { selectSpace(space) }
-        newTab(url: url)
-        NSApp.activate(ignoringOtherApps: true)
+        revealTab(newTab(url: url))
     }
 
     /// the space that best fits `url`: a routing rule's, else one already holding
@@ -1381,22 +1714,36 @@ final class TabManager {
             scheduleSave()
             return
         }
-        moveTab(
-            tab, in: space, to: .section(pin ? .pinned : .today),
-            at: pin ? space.pinnedEntries.count : 0)
+        recordingLayout(pin ? "Pin Tab" : "Unpin Tab") {
+            moveTab(
+                tab, in: space, to: .section(pin ? .pinned : .today),
+                at: pin ? space.pinnedEntries.count : 0)
+        }
     }
 
-    /// "–" on an open pinned tab: the page goes dormant at its pinned url and the
-    /// pin stays; selection moves off it as a close would
+    /// "–" on an open pinned tab or favourite: the page goes dormant at its pinned url
+    /// and the tab stays where it is; selection moves off it as a close would
     func closeAndKeepPinned(_ tab: BrowserTab) {
         guard tab.isPinned || tab.isEssential else { return }
-        // an active favourite: leaving it is the same as closing its view
+        if let state = tab.persistableInteractionState {
+            // ⌘Z wakes it back on the page it was on
+            let id = tab.id
+            undo.registerUndo(withTarget: self) { manager in
+                guard let tab = manager.allTabs.first(where: { $0.id == id }) else { return }
+                tab.adopt(interactionState: state)
+                tab.hasUnsavedState = true
+                manager.focus(tab)
+                manager.undo.registerUndo(withTarget: manager) { manager in
+                    if let tab = manager.allTabs.first(where: { $0.id == id }) { manager.closeAndKeepPinned(tab) }
+                }
+                manager.undo.setActionName("Close Tab")
+            }
+            undo.setActionName("Close Tab")
+        }
+        if tab.id == selectedTab?.id { closeAddressEdit() }
         if tab.isEssential {
             tab.closeToPinned()
-            if activeEssentialID == tab.id {
-                activeEssentialID = nil
-                prepareCurrentSpace()
-            }
+            forgetEssentials([tab])
             scheduleSave()
             return
         }
@@ -1413,7 +1760,7 @@ final class TabManager {
             // is nothing to land on
             let index = space.tabs.firstIndex { $0.id == tab.id } ?? 0
             let open = space.tabs.enumerated().filter {
-                $0.element.pendingURL == nil && group?.contains($0.element.id) != true
+                !$0.element.isDormantPin && group?.contains($0.element.id) != true
             }
             let nearest = open.min { abs($0.offset - index) < abs($1.offset - index) }
             space.selectedTabID = nearest?.element.id
@@ -1429,7 +1776,9 @@ final class TabManager {
         let members = space.tabs(in: group)
         guard let first = members.first else { return }
         let pin = !first.isPinned
-        moveGroup(group, to: .section(pin ? .pinned : .today), at: pin ? space.pinnedEntries.count : 0)
+        recordingLayout(pin ? "Pin Split" : "Unpin Split") {
+            moveGroup(group, to: .section(pin ? .pinned : .today), at: pin ? space.pinnedEntries.count : 0)
+        }
         if pin { members.forEach(requestTidyName) }
     }
 
@@ -1440,45 +1789,45 @@ final class TabManager {
     /// web view) is preserved across the move, so nothing reloads
     func toggleEssential(_ tab: BrowserTab) {
         guard kind == .main else { return }
-        if tab.isEssential {
-            essentials.removeAll { $0.id == tab.id }
-            tab.isEssential = false
-            if activeEssentialID == tab.id { activeEssentialID = nil }
-            currentSpace.tabs.append(tab)
-            currentSpace.normalizeTree()
-            selectedTabID = tab.id  // lands as the current space's selected tab
-        } else {
-            // a favourite belongs to no space, so it can't stay tiled in a split
-            detachFromSplit(tab)
-            // pull it out of whichever space currently holds it
-            for space in spaces {
-                space.tabs.removeAll { $0.id == tab.id }
-                space.normalizeTree()
+        recordingLayout(tab.isEssential ? "Move to Tabs" : "Add to Favourites") {
+            if tab.isEssential {
+                essentials.removeAll { $0.id == tab.id }
+                tab.isEssential = false
+                currentSpace.tabs.append(tab)
+                currentSpace.normalizeTree()
+                selectedTabID = tab.id  // lands as the current space's selected tab
+                forgetEssentials([tab])
+            } else {
+                // a favourite belongs to no space, so it can't stay tiled in a split
+                detachFromSplit(tab)
+                // pull it out of whichever space currently holds it
+                for space in spaces {
+                    space.tabs.removeAll { $0.id == tab.id }
+                    space.normalizeTree()
+                }
+                tab.isEssential = true
+                tab.isPinned = false
+                tab.pinnedURL = tab.pinnedURL ?? tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
+                essentials.append(tab)
+                requestTidyName(for: tab)
+                // any space that just lost its selected tab gets a fresh one
+                for space in spaces where space.selectedTab == nil {
+                    space.selectedTabID = space.firstOpenTab?.id
+                }
+                showEssential(tab.id)
+                tab.activateIfNeeded()
             }
-            tab.isEssential = true
-            tab.isPinned = false
-            tab.pinnedURL = nil
-            essentials.append(tab)
-            requestTidyName(for: tab)
-            // any space that just lost its selected tab gets a fresh one
-            for space in spaces where space.selectedTab == nil {
-                space.selectedTabID = space.tabs.first?.id
-            }
-            activeEssentialID = tab.id
-            tab.activateIfNeeded()
+            scheduleSave()
         }
-        scheduleSave()
     }
 
     /// fully remove a favourite from the grid (the ✕ on its tile)
-    func removeEssential(_ tab: BrowserTab) {
-        essentials.removeAll { $0.id == tab.id }
+    func removeEssential(_ tab: BrowserTab, act: ClosedAct? = nil) {
+        rememberClosed(tab, from: nil, act: act ?? ClosedAct(name: "Remove from Favourites"))
+        for profile in profiles { profile.essentials.removeAll { $0.id == tab.id } }
         SpotlightIndex.forget(.items([tab.id]))
         letGo(of: tab)
-        if activeEssentialID == tab.id {
-            activeEssentialID = nil
-            prepareCurrentSpace()
-        }
+        forgetEssentials([tab])
         scheduleSave()
     }
 
@@ -1486,8 +1835,10 @@ final class TabManager {
     /// position). `index` is the target slot once the tab itself is removed
     func reorderEssential(_ tab: BrowserTab, to index: Int) {
         guard let from = essentials.firstIndex(where: { $0.id == tab.id }) else { return }
-        let moved = essentials.remove(at: from)
-        essentials.insert(moved, at: max(0, min(index, essentials.count)))
+        recordingLayout("Move Favourite") {
+            let moved = essentials.remove(at: from)
+            essentials.insert(moved, at: max(0, min(index, essentials.count)))
+        }
         scheduleSave()
     }
 
@@ -1498,72 +1849,94 @@ final class TabManager {
             reorderEssential(tab, to: index)
             return
         }
-        detachFromSplit(tab)
-        for space in spaces {
-            space.tabs.removeAll { $0.id == tab.id }
-            space.normalizeTree()
+        recordingLayout("Add to Favourites") {
+            detachFromSplit(tab)
+            for space in spaces {
+                space.tabs.removeAll { $0.id == tab.id }
+                space.normalizeTree()
+            }
+            tab.isEssential = true
+            tab.isPinned = false
+            tab.pinnedURL = tab.pinnedURL ?? tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
+            essentials.insert(tab, at: max(0, min(index, essentials.count)))
+            for space in spaces where space.selectedTab == nil {
+                space.selectedTabID = space.firstOpenTab?.id
+            }
+            showEssential(tab.id)
+            tab.activateIfNeeded()
+            scheduleSave()
         }
-        tab.isEssential = true
-        tab.isPinned = false
-        tab.pinnedURL = nil
-        essentials.insert(tab, at: max(0, min(index, essentials.count)))
-        for space in spaces where space.selectedTab == nil {
-            space.selectedTabID = space.tabs.first?.id
-        }
-        activeEssentialID = tab.id
-        tab.activateIfNeeded()
-        scheduleSave()
     }
 
     /// demote a favourite back into the current space's tabs at a chosen spot
     func demoteEssential(_ tab: BrowserTab, to container: SidebarContainer, at index: Int) {
         guard tab.isEssential else { return }
-        essentials.removeAll { $0.id == tab.id }
-        tab.isEssential = false
-        if activeEssentialID == tab.id { activeEssentialID = nil }
-        // moveTab adopts it into the current space and slots it in
-        moveTab(tab, to: container, at: index)
-        selectedTabID = tab.id
+        recordingLayout("Move to Tabs") {
+            essentials.removeAll { $0.id == tab.id }
+            tab.isEssential = false
+            // moveTab adopts it into the current space and slots it in
+            moveTab(tab, to: container, at: index)
+            selectedTabID = tab.id
+            forgetEssentials([tab])
+        }
     }
 
-    /// send an off-pinned tab back to its anchored url, and focus it
+    /// send an off-pinned tab back to its anchored url, and focus it; one at home only gains focus
     func returnToPinnedURL(_ tab: BrowserTab) {
         guard let pinnedURL = tab.pinnedURL else { return }
         selectedTabID = tab.id
-        tab.load(pinnedURL)
+        if tab.isOffPinnedURL { tab.load(pinnedURL) }
         isCommandBarVisible = false
     }
 
     /// split an off-pinned tab into the page you navigated to and its pinned
     /// anchor, kept and placed per the user's settings; focus follows the page
     func separateFromPinned(_ tab: BrowserTab) {
-        guard let deviated = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL,
+        guard tab.isOffPinnedURL, let deviated = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL,
             let pinnedURL = tab.pinnedURL
         else { return }
+        recordingLayout("Separate from Pinned") {
+            let separatedURL: URL
+            let deviationStaysInPinned: Bool
+            switch PinnedSeparationKeep.current {
+            case .pinnedStays:
+                // the existing pinned tab snaps back to its anchor; the page you
+                // navigated to splits off
+                tab.load(pinnedURL)
+                separatedURL = deviated
+                deviationStaysInPinned = false
+            case .deviationStays:
+                // the page you navigated to becomes the pinned tab, re-anchored here;
+                // the original pinned url splits off
+                tab.pinnedURL = deviated
+                separatedURL = pinnedURL
+                deviationStaysInPinned = true
+            }
 
-        let separatedURL: URL
-        let deviationStaysInPinned: Bool
-        switch PinnedSeparationKeep.current {
-        case .pinnedStays:
-            // the existing pinned tab snaps back to its anchor; the page you
-            // navigated to splits off
-            tab.load(pinnedURL)
-            separatedURL = deviated
-            deviationStaysInPinned = false
-        case .deviationStays:
-            // the page you navigated to becomes the pinned tab, re-anchored here;
-            // the original pinned url splits off
-            tab.pinnedURL = deviated
-            separatedURL = pinnedURL
-            deviationStaysInPinned = true
+            let separated = newTab(url: separatedURL, select: false)
+            place(separated, at: PinnedSeparationDestination.current, near: tab)
+
+            // keep viewing the page you'd navigated to, wherever it now lives
+            selectedTabID = deviationStaysInPinned ? tab.id : separated.id
+            isCommandBarVisible = false
+            scheduleSave()
         }
+    }
 
-        let separated = newTab(url: separatedURL, select: false)
-        place(separated, at: PinnedSeparationDestination.current, near: tab)
+    /// "Make This the Pinned Page" and the favourite's: the tab's home becomes `url`
+    func rehome(_ tab: BrowserTab, at url: URL) {
+        recordingLayout(tab.isEssential ? "Change Favourite's Page" : "Change Pinned Page") { tab.pinnedURL = url }
+        scheduleSave()
+    }
 
-        // keep viewing the page you'd navigated to, wherever it now lives
-        selectedTabID = deviationStaysInPinned ? tab.id : separated.id
-        isCommandBarVisible = false
+    func toggleKeepsLoaded(_ tab: BrowserTab) {
+        let id = tab.id
+        undo.registerUndo(withTarget: self) { manager in
+            if let tab = manager.allTabs.first(where: { $0.id == id }) { manager.toggleKeepsLoaded(tab) }
+        }
+        // an undo's redo is the act it undid
+        undo.setActionName(tab.keepsLoaded != undo.isUndoing ? "Stop Keeping Loaded" : "Keep Loaded")
+        tab.keepsLoaded.toggle()
         scheduleSave()
     }
 
@@ -1602,30 +1975,32 @@ final class TabManager {
     func moveTab(
         _ tab: BrowserTab, in target: Space? = nil, to container: SidebarContainer, at index: Int
     ) {
-        let space = target ?? currentSpace
-        // a tab another space still holds (a drag carried across a space switch) moves over
-        if !tab.isEssential, !space.tabs.contains(where: { $0.id == tab.id }) {
-            moveTab(tab, toSpace: space)
-            if space.id == currentSpace.id { selectedTabID = tab.id }
+        recordingLayout("Move Tab") {
+            let space = target ?? currentSpace
+            // a tab another space still holds (a drag carried across a space switch) moves over
+            if !tab.isEssential, !space.tabs.contains(where: { $0.id == tab.id }) {
+                moveTab(tab, toSpace: space)
+                if space.id == currentSpace.id { selectedTabID = tab.id }
+            }
+            detachFromSplit(tab)
+            // a favourite dragged back into the list joins the space here
+            if !space.tabs.contains(where: { $0.id == tab.id }) { space.tabs.append(tab) }
+            let pinned = space.section(of: container) == .pinned
+            let becamePinned = pinned && !tab.isPinned
+            tab.isPinned = pinned
+            // becoming pinned anchors to the current spot; leaving drops the anchor
+            if pinned, tab.pinnedURL == nil {
+                tab.pinnedURL = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
+            }
+            // pinning by drag asks for a tidy name
+            if becamePinned { requestTidyName(for: tab) }
+            space.moveEntry(.tab(tab.id), to: container, at: index)
+            space.normalizeTree()
+            // a reorder can land a tab amid another group's run — pull groups back
+            // together so each stays one contiguous block
+            regroupContiguous(in: space)
+            scheduleSave()
         }
-        detachFromSplit(tab)
-        // a favourite dragged back into the list joins the space here
-        if !space.tabs.contains(where: { $0.id == tab.id }) { space.tabs.append(tab) }
-        let pinned = space.section(of: container) == .pinned
-        let becamePinned = pinned && !tab.isPinned
-        tab.isPinned = pinned
-        // becoming pinned anchors to the current spot; leaving drops the anchor
-        if pinned, tab.pinnedURL == nil {
-            tab.pinnedURL = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
-        }
-        // pinning by drag asks for a tidy name
-        if becamePinned { requestTidyName(for: tab) }
-        space.moveEntry(.tab(tab.id), to: container, at: index)
-        space.normalizeTree()
-        // a reorder can land a tab amid another group's run — pull groups back
-        // together so each stays one contiguous block
-        regroupContiguous(in: space)
-        scheduleSave()
     }
 
     func selectNextTab() { shiftSelection(by: 1) }
@@ -1665,16 +2040,25 @@ final class TabManager {
                 && !space.isFoldered($0.id)
         }
         guard !doomed.isEmpty else { return }
+        archiveAndClose(doomed, in: space, act: ClosedAct(name: "Clear Today's Tabs", archives: true))
+    }
+
+    /// file `doomed` in the archive and close them as `act`
+    private func archiveAndClose(_ doomed: [BrowserTab], in space: Space, act: ClosedAct) {
         SpotlightIndex.forget(.items(Set(doomed.map(\.id))))
         for tab in doomed {
             if !tab.isPrivate, let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL {
-                archive.add(url: url, title: tab.displayTitle, spaceName: space.name)
+                core.profile(of: space).archive.add(
+                    id: tab.id, url: url, title: tab.displayTitle, spaceName: space.name, name: tab.customName)
             }
-            rememberClosed(tab, from: space)
+            rememberClosed(tab, from: space, act: act)
+            detachFromSplit(tab)
             letGo(of: tab)
             space.tabs.removeAll { $0.id == tab.id }
         }
         space.normalizeTree()
+        if space.selectedTab == nil { space.selectedTabID = space.firstOpenTab?.id }
+        prepareCurrentSpace()
         scheduleSave()
     }
 
@@ -1696,7 +2080,7 @@ final class TabManager {
 
     /// every callback acts on `tab.manager` when it fires: a shared tab's window
     /// is whichever has it then, not the one that made it
-    private func wire(_ tab: BrowserTab) {
+    func wire(_ tab: BrowserTab) {
         tab.maker = self
         tab.isShared = kind == .main
         tab.onRequestNewTab = { [weak tab] configuration, features in
@@ -1786,18 +2170,17 @@ final class TabManager {
         var ids = onScreenTabIDs
         for manager in BrowserWindows.shared.allManagers { ids.formUnion(manager.onScreenTabIDs) }
         if let playing = miniPlayer.tab { ids.insert(playing.id) }
-        // each space keeps its own selected tab live, so switching back is instant
-        for space in spaces { if let id = space.selectedTabID { ids.insert(id) } }
+        // each space keeps the page it shows live, so switching back is instant
+        for space in spaces { ids.formUnion([space.selectedTabID, space.selectedEssentialID].compactMap { $0 }) }
         return ids
     }
 
     /// what this window has on screen right now — its page, every pane of a shown
-    /// split, its focused favourite, its Peek preview, its Scout page
+    /// split, its Peek preview, its Scout page
     var onScreenTabIDs: Set<BrowserTab.ID> {
         var ids: Set<BrowserTab.ID> = []
         if let selected = selectedTab { ids.insert(selected.id) }
         if let override = contentOverride { ids.insert(override.id) }
-        if let activeEssentialID { ids.insert(activeEssentialID) }
         if let peekTab { ids.insert(peekTab.id) }
         if let group = displayedSplitGroup { ids.formUnion(group.tabIDs) }
         if let privateSpace { ids.formUnion(privateSpace.tabs.map(\.id)) }
@@ -1817,15 +2200,18 @@ final class TabManager {
         }
     }
 
-    /// under memory pressure, every eligible background tab sleeps at once
+    /// critical memory pressure sleeps every eligible background tab at once; a warning, which
+    /// macOS raises often, only those idle a quarter of the chosen wait (five minutes at least), none at Never
     private func watchMemoryPressure() {
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self] in
+        source.setEventHandler { [weak self, weak source] in
             guard let self else { return }
             let keep = self.visibleTabIDs
+            let critical = source?.data.contains(.critical) == true
+            let idle = Date(timeIntervalSinceNow: -max(300, self.hibernateInterval / 4))
             var slept = 0
-            for tab in self.allTabs where !keep.contains(tab.id) {
+            for tab in self.allTabs where !keep.contains(tab.id) && (critical || self.hibernateInterval > 0 && tab.lastAccessed < idle) {
                 if tab.canHibernate {
                     tab.hibernate()
                     slept += 1
@@ -1860,14 +2246,15 @@ final class TabManager {
             SpotlightIndex.forget(.items(Set(stale.map(\.id))))
             for tab in stale {
                 if let url = tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL {
-                    core.profile(of: space).archive.add(url: url, title: tab.title, spaceName: space.name)
+                    core.profile(of: space).archive.add(
+                        id: tab.id, url: url, title: tab.title, spaceName: space.name, name: tab.customName)
                 }
                 letGo(of: tab)
                 space.tabs.removeAll { $0.id == tab.id }
             }
             space.normalizeTree()
             if space.selectedTab == nil {
-                space.selectedTabID = space.tabs.first?.id
+                space.selectedTabID = space.firstOpenTab?.id
             }
             didChange = true
         }
@@ -1880,7 +2267,8 @@ final class TabManager {
 
     /// reopen an archived tab in the current space and drop it from the archive
     func restoreFromArchive(_ entry: ArchiveEntry) {
-        newTab(url: entry.url)
+        let tab = newTab(url: entry.url)
+        if !tab.isPrivate { tab.customName = entry.name }
         archive.remove(entry)
     }
 
@@ -1896,10 +2284,7 @@ final class TabManager {
     func selectSpace(_ space: Space, animatePosition: Bool = true) {
         guard kind == .main, space.id != selectedSpaceID, spaces.contains(where: { $0.id == space.id }) else { return }
         switchSlides = false
-        // a favourite belongs to its profile; crossing into another drops it
-        if let id = activeEssentialID, core.profile(of: space).essentials.allSatisfy({ $0.id != id }) {
-            activeEssentialID = nil
-        }
+        selectedTab?.touch()
         if let from = spaces.firstIndex(where: { $0.id == selectedSpaceID }),
             let to = spaces.firstIndex(where: { $0.id == space.id })
         {
@@ -1915,9 +2300,9 @@ final class TabManager {
         // it so the web card reads straight from selectedTab again
         endContentSwitch()
         scheduleSave()
-        // a focused favourite is global, so it stays focused across spaces;
-        // only fall back to the space's own tab when none is active
+        // lands on what this window last showed here: a favourite or the space's own tab
         prepareCurrentSpace()
+        selectedTab?.touch()
         // the switch, not the sidebar's pager, drives the backdrop cross-fade, so it
         // runs with the sidebar collapsed; a live swipe drives the position itself
         if animatePosition {
@@ -1976,6 +2361,7 @@ final class TabManager {
         selectSpace(space)
         newTab()  // start it with a fresh tab + url focus
         scheduleSave()
+        registerDeleting(space.id, as: "New Space")
         return space
     }
 
@@ -1984,15 +2370,18 @@ final class TabManager {
     /// importing twice adds nothing. returns the space to land in
     @discardableResult
     func importBookmarks(_ result: BookmarkImport.Result, into profileID: Profile.ID? = nil) -> Space? {
+        undo.disableUndoRegistration()
+        defer { undo.enableUndoRegistration() }
         let profile = core.profile(profileID) ?? currentProfile
         var landed = result.folders.map { pin($0.links, inSpaceNamed: $0.name, icon: $0.icon, profile: profile.id) }
         if !result.loose.isEmpty {
             landed.append(pin(result.loose, inSpaceNamed: "Imported", icon: nil, profile: profile.id))
         }
-        var known = Set(profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.absoluteString })
+        var known = Self.favouriteLinks(in: profile)
         for link in result.favourites where known.insert(link.url.absoluteString).inserted {
             let tab = BrowserTab(restoring: link.url, pinned: false, dataStore: profile.dataStore)
             tab.isEssential = true
+            tab.pinnedURL = link.url
             tab.adopt(restoredTitle: link.title)
             wire(tab)
             tab.prefetchFavicon()
@@ -2001,6 +2390,11 @@ final class TabManager {
         if let first = landed.first { selectSpace(first) }
         scheduleSave()
         return landed.first
+    }
+
+    /// the links an import counts as already a favourite: each one's home and the page it is on
+    private static func favouriteLinks(in profile: Profile) -> Set<String> {
+        Set(profile.essentials.flatMap { [$0.pinnedURL, $0.url ?? $0.pendingURL] }.compactMap { $0?.absoluteString })
     }
 
     private func pin(_ links: [BookmarkImport.Link], inSpaceNamed name: String, icon: String?, profile: Profile.ID)
@@ -2017,12 +2411,10 @@ final class TabManager {
         let store = dataStore(for: space)
         for link in fresh {
             let tab = BrowserTab(restoring: link.url, pinned: true, pinnedURL: link.url, dataStore: store)
+            // the name it was filed under beats the page's own title
+            tab.customName = link.title.isEmpty ? nil : link.title
             wire(tab)
             space.tabs.append(tab)
-            // the name it was filed under beats the page's own title, never one you typed
-            if !link.title.isEmpty, TabNameStore.shared.custom(for: link.url) == nil {
-                TabNameStore.shared.setCustom(link.title, for: link.url)
-            }
         }
         space.normalizeTree()
         if space.selectedTabID == nil { space.selectedTabID = space.tabs.first?.id }
@@ -2035,12 +2427,8 @@ final class TabManager {
     /// many archived tabs landed
     @discardableResult
     func importArc(_ result: ArcImport.Result) -> (spaces: [Space], archived: Int) {
-        for (url, name) in result.renames {
-            let target = URL(string: url)
-            // a name you typed here outranks the one Arc had
-            guard TabNameStore.shared.custom(for: target) == nil else { continue }
-            TabNameStore.shared.setCustom(name, for: target)
-        }
+        undo.disableUndoRegistration()
+        defer { undo.enableUndoRegistration() }
         let fresh = result.spaces.filter { data in !spaces.contains { $0.id == data.id } }
         let folders = Set(result.favourites.map(\.folder) + result.archived.map(\.folder))
         let wanted = Set(fresh.compactMap(\.profileID) + folders.compactMap { result.profileIDs[$0] })
@@ -2059,13 +2447,15 @@ final class TabManager {
         func profile(for folder: String) -> Profile {
             core.profile(result.profileIDs[folder]) ?? core.defaultProfile
         }
-        for (folder, raw) in result.favourites {
+        for (folder, raw, name) in result.favourites {
             let home = profile(for: folder)
             guard let url = URL(string: raw),
-                !home.essentials.contains(where: { ($0.url ?? $0.pendingURL)?.absoluteString == raw })
+                !Self.favouriteLinks(in: home).contains(raw)
             else { continue }
             let tab = BrowserTab(restoring: url, pinned: false, dataStore: home.dataStore)
             tab.isEssential = true
+            tab.pinnedURL = url
+            tab.customName = name
             if let title = result.titles[raw] { tab.adopt(restoredTitle: title) }
             wire(tab)
             tab.prefetchFavicon()
@@ -2083,18 +2473,27 @@ final class TabManager {
         guard spaces.count > 1,
             let index = spaces.firstIndex(where: { $0.id == space.id })
         else { return }
+        // what ⌘Z rebuilds it from: letting go deletes each tab's saved session
+        let data = spaceData(of: space)
+        let pages = Dictionary(
+            space.tabs.map { ($0.id, SavedPage(state: $0.persistableInteractionState, title: $0.title)) },
+            uniquingKeysWith: { first, _ in first })
         spaces.remove(at: index)
         SpotlightIndex.forget(.items(Set([space.id] + space.tabs.map(\.id))))
         for tab in space.tabs { letGo(of: tab) }
-        RoutingStore.shared.forget(spaceID: space.id)
+        let rules = RoutingStore.shared.forget(spaceID: space.id)
+        // only New Space's ⌘Z deletes while undoing
+        let name = undo.isUndoing ? "New Space" : "Delete Space"
+        undo.registerUndo(withTarget: self) { $0.restoreSpace(data, at: index, pages: pages, rules: rules, as: name) }
+        undo.setActionName(name)
         let fallback = spaces[min(index, spaces.count - 1)].id
         if core.persistedSpaceID == space.id { core.persistedSpaceID = fallback }
         for window in mainWindows {
             // a glide in flight names a slot by its old index
             window.glideOrigin = nil
+            window.essentialBySpace[space.id] = nil
             if window.selectedSpaceID == space.id {
                 window.selectedSpaceID = fallback
-                window.dropForeignEssential()
                 window.prepareCurrentSpace()
             }
             // removal reindexes the row: snap both positions to the selected slot
@@ -2106,6 +2505,59 @@ final class TabManager {
         scheduleSave()
     }
 
+    /// a deleted space's tab as ⌘Z brings it back
+    private struct SavedPage {
+        let state: Any?
+        let title: String
+    }
+
+    private func restoreSpace(
+        _ data: SpaceData, at index: Int, pages: [BrowserTab.ID: SavedPage], rules: [(Int, RoutingRule)],
+        as name: String
+    ) {
+        var data = data
+        if core.profile(data.profileID) == nil { data.profileID = Profile.defaultID }
+        let space = Self.makeSpace(from: data)
+        showEssential(data.selectedEssentialID, in: space)
+        for tab in space.tabs {
+            if let page = pages[tab.id] {
+                tab.adopt(interactionState: page.state)
+                tab.hasUnsavedState = true
+                tab.adopt(restoredTitle: page.title)
+            }
+            wire(tab)
+            ExtensionManager.shared.tabDidOpen(tab)
+        }
+        spaces.insert(space, at: min(index, spaces.count))
+        RoutingStore.shared.reinsert(rules)
+        for window in mainWindows {
+            window.glideOrigin = nil
+            if let i = spaces.firstIndex(where: { $0.id == window.selectedSpaceID }) {
+                window.spacePagePosition = Double(i)
+                window.backdropPosition = Double(i)
+            }
+        }
+        selectSpace(space)
+        LiveRefresh.shared.reschedule()
+        scheduleSave()
+        registerDeleting(space.id, as: name)
+    }
+
+    /// ⌘Z for New Space and the redo of Delete Space. a locked space is deleted only once
+    /// its owner opens it, as the Delete menu item asks
+    private func registerDeleting(_ id: Space.ID, as name: String) {
+        undo.registerUndo(withTarget: self) { manager in
+            guard let space = manager.spaces.first(where: { $0.id == id }) else { return }
+            guard SpaceLock.shared.isLocked(space) else { return manager.deleteSpace(space) }
+            Task {
+                guard await SpaceLock.shared.unlock(space, to: "delete the \u{201C}\(space.name)\u{201D} space")
+                else { return }
+                manager.deleteSpace(space)
+            }
+        }
+        undo.setActionName(name)
+    }
+
     /// every browser window's model, this one first whether or not its window registered
     private var mainWindows: [TabManager] {
         [self] + BrowserWindows.shared.mainManagers.filter { $0 !== self }
@@ -2115,6 +2567,22 @@ final class TabManager {
         _ space: Space, name: String? = nil, icon: String? = nil,
         appearance: SpaceAppearance? = nil
     ) {
+        // a theme preview wears a look without choosing it
+        let change: String? =
+            if let name, name != space.name { "Rename Space" }
+            else if let icon, icon != space.icon { "Change Space Icon" }
+            else if let appearance, appearance != space.appearance { "Change Space Theme" }
+            else { nil }
+        if previewRevert == nil, let change {
+            let (id, oldName, oldIcon, oldAppearance) = (space.id, space.name, space.icon, space.appearance)
+            undo.registerUndo(withTarget: self) { manager in
+                guard let space = manager.allSpaces.first(where: { $0.id == id }) else { return }
+                manager.updateSpace(
+                    space, name: name.map { _ in oldName }, icon: icon.map { _ in oldIcon },
+                    appearance: appearance.map { _ in oldAppearance })
+            }
+            undo.setActionName(change)
+        }
         if let name { space.name = name }
         if let icon { space.icon = icon }
         if let appearance { space.appearance = appearance }
@@ -2124,21 +2592,27 @@ final class TabManager {
     /// move a space to another profile, rebuilding its tabs' web views in that
     /// profile's jar. the pages reload signed in as the new profile
     func setProfile(_ profileID: Profile.ID, for space: Space) {
-        guard space.profileID != profileID, core.profile(profileID) != nil else { return }
+        guard space.profileID != profileID, let profile = core.profile(profileID) else { return }
+        let (id, old, shown) = (space.id, space.profileID, essential(in: space)?.id)
+        undo.registerUndo(withTarget: self) { manager in
+            guard let space = manager.spaces.first(where: { $0.id == id }) else { return }
+            manager.setProfile(old, for: space)
+            manager.showEssential(shown, in: space)
+            if manager.currentSpace === space { manager.prepareCurrentSpace() }
+        }
+        // an undo's redo moves the space back to where it is now
+        let target = undo.isUndoing ? core.profile(old) ?? profile : profile
+        undo.setActionName("Move Space to \(target.name)")
         space.profileID = profileID
         let store = dataStore(for: space)
         for tab in space.tabs { tab.rebuildWebView(with: store) }
-        for manager in BrowserWindows.shared.allManagers where manager.currentSpace === space {
-            manager.dropForeignEssential()
+        // the favourite it showed belongs to the profile it left
+        space.selectedEssentialID = nil
+        for manager in mainWindows {
+            manager.essentialBySpace[space.id] = nil
+            if manager.currentSpace === space { manager.prepareCurrentSpace() }
         }
         scheduleSave()
-    }
-
-    /// a favourite from a profile the current space no longer browses as can't stay shown
-    private func dropForeignEssential() {
-        guard let id = activeEssentialID, !essentials.contains(where: { $0.id == id }) else { return }
-        activeEssentialID = nil
-        prepareCurrentSpace()
     }
 
     // MARK: - Profiles
@@ -2153,6 +2627,8 @@ final class TabManager {
 
     /// another browser's profiles, keeping the ids their spaces already name
     func adoptProfiles(_ incoming: [ProfileData]) {
+        undo.disableUndoRegistration()
+        defer { undo.enableUndoRegistration() }
         for data in incoming where core.profile(data.id) == nil {
             profiles.append(Self.makeProfile(from: data))
         }
@@ -2178,11 +2654,7 @@ final class TabManager {
         for space in spaces where space.profileID == profile.id {
             setProfile(Profile.defaultID, for: space)
         }
-        for manager in BrowserWindows.shared.allManagers
-        where profile.essentials.contains(where: { $0.id == manager.activeEssentialID }) {
-            manager.activeEssentialID = nil
-            manager.prepareCurrentSpace()
-        }
+        forgetEssentials(profile.essentials)
         for tab in profile.essentials {
             letGo(of: tab)
             tab.stopLoading()
@@ -2190,6 +2662,7 @@ final class TabManager {
         profile.essentials = []
         profiles.removeAll { $0.id == profile.id }
         SpotlightIndex.forget(.profile(profile.id))
+        LiveSource.forget(profile.id)
         PasswordStore.shared.deleteAll(in: profile.id)
         AutofillStore.shared.deleteAll(in: profile.id)
         // before the jar goes: an extension controller still holding it keeps it on disk
@@ -2200,6 +2673,8 @@ final class TabManager {
             try? FileManager.default.removeItem(at: Profile.directory(for: id))
         }
         ProfileStore.destroy(id)
+        // what ⌘Z holds could name its tabs and jar
+        clearAllUndo()
         scheduleSave()
     }
 
@@ -2208,7 +2683,7 @@ final class TabManager {
     var displayedContentTab: BrowserTab? { contentOverride ?? selectedTab }
     /// `displayedContentTab`, but nil while that is a locked space's own page
     var unlockedContentTab: BrowserTab? {
-        displayedContentTab.flatMap { $0.isEssential || !SpaceLock.shared.isLocked(currentSpace) ? $0 : nil }
+        SpaceLock.shared.unlocked(displayedContentTab, in: currentSpace)
     }
     private var contentOverride: BrowserTab?
 
@@ -2218,16 +2693,14 @@ final class TabManager {
         guard spaces.indices.contains(index) else { return }
         let space = spaces[index]
         contentSpaceID = space.id
-        // a locked space shows none of its pages: its lock screen takes over at settle
-        guard !SpaceLock.shared.isLocked(space) else {
+        // a locked space shows none of its own pages: its lock screen takes over at settle
+        guard essential(in: space) != nil || !SpaceLock.shared.isLocked(space) else {
             contentOverride = nil
             return
         }
-        let incoming = selectedTab(in: space) ?? space.tabs.first
+        let incoming = shownPage(in: space)
         activateSplit(for: incoming, in: space)
-        // a focused essential is global — it stays shown across spaces, so only
-        // override when the space's own tab is what'll actually be shown
-        contentOverride = activeEssentialID == nil ? incoming : nil
+        contentOverride = incoming
     }
 
     /// the space whose page is shown ahead of the switch committing (a swipe
@@ -2256,7 +2729,7 @@ final class TabManager {
         let center = contentSpaceID ?? selectedSpaceID
         guard let i = spaces.firstIndex(where: { $0.id == center }) else { return }
         for j in [i - 1, i + 1] where spaces.indices.contains(j) {
-            activateSplit(for: spaces[j].selectedTab ?? spaces[j].tabs.first, in: spaces[j])
+            activateSplit(for: shownPage(in: spaces[j]), in: spaces[j])
         }
     }
 
@@ -2265,11 +2738,10 @@ final class TabManager {
     private func prepareCurrentSpace() {
         guard kind == .main || privateSpace != nil else { return }
         let space = currentSpace
-        if space.selectedTab == nil, let first = space.tabs.first {
+        if space.selectedTab == nil, let first = space.firstOpenTab {
             space.selectedTabID = first.id
         }
-        // a focused favourite stays the active tab; otherwise warm the space's
-        // focused tab — and, if it's a split, every pane of it
+        // warm what the space shows: its favourite, or its focused tab and every pane of its split
         activateSplit(for: selectedTab)
         settleSelection()
     }
@@ -2354,8 +2826,8 @@ final class TabManager {
     func closeSelection() {
         let doomed = selectedTabs
         guard !doomed.isEmpty else { return }
-        let group = UUID()
-        for tab in doomed { close(tab, undoGroup: group, wakesSuccessor: false) }
+        let act = ClosedAct(name: doomed.count == 1 ? "Close Tab" : "Close \(doomed.count) Tabs")
+        for tab in doomed { close(tab, act: act, wakesSuccessor: false) }
         prepareCurrentSpace()
         clearSelection()
     }
@@ -2365,15 +2837,18 @@ final class TabManager {
         let today = currentSpace.todayTabs
         guard let index = today.firstIndex(where: { $0.id == tab.id }) else { return }
         let doomed = onlyBelow ? Array(today[(index + 1)...]) : today.filter { $0.id != tab.id }
-        let group = UUID()
-        for other in doomed { close(other, undoGroup: group, wakesSuccessor: false) }
+        let act = ClosedAct(name: onlyBelow ? "Close Tabs Below" : "Close Other Tabs")
+        for other in doomed { close(other, act: act, wakesSuccessor: false) }
         prepareCurrentSpace()
     }
 
     func setPinnedForSelection(_ pinned: Bool) {
         let moving = selectedTabs.filter { $0.isPinned != pinned }
-        // pinning appends each at the foot of the pins, unpinning puts each at the top of Today
-        for tab in pinned ? moving : moving.reversed() { togglePin(tab) }
+        let noun = moving.count == 1 ? "Tab" : "\(moving.count) Tabs"
+        recordingLayout(pinned ? "Pin \(noun)" : "Unpin \(noun)") {
+            // pinning appends each at the foot of the pins, unpinning puts each at the top of Today
+            for tab in pinned ? moving : moving.reversed() { togglePin(tab) }
+        }
         clearSelection()
     }
 
@@ -2392,7 +2867,10 @@ final class TabManager {
     }
 
     func moveSelection(to space: Space) {
-        for tab in selectedTabs { moveTab(tab, toSpace: space) }
+        let moving = selectedTabs
+        recordingLayout(moving.count == 1 ? "Move Tab" : "Move \(moving.count) Tabs") {
+            for tab in moving { moveTab(tab, toSpace: space) }
+        }
         clearSelection()
     }
 
@@ -2414,95 +2892,101 @@ final class TabManager {
         _ tabs: [BrowserTab], anchor: BrowserTab? = nil,
         orientation: SplitOrientation? = nil
     ) -> SplitGroup? {
-        let space = currentSpace
-        // de-dupe, keep order, only this space's own non-favourite tabs
-        var members: [BrowserTab] = []
-        for tab in tabs where !tab.isEssential
-            && space.tabs.contains(where: { $0.id == tab.id })
-            && !members.contains(where: { $0.id == tab.id }) {
-            members.append(tab)
-        }
-        guard members.count >= SplitGroup.minPanes else { return nil }
-        let members4 = Array(members.prefix(SplitGroup.maxPanes))
-        let anchorTab = anchor.flatMap { a in members4.first { $0.id == a.id } } ?? members4[0]
+        recordingLayout("Split View") { () -> SplitGroup? in
+            let space = currentSpace
+            // de-dupe, keep order, only this space's own non-favourite tabs
+            var members: [BrowserTab] = []
+            for tab in tabs where !tab.isEssential
+                && space.tabs.contains(where: { $0.id == tab.id })
+                && !members.contains(where: { $0.id == tab.id }) {
+                members.append(tab)
+            }
+            guard members.count >= SplitGroup.minPanes else { return nil }
+            let members4 = Array(members.prefix(SplitGroup.maxPanes))
+            let anchorTab = anchor.flatMap { a in members4.first { $0.id == a.id } } ?? members4[0]
 
-        // members leave their old splits, which keep any two panes left behind
-        for member in members4 { detachFromSplit(member) }
-        gather(members4, anchor: anchorTab, in: space)
-        // an anchor that was a middle pane leaves its old split's panes apart
-        regroupContiguous(in: space)
-        let group = SplitGroup(
-            tabIDs: members4.map(\.id),
-            orientation: orientation ?? SplitOrientation.defaultForNewSplits)
-        // opt-in: new splits can start in linked mode (first pane's links open in
-        // the second), set in Customization
-        if UserDefaults.standard.bool(forKey: "defaultSplitLinked"), group.tabIDs.count >= 2 {
-            group.linkSourceID = group.tabIDs[0]
-            group.linkTargetID = group.tabIDs[1]
+            // members leave their old splits, which keep any two panes left behind
+            for member in members4 { detachFromSplit(member) }
+            gather(members4, anchor: anchorTab, in: space)
+            // an anchor that was a middle pane leaves its old split's panes apart
+            regroupContiguous(in: space)
+            let group = SplitGroup(
+                tabIDs: members4.map(\.id),
+                orientation: orientation ?? SplitOrientation.defaultForNewSplits)
+            // opt-in: new splits can start in linked mode (first pane's links open in
+            // the second), set in Customization
+            if UserDefaults.standard.bool(forKey: "defaultSplitLinked"), group.tabIDs.count >= 2 {
+                group.linkSourceID = group.tabIDs[0]
+                group.linkTargetID = group.tabIDs[1]
+            }
+            space.splitGroups.append(group)
+            for member in members4 { member.activateIfNeeded() }
+            selectedTabID = anchorTab.id
+            scheduleSave()
+            return group
         }
-        space.splitGroups.append(group)
-        for member in members4 { member.activateIfNeeded() }
-        selectedTabID = anchorTab.id
-        scheduleSave()
-        return group
     }
 
     /// add `tab` as another pane in `group` at `index` (default: end), keeping
     /// the run contiguous at the group's current spot, and focus it. no-op past
     /// the pane cap
     func addToSplit(_ group: SplitGroup, tab: BrowserTab, at index: Int? = nil) {
-        let space = currentSpace
-        guard !tab.isEssential, !group.contains(tab.id),
-            group.tabIDs.count < SplitGroup.maxPanes,
-            space.tabs.contains(where: { $0.id == tab.id }),
-            let anchor = space.tabs(in: group).first
-        else { return }
-        // pull it out of any other split first
-        if let other = space.splitGroup(containing: tab.id), other.id != group.id {
-            other.removeLeaf(tab.id)
-            if other.leafCount < SplitGroup.minPanes { dissolveSplit(other) }
+        recordingLayout("Add to Split") {
+            let space = currentSpace
+            guard !tab.isEssential, !group.contains(tab.id),
+                group.tabIDs.count < SplitGroup.maxPanes,
+                space.tabs.contains(where: { $0.id == tab.id }),
+                let anchor = space.tabs(in: group).first
+            else { return }
+            // pull it out of any other split first
+            if let other = space.splitGroup(containing: tab.id), other.id != group.id {
+                other.removeLeaf(tab.id)
+                if other.leafCount < SplitGroup.minPanes { dissolveSplit(other) }
+            }
+            let slot = max(0, min(index ?? group.leafCount, group.leafCount))
+            var members = space.tabs(in: group)
+            members.insert(tab, at: min(slot, members.count))
+            // anchor stays an existing pane, so the run keeps its place in the list
+            gather(members, anchor: anchor, in: space)
+            group.appendLeaf(tab.id, at: slot)
+            tab.activateIfNeeded()
+            selectedTabID = tab.id
+            scheduleSave()
         }
-        let slot = max(0, min(index ?? group.leafCount, group.leafCount))
-        var members = space.tabs(in: group)
-        members.insert(tab, at: min(slot, members.count))
-        // anchor stays an existing pane, so the run keeps its place in the list
-        gather(members, anchor: anchor, in: space)
-        group.appendLeaf(tab.id, at: slot)
-        tab.activateIfNeeded()
-        selectedTabID = tab.id
-        scheduleSave()
     }
 
     /// drop `tab` into `group` beside a pane or at the group's outer edge, keeping
     /// the run contiguous, and focus it; no-op past the pane cap
     func addPane(_ tab: BrowserTab, to group: SplitGroup, target: SplitDropTarget) {
-        let space = currentSpace
-        guard !tab.isEssential, !group.contains(tab.id),
-            group.leafCount < SplitGroup.maxPanes,
-            space.tabs.contains(where: { $0.id == tab.id })
-        else { return }
-        // pull it out of any other split first
-        if let other = space.splitGroup(containing: tab.id), other.id != group.id {
-            other.removeLeaf(tab.id)
-            if other.leafCount < SplitGroup.minPanes { dissolveSplit(other) }
+        recordingLayout("Add to Split") {
+            let space = currentSpace
+            guard !tab.isEssential, !group.contains(tab.id),
+                group.leafCount < SplitGroup.maxPanes,
+                space.tabs.contains(where: { $0.id == tab.id })
+            else { return }
+            // pull it out of any other split first
+            if let other = space.splitGroup(containing: tab.id), other.id != group.id {
+                other.removeLeaf(tab.id)
+                if other.leafCount < SplitGroup.minPanes { dissolveSplit(other) }
+            }
+            switch target {
+            case .paneEdge(let leaf, let edge):
+                guard group.contains(leaf) else { return }
+                group.insertLeaf(tab.id, beside: leaf, axis: edge.axis, before: edge.before)
+            case .outerEdge(let edge):
+                group.insertLeaf(tab.id, atOuterEdge: edge.axis, before: edge.before)
+            }
+            if UserDefaults.standard.autoResizeSplitOnDrag {
+                group.root = group.root.balancedRatios()
+            }
+            // keep the group's panes contiguous in the tab list (anchor on an existing
+            // pane, so the run keeps its place)
+            let members = space.tabs(in: group)
+            if let anchor = members.first(where: { $0.id != tab.id }) { gather(members, anchor: anchor, in: space) }
+            tab.activateIfNeeded()
+            selectedTabID = tab.id
+            scheduleSave()
         }
-        switch target {
-        case .paneEdge(let leaf, let edge):
-            guard group.contains(leaf) else { return }
-            group.insertLeaf(tab.id, beside: leaf, axis: edge.axis, before: edge.before)
-        case .outerEdge(let edge):
-            group.insertLeaf(tab.id, atOuterEdge: edge.axis, before: edge.before)
-        }
-        if UserDefaults.standard.autoResizeSplitOnDrag {
-            group.root = group.root.balancedRatios()
-        }
-        // keep the group's panes contiguous in the tab list (anchor on an existing
-        // pane, so the run keeps its place)
-        let members = space.tabs(in: group)
-        if let anchor = members.first(where: { $0.id != tab.id }) { gather(members, anchor: anchor, in: space) }
-        tab.activateIfNeeded()
-        selectedTabID = tab.id
-        scheduleSave()
     }
 
     /// start a split by dropping `tab` against the lone focused page on a given
@@ -2519,26 +3003,30 @@ final class TabManager {
     /// dissolves the split if it falls below two panes; focus moves to a
     /// surviving pane so the split stays on screen
     func removeFromSplit(_ tab: BrowserTab) {
-        let space = currentSpace
-        guard let group = space.splitGroup(containing: tab.id) else { return }
-        let wasFocused = selectedTabID == tab.id
-        group.removeLeaf(tab.id)
-        if group.leafCount < SplitGroup.minPanes {
-            dissolveSplit(group)
-        } else {
-            if wasFocused, let survivor = group.tabIDs.first {
-                selectedTabID = survivor
+        recordingLayout("Remove from Split") {
+            let space = currentSpace
+            guard let group = space.splitGroup(containing: tab.id) else { return }
+            let wasFocused = selectedTabID == tab.id
+            group.removeLeaf(tab.id)
+            if group.leafCount < SplitGroup.minPanes {
+                dissolveSplit(group)
+            } else {
+                if wasFocused, let survivor = group.tabIDs.first {
+                    selectedTabID = survivor
+                }
+                // the removed pane still sits between the survivors in the tab order
+                regroupContiguous(in: space)
             }
-            // the removed pane still sits between the survivors in the tab order
-            regroupContiguous(in: space)
+            scheduleSave()
         }
-        scheduleSave()
     }
 
     /// disband a split — its tabs stay open and where they are, just no longer
     /// tiled. focus is untouched (still on a former pane → single view)
     func dissolveSplit(_ group: SplitGroup) {
-        for space in allSpaces { space.splitGroups.removeAll { $0.id == group.id } }
+        recordingLayout("Unsplit") {
+            for space in allSpaces { space.splitGroups.removeAll { $0.id == group.id } }
+        }
         scheduleSave()
     }
 
@@ -2546,21 +3034,23 @@ final class TabManager {
     /// list — reordering it as a unit, like dragging a single tab. panes are
     /// coerced into the target pinned/today section
     func moveGroup(_ group: SplitGroup, to container: SidebarContainer, at index: Int) {
-        let space = currentSpace
-        let members = group.tabIDs.compactMap { id in space.tabs.first { $0.id == id } }
-        guard !members.isEmpty else { return }
-        let pinned = space.section(of: container) == .pinned
-        for member in members where pinned && member.pinnedURL == nil {
-            member.pinnedURL = member.url ?? member.lastAttemptedURL ?? member.pendingURL
+        recordingLayout("Move Split") {
+            let space = currentSpace
+            let members = group.tabIDs.compactMap { id in space.tabs.first { $0.id == id } }
+            guard !members.isEmpty else { return }
+            let pinned = space.section(of: container) == .pinned
+            for member in members where pinned && member.pinnedURL == nil {
+                member.pinnedURL = member.url ?? member.lastAttemptedURL ?? member.pendingURL
+            }
+            for member in members { space.removeEntry(.tab(member.id)) }
+            var list = space.entries(in: container)
+            list.insert(
+                contentsOf: members.map { SidebarEntry.tab($0.id) },
+                at: max(0, min(index, list.count)))
+            space.setEntries(list, in: container)
+            space.normalizeTree()
+            scheduleSave()
         }
-        for member in members { space.removeEntry(.tab(member.id)) }
-        var list = space.entries(in: container)
-        list.insert(
-            contentsOf: members.map { SidebarEntry.tab($0.id) },
-            at: max(0, min(index, list.count)))
-        space.setEntries(list, in: container)
-        space.normalizeTree()
-        scheduleSave()
     }
 
     /// reorder a lifted pane back into its own split at a new slot, keeping the
@@ -2573,10 +3063,12 @@ final class TabManager {
         // tiling back to a single flat split in the new pane order
         order.remove(at: from)
         order.insert(tab.id, at: max(0, min(index, order.count)))
-        group.flatten(order: order)
-        let space = currentSpace
-        let members = space.tabs(in: group)
-        if let anchor = members.first { gather(members, anchor: anchor, in: space) }
+        recordingLayout("Rearrange Split") {
+            group.flatten(order: order)
+            let space = currentSpace
+            let members = space.tabs(in: group)
+            if let anchor = members.first { gather(members, anchor: anchor, in: space) }
+        }
         selectedTabID = tab.id
         scheduleSave()
     }
@@ -2602,47 +3094,53 @@ final class TabManager {
     /// against a whole-group outer edge, or onto another pane's centre to swap.
     /// the dragged pane stays focused
     func rearrangeSplit(_ group: SplitGroup, _ action: SplitRearrange) {
-        // linking points at tab ids, so it survives a move — but `removeLeaf` drops
-        // it when an endpoint is the moved pane; restore both ends after
-        let savedSource = group.linkSourceID
-        let savedTarget = group.linkTargetID
-        switch action {
-        case .besideLeaf(let dragged, let target, let axis, let before):
-            guard dragged != target else { return }
-            // pull the pane out first, then drop it into the new half — otherwise
-            // it'd be duplicated (it's still in the tree)
-            group.removeLeaf(dragged)
-            group.insertLeaf(dragged, beside: target, axis: axis, before: before)
-        case .outerEdge(let dragged, let axis, let before):
-            group.removeLeaf(dragged)
-            group.insertLeaf(dragged, atOuterEdge: axis, before: before)
+        recordingLayout("Rearrange Split") {
+            // linking points at tab ids, so it survives a move — but `removeLeaf` drops
+            // it when an endpoint is the moved pane; restore both ends after
+            let savedSource = group.linkSourceID
+            let savedTarget = group.linkTargetID
+            switch action {
+            case .besideLeaf(let dragged, let target, let axis, let before):
+                guard dragged != target else { return }
+                // pull the pane out first, then drop it into the new half — otherwise
+                // it'd be duplicated (it's still in the tree)
+                group.removeLeaf(dragged)
+                group.insertLeaf(dragged, beside: target, axis: axis, before: before)
+            case .outerEdge(let dragged, let axis, let before):
+                group.removeLeaf(dragged)
+                group.insertLeaf(dragged, atOuterEdge: axis, before: before)
+            }
+            if group.linkSourceID == nil, let savedSource, let savedTarget,
+                group.contains(savedSource), group.contains(savedTarget)
+            {
+                group.linkSourceID = savedSource
+                group.linkTargetID = savedTarget
+            }
+            // re-even every split level so the panes stay balanced (Settings toggle)
+            if UserDefaults.standard.autoResizeSplitOnDrag {
+                group.root = group.root.balancedRatios()
+            }
+            selectedTabID = action.draggedID
+            scheduleSave()
         }
-        if group.linkSourceID == nil, let savedSource, let savedTarget,
-            group.contains(savedSource), group.contains(savedTarget)
-        {
-            group.linkSourceID = savedSource
-            group.linkTargetID = savedTarget
-        }
-        // re-even every split level so the panes stay balanced (Settings toggle)
-        if UserDefaults.standard.autoResizeSplitOnDrag {
-            group.root = group.root.balancedRatios()
-        }
-        selectedTabID = action.draggedID
-        scheduleSave()
     }
 
     /// link `source`'s plain link clicks to open in the chosen `target` pane
     func setSplitLink(_ group: SplitGroup, source: BrowserTab.ID, target: BrowserTab.ID) {
         guard source != target, group.contains(source), group.contains(target) else { return }
-        group.linkSourceID = source
-        group.linkTargetID = target
+        recordingLayout("Link Panes") {
+            group.linkSourceID = source
+            group.linkTargetID = target
+        }
         scheduleSave()
     }
 
     /// drop a split's linking entirely
     func clearSplitLink(_ group: SplitGroup) {
-        group.linkSourceID = nil
-        group.linkTargetID = nil
+        recordingLayout("Unlink Panes") {
+            group.linkSourceID = nil
+            group.linkTargetID = nil
+        }
         scheduleSave()
     }
 
@@ -2674,21 +3172,24 @@ final class TabManager {
     /// the focused tab with a partner — the next tab in its section, or a fresh
     /// tab when it's the space's only one
     func toggleSplit() {
-        // a staged multi-selection wins — tile exactly those
-        if selection.count >= SplitGroup.minPanes {
-            createSplitFromSelection()
-            return
+        let splits = selection.count >= SplitGroup.minPanes || displayedSplitGroup == nil
+        recordingLayout(splits ? "Split View" : "Unsplit") {
+            // a staged multi-selection wins — tile exactly those
+            if selection.count >= SplitGroup.minPanes {
+                createSplitFromSelection()
+                return
+            }
+            if let group = displayedSplitGroup {
+                dissolveSplit(group)
+                return
+            }
+            guard let focused = selectedTab(in: currentSpace), !focused.isEssential else { return }
+            let others = currentSpace.tabs.filter { $0.id != focused.id }
+            let partner = others.first { $0.isPinned == focused.isPinned }
+                ?? others.first
+                ?? newTab(select: false)  // lone tab → split it with a new one
+            createSplit([focused, partner], anchor: focused)
         }
-        if let group = displayedSplitGroup {
-            dissolveSplit(group)
-            return
-        }
-        guard let focused = selectedTab(in: currentSpace), !focused.isEssential else { return }
-        let others = currentSpace.tabs.filter { $0.id != focused.id }
-        let partner = others.first { $0.isPinned == focused.isPinned }
-            ?? others.first
-            ?? newTab(select: false)  // lone tab → split it with a new one
-        createSplit([focused, partner], anchor: focused)
     }
 
     /// cycle focus to the next/previous pane within the shown split (⌥⌘] / ⌥⌘[)
@@ -2729,53 +3230,80 @@ final class TabManager {
 
     // MARK: - Folders
 
-    /// a new, empty folder, or nil at the nesting cap
+    /// a new, empty folder in `space`, else the current one, or nil at the nesting cap.
+    /// `live` makes it a live folder
     @discardableResult
     func newFolder(
         named name: String = "New Folder", in container: SidebarContainer = .section(.today),
-        at index: Int? = nil
+        at index: Int? = nil, space: Space? = nil, live: LiveFolder? = nil
     ) -> TabFolder? {
-        let space = currentSpace
+        let space = space ?? currentSpace
         guard space.canNestFolder(in: container) else { return nil }
-        let folder = TabFolder(name: name)
-        space.folders.append(folder)
-        space.insertEntry(
-            .folder(folder.id), into: container,
-            at: index ?? space.entries(in: container).count)
-        space.normalizeTree()
-        scheduleSave()
-        return folder
+        return recordingLayout(live == nil ? "New Folder" : "New Live Folder") { () -> TabFolder in
+            let folder = TabFolder(name: name)
+            folder.live = live
+            space.folders.append(folder)
+            space.insertEntry(
+                .folder(folder.id), into: container,
+                at: index ?? space.entries(in: container).count)
+            space.normalizeTree()
+            scheduleSave()
+            return folder
+        }
     }
 
     /// "New Folder with N Tabs": the folder takes the topmost tab's slot, and the
     /// tabs move into it in the order they were shown
     @discardableResult
     func newFolder(with tabs: [BrowserTab]) -> TabFolder? {
-        let space = currentSpace
-        let members = tabs.filter { tab in space.tabs.contains { $0.id == tab.id } }
-        guard let first = members.first else { return nil }
-        let container = space.parent(of: .tab(first.id)) ?? .section(.today)
-        let index = space.entries(in: container).firstIndex(of: .tab(first.id)) ?? 0
-        guard let folder = newFolder(in: container, at: index) else { return nil }
-        for member in members {
-            space.moveEntry(
-                .tab(member.id), to: .folder(folder.id), at: folder.children.count)
+        recordingLayout("New Folder") { () -> TabFolder? in
+            let space = currentSpace
+            let members = tabs.filter { tab in space.tabs.contains { $0.id == tab.id } }
+            guard let first = members.first else { return nil }
+            let container = space.parent(of: .tab(first.id)) ?? .section(.today)
+            let index = space.entries(in: container).firstIndex(of: .tab(first.id)) ?? 0
+            guard let folder = newFolder(in: container, at: index) else { return nil }
+            for member in members {
+                space.moveEntry(
+                    .tab(member.id), to: .folder(folder.id), at: folder.children.count)
+            }
+            space.normalizeTree()
+            clearSelection()
+            scheduleSave()
+            return folder
         }
-        space.normalizeTree()
-        clearSelection()
-        scheduleSave()
-        return folder
     }
 
     func rename(_ folder: TabFolder, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let old = folder.name
         folder.name = trimmed.isEmpty ? "New Folder" : trimmed
+        guard folder.name != old else { return }
+        let id = folder.id
+        undo.registerUndo(withTarget: self) { manager in
+            guard let folder = manager.allSpaces.lazy.compactMap({ $0.folder(id) }).first else { return }
+            manager.rename(folder, to: old)
+        }
+        undo.setActionName("Rename Folder")
         scheduleSave()
     }
 
+    /// "Stop Updating": the folder keeps its rows as plain tabs
+    func stopUpdating(_ folder: TabFolder) {
+        recordingLayout("Stop Updating") { folder.live = nil }
+        scheduleSave()
+    }
+
+    /// opening a live folder refreshes it, unless it was tried in the last two minutes
     func setExpanded(_ folder: TabFolder, _ expanded: Bool) {
         folder.isExpanded = expanded
         scheduleSave()
+        if expanded, let live = folder.live,
+            -(live.attempted ?? live.fetched ?? .distantPast).timeIntervalSinceNow > 120,
+            let space = spaces.first(where: { $0.folder(folder.id) === folder })
+        {
+            Task { await refreshLive(folder, in: space) }
+        }
     }
 
     func setPinnedCollapsed(_ space: Space, _ collapsed: Bool) {
@@ -2790,42 +3318,46 @@ final class TabManager {
         guard !space.container(container, isWithin: folder.id),
             space.canNest(folder, in: container)
         else { return }
-        space.moveEntry(.folder(folder.id), to: container, at: index)
-        space.normalizeTree()
+        recordingLayout("Move Folder") {
+            space.moveEntry(.folder(folder.id), to: container, at: index)
+            space.normalizeTree()
+        }
         scheduleSave()
     }
 
     /// dissolve the folder, its children rising into the folder's own slot
     func ungroup(_ folder: TabFolder) {
         let space = currentSpace
-        guard let (container, index) = space.removeEntry(.folder(folder.id)) else { return }
-        var list = space.entries(in: container)
-        list.insert(contentsOf: folder.children, at: min(index, list.count))
-        space.setEntries(list, in: container)
-        space.folders.removeAll { $0.id == folder.id }
-        space.normalizeTree()
+        recordingLayout("Ungroup Folder") {
+            guard let (container, index) = space.removeEntry(.folder(folder.id)) else { return }
+            var list = space.entries(in: container)
+            list.insert(contentsOf: folder.children, at: min(index, list.count))
+            space.setEntries(list, in: container)
+            space.folders.removeAll { $0.id == folder.id }
+            space.normalizeTree()
+        }
         scheduleSave()
     }
 
-    /// close everything filed under the folder and delete it. one undo group
-    /// covers the tabs and the folder shape, so ⇧⌘T brings back the whole thing
-    /// — nested and empty folders included
-    func closeFolder(_ folder: TabFolder) {
-        let space = currentSpace
-        let group = UUID()
+    /// close everything filed under the folder and delete it as one act, so ⇧⌘T or ⌘Z
+    /// brings back the whole thing, nested and empty folders included
+    func closeFolder(_ folder: TabFolder, act: ClosedAct? = nil) {
+        let space = allSpaces.first { $0.folder(folder.id) === folder } ?? currentSpace
+        let act = act ?? ClosedAct(name: "Delete Folder")
         let container = space.parent(of: .folder(folder.id)) ?? .section(.today)
         let index = space.entries(in: container).firstIndex(of: .folder(folder.id)) ?? 0
 
         var nodes = [
             ClosedFolder.Node(
-                id: folder.id, name: folder.name, isExpanded: folder.isExpanded, parent: nil)
+                id: folder.id, name: folder.name, isExpanded: folder.isExpanded, parent: nil, live: folder.live)
         ]
         func walk(_ parent: TabFolder) {
             for case .folder(let id) in parent.children {
                 guard let child = space.folder(id) else { continue }
                 nodes.append(
                     ClosedFolder.Node(
-                        id: id, name: child.name, isExpanded: child.isExpanded, parent: parent.id))
+                        id: id, name: child.name, isExpanded: child.isExpanded, parent: parent.id,
+                        live: child.live))
                 walk(child)
             }
         }
@@ -2834,7 +3366,7 @@ final class TabManager {
         // close the tabs while the tree still says where each one lived
         let doomed = space.tabIDs(under: .folder(folder.id))
             .compactMap { id in space.tabs.first { $0.id == id } }
-        for tab in doomed { close(tab, undoGroup: group, wakesSuccessor: false) }
+        for tab in doomed { close(tab, act: act, wakesSuccessor: false) }
         prepareCurrentSpace()
 
         space.removeEntry(.folder(folder.id))
@@ -2844,12 +3376,14 @@ final class TabManager {
         if kind != .incognito {
             closedFolders.insert(
                 ClosedFolder(
-                    undoGroup: group, spaceID: space.id, container: container, index: index,
+                    act: act, spaceID: space.id, container: container, index: index,
                     nodes: nodes, closedAt: Date()),
                 at: 0)
-            if closedFolders.count > Self.closedTabLimit {
-                closedFolders.removeLast(closedFolders.count - Self.closedTabLimit)
+            while closedFolders.count > Self.closedTabLimit {
+                let dropped = closedFolders.removeLast()
+                if !closedTabs.contains(where: { $0.act === dropped.act }) { forget(dropped.act) }
             }
+            if !act.isRegistered { registerReopen(act) }
         }
         scheduleSave()
     }
@@ -2858,8 +3392,9 @@ final class TabManager {
     private func restore(_ closed: ClosedFolder) {
         guard let space = spaces.first(where: { $0.id == closed.spaceID }) else { return }
         for node in closed.nodes where space.folder(node.id) == nil {
-            space.folders.append(
-                TabFolder(id: node.id, name: node.name, isExpanded: node.isExpanded))
+            let folder = TabFolder(id: node.id, name: node.name, isExpanded: node.isExpanded)
+            folder.live = node.live
+            space.folders.append(folder)
             if let parent = node.parent, space.folder(parent) != nil {
                 space.insertEntry(
                     .folder(node.id), into: .folder(parent),
@@ -2874,6 +3409,7 @@ final class TabManager {
             }
         }
         space.normalizeTree()
+        LiveRefresh.shared.reschedule()
         scheduleSave()
     }
 
@@ -2889,6 +3425,259 @@ final class TabManager {
             }
             return
         }
+    }
+
+    // MARK: - Undoing layout
+
+    /// runs `body` as one ⌘Z named `action` that puts back whatever it moved, pinned,
+    /// filed or tiled; a call inside another joins it, and a change to nothing registers nothing
+    @discardableResult
+    private func recordingLayout<T>(_ action: String, _ body: () -> T) -> T {
+        guard layoutDepth == 0, undo.isUndoRegistrationEnabled else { return body() }
+        layoutDepth += 1
+        let before = sidebarLayout()
+        let result = body()
+        layoutDepth -= 1
+        registerLayout(LayoutChange(from: sidebarLayout(), to: before), as: action)
+        return result
+    }
+
+    private func registerLayout(_ change: LayoutChange, as action: String) {
+        guard !change.isEmpty else { return }
+        undo.registerUndo(withTarget: self) { manager in
+            let locked = manager.allSpaces.filter { SpaceLock.shared.isLocked($0) && change.spaces.contains($0.id) }
+            guard !locked.isEmpty else { return manager.apply(change, as: action) }
+            // past the prompt the redo lands on the undo stack, so a second ⌘Z puts it back
+            Task {
+                for space in locked {
+                    guard await SpaceLock.shared.unlock(space, to: "undo \(action.lowercased())") else { return }
+                }
+                manager.apply(change, as: action)
+            }
+        }
+        undo.setActionName(action)
+    }
+
+    /// every space and favourites grid this window reaches, by id
+    private func sidebarLayout() -> SidebarLayout {
+        var layout = SidebarLayout()
+        for space in allSpaces {
+            layout.lists[.init(owner: space.id, container: .section(.pinned))] = space.pinnedEntries
+            layout.lists[.init(owner: space.id, container: .section(.today))] = space.todayEntries
+            for folder in space.folders {
+                layout.lists[.init(owner: space.id, container: .folder(folder.id))] = folder.children
+                layout.folders[folder.id] = .init(
+                    space: space.id, name: folder.name, isExpanded: folder.isExpanded, live: folder.live)
+            }
+            for group in space.splitGroups {
+                layout.splits[group.id] = .init(
+                    space: space.id, root: group.root, linkSourceID: group.linkSourceID,
+                    linkTargetID: group.linkTargetID)
+            }
+            for tab in space.tabs { layout.anchors[tab.id] = tab.pinnedURL }
+            layout.selections[space.id] = selectedTabID(in: space)
+            layout.favourites[space.id] = essential(in: space)?.id
+        }
+        for profile in profiles {
+            layout.lists[.init(owner: profile.id, container: nil)] = profile.essentials.map { .tab($0.id) }
+            for tab in profile.essentials { layout.anchors[tab.id] = tab.pinnedURL }
+        }
+        return layout
+    }
+
+    /// bring back `change.to` wherever the change differs, leaving what moved elsewhere since
+    /// alone, and register the way back as the redo
+    private func apply(_ change: LayoutChange, as action: String) {
+        layoutDepth += 1
+        defer { layoutDepth -= 1 }
+        let (from, to, moved) = (change.from, change.to, change.moved)
+        let spaces = allSpaces
+        var live: [BrowserTab.ID: BrowserTab] = [:]
+        for tab in spaces.flatMap(\.tabs) + core.allEssentials where live[tab.id] == nil { live[tab.id] = tab }
+
+        func discard(_ tab: BrowserTab) {
+            detachFromSplit(tab)
+            for space in spaces { space.tabs.removeAll { $0 === tab } }
+            live[tab.id] = nil
+            SpotlightIndex.forget(.items([tab.id]))
+            letGo(of: tab)
+        }
+        // a tab the change opened closes, and the redo opens it again
+        var closed: [BrowserTab.ID: LayoutChange.Page] = [:]
+        for id in from.tabIDs.subtracting(to.tabIDs) {
+            guard let tab = live[id] else { continue }
+            if !tab.isPrivate {
+                closed[id] = .init(
+                    url: tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL, title: tab.title, name: tab.customName,
+                    state: tab.persistableInteractionState)
+            }
+            discard(tab)
+        }
+        for (id, page) in change.opened where live[id] == nil {
+            guard let owner = to.lists.first(where: { $0.value.contains(.tab(id)) })?.key.owner,
+                let store = spaces.first(where: { $0.id == owner }).map(dataStore(for:))
+                    ?? core.profile(owner)?.dataStore
+            else { continue }
+            let tab =
+                page.url.map { BrowserTab(id: id, restoring: $0, pinned: false, dataStore: store) }
+                ?? BrowserTab(id: id, configuration: BrowserTab.defaultConfiguration(dataStore: store))
+            tab.customName = page.name
+            tab.adopt(restoredTitle: page.title)
+            tab.adopt(interactionState: page.state)
+            tab.hasUnsavedState = true
+            wire(tab)
+            ExtensionManager.shared.tabDidOpen(tab)
+            live[id] = tab
+        }
+
+        // lift what moved. a folder the change made goes, and what was filed in it since stays
+        // where it sat, all but a live folder's own rows
+        for space in spaces {
+            for entry in moved where space.parent(of: entry) != nil {
+                guard case .folder(let id) = entry, to.folders[id] == nil, let folder = space.folder(id),
+                    let (container, index) = space.removeEntry(entry)
+                else {
+                    space.removeEntry(entry)
+                    continue
+                }
+                var slot = index
+                for child in folder.children where !moved.contains(child) {
+                    if case .tab(let tab) = child, folder.live?.items[tab] != nil, let tab = live[tab] {
+                        discard(tab)
+                        continue
+                    }
+                    space.insertEntry(child, into: container, at: slot)
+                    slot += 1
+                }
+                folder.live?.items = [:]
+                folder.live?.fetched = nil
+                space.folders.removeAll { $0 === folder }
+            }
+        }
+        var lifted: [(Profile, BrowserTab)] = []
+        for profile in profiles {
+            lifted += profile.essentials.filter { moved.contains(.tab($0.id)) }.map { (profile, $0) }
+            profile.essentials.removeAll { moved.contains(.tab($0.id)) }
+        }
+
+        // each moved entry goes in after the nearest of its old neighbours still there
+        func slot(after list: ArraySlice<SidebarEntry>, in here: [SidebarEntry]) -> Int {
+            list.last { here.contains($0) }.flatMap { here.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        }
+        for space in spaces {
+            func adopt(_ entry: SidebarEntry) -> Bool {
+                switch entry {
+                case .tab(let id):
+                    guard let tab = live[id] else { return false }
+                    guard !space.tabs.contains(where: { $0 === tab }) else { return true }
+                    for other in spaces { other.tabs.removeAll { $0 === tab } }
+                    lifted.removeAll { $0.1 === tab }
+                    tab.isEssential = false
+                    tab.rebuildWebView(with: dataStore(for: space))
+                    space.tabs.append(tab)
+                    return true
+                case .folder(let id):
+                    if space.folder(id) != nil { return true }
+                    guard let shape = to.folders[id], shape.space == space.id else { return false }
+                    let folder = TabFolder(id: id, name: shape.name, isExpanded: shape.isExpanded)
+                    folder.live = shape.live
+                    space.folders.append(folder)
+                    return true
+                }
+            }
+            func place(_ container: SidebarContainer) {
+                let list = to.lists[.init(owner: space.id, container: container)] ?? []
+                for (i, entry) in list.enumerated() {
+                    if moved.contains(entry), space.parent(of: entry) == nil, adopt(entry) {
+                        let at = slot(after: list[..<i], in: space.entries(in: container))
+                        space.insertEntry(entry, into: container, at: at)
+                    }
+                    if case .folder(let id) = entry, space.folder(id) != nil { place(.folder(id)) }
+                }
+            }
+            place(.section(.pinned))
+            place(.section(.today))
+        }
+        for profile in profiles {
+            let list = to.lists[.init(owner: profile.id, container: nil)] ?? []
+            for (i, entry) in list.enumerated() where moved.contains(entry) {
+                guard case .tab(let id) = entry, let tab = live[id],
+                    !profile.essentials.contains(where: { $0 === tab })
+                else { continue }
+                for space in spaces {
+                    space.removeEntry(entry)
+                    space.tabs.removeAll { $0 === tab }
+                }
+                lifted.removeAll { $0.1 === tab }
+                tab.isEssential = true
+                tab.isPinned = false
+                tab.rebuildWebView(with: profile.dataStore)
+                let at = slot(after: list[..<i], in: profile.essentials.map { .tab($0.id) })
+                profile.essentials.insert(tab, at: at)
+            }
+        }
+        // a favourite with nowhere to go stays a favourite
+        for (profile, tab) in lifted { profile.essentials.append(tab) }
+
+        for (id, shape) in to.folders where from.folders[id] != shape {
+            guard let folder = spaces.lazy.compactMap({ $0.folder(id) }).first else { continue }
+            folder.name = shape.name
+            folder.isExpanded = shape.isExpanded
+            if folder.live !== shape.live { folder.live = shape.live }
+        }
+        for id in Set(from.splits.keys).union(to.splits.keys) where from.splits[id] != to.splits[id] {
+            let shape = to.splits[id]
+            for space in spaces where space.id != shape?.space { space.splitGroups.removeAll { $0.id == id } }
+            guard let shape, let space = spaces.first(where: { $0.id == shape.space }) else { continue }
+            let group = space.splitGroups.first { $0.id == id } ?? SplitGroup(id: id, root: shape.root)
+            if !space.splitGroups.contains(where: { $0 === group }) { space.splitGroups.append(group) }
+            group.root = shape.root
+            group.linkSourceID = shape.linkSourceID
+            group.linkTargetID = shape.linkTargetID
+        }
+        for id in Set(from.anchors.keys).union(to.anchors.keys) where from.anchors[id] != to.anchors[id] {
+            live[id]?.pinnedURL = to.anchors[id]
+        }
+
+        for space in spaces {
+            // every pane is its space's own, and in one split only
+            var tiled = Set<BrowserTab.ID>()
+            for group in space.splitGroups {
+                for id in group.tabIDs
+                where !space.tabs.contains(where: { $0.id == id }) || !tiled.insert(id).inserted {
+                    group.removeLeaf(id)
+                }
+            }
+            space.splitGroups.removeAll { $0.leafCount < SplitGroup.minPanes }
+            space.normalizeTree()
+            regroupContiguous(in: space)
+            if let id = to.selections[space.id], id != from.selections[space.id],
+                space.tabs.contains(where: { $0.id == id })
+            {
+                setSelectedTab(id, in: space)
+            } else if space.selectedTab == nil {
+                space.selectedTabID = space.firstOpenTab?.id
+            }
+            if to.favourites[space.id] != from.favourites[space.id] { showEssential(to.favourites[space.id], in: space) }
+        }
+        let favourites = Set(profiles.flatMap(\.essentials).map(\.id))
+        for space in spaces where space.selectedEssentialID.map(favourites.contains) == false {
+            space.selectedEssentialID = nil
+        }
+        for window in mainWindows {
+            window.essentialBySpace = window.essentialBySpace.filter { favourites.contains($0.value) }
+            window.prepareCurrentSpace()
+        }
+        // a live folder back from a ⌘Z fills again
+        for (id, shape) in to.folders where shape.live != nil && from.folders[id] == nil {
+            guard let space = spaces.first(where: { $0.id == shape.space }), let folder = space.folder(id) else {
+                continue
+            }
+            Task { await refreshLive(folder, in: space) }
+        }
+        LiveRefresh.shared.reschedule()
+        scheduleSave()
+        registerLayout(LayoutChange(from: to, to: from, opened: closed), as: action)
     }
 
     // MARK: - Persistence
@@ -2930,12 +3719,15 @@ final class TabManager {
         core.persistedSpaceID = selectedSpaceID
 
         let restored = spaces.flatMap(\.tabs) + core.allEssentials
+        if !session.namesOnTabs {
+            TabNameStore.shared.handOverCustomNames(to: restored, archives: profiles.map(\.archive))
+        }
         for tab in restored { wire(tab) }
         for tab in core.allEssentials { tab.prefetchFavicon() }
         TabStateStore.sweep(keeping: Set(spaces.flatMap(\.tabs).map(\.id)))
         for tab in restored { ExtensionManager.shared.tabDidOpen(tab) }
         for window in mainWindows {
-            window.activeEssentialID = nil
+            window.essentialBySpace = rememberedEssentials
             window.endContentSwitch()
             window.shownTabBySpace = [:]
             if !spaces.contains(where: { $0.id == window.selectedSpaceID }) { window.selectedSpaceID = selectedSpaceID }
@@ -2948,6 +3740,8 @@ final class TabManager {
             window.prepareCurrentSpace()
         }
         ProfileStore.reconcile(keeping: Set(profiles.map(\.id)))
+        LiveRefresh.shared.reschedule()
+        clearAllUndo()
     }
 
     /// move a tab into another space (a drag onto its icon); the live page moves
@@ -2957,22 +3751,84 @@ final class TabManager {
             let source = spaces.first(where: { space in space.tabs.contains { $0.id == tab.id } }),
             source.id != destination.id
         else { return }
+        recordingLayout("Move Tab") {
+            detachFromSplit(tab)
+            let wasSelected = source.selectedTabID == tab.id
+            source.tabs.removeAll { $0.id == tab.id }
+            if wasSelected { source.selectedTabID = source.firstOpenTab?.id }
 
-        detachFromSplit(tab)
-        let wasSelected = source.selectedTabID == tab.id
-        source.tabs.removeAll { $0.id == tab.id }
-        if wasSelected { source.selectedTabID = source.tabs.first?.id }
+            // a pinned tab lands in the destination's pinned run
+            source.normalizeTree()
+            destination.tabs.insert(
+                tab, at: tab.isPinned ? destination.pinnedTabs.count : destination.tabs.count)
+            destination.normalizeTree()
+            destination.selectedTabID = tab.id
+            tab.rebuildWebView(with: dataStore(for: destination))
+            tab.touch()
+            if selectedSpaceID == source.id { prepareCurrentSpace() }
+            scheduleSave()
+        }
+    }
 
-        // a pinned tab lands in the destination's pinned run
-        source.normalizeTree()
-        destination.tabs.insert(
-            tab, at: tab.isPinned ? destination.pinnedTabs.count : destination.tabs.count)
-        destination.normalizeTree()
-        destination.selectedTabID = tab.id
-        tab.rebuildWebView(with: dataStore(for: destination))
-        tab.touch()
-        if selectedSpaceID == source.id { prepareCurrentSpace() }
-        scheduleSave()
+    /// one space as the session stores it; `appearance` stands in for a theme being previewed
+    private func spaceData(of space: Space, appearance: SpaceAppearance? = nil) -> SpaceData {
+        // a tab with no url yet (a command bar left open) is not persistable.
+        // Both the records and the split pane indices come off this one
+        // filtered list, or a dropped tab shifts every pane index by one
+        let saved = (space.pinnedTabs + space.todayTabs).filter { tabURL($0) != nil }
+        let slot = Dictionary(saved.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let records = saved.map { tab in
+            let url = tabURL(tab) ?? ""
+            return TabRecord(
+                id: tab.id, url: url,
+                pinnedURL: tab.isPinned ? (tab.pinnedURL?.absoluteString ?? url) : nil,
+                isPinned: tab.isPinned, lastAccessed: tab.lastAccessed,
+                keepsLoaded: tab.keepsLoaded, name: tab.customName)
+        }
+        // splits store their tiling tree, with each pane as an index into the
+        // same list; the flat fields are kept too for downgrade safety
+        let splitData = space.splitGroups.compactMap { group -> SplitGroupData? in
+            let indexOf: (BrowserTab.ID) -> Int? = { slot[$0] }
+            guard let tree = group.root.toData(indexOf: indexOf) else { return nil }
+            let indices = group.tabIDs.compactMap(indexOf)
+            guard indices.count >= SplitGroup.minPanes else { return nil }
+            let srcIndex = group.linkSourceID.flatMap(indexOf)
+            let dstIndex = group.linkTargetID.flatMap(indexOf)
+            return SplitGroupData(
+                id: group.id, tree: tree,
+                tabIDs: group.tabIDs.filter { indexOf($0) != nil }, tabIndices: indices,
+                orientation: group.primaryAxis, ratios: [],
+                linkSourceID: srcIndex == nil ? nil : group.linkSourceID,
+                linkTargetID: dstIndex == nil ? nil : group.linkTargetID,
+                linkSourceIndex: srcIndex, linkTargetIndex: dstIndex)
+        }
+        // an empty folder is written out — unlike a split, which is dropped
+        // once it falls below two panes
+        func entryData(_ list: [SidebarEntry], depth: Int) -> [EntryData] {
+            guard depth <= Space.maxFolderDepth else { return [] }
+            return list.compactMap { entry -> EntryData? in
+                switch entry {
+                case .tab(let id):
+                    return slot[id] != nil ? EntryData(kind: "tab", id: id) : nil
+                case .folder(let id):
+                    guard let folder = space.folder(id) else { return nil }
+                    return EntryData(
+                        kind: "folder", id: id, name: folder.name,
+                        expanded: folder.isExpanded,
+                        children: entryData(folder.children, depth: depth + 1),
+                        live: folder.live?.data(for: folder, in: space))
+                }
+            }
+        }
+        return SpaceData(
+            id: space.id, name: space.name, icon: space.icon,
+            appearance: appearance ?? space.appearance, profileID: space.profileID,
+            splitGroups: splitData, tabs: records,
+            selectedTabID: saved.first { $0.id == space.selectedTabID }?.id,
+            selectedEssentialID: space.selectedEssentialID,
+            pinnedEntries: entryData(space.pinnedEntries, depth: 0),
+            todayEntries: entryData(space.todayEntries, depth: 0),
+            requiresUnlock: space.requiresUnlock, pinnedCollapsed: space.pinnedCollapsed)
     }
 
     /// the session exactly as it stands — the shape both the on-disk save and the
@@ -2983,74 +3839,26 @@ final class TabManager {
                 manager.resumeGradientEdit.flatMap { edit in manager.previewRevert.map { (edit.id, $0) } }
             },
             uniquingKeysWith: { first, _ in first })
-        let data = spaces.map { space in
-            // a tab with no url yet (a command bar left open) is not persistable.
-            // Both the records and the split pane indices come off this one
-            // filtered list, or a dropped tab shifts every pane index by one
-            let saved = (space.pinnedTabs + space.todayTabs).filter { tabURL($0) != nil }
-            let slot = Dictionary(saved.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let records = saved.map { tab in
-                let url = tabURL(tab) ?? ""
-                return TabRecord(
-                    id: tab.id, url: url,
-                    pinnedURL: tab.isPinned ? (tab.pinnedURL?.absoluteString ?? url) : nil,
-                    isPinned: tab.isPinned, lastAccessed: tab.lastAccessed,
-                    keepsLoaded: tab.keepsLoaded)
-            }
-            // splits store their tiling tree, with each pane as an index into the
-            // same list; the flat fields are kept too for downgrade safety
-            let splitData = space.splitGroups.compactMap { group -> SplitGroupData? in
-                let indexOf: (BrowserTab.ID) -> Int? = { slot[$0] }
-                guard let tree = group.root.toData(indexOf: indexOf) else { return nil }
-                let indices = group.tabIDs.compactMap(indexOf)
-                guard indices.count >= SplitGroup.minPanes else { return nil }
-                let srcIndex = group.linkSourceID.flatMap(indexOf)
-                let dstIndex = group.linkTargetID.flatMap(indexOf)
-                return SplitGroupData(
-                    id: group.id, tree: tree,
-                    tabIDs: group.tabIDs.filter { indexOf($0) != nil }, tabIndices: indices,
-                    orientation: group.primaryAxis, ratios: [],
-                    linkSourceID: srcIndex == nil ? nil : group.linkSourceID,
-                    linkTargetID: dstIndex == nil ? nil : group.linkTargetID,
-                    linkSourceIndex: srcIndex, linkTargetIndex: dstIndex)
-            }
-            // an empty folder is written out — unlike a split, which is dropped
-            // once it falls below two panes
-            func entryData(_ list: [SidebarEntry], depth: Int) -> [EntryData] {
-                guard depth <= Space.maxFolderDepth else { return [] }
-                return list.compactMap { entry -> EntryData? in
-                    switch entry {
-                    case .tab(let id):
-                        return slot[id] != nil ? EntryData(kind: "tab", id: id) : nil
-                    case .folder(let id):
-                        guard let folder = space.folder(id) else { return nil }
-                        return EntryData(
-                            kind: "folder", id: id, name: folder.name,
-                            expanded: folder.isExpanded,
-                            children: entryData(folder.children, depth: depth + 1))
-                    }
-                }
-            }
-            return SpaceData(
-                id: space.id, name: space.name, icon: space.icon,
-                appearance: previewed[space.id] ?? space.appearance, profileID: space.profileID,
-                splitGroups: splitData, tabs: records,
-                selectedTabID: saved.first { $0.id == space.selectedTabID }?.id,
-                pinnedEntries: entryData(space.pinnedEntries, depth: 0),
-                todayEntries: entryData(space.todayEntries, depth: 0),
-                requiresUnlock: space.requiresUnlock, pinnedCollapsed: space.pinnedCollapsed)
-        }
+        let data = spaces.map { spaceData(of: $0, appearance: previewed[$0.id]) }
         return BrowsingSession(
             profiles: profiles.map { profile in
                 ProfileData(
                     id: profile.id, name: profile.name, icon: profile.icon,
-                    essentialURLs: profile.essentials.compactMap { tabURL($0) },
+                    favourites: profile.essentials.compactMap { tab in
+                        tabURL(tab).map { url in
+                            TabRecord(
+                                id: tab.id, url: url, pinnedURL: tab.pinnedURL?.absoluteString ?? url,
+                                lastAccessed: tab.lastAccessed, keepsLoaded: tab.keepsLoaded, name: tab.customName)
+                        }
+                    },
                     searchEngine: profile.isDefault ? nil : profile.searchEngine.rawValue,
                     searchSuggestions: profile.isDefault ? nil : profile.suggestsSearches,
                     archiveAfterHours: profile.isDefault ? nil : profile.archiveAfterHours)
             },
             spaces: data,
-            essentialURLs: core.defaultProfile.essentials.compactMap { tabURL($0) },
+            essentialURLs: core.defaultProfile.essentials.compactMap { tab in
+                tabURL(tab).map { tab.pinnedURL?.absoluteString ?? $0 }
+            },
             selectedSpaceID: core.persistedSpaceID ?? selectedSpaceID)
     }
 
@@ -3088,15 +3896,21 @@ final class TabManager {
             searchEngine: own ? data.searchEngine.flatMap(SearchEngine.init) : nil,
             suggestsSearches: own ? data.searchSuggestions : nil,
             archiveAfterHours: own ? data.archiveAfterHours : nil)
-        profile.essentials = data.essentialURLs.compactMap(URL.init(string:)).map { url in
-            let tab = BrowserTab(restoring: url, pinned: false, dataStore: profile.dataStore)
+        profile.essentials = data.favourites.compactMap { record in
+            guard let url = URL(string: record.url) else { return nil }
+            let tab = BrowserTab(
+                id: record.id, restoring: url, pinned: false, lastAccessed: record.lastAccessed,
+                dataStore: profile.dataStore)
             tab.isEssential = true
+            tab.pinnedURL = record.pinnedURL.flatMap(URL.init(string:)) ?? url
+            tab.keepsLoaded = record.keepsLoaded
+            tab.customName = record.name
             return tab
         }
         return profile
     }
 
-    private static func makeSpace(from data: SpaceData) -> Space {
+    static func makeSpace(from data: SpaceData) -> Space {
         // resolve the space's jar up front so its restored tabs are born in it
         let profileID = data.profileID ?? Profile.defaultID
         let store = ProfileStore.dataStore(for: profileID)
@@ -3109,6 +3923,7 @@ final class TabManager {
                 pinnedURL: record.pinnedURL.flatMap(URL.init(string:)),
                 lastAccessed: record.lastAccessed, dataStore: store)
             tab.keepsLoaded = record.keepsLoaded
+            tab.customName = record.name
             return tab
         }
         for tab in tabs { tab.adopt(interactionState: TabStateStore.load(tab.id)) }
@@ -3129,11 +3944,14 @@ final class TabManager {
                 case "tab":
                     return tabs.contains { $0.id == node.id } ? .tab(node.id) : nil
                 case "folder":
-                    folders.append(
-                        TabFolder(
-                            id: node.id, name: node.name ?? "Folder",
-                            isExpanded: node.expanded ?? true,
-                            children: tree(node.children ?? [], depth: depth + 1)))
+                    let folder = TabFolder(
+                        id: node.id, name: node.name ?? "Folder", isExpanded: node.expanded ?? true,
+                        children: tree(node.children ?? [], depth: depth + 1))
+                    folder.live = node.live.flatMap(LiveFolder.init)
+                    for item in folder.live.map({ Array($0.items.values) }) ?? [] {
+                        tabs.first { $0.id == item.tab }?.adopt(restoredTitle: item.title)
+                    }
+                    folders.append(folder)
                     return .folder(node.id)
                 default:
                     return nil
@@ -3147,7 +3965,8 @@ final class TabManager {
         space.todayEntries = todayEntries
         // a file with no tree at all leaves the tabs flat, in the order read
         space.normalizeTree()
-        space.selectedTabID = tabs.first { $0.id == data.selectedTabID }?.id ?? tabs.first?.id
+        space.selectedTabID = tabs.first { $0.id == data.selectedTabID }?.id ?? space.firstOpenTab?.id
+        space.selectedEssentialID = data.selectedEssentialID
         // rebuild splits from the tiling tree (or legacy flat fields), resolving
         // pane indices into the same [pinned…, today…] order
         space.splitGroups = data.splitGroups.compactMap { groupData -> SplitGroup? in
@@ -3208,7 +4027,104 @@ final class PermissionRequest: Identifiable {
     /// the tab went away with the question still on screen
     func abandon() { answer(.deny) }
 
+    /// `decide` hears whatever this question is answered
+    func alsoAnswer(_ decide: @escaping (PermissionDecision) -> Void) {
+        respond = { [respond] in
+            respond?($0)
+            decide($0)
+        }
+    }
+
     var summary: String {
         permissions.map(\.request).formatted(.list(type: .and))
+    }
+}
+
+/// the order and nesting of spaces and favourites grids, by id, so a ⌘Z can put a
+/// move back without holding any page
+private struct SidebarLayout {
+    /// one list of a space's tree, or a profile's favourites grid when `container` is nil
+    struct Slot: Hashable {
+        let owner: UUID
+        let container: SidebarContainer?
+    }
+
+    struct FolderShape: Equatable {
+        let space: Space.ID
+        let name: String
+        let isExpanded: Bool
+        let live: LiveFolder?
+
+        static func == (a: Self, b: Self) -> Bool {
+            a.space == b.space && a.name == b.name && a.isExpanded == b.isExpanded && a.live === b.live
+        }
+    }
+
+    struct SplitShape: Equatable {
+        let space: Space.ID
+        let root: SplitNode
+        let linkSourceID: BrowserTab.ID?
+        let linkTargetID: BrowserTab.ID?
+    }
+
+    var lists: [Slot: [SidebarEntry]] = [:]
+    var folders: [TabFolder.ID: FolderShape] = [:]
+    var splits: [UUID: SplitShape] = [:]
+    /// each pinned tab's and favourite's home
+    var anchors: [BrowserTab.ID: URL] = [:]
+    /// not compared: choosing a tab is no change to take back
+    var selections: [Space.ID: BrowserTab.ID] = [:]
+    /// the favourite this window shows over each space's own tab, not compared either
+    var favourites: [Space.ID: BrowserTab.ID] = [:]
+
+    var tabIDs: Set<BrowserTab.ID> {
+        Set(lists.values.joined().compactMap { if case .tab(let id) = $0 { id } else { nil } })
+    }
+}
+
+/// one act's layout as it left it (`from`) and as its ⌘Z puts it back (`to`)
+private struct LayoutChange {
+    /// a tab only `to` holds, closed by the ⌘Z this change is the redo of
+    struct Page {
+        let url: URL?
+        let title: String
+        let name: String?
+        let state: Any?
+    }
+
+    let from: SidebarLayout
+    let to: SidebarLayout
+    var opened: [BrowserTab.ID: Page] = [:]
+
+    var isEmpty: Bool {
+        from.lists == to.lists && from.folders == to.folders && from.splits == to.splits && from.anchors == to.anchors
+    }
+
+    /// every space whose tree, folders or splits differ between the two
+    var spaces: Set<UUID> {
+        var out = Set<UUID>()
+        for slot in Set(from.lists.keys).union(to.lists.keys) where from.lists[slot] != to.lists[slot] {
+            out.insert(slot.owner)
+        }
+        for id in Set(from.folders.keys).union(to.folders.keys) where from.folders[id] != to.folders[id] {
+            [from.folders[id]?.space, to.folders[id]?.space].compactMap { $0 }.forEach { out.insert($0) }
+        }
+        for id in Set(from.splits.keys).union(to.splits.keys) where from.splits[id] != to.splits[id] {
+            [from.splits[id]?.space, to.splits[id]?.space].compactMap { $0 }.forEach { out.insert($0) }
+        }
+        return out
+    }
+
+    /// the entries `to` places differently: whatever keeps its order in a list stays put
+    var moved: Set<SidebarEntry> {
+        var out = Set<SidebarEntry>()
+        for slot in Set(from.lists.keys).union(to.lists.keys) {
+            for step in (to.lists[slot] ?? []).difference(from: from.lists[slot] ?? []) {
+                switch step {
+                case .insert(_, let entry, _), .remove(_, let entry, _): out.insert(entry)
+                }
+            }
+        }
+        return out
     }
 }

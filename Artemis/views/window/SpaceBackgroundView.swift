@@ -45,12 +45,14 @@ private struct SpaceBackgroundView: View {
 
 /// the window backdrop, cross-faded across spaces by the carousel position: one
 /// stable-identity layer per space, faded by `.opacity`. colour layers keep an
-/// opaque floor; glass layers are scrims over one shared `GlassSubstrate`
+/// opaque floor; glass layers are clear over one shared `GlassSubstrate`
 struct SpaceBackdrop: View, Animatable {
     var spaces: [Space]
     var position: Double
     /// glass frosts the page beneath (the floating sidebar) instead of the desktop behind the window
     var overPage = false
+    /// the pinned sidebar's leading strip, frosted at the sidebar's own level; 0 while it floats
+    var sidebarWidth: CGFloat = 0
 
     // `withAnimation` interpolates only animatable data: exposing `position`
     // re-runs `body` per frame of a click switch instead of jumping to the end
@@ -83,9 +85,10 @@ struct SpaceBackdrop: View, Animatable {
 
             // one shared frost, mounted across all spaces (hidden, opacity 0, over
             // colour) so two glass spaces crossfade over a single surface
-            GlassSubstrate(blur: substrateBlur(
-                floorSpace: floorSpace, nextSpace: nextSpace,
-                floorGlass: floorGlass, nextGlass: nextGlass, frac: frac), overPage: overPage)
+            GlassSubstrate(
+                background: frost(\.backgroundFrost, floorSpace, nextSpace, frac),
+                sidebar: frost(\.sidebarFrost, floorSpace, nextSpace, frac),
+                sidebarWidth: sidebarWidth, overPage: overPage, edge: glassInvolved)
                 .opacity(glassInvolved ? 1 : 0)
 
             ForEach(Array(spaces.enumerated()), id: \.element.id) { index, space in
@@ -100,17 +103,17 @@ struct SpaceBackdrop: View, Animatable {
         .ignoresSafeArea()
     }
 
-    /// the frost level the shared substrate shows. both ends glass → crossfade
-    /// blur-to-blur as the carousel slides; otherwise hold the single glass
-    /// space's blur while the colour layer fades over it
-    private func substrateBlur(
-        floorSpace: Space?, nextSpace: Space?,
-        floorGlass: Bool, nextGlass: Bool, frac: Double
+    /// the frost the shared substrate shows. both ends glass → crossfade frost to
+    /// frost as the carousel slides; otherwise hold the single glass space's frost
+    /// while the colour layer fades over it
+    private func frost(
+        _ key: KeyPath<SpaceAppearance, Double>, _ floorSpace: Space?, _ nextSpace: Space?, _ frac: Double
     ) -> Double {
-        let floorBlur = floorSpace?.appearance.glassBlur ?? 0.6
-        let nextBlur = nextSpace?.appearance.glassBlur ?? 0.6
-        if floorGlass && nextGlass { return floorBlur + (nextBlur - floorBlur) * frac }
-        return floorGlass ? floorBlur : nextBlur
+        let floor = floorSpace?.appearance[keyPath: key] ?? 0.6
+        let next = nextSpace?.appearance[keyPath: key] ?? 0.6
+        let floorGlass = floorSpace?.appearance.fill == .glass
+        if floorGlass && nextSpace?.appearance.fill == .glass { return floor + (next - floor) * frac }
+        return floorGlass ? floor : next
     }
 
     private func layerOpacity(index: Int, floor: Int, frac: Double, glassInvolved: Bool) -> Double {
@@ -128,35 +131,120 @@ struct SpaceBackdrop: View, Animatable {
 }
 
 /// the single liquid-glass surface, shared across all spaces so two glass spaces never
-/// stack two frosts. as the window backdrop it is frosted glass of its own and never
-/// shows the desktop; over the page (the floating sidebar) it frosts the page beneath
+/// stack two frosts. as the window backdrop it frosts the desktop behind the window, the
+/// pinned sidebar's strip at its own level; over the page it frosts the page beneath
 private struct GlassSubstrate: View {
-    /// 0 = light frost … 1 = heavy; crossfaded between two glass spaces by the carousel
-    var blur: Double
+    var background: Double
+    var sidebar: Double
+    var sidebarWidth: CGFloat
     var overPage: Bool
-    /// Reduce Transparency flattens the page frost to a system grey too light for white ink
+    var edge: Bool
+    /// Reduce Transparency flattens any vibrancy to a system grey too light for white ink
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         ZStack {
-            if overPage && !reduceTransparency {
-                VisualEffectView(material: .underWindowBackground, blending: .withinWindow)
-                    .opacity(0.5 + blur * 0.5)
-            } else {
+            if reduceTransparency {
                 LinearGradient(
                     colors: [Color(white: 0.25), Color(white: 0.13)],
                     startPoint: .topLeading, endPoint: .bottomTrailing)
                 NoiseTexture()
-                    .opacity(0.05 + blur * 0.07)
+                    .opacity(0.1)
                     .blendMode(.overlay)
+                Color.black.opacity(0.3)
+            } else if overPage {
+                Frost(amount: sidebar, blending: .withinWindow)
+            } else {
+                // the pinned sidebar is glass on glass: its frost and rim stack on the background's,
+                // running a corner's width under the card so its rounded sidebar side shows no seam
+                let tucked = sidebarWidth > 0 ? sidebarWidth + WindowChrome.outerWindowRadius : 0
+                ZStack(alignment: .leading) {
+                    Frost(amount: background, blending: .behindWindow)
+                    Frost(amount: sidebar, blending: .behindWindow)
+                        .frame(width: tucked)
+                    if edge && sidebarWidth > 0 {
+                        GlassLens(identifier: GlassLens.sidebar)
+                            .frame(width: tucked)
+                    }
+                }
+                if edge {
+                    GlassLens(identifier: GlassLens.window)
+                }
             }
-            // the sheen and edge refraction that make either surface read as glass
-            Rectangle()
-                .fill(.clear)
-                .glassEffect(overPage ? .clear : .regular, in: Rectangle())
         }
         .ignoresSafeArea()
     }
+}
+
+/// one frosted region over what lies behind it, the same curve for the sidebar and the
+/// background: 0 paints nothing, 1 is the full blur, clear-glass sheen and scrim
+struct Frost: NSViewRepresentable {
+    static let fullBlur = 0.8
+    static let fullScrim = 0.3
+    var amount: Double
+    var blending: NSVisualEffectView.BlendingMode
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func makeNSView(context: Context) -> FrostView { FrostView() }
+
+    func updateNSView(_ view: FrostView, context: Context) {
+        view.blur.blendingMode = blending
+        // the blur comes in ahead of the scrim, so a low frost already reads as frost
+        view.blur.alphaValue = Self.fullBlur * amount.squareRoot()
+        view.sheen.alphaValue = amount
+        view.scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(Self.fullScrim * amount).cgColor
+    }
+
+    final class FrostView: NSView {
+        let blur = NSVisualEffectView()
+        /// overhangs the region on every side, so its edge lens is clipped away
+        let sheen = NSGlassEffectView()
+        let scrim = NSView()
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            clipsToBounds = true
+            blur.material = .underWindowBackground
+            blur.state = .active
+            blur.appearance = NSAppearance(named: .darkAqua)
+            sheen.style = .clear
+            scrim.wantsLayer = true
+            for view in [blur, sheen, scrim] {
+                view.frame = view === sheen ? bounds.insetBy(dx: -Self.sheenOverhang, dy: -Self.sheenOverhang) : bounds
+                view.autoresizingMask = [.width, .height]
+                addSubview(view)
+            }
+        }
+
+        private static let sheenOverhang: CGFloat = 40
+
+        required init?(coder: NSCoder) { fatalError() }
+    }
+}
+
+/// a rim of the same clear glass the floating sidebar's edge uses, at the window's radius;
+/// it lenses what lies behind the window, frosted or not
+struct GlassLens: NSViewRepresentable {
+    static let window = NSUserInterfaceItemIdentifier("windowGlassEdge")
+    static let sidebar = NSUserInterfaceItemIdentifier("sidebarGlassEdge")
+    let identifier: NSUserInterfaceItemIdentifier
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let glass = NSGlassEffectView()
+        glass.identifier = identifier
+        glass.style = .clear
+        glass.cornerRadius = WindowChrome.outerWindowRadius
+        return glass
+    }
+
+    func updateNSView(_ nsView: NSGlassEffectView, context: Context) {}
 }
 
 /// AppKit vibrancy (blurs content behind the window) for the glass fill
@@ -171,9 +259,8 @@ struct VisualEffectView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blending
         view.state = .active
+        updateNSView(view, context: context)
         return view
     }
 

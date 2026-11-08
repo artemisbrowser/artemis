@@ -928,6 +928,7 @@
     if (typeof nativeFetch === "function" && typeof Request === "function") {
       const bridgeByHost = new Map();  // host -> {bridge, at}
       globalThis.fetch = async function (input, init) {
+        let refused = false;
         try {
           const probe = new Request(input, init);
           if (/^https?:/.test(probe.url)) {
@@ -946,7 +947,9 @@
               probe.headers.forEach((value, key) => { headers[key] = value; });
               const reply = await call("fetch.perform",
                 { url: probe.url, method, headers, bodyBase64 });
-              if (reply && typeof reply.status === "number") {
+              if (reply && reply.networkError) {
+                refused = true;
+              } else if (reply && typeof reply.status === "number") {
                 const bytes = reply.bodyBase64
                   ? Uint8Array.from(atob(reply.bodyBase64), (c) => c.charCodeAt(0))
                   : null;
@@ -955,13 +958,16 @@
                   statusText: reply.statusText || "",
                   headers: reply.headers || {},
                 });
+              } else {
+                report("fetch-bridge", "bridge failed for " + probe.url + ", falling through");
               }
-              report("fetch-bridge", "bridge failed for " + probe.url + ", falling through");
             }
           }
         } catch (e) {
           report("fetch-bridge", (e && e.message) || String(e));
         }
+        // a redirect out of the extension's reach fails as Chrome's CORS check would, unretried
+        if (refused) throw new TypeError("Failed to fetch");
         return nativeFetch.apply(this, arguments);
       };
     }

@@ -4,7 +4,7 @@
 
 """Score a tab-name sweep.
 
-Reads ~/Downloads/artemis-sweep.jsonl (written by ARTEMIS_DIAG=sweep) and
+Reads ~/Library/Logs/Artemis/artemis-sweep.jsonl (written by ARTEMIS_DIAG=sweep) and
 reports, for every context depth:
 
   named      how often a page ended up with a name at all
@@ -114,7 +114,7 @@ def summarise(rows: list[dict]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--file", default=os.path.expanduser("~/Downloads/artemis-sweep.jsonl"))
+    parser.add_argument("--file", default=os.path.expanduser("~/Library/Logs/Artemis/artemis-sweep.jsonl"))
     parser.add_argument("--sample", type=int, default=0, help="print N pages across variants")
     parser.add_argument("--category", help="only this category")
     parser.add_argument("--worst", type=int, default=0, help="print N suspect names")

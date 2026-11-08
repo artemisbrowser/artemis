@@ -64,19 +64,22 @@ final class StorePageCleaner: NSObject, WKScriptMessageHandler {
       const post = m => webkit.messageHandlers.\(handlerName).postMessage(m);
       const labels = { ready: "Add to Artemis", adding: "Adding…", added: "Added to Artemis" };
       const ours = /^(Add to Artemis|Adding…|Added to Artemis)$/;
-      let state = "ready", note = "", lastPath = "";
+      let state = "ready", note = "", lastItem = "";
 
       const isItemPage = () => isCWS ? location.pathname.includes("/detail/") : location.pathname.includes("/addon/");
-      const itemName = () => (document.querySelector("h1")?.firstChild?.textContent || "").trim();
+      // the Chrome Web Store keeps the pages it left in the DOM, hidden
+      const shown = e => e.getClientRects().length > 0 && getComputedStyle(e).visibility === "visible";
 
       // [button, element holding its label]
       function itemButton() {
         if (isCWS) {
           for (const span of document.querySelectorAll("button span")) {
-            const text = span.textContent.trim();
-            if (/^(Add to Chrome|Remove from Chrome)$/.test(text) || ours.test(text)) return [span.closest("button"), span];
+            const text = span.textContent.trim(), button = span.closest("button");
+            if ((/^(Add to Chrome|Remove from Chrome)$/.test(text) || ours.test(text)) && shown(button)) return [button, span];
           }
-          const span = document.querySelector('button span[jsname="V67aGc"]');
+          // any language: the install button is the item's one disabled labelled button; the header
+          // tabs and search's disabled "Clear all" label alike but sit outside main
+          const span = [...document.querySelectorAll('main button[disabled] span[jsname="V67aGc"]')].find(s => shown(s.closest("button")));
           return span ? [span.closest("button"), span] : null;
         }
         const button = document.querySelector(".GetFirefoxButton-button, .AMInstallButton-button")
@@ -100,7 +103,7 @@ final class StorePageCleaner: NSObject, WKScriptMessageHandler {
             }
           });
           // the "switch to Chrome" banner: hide the largest block around its text that stays
-          // banner-sized (under 400 characters), never the install button
+          // banner-sized (under 400 characters), never the item's title or install button
           const nag = /Switch to Chrome|Install Chrome|Get Chrome|recommends using Chrome|Download Chrome/i;
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
           for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -108,7 +111,7 @@ final class StorePageCleaner: NSObject, WKScriptMessageHandler {
             let block = node.parentElement;
             while (block.parentElement && block.parentElement !== document.body
                    && (block.parentElement.textContent || "").length < 400
-                   && !block.parentElement.querySelector("[data-artemis-store]")) {
+                   && !block.parentElement.querySelector("h1, [data-artemis-store]")) {
               block = block.parentElement;
             }
             block.style.setProperty("display", "none", "important");
@@ -119,11 +122,13 @@ final class StorePageCleaner: NSObject, WKScriptMessageHandler {
       function apply() {
         clean();
         if (!isItemPage()) return;
-        if (location.pathname !== lastPath && itemName()) {
-          lastPath = location.pathname;
+        const name = ([...document.querySelectorAll("h1")].find(shown)?.firstChild?.textContent || "").trim();
+        // keyed on the name too: the URL changes before the store shows the item
+        if (name && location.pathname + name !== lastItem) {
+          lastItem = location.pathname + name;
           state = "ready";
           note = "";
-          post({ type: "hello", name: itemName() });
+          post({ type: "hello", name });
         }
         const found = itemButton();
         if (!found) return;

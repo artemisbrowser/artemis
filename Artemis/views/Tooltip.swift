@@ -28,12 +28,14 @@ final class TooltipState {
         /// the live cursor in global space — used by `.cursor`, which tracks it
         var cursor: CGPoint
         var style: TooltipStyle
+        /// the window the control sits in: the bubble lives no longer than it does
+        let windowNumber: Int
     }
 
     /// the tooltip currently shown, or nil
     var active: Active? {
         didSet {
-            if active?.id != oldValue?.id { inline = active != nil && pointerIsOverWindow }
+            if active?.id != oldValue?.id { inline = active != nil && active?.windowNumber == window?.windowNumber }
             present()
         }
     }
@@ -51,8 +53,32 @@ final class TooltipState {
     /// the window `TooltipLayer` draws in; nil leaves every bubble to the panel
     @ObservationIgnored weak var window: NSWindow?
 
+    /// a hover card is up in the bubble's place: no bubble shows until it goes
+    var isSuppressed = false {
+        didSet { if isSuppressed { active = nil } }
+    }
+
     @ObservationIgnored private static let all = NSHashTable<TooltipState>.weakObjects()
-    init() { Self.all.add(self) }
+    @ObservationIgnored private var closing: (any NSObjectProtocol)?
+
+    init() {
+        Self.all.add(self)
+        // a closed window's controls report neither their hover ending nor disappearing
+        closing = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let window = note.object as? NSWindow,
+                    self.active?.windowNumber == window.windowNumber
+                else { return }
+                self.active = nil
+            }
+        }
+    }
+
+    deinit {
+        if let closing { NotificationCenter.default.removeObserver(closing) }
+    }
 
     /// for a control the environment doesn't reach (a popover is a window of its
     /// own and often doesn't inherit it; Settings has none): the main window's
@@ -70,13 +96,6 @@ final class TooltipState {
         presenter.update(inline ? nil : active, accent: accent, light: light)
     }
 
-    /// popovers and sheets are windows of their own, so a control in one misses this
-    private var pointerIsOverWindow: Bool {
-        guard let window, window.isVisible else { return false }
-        return NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0)
-            == window.windowNumber
-    }
-
     /// once a tooltip has shown, neighbouring controls skip the dwell and appear
     /// instantly until the cursor sits in dead space for this long
     private(set) var warm = false
@@ -87,8 +106,10 @@ final class TooltipState {
     /// onto a neighbour swaps the bubble in place rather than fading it out and in
     private static let clearGraceMS = 70
 
-    /// show a tooltip and (re)enter the warm period
+    /// show a tooltip and (re)enter the warm period; refused once the control's
+    /// window is off screen, which a dwell can outlast
     func show(_ a: Active) {
+        guard !isSuppressed, NSApp.window(withWindowNumber: a.windowNumber)?.isVisible == true else { return }
         clear?.cancel()
         clear = nil
         active = a
@@ -181,19 +202,16 @@ private struct TooltipModifier: ViewModifier {
                         if state.active?.id == id { state.active?.cursor = loc }
                         guard !hovering else { return }
                         hovering = true
+                        place.window = NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0)
                         showTask?.cancel()
                         // warm → appear instantly; cold → wait out the dwell
                         if state.warm {
-                            state.show(
-                                .init(id: id, text: text, keys: keys, anchor: place.frame, cursor: place.cursor, style: style))
+                            state.show(bubble)
                         } else {
                             showTask = Task {
                                 try? await Task.sleep(for: .milliseconds(Self.delayMS))
                                 guard !Task.isCancelled else { return }
-                                state.show(
-                                    .init(
-                                        id: id, text: text, keys: keys, anchor: place.frame, cursor: place.cursor, style: style)
-                                )
+                                state.show(bubble)
                             }
                         }
                     case .ended:
@@ -207,19 +225,29 @@ private struct TooltipModifier: ViewModifier {
                     state.hideNow(id: id)
                 }
                 // a control whose label changes (e.g. Copy → Copied!) refreshes the
-                // live bubble in place
-                .onChange(of: text) { _, new in
+                // live bubble in place, and a dwell still running shows the new label
+                .onChange(of: text, initial: true) { _, new in
+                    place.text = new
                     if state.active?.id == id { state.active?.text = new }
                 }
         } else {
             content.help(text)
         }
     }
+
+    private var bubble: TooltipState.Active {
+        .init(
+            id: id, text: place.text, keys: keys, anchor: place.frame, cursor: place.cursor, style: style,
+            windowNumber: place.window)
+    }
 }
 
 private final class AnchorBox {
     var frame: CGRect = .zero
     var cursor: CGPoint = .zero
+    /// the window under the pointer as the hover began, which is the control's
+    var window = 0
+    var text = ""
 }
 
 /// the bubble itself, at its natural size plus room for its shadow in the panel;
@@ -397,13 +425,9 @@ private final class TooltipPresenter {
     nonisolated(unsafe) private var panel: NSPanel?
 
     deinit {
-        if let watch { NotificationCenter.default.removeObserver(watch) }
         panel?.orderOut(nil)
     }
 
-    /// a window closing is the general case of "the control I was over has gone",
-    /// and the one the per-control teardown can miss
-    private var watch: (any NSObjectProtocol)?
     /// one hosting view for the life of the panel: the bubble follows the pointer,
     /// so this is re-rooted on every move, and a fresh view each time would restart
     /// the keycap tracker as fast as the mouse reports
@@ -531,11 +555,6 @@ private final class TooltipPresenter {
     }
 
     private func makePanel() -> NSPanel {
-        watch = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.panel?.orderOut(nil) }
-        }
         let panel = NSPanel(
             contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false)

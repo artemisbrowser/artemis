@@ -189,22 +189,21 @@ final class Autofill: NSObject, WKScriptMessageHandler {
         guard kind == "card" else {
             return store.fillsAddresses ? store.addresses(in: tab.loginProfile).map(AutofillChoice.address) : []
         }
-        guard store.fillsCards, PasswordStore.isSecure(target.origin), PasswordStore.isSecure(topOrigin(of: tab, or: target.origin))
-        else { return [] }
+        guard store.fillsCards, takesCards(target.origin, in: tab) else { return [] }
         return store.cards(in: tab.loginProfile).map(AutofillChoice.card)
     }
 
-    private func topOrigin(of tab: BrowserTab, or fallback: String) -> String {
-        SitePermissionStore.originString(tab.webView.url) ?? fallback
+    private func takesCards(_ origin: String, in tab: BrowserTab) -> Bool {
+        let top = SitePermissionStore.originString(tab.webView.url) ?? origin
+        return PasswordStore.isSecure(origin) && PasswordStore.isSecure(top) && tab.offersCredentials(to: origin)
     }
 
-    /// Fills `choice` into the section it was picked from and into other frames of the page on the same origin as
-    /// that frame; nothing crosses origins. A card needs a secure frame and page. Either kind asks the device owner as
-    /// its unlock policy says. False when nothing filled.
+    /// Fills `choice` into the section it was picked from; a card also fills other frames on that frame's origin
+    /// that show through every iframe up to the top. Nothing crosses origins. A card needs a secure frame and page.
+    /// Either kind asks the device owner as its unlock policy says. False when nothing filled.
     @discardableResult
     func fill(_ choice: AutofillChoice, into target: AutofillTarget, in tab: BrowserTab) async -> Bool {
         let store = AutofillStore.shared
-        let top = topOrigin(of: tab, or: target.origin)
         let values: [String: Any]
         switch choice {
         case .address(let address):
@@ -218,7 +217,7 @@ final class Autofill: NSObject, WKScriptMessageHandler {
             ]
         case .card(let card):
             guard store.cards(in: tab.loginProfile).contains(where: { $0.id == card.id }),
-                PasswordStore.isSecure(target.origin), PasswordStore.isSecure(top)
+                takesCards(target.origin, in: tab)
             else { return false }
             guard await OwnerUnlock.authenticate(.cards, "fill your \(card.label)") else { return false }
             guard let number = store.number(for: card) else { return false }
@@ -230,8 +229,8 @@ final class Autofill: NSObject, WKScriptMessageHandler {
         let asked = LoginKeys.key(target.frame)
         var filled = await fill(values, kind: choice.kind, in: target.frame, origin: target.origin, of: tab)
         for (key, other) in tab.autofillFrames
-        where key != asked && other.origin == target.origin && other.kinds[choice.kind] != nil {
-            if !other.frame.isMainFrame, await !PasswordAutofill.shared.frameIsShown(other.origin, in: tab) { continue }
+        where choice.kind == "card" && key != asked && other.origin == target.origin && other.kinds["card"] != nil {
+            if !other.frame.isMainFrame, await !isShown(other.frame, in: tab) { continue }
             filled += await fill(values, kind: choice.kind, in: other.frame, origin: other.origin, of: tab)
         }
         guard filled > 0 else { return false }
@@ -242,6 +241,19 @@ final class Autofill: NSObject, WKScriptMessageHandler {
             }
         }
         return true
+    }
+
+    /// whether the top document shows `frame` through each iframe between them; the frame names itself to the top
+    /// by a trusted postMessage, so no other frame on its origin can stand in for it
+    private func isShown(_ frame: WKFrameInfo, in tab: BrowserTab) async -> Bool {
+        let nonce = UUID().uuidString
+        _ = try? await tab.webView.callAsyncJavaScript(
+            "top.postMessage('artemis-frame:' + nonce, '*')", arguments: ["nonce": nonce], in: frame,
+            contentWorld: AutofillPage.world)
+        let shown = try? await tab.webView.callAsyncJavaScript(
+            "return await globalThis.__artemisAutofill?.frameShown(nonce) ?? false", arguments: ["nonce": nonce],
+            in: nil, contentWorld: AutofillPage.world)
+        return shown as? Bool == true
     }
 
     private func fill(
@@ -330,8 +342,7 @@ final class Autofill: NSObject, WKScriptMessageHandler {
         }
         if let found = body["card"] as? [String: Any], let number = found["number"] as? String, CardBrand.isValid(number),
             let month = found["month"] as? Int, (1...12).contains(month), let year = found["year"] as? Int,
-            (2000...2100).contains(year), PasswordStore.isSecure(origin),
-            PasswordStore.isSecure(topOrigin(of: tab, or: origin))
+            (2000...2100).contains(year), takesCards(origin, in: tab)
         {
             let holder = (found["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
             if var card = store.card(numbered: number, in: profile) {

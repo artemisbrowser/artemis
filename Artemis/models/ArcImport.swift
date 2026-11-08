@@ -13,14 +13,13 @@ nonisolated enum ArcImport {
 
     struct Result {
         var spaces: [SpaceData] = []
-        /// Arc's top apps, which are Artemis' favourites, by Arc profile folder
-        var favourites: [(folder: String, url: String)] = []
+        /// Arc's top apps, which are Artemis' favourites, by Arc profile folder, with
+        /// the name you gave each in Arc
+        var favourites: [(folder: String, url: String, name: String?)] = []
         /// archived tabs, by the Arc profile folder of the space they left
         var archived: [(folder: String, entry: ArchiveEntry)] = []
         /// url → the page title Arc had, shown until the tab is hydrated
         var titles: [String: String] = [:]
-        /// url → the name you gave the tab in Arc, which outranks any title
-        var renames: [String: String] = [:]
         /// Arc profile folder ("Default", "Profile 1") → the Artemis profile its
         /// spaces, favourites, archive, cookies, history and passwords land in
         var profileIDs: [String: UUID] = ["Default": Profile.defaultID]
@@ -37,9 +36,7 @@ nonisolated enum ArcImport {
         var profiles: [ProfileData] {
             profileIDs.compactMap { folder, id in
                 guard id != Profile.defaultID else { return nil }
-                return ProfileData(
-                    id: id, name: profileNames[folder] ?? folder, icon: "person.crop.circle",
-                    essentialURLs: [])
+                return ProfileData(id: id, name: profileNames[folder] ?? folder, icon: "person.crop.circle")
             }
             .sorted { $0.name < $1.name }
         }
@@ -119,7 +116,6 @@ nonisolated enum ArcImport {
                     selectedTabID: builder.tabs.first?.id,
                     pinnedEntries: pinned, todayEntries: today))
             result.titles.merge(builder.titles) { current, _ in current }
-            result.renames.merge(builder.renames) { current, _ in current }
         }
 
         // each Arc profile has a top-apps container; its children are that profile's favourites
@@ -133,10 +129,9 @@ nonisolated enum ArcImport {
             guard favourites.tabs.count > before else { continue }
             let profile = arcProfile(owner)
             result.profileIDs[profile.folder] = result.profileIDs[profile.folder] ?? profile.id
-            result.favourites += favourites.tabs[before...].map { (profile.folder, $0.url) }
+            result.favourites += favourites.tabs[before...].map { (profile.folder, $0.url, $0.name) }
         }
         result.titles.merge(favourites.titles) { current, _ in current }
-        result.renames.merge(favourites.renames) { current, _ in current }
 
         guard !result.isEmpty else { return nil }
         return (result, spaces)
@@ -199,7 +194,6 @@ nonisolated enum ArcImport {
         var tabs: [TabRecord] = []
         var splits: [SplitGroupData] = []
         var titles: [String: String] = [:]
-        var renames: [String: String] = [:]
         /// containers already walked: a damaged file can list a folder under itself
         private var walked: Set<String> = []
 
@@ -241,10 +235,10 @@ nonisolated enum ArcImport {
             else { return nil }
             let record = TabRecord(
                 url: raw, pinnedURL: pinned ? raw : nil, isPinned: pinned,
-                lastAccessed: date(info["timeLastActiveAt"]))
+                lastAccessed: date(info["timeLastActiveAt"]),
+                name: (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 })
             tabs.append(record)
             if let title = info["savedTitle"] as? String, !title.isEmpty { titles[raw] = title }
-            if let name = item["title"] as? String, !name.isEmpty { renames[raw] = name }
             return EntryData(kind: "tab", id: record.id)
         }
 

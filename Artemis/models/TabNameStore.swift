@@ -3,15 +3,16 @@
 
 import Foundation
 
-/// what a tab is called when that isn't the page's title, keyed by url so the
-/// name outlives the tab object. `custom` is typed and never overwritten;
-/// `generated` is the on-device model's, replaced when the page changes
+/// the on-device model's name for a page, keyed by url since it describes the page
+/// rather than a tab, and replaced when the page changes. a typed name lives on its tab
 @MainActor
 @Observable
 final class TabNameStore {
     static let shared = TabNameStore()
 
     nonisolated struct Names: Codable {
+        /// a typed name by url, which builds that kept names by url read and write;
+        /// `handOverCustomNames` gives it to tabs
         var custom: String?
         var generated: String?
         /// the page title the generated name was made from; a match means the
@@ -21,37 +22,29 @@ final class TabNameStore {
         var isEmpty: Bool { custom == nil && generated == nil }
     }
 
-    private(set) var names: [String: Names] = [:]
-    private static let fileName = "tabnames.json"
+    private var names: [String: Names] = [:]
+    private let file: URL
 
-    private init() {
-        names =
-            AppStorageLocation.loadDurable(
-                [String: Names].self, from: AppStorageLocation.file(Self.fileName)) ?? [:]
+    init(file: URL = AppStorageLocation.file("tabnames.json")) {
+        self.file = file
+        names = AppStorageLocation.loadDurable([String: Names].self, from: file) ?? [:]
     }
 
-    /// the name to show: yours, then the model's, then nothing (meaning "use the
-    /// page title")
-    func name(for url: URL?) -> String? {
-        guard let key = Self.key(url) else { return nil }
-        guard let entry = names[key] else { return nil }
-        return entry.custom ?? entry.generated
+    /// the model's name for the page at `url`; nil means "use the page title"
+    func generated(for url: URL?) -> String? {
+        Self.key(url).flatMap { names[$0]?.generated }
     }
 
-    func custom(for url: URL?) -> String? {
-        Self.key(url).flatMap { names[$0]?.custom }
-    }
-
-    func hasGenerated(for url: URL?) -> Bool {
-        Self.key(url).flatMap { names[$0]?.generated } != nil
-    }
-
-    func setCustom(_ name: String?, for url: URL?) {
-        guard let key = Self.key(url) else { return }
-        var entry = names[key] ?? Names()
-        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        entry.custom = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        write(entry, at: key)
+    /// give each unnamed tab the typed name stored for its url, or for its pin's, and
+    /// each unnamed archived tab the one for its url. the store keeps them
+    func handOverCustomNames(to tabs: [BrowserTab], archives: [ArchiveStore]) {
+        let typed = names.compactMapValues(\.custom)
+        guard !typed.isEmpty else { return }
+        for tab in tabs where tab.customName == nil {
+            let keys = [tab.url ?? tab.pendingURL, tab.pinnedURL].compactMap(Self.key)
+            tab.customName = keys.lazy.compactMap { typed[$0] }.first
+        }
+        for archive in archives { archive.nameUnnamed { Self.key($0).flatMap { typed[$0] } } }
     }
 
     func setGenerated(_ name: String?, from pageTitle: String? = nil, for url: URL?) {
@@ -67,7 +60,7 @@ final class TabNameStore {
         Self.key(url).flatMap { names[$0]?.generatedFrom }
     }
 
-    /// forget the model's suggestion but keep anything typed
+    /// forget the model's name for the page at `url`
     func clearGenerated(for url: URL?) {
         guard let key = Self.key(url), var entry = names[key] else { return }
         entry.generated = nil
@@ -75,8 +68,7 @@ final class TabNameStore {
         write(entry, at: key)
     }
 
-    /// forget the model's names, and the page titles they came from, except at `urls`;
-    /// anything typed stays
+    /// forget the model's names, and the page titles they came from, except at `urls`
     func clearAllGenerated(keeping urls: [URL?] = []) {
         let kept = Set(urls.compactMap(Self.key))
         let stale = names.filter {
@@ -147,7 +139,7 @@ final class TabNameStore {
     private func flush() {
         guard needsWrite, let data = try? JSONEncoder().encode(names) else { return }
         needsWrite = false
-        AppStorageLocation.writeDurable(data, to: AppStorageLocation.file(Self.fileName))
+        AppStorageLocation.writeDurable(data, to: file)
     }
 
     @ObservationIgnored private var needsWrite = false
@@ -159,6 +151,6 @@ final class TabNameStore {
         saveTask?.cancel()
         guard needsWrite, let data = try? JSONEncoder().encode(names) else { return }
         needsWrite = false
-        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(Self.fileName))
+        AppStorageLocation.writeDurableNow(data, to: file)
     }
 }

@@ -33,18 +33,21 @@ final class ExtensionWindow: NSObject, WKWebExtensionWindow {
 
     /// what a profile's extensions see of this window: the space you're in when it
     /// is theirs, else the first of their own. never another profile's tabs, and
-    /// incognito ones only in an incognito window
+    /// incognito ones only in an incognito window. a locked space has no selected tab
     @MainActor
     private func space(for context: WKWebExtensionContext) -> (tabs: [BrowserTab], selected: BrowserTab?) {
         guard let scope else { return ([], nil) }
-        if parent != nil { return (scope.currentSpace.tabs, scope.currentSpace.selectedTab) }
+        let lock = SpaceLock.shared
+        if parent != nil {
+            return (scope.currentSpace.tabs, lock.unlocked(scope.currentSpace.selectedTab, in: scope.currentSpace))
+        }
         let profile = context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:))
             ?? Profile.defaultID
         let space = scope.currentSpace.profileID == profile
             ? scope.currentSpace : scope.spaces.first { $0.profileID == profile }
         let essentials = scope.core.profile(profile)?.essentials ?? []
         let selected = space?.selectedTab ?? essentials.first
-        return (((space?.tabs ?? []) + essentials).filter { !$0.isPrivate }, selected)
+        return (((space?.tabs ?? []) + essentials).filter { !$0.isPrivate }, lock.unlocked(selected, in: space))
     }
 
     /// favourites are open tabs too, and WebKit throws the whole list away when

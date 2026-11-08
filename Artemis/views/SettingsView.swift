@@ -74,7 +74,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-    private static let paneKey = "settingsPane"
+    static let paneKey = "settingsPane"
     @AppStorage(paneKey) private var selectedPane: SettingsPane = .general
     @State private var back: [SettingsPane] = []
     @State private var forward: [SettingsPane] = []

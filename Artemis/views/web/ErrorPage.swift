@@ -10,8 +10,11 @@ struct ErrorPage: View {
     @Environment(\.chromeInk) private var ink
 
     private static let certificateWarning =
-        "Artemis couldn't verify this server's identity. Continue only if you know who runs it — "
-        + "someone could be impersonating the site."
+        "Artemis couldn't verify this server's identity. Continue only if you know who runs it, "
+        + "since someone could be pretending to be this site."
+    private static let secureConnectionRequired =
+        "This site requires a secure connection, so you can't continue past this error. "
+        + "Try again later or on another network."
 
     var body: some View {
         let crashed = tab.loadError == BrowserTab.crashLoopError
@@ -49,15 +52,17 @@ struct ErrorPage: View {
                 .controlSize(.large)
                 .tooltip("Reload this page")
 
-                // the only failure with a way past; accepting trusts that one certificate
-                if tab.canOverrideCertificate {
+                if tab.certificateFailure != nil {
                     Button("Show Certificate") {
                         let host = tab.lastAttemptedURL?.host() ?? ""
                         CertificateTrust.showViewer(trust: tab.serverTrusts[host])
                     }
                     .controlSize(.large)
                     .tooltip("Look at what this server presented")
+                }
 
+                // the only failure with a way past; accepting trusts that one certificate
+                if tab.certificateFailure == .overridable {
                     Button("Continue Anyway") {
                         tab.acceptCertificateAndRetry()
                     }
@@ -67,8 +72,8 @@ struct ErrorPage: View {
             }
             .padding(.top, 6)
 
-            if tab.canOverrideCertificate {
-                Text(Self.certificateWarning)
+            if let failure = tab.certificateFailure {
+                Text(failure == .final ? Self.secureConnectionRequired : Self.certificateWarning)
                     .font(.caption)
                     .foregroundStyle(ink.opacity(0.4))
                     .multilineTextAlignment(.center)

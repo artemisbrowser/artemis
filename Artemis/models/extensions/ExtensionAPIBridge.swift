@@ -70,9 +70,10 @@ final class ExtensionAPIBridge {
         case "identity.launch":
             let interactive = message["interactive"] as? Bool ?? false
             guard let url = (message["url"] as? String).flatMap(URL.init(string:)),
-                url.scheme == "https" || url.scheme == "http",
-                let host = context.webExtension.manifest[ExtensionCompat.redirectHostKey] as? String
+                url.scheme == "https" || url.scheme == "http"
             else { return ["error": "Authorization page could not be loaded."] }
+            let host = ExtensionCompat.redirectHost(
+                storedID: context.uniqueIdentifier, manifest: context.webExtension.manifest)
             let flow = AuthFlow(
                 url: url, redirectHost: host.lowercased(),
                 title: context.webExtension.displayName ?? "Sign In",
@@ -81,6 +82,9 @@ final class ExtensionAPIBridge {
                 return ["url": redirect.absoluteString]
             }
             return ["error": interactive ? "The user did not approve access." : "User interaction required."]
+
+        case "fetch.perform":
+            return await ExtensionProxyBridge.performBridgedFetch(message, for: context, in: Self.profile(of: context))
 
         case "sidePanel.state":
             let settings = panelSettings[context.uniqueIdentifier] ?? PanelSettings()

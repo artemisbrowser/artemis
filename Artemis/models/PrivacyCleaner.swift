@@ -76,6 +76,7 @@ enum PrivacyCleaner {
     ) async {
         let since = range.since
         SpotlightIndex.forget(.profile(profile.id))
+        LiveSource.forget(profile.id)
 
         if targets.contains(.history) {
             profile.history.clear(since: since)
@@ -84,11 +85,11 @@ enum PrivacyCleaner {
             func isCleared(_ space: UUID, _ closedAt: Date) -> Bool {
                 closedAt >= since && (manager.spaces.first { $0.id == space }?.profileID ?? profile.id) == profile.id
             }
-            manager.closedTabs.removeAll { isCleared($0.spaceID, $0.closedAt) }
-            manager.closedFolders.removeAll { isCleared($0.spaceID, $0.closedAt) }
-            // the command bar's learned inputs, each tab's back/forward list and the
-            // model's tab names are history too, but untimestamped: only a full clear takes them
+            manager.forgetClosed(where: isCleared)
+            // the command bar's learned inputs, each tab's back/forward list, the model's tab
+            // names and what ⌘Z holds are history too, but untimestamped: only a full clear takes them
             if range == .all {
+                manager.clearAllUndo()
                 profile.inputHistory.clear()
                 TabNameStore.shared.clearAllGenerated()
                 for tab in profile.essentials { tab.forgetSessionHistory() }

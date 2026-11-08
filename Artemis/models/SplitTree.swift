@@ -8,12 +8,12 @@ import Observation
 /// one node of a split's tiling tree: a `leaf` pane, or a `split` sharing its axis
 /// among `children` by `ratio`. a node's `id` survives restructuring, so SwiftUI
 /// moves a subtree and its web view rather than remounting it
-indirect enum SplitNode: Identifiable {
+indirect enum SplitNode: Identifiable, Equatable {
     case leaf(id: UUID, tab: UUID)
     case split(id: UUID, axis: SplitOrientation, children: [Child])
 
     /// a child slot in a split node: the subtree plus its fraction of the axis
-    struct Child: Identifiable {
+    struct Child: Identifiable, Equatable {
         var node: SplitNode
         var ratio: Double
         var id: UUID { node.id }

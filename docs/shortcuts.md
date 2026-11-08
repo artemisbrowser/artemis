@@ -23,6 +23,12 @@ The menu bar's shortcuts, menu by menu, as `Artemis/ArtemisApp.swift` binds them
 | ⌥⌘F      | Ask About This Page…                                                   |
 | ⌘P       | Print…                                                                 |
 
+## Edit
+
+| Shortcut  | Action                                                                                                      |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| ⌘Z / ⌘⇧Z  | Undo / Redo the last sidebar action, the typing in a focused field or page, or in Settings the last change |
+
 ## View
 
 | Shortcut             | Action                                                |

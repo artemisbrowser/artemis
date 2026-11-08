@@ -48,11 +48,13 @@ enum ExternalSchemes {
         "\(site.lowercased())|\(scheme.lowercased())"
     }
 
+    /// an empty site, a page whose asker is unknown, is never allowed
     static func isAllowed(site: String, scheme: String) -> Bool {
-        allowed.contains(key(site: site, scheme: scheme))
+        !site.isEmpty && allowed.contains(key(site: site, scheme: scheme))
     }
 
     static func allow(site: String, scheme: String) {
+        guard !site.isEmpty else { return }
         allowed.insert(key(site: site, scheme: scheme))
         save()
     }
@@ -66,7 +68,7 @@ enum ExternalSchemes {
 
     private static func load() -> Set<String> {
         let url = AppStorageLocation.file(file)
-        return Set(AppStorageLocation.loadDurable([String].self, from: url) ?? [])
+        return Set((AppStorageLocation.loadDurable([String].self, from: url) ?? []).filter { !$0.hasPrefix("|") })
     }
 
     private static func save(keepsBackup: Bool = true) {

@@ -10,6 +10,7 @@ nonisolated enum SitePermission: String, Codable, CaseIterable, Identifiable, Se
     case microphone
     case location
     case notifications
+    case downloads
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ nonisolated enum SitePermission: String, Codable, CaseIterable, Identifiable, Se
         case .microphone: "Microphone"
         case .location: "Location"
         case .notifications: "Notifications"
+        case .downloads: "Downloads"
         }
     }
 
@@ -28,7 +30,13 @@ nonisolated enum SitePermission: String, Codable, CaseIterable, Identifiable, Se
         case .microphone: "mic"
         case .location: "location"
         case .notifications: "bell"
+        case .downloads: "arrow.down.circle"
         }
+    }
+
+    /// `icon` for a site that was refused
+    var blockedIcon: String {
+        self == .downloads ? "xmark.circle" : "\(icon).slash"
     }
 
     /// what the prompt says the site is asking for
@@ -38,6 +46,7 @@ nonisolated enum SitePermission: String, Codable, CaseIterable, Identifiable, Se
         case .microphone: "use your microphone"
         case .location: "know your location"
         case .notifications: "send you notifications"
+        case .downloads: "download files"
         }
     }
 }

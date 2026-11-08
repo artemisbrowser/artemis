@@ -103,9 +103,6 @@ final class ArcImportModel {
             if !selection.spaces { result.spaces = [] }
             if !selection.favourites { result.favourites = [] }
             if !selection.archive { result.archived = [] }
-            // Arc's names only for the tabs that are coming
-            let coming = Set(result.favourites.map(\.url) + result.spaces.flatMap { $0.tabs.map(\.url) })
-            result.renames = result.renames.filter { coming.contains($0.key) }
             let (made, archived) = manager.importArc(result)
             if !made.isEmpty {
                 landed.append("\(made.count) spaces, \(made.reduce(0) { $0 + $1.tabs.count }) tabs")

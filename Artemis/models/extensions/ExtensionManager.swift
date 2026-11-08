@@ -373,14 +373,16 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     /// declared permissions, optional ones included, that WebKit can't provide: those the shim fills
     /// and those still missing. read from the manifest, which keeps the keys `requestedPermissions`
     /// drops; `system.display` and kin count as `system`
-    func permissionCoverage(for ext: InstalledExtension) -> (bridged: [String], missing: [String]) {
-        let manifest = ext.webExtension.manifest
+    static func permissionCoverage(of manifest: [String: Any]) -> (bridged: [String], missing: [String]) {
         let declared = Set(
             ["permissions", "optional_permissions"]
                 .flatMap { (manifest[$0] as? [Any]) ?? [] }
                 .compactMap { ($0 as? String)?.split(separator: ".").first.map(String.init) })
-        let gaps = declared.intersection(Self.unsupportedAPIs)
-        let bridged = isCompatBridged(ext) ? gaps.intersection(ExtensionCompat.shimmedPermissions) : []
+        let gaps = declared.intersection(unsupportedAPIs)
+        // the shim answers onAuthRequired with a proxy's own login, so only a proxy's counts
+        let shimmed = ExtensionCompat.shimmedPermissions
+            .union(declared.contains("proxy") ? ["webRequestAuthProvider"] : [])
+        let bridged = manifest[ExtensionCompat.markerKey] is NSNumber ? gaps.intersection(shimmed) : []
         return (bridged.sorted(), gaps.subtracting(bridged).sorted())
     }
 
@@ -395,9 +397,10 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         actionTab.flatMap { $0.isPrivate ? nil : $0 }
     }
 
-    /// the page an extension's button acts on: incognito ones offer only extensions allowed there
+    /// the page an extension's button acts on, never a locked space's: incognito ones offer
+    /// only extensions allowed there
     @MainActor
-    var actionTab: BrowserTab? { (BrowserWindows.shared.current ?? tabManager)?.selectedTab }
+    var actionTab: BrowserTab? { (BrowserWindows.shared.current ?? tabManager)?.unlockedContentTab }
 
     /// the action (icon, badge, popup) for an extension in the current tab; a view reading it
     /// redraws on the extension's `actionRevision`
@@ -481,14 +484,14 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         WebExtensionRuntime.controllers[ProfileStore.proxyProfile(of: tab.dataStore)]
     }
 
-    /// an incognito window's face to the runtime, once its first page has announced it
+    /// an incognito window's face to the runtime
     @MainActor
     func privateWindow(of manager: TabManager) -> ExtensionWindow? {
         privateWindows[ObjectIdentifier(manager)]
     }
 
     @MainActor
-    private func openPrivateWindow(of manager: TabManager) {
+    func openPrivateWindow(of manager: TabManager) {
         // a manager that went without closing its window frees its identifier for another
         for (key, stale) in privateWindows where stale.tabManager == nil {
             privateWindows[key] = nil

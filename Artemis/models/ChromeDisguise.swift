@@ -14,17 +14,18 @@ enum ChromeDisguise {
     /// matched with their subdomains
     private static let signInHosts = ["accounts.google.com", "accounts.youtube.com", "myaccount.google.com"]
 
-    /// Chrome's reduced macOS UA. stable milestones ship every 14 days from
-    /// M152 on 2026-08-25
-    static let userAgent: String = {
+    /// Chrome's current stable milestone: one ships every 14 days from M152 on 2026-08-25
+    static let major: Int = {
         let anchor = DateComponents(
             calendar: Calendar(identifier: .gregorian), timeZone: .gmt,
             year: 2026, month: 8, day: 25
         ).date ?? .distantPast
-        let major = 152 + max(0, Int(Date().timeIntervalSince(anchor) / (14 * 86_400)))
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            + "(KHTML, like Gecko) Chrome/\(major).0.0.0 Safari/537.36"
+        return 152 + max(0, Int(Date().timeIntervalSince(anchor) / (14 * 86_400)))
     }()
+
+    /// Chrome's reduced macOS UA
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        + "(KHTML, like Gecko) Chrome/\(major).0.0.0 Safari/537.36"
 
     private static var persistedHosts: Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: hostsKey) ?? [])

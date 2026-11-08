@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
+import AppKit
 import SwiftUI
 
 /// the favourites grid at the top of the sidebar, shared across every space:
@@ -69,6 +70,17 @@ struct EssentialsGrid: View {
         .gesture(dragGesture)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Favourites")
+    }
+
+    /// a favourite tile's context menu, which VoiceOver also offers as actions
+    static func menuEntries(for tab: BrowserTab, in tabManager: TabManager) -> [MenuEntry] {
+        var entries: [MenuEntry] = [.button("Move to Tabs", "pin.slash") { tabManager.toggleEssential(tab) }]
+        if tab.isOffPinnedURL, let here = tab.url {
+            entries.append(.button("Make This the Favourite's Page", "star.circle") { tabManager.rehome(tab, at: here) })
+        }
+        entries.append(
+            .button("Remove from Favourites", "star.slash", role: .destructive) { tabManager.removeEssential(tab) })
+        return entries
     }
 
     /// pick a favourite up into the shared drag system. the gesture lives on the
@@ -156,26 +168,39 @@ private struct BalancedTileLayout: Layout {
 
 /// a single favourite: favicon on a rounded tile, accent ring when it's the
 /// active tab, drag to reorder / out to the tabs, right-click to remove
-private struct EssentialTile: View {
+struct EssentialTile: View {
     @Environment(TabManager.self) private var tabManager
     private let metrics = SidebarMetrics.standard
     @Environment(\.chromeInk) private var ink
     @Environment(SidebarDragState.self) private var drag
     let tab: BrowserTab
     @State private var isHovering = false
+    /// on an off-home tile's favicon side, where a click goes home
+    @State private var iconHovering = false
+    @State private var cmdHeld = false
+    @State private var width: CGFloat = 0
 
-    private var isSelected: Bool { tabManager.activeEssentialID == tab.id }
+    private var isSelected: Bool { tabManager.displayedContentTab?.id == tab.id }
     /// the ring matches the favicon's own colour, falling back to the space
     /// accent until the icon (and its colour) resolves
     private var accent: Color { tab.faviconAccent ?? tabManager.blendedAccent }
-    /// hover highlight is suppressed while a drag is in flight, so tiles don't
-    /// light up as the ghost passes over them
-    private var showsHover: Bool { isHovering && !drag.isDragging }
+    /// unlit while a drag is in flight, and while the favicon side shows its own highlight
+    private var showsHover: Bool { isHovering && !iconHovering && !drag.isDragging }
+    /// how far right of the tile's centre the off-home slash sits
+    private var slashOffset: CGFloat { metrics.essentialFaviconSize / 2 + 8 }
+    /// the favicon side's width: to 2pt past the slash, where a pinned row's favicon square ends
+    private var homeSide: CGFloat { width / 2 + slashOffset + 2 }
+    private var showsSlash: Bool { tab.isOffPinnedURL && !iconHovering }
 
     var body: some View {
         favicon
             .frame(maxWidth: .infinity)
             .frame(height: metrics.essentialTileHeight)
+            .background(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ink.opacity(iconHovering && !drag.isDragging ? 0.09 : 0))
+                    .frame(width: homeSide)
+            }
             .background(
                 Color.clear
                     .chromeGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous), lit: isSelected || showsHover)
@@ -184,6 +209,42 @@ private struct EssentialTile: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(accent.opacity(isSelected ? 0.9 : 0), lineWidth: 1.5)
             )
+            .overlay {
+                if showsSlash {
+                    // 8pt past the favicon's edge, as on an off-home pinned row, cut 1.5pt clear of the badge
+                    ZStack(alignment: .topTrailing) {
+                        OffHomeSlash()
+                            .offset(x: slashOffset)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if let unread = tab.unread {
+                            UnreadBadge(badge: unread).hidden().padding(1.5).background(.black, in: Capsule())
+                                .padding(2.5).blendMode(.destinationOut)
+                        }
+                    }
+                    .compositingGroup()
+                    .transition(.opacity)
+                }
+            }
+            .animation(Motion.hover, value: showsSlash)
+            // as on a pinned row, a click on the favicon side goes home, ⌘ splits the page off,
+            // and a click anywhere else selects
+            .overlay(alignment: .leading) {
+                if tab.isOffPinnedURL {
+                    Color.clear
+                        .frame(width: homeSide)
+                        .contentShape(Rectangle())
+                        .onHover { iconHovering = $0 }
+                        .onModifierKeysChanged(mask: .command) { _, now in cmdHeld = now.contains(.command) }
+                        .onTapGesture {
+                            if NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+                                tabManager.separateFromPinned(tab)
+                            } else {
+                                tabManager.returnToPinnedURL(tab)
+                            }
+                        }
+                }
+            }
+            // above the favicon side, so a click on the badge only selects
             .overlay(alignment: .topTrailing) {
                 if let unread = tab.unread {
                     UnreadBadge(badge: unread)
@@ -192,6 +253,11 @@ private struct EssentialTile: View {
                 }
             }
             .animation(Motion.hover, value: tab.unread)
+            // the favicon side leaves under the pointer, so it never sees the hover end
+            .onChange(of: tab.isOffPinnedURL) { _, off in
+                if !off { iconHovering = false }
+            }
+            .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .animation(Motion.hover, value: isHovering)
             .animation(Motion.pop, value: isSelected)
@@ -208,26 +274,21 @@ private struct EssentialTile: View {
             }
             .onTapGesture { select() }
             .onHover { isHovering = $0 }
+            .modifier(TabPreviewHover(tab: tab))
+            // inside the element, so its words never become the tile's name
+            .tooltip(!iconHovering ? tab.badgedTitle : cmdHeld ? "Separate from favourite" : "Back to favourite's page")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(tab.badgedTitle)
             .accessibilityValue(accessibilityState)
             .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
             .accessibilityAction { select() }
-            .accessibilityActions { MenuEntryActions(entries: menuEntries) }
+            .accessibilityActions { MenuEntryActions(entries: EssentialsGrid.menuEntries(for: tab, in: tabManager)) }
             .focusable(interactions: .activate)
             .onKeyPress(keys: [.return, .space]) { _ in
                 select()
                 return .handled
             }
-            .tooltip(tab.badgedTitle)
-            .contextMenu { MenuEntriesView(entries: menuEntries) }
-    }
-
-    private var menuEntries: [MenuEntry] {
-        [
-            .button("Move to Tabs", "pin.slash") { tabManager.toggleEssential(tab) },
-            .button("Remove from Favourites", "star.slash", role: .destructive) { tabManager.removeEssential(tab) },
-        ]
+            .contextMenu { MenuEntriesView(entries: EssentialsGrid.menuEntries(for: tab, in: tabManager)) }
     }
 
     private func select() {

@@ -3,8 +3,8 @@
 
 import WebKit
 
-/// the browser-data namespaces' platform-free half: matching, shapes, website data and
-/// user-script files. each platform's bridge answers from its own profiles with these
+/// the browser-data namespaces' matching, shapes, website data and user-script files, which
+/// the bridge uses to answer from its profiles
 nonisolated enum ExtensionData {
     /// WebKit drops the permission keys it doesn't implement, so the manifest is the record. only
     /// required ones count: nothing grants an optional one WebKit doesn't know

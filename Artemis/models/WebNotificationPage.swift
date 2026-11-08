@@ -3,7 +3,7 @@
 
 import Foundation
 
-/// what both apps share of the Notification web API: the page-world `window.Notification` that
+/// the page half of the Notification web API: the page-world `window.Notification` that
 /// posts to a native handler, and what that handler calls back with
 enum WebNotificationPage {
     static let messageName = "artemisNotifications"

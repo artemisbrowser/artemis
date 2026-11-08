@@ -30,12 +30,23 @@ final class SpaceLock {
                 if let tab = player.tab, tab.manager?.space(of: tab).map(SpaceLock.shared.isLocked) == true {
                     player.exitIfActive(for: tab)
                 }
+                for manager in BrowserWindows.shared.allManagers {
+                    if manager.currentSpace.requiresUnlock { manager.closePeek() }
+                    for space in manager.spaces + [manager.currentSpace] where space.requiresUnlock {
+                        for tab in space.tabs { tab.closeInspector() }
+                    }
+                }
                 BrowserWindows.shared.current?.offerHandoff()
             }
         }
     }
 
     func isLocked(_ space: Space) -> Bool { space.requiresUnlock && !unlocked.contains(space.id) }
+
+    /// `tab`, or nil while it is locked `space`'s own page
+    func unlocked(_ tab: BrowserTab?, in space: Space?) -> BrowserTab? {
+        tab.flatMap { $0.isEssential || space.map(isLocked) != true ? $0 : nil }
+    }
 
     /// done by the person at the keyboard, so the space starts unlocked
     func requireUnlock(for space: Space) {
@@ -75,6 +86,7 @@ final class SpaceLock {
         guard await OwnerUnlock.check(reason) else { return false }
         unlocked.insert(space.id)
         BrowserWindows.shared.current?.offerHandoff()
+        LiveRefresh.shared.reschedule()
         return true
     }
 
@@ -86,20 +98,29 @@ final class SpaceLock {
 /// stands in for a locked space's page until Touch ID or the account password opens it
 struct LockedSpaceView: View {
     @Environment(\.chromeInk) private var ink
+    @Environment(\.controlActiveState) private var activeState
     let space: Space
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 30, weight: .semibold))
-            Text("\(space.name) is locked")
-                .font(.system(size: 17, weight: .semibold))
-            Button("Unlock") { Task { await SpaceLock.shared.unlock(space) } }
-                .buttonStyle(.glass)
+        Button { Task { await SpaceLock.shared.unlock(space) } } label: {
+            Image(systemName: LockedSpaceView.glyph)
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(ink.opacity(0.85))
+                .frame(width: 96, height: 96)
+                .contentShape(Circle())
         }
-        .foregroundStyle(ink.opacity(0.85))
+        .buttonStyle(.plain)
+        .tooltip("Unlock \(space.name)")
+        .accessibilityLabel("Unlock \(space.name)")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // arriving on the space in the key window asks at once; a cancel waits for a click.
+        // a self-test locks spaces in place under a check that always passes
+        .task(id: space.id) {
+            if activeState == .key, !SelfTest.isRequested { await SpaceLock.shared.unlock(space) }
+        }
     }
+
+    static var glyph: String { OwnerUnlock.method == "Touch ID" ? "touchid" : "lock.fill" }
 }
 
 /// the sidebar's tab list while its space is locked
@@ -111,7 +132,7 @@ struct LockedTabsNote: View {
         Button {
             Task { await SpaceLock.shared.unlock(space) }
         } label: {
-            Label("Locked — click to unlock", systemImage: "lock.fill")
+            Label("Click to unlock", systemImage: LockedSpaceView.glyph)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ink.opacity(0.55))
                 .frame(maxWidth: .infinity)

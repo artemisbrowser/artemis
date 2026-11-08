@@ -72,7 +72,7 @@ struct LinksSettings: View {
             }
 
             Section("Links from other apps") {
-                Picker(selection: $externalRaw) {
+                Picker(selection: $externalRaw.undoable("Links from Other Apps")) {
                     ForEach(ExternalLinkRouting.allCases) { mode in
                         Text(mode.title).tag(mode.rawValue)
                     }
@@ -85,7 +85,7 @@ struct LinksSettings: View {
             }
 
             Section("Peek") {
-                Picker(selection: $peekControlsCornerRaw) {
+                Picker(selection: $peekControlsCornerRaw.undoable("Peek Controls Corner")) {
                     ForEach(PeekControlsCorner.allCases) { corner in
                         Text(corner.label).tag(corner.rawValue)
                     }

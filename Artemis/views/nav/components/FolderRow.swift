@@ -96,6 +96,12 @@ struct FolderRow: View {
         onHoverChanged?(false)
     }
 
+    private var unread: Int { folder.live?.foldedUnread(of: folder, in: space) ?? 0 }
+
+    private func refresh() {
+        Task { await tabManager.refreshLive(folder, in: space) }
+    }
+
     /// the context menu, which VoiceOver also offers as actions
     private var menuEntries: [MenuEntry] {
         var entries: [MenuEntry] = [.button("Rename Folder…", "pencil") { beginRename() }]
@@ -103,6 +109,23 @@ struct FolderRow: View {
             entries.append(.button("New Folder Inside", "folder.badge.plus") {
                 tabManager.newFolder(in: .folder(folder.id), at: 0)
                 tabManager.setExpanded(folder, true)
+            })
+        }
+        if let live = folder.live {
+            entries += [.divider, .button("Refresh", "arrow.clockwise") { refresh() }]
+            if live.problem == .needsSignIn {
+                entries.append(.button("Sign In to GitHub", "person.crop.circle") {
+                    tabManager.newTab(url: URL(string: "https://github.com/login")!, in: space)
+                })
+            }
+            if live.unreadCount(of: folder, in: space) > 0 {
+                entries.append(.button("Mark All as Read", "checkmark.circle") {
+                    live.markAllRead()
+                    tabManager.scheduleSave()
+                })
+            }
+            entries.append(.button("Stop Updating", "antenna.radiowaves.left.and.right.slash") {
+                tabManager.stopUpdating(folder)
             })
         }
         return entries + [
@@ -133,6 +156,18 @@ struct FolderRow: View {
                 open: folder.isExpanded ? 1 : 0, color: accent, marked: holdsCurrentTab)
             name
             Spacer(minLength: 4)
+            if let problem = folder.live?.problemText {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: metrics.fontSize - 2, weight: .medium))
+                    .foregroundStyle(ink.opacity(0.55))
+                    .contentShape(Rectangle())
+                    .onTapGesture { refresh() }
+                    .tooltip(problem)
+                    .accessibilityLabel(problem)
+            }
+            if unread > 0 {
+                UnreadBadge(badge: .count(unread))
+            }
             if tabCount > 0, FolderTabCount(rawValue: countStyleRaw) != FolderTabCount.none {
                 Text("\(tabCount)")
                     .font(.system(size: metrics.fontSize - 2, weight: .medium))
@@ -156,7 +191,11 @@ struct FolderRow: View {
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(folder.name)
-        .accessibilityValue("\(tabCount) tabs, \(folder.isExpanded ? "expanded" : "collapsed")")
+        .accessibilityValue(
+            [
+                "\(tabCount) tabs", unread > 0 ? UnreadBadge.spoken(.count(unread)) : nil,
+                folder.isExpanded ? "expanded" : "collapsed", folder.live?.problemText,
+            ].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits([.isButton, .isHeader])
         .accessibilityAction { toggle() }
         .accessibilityAction(named: folder.isExpanded ? "Collapse" : "Expand") { toggle() }

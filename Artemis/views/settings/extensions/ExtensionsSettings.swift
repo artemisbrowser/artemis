@@ -17,7 +17,7 @@ struct ExtensionsSettings: View {
         @Bindable var extensions = extensions
         return Form {
             Section {
-                Toggle(isOn: $extensions.isMasterEnabled) {
+                Toggle(isOn: $extensions.isMasterEnabled.undoable("Extensions")) {
                     InfoLabel(
                         "Enable extensions",
                         info: "Turning this off disables every extension and remembers which ones were on."
@@ -167,7 +167,10 @@ private struct BoostsSection: View {
                     Toggle(
                         boost.host,
                         isOn: Binding(
-                            get: { boost.isEnabled }, set: { store.setEnabled(boost, $0) })
+                            // the live value: `boost` is the copy this row was drawn from
+                            get: { store.boosts.first { $0.id == boost.id }?.isEnabled ?? false },
+                            set: { store.setEnabled(boost, $0) }
+                        ).undoable("Boost")
                     )
                     .labelsHidden()
                     VStack(alignment: .leading, spacing: 1) {
@@ -279,7 +282,8 @@ private struct ExtensionRow: View {
     private func enabled(in profile: UUID) -> Binding<Bool> {
         Binding(
             get: { ext.profiles.contains(profile) },
-            set: { extensions.setEnabled(ext, $0, in: profile) })
+            set: { extensions.setEnabled(ext, $0, in: profile) }
+        ).undoable(ext.name)
     }
 
     var body: some View {
@@ -321,7 +325,8 @@ private struct ExtensionRow: View {
 
             HStack(spacing: 4) {
                 Toggle("Allow in incognito", isOn: Binding(
-                    get: { ext.allowsIncognito }, set: { extensions.setAllowsIncognito(ext, $0) }))
+                    get: { ext.allowsIncognito }, set: { extensions.setAllowsIncognito(ext, $0) }
+                ).undoable("\(ext.name) in Incognito"))
                     .toggleStyle(.checkbox)
                     .disabled(ext.refusesIncognito)
                     .accessibilityLabel("Allow \(ext.name) in incognito")
@@ -331,28 +336,10 @@ private struct ExtensionRow: View {
             }
             .font(.caption)
 
-            if let errorText = ext.loadErrorText {
-                Label(errorText, systemImage: "exclamationmark.triangle.fill")
+            if ext.isEnabled, !ext.context.isLoaded {
+                Text("This extension couldn't start.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            if !coverage.missing.isEmpty {
-                Label(
-                    "Needs \(coverage.missing.joined(separator: ", ")) — an API WebKit doesn't "
-                        + "provide to extensions. Parts of this extension can't work in Artemis.",
-                    systemImage: "bolt.horizontal.circle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            if !coverage.bridged.isEmpty {
-                Label(
-                    "Bridged by Artemis: \(coverage.bridged.joined(separator: ", ")) — "
-                        + "APIs WebKit lacks, filled in natively.",
-                    systemImage: "arrow.triangle.branch")
-                    .font(.caption)
-                    .foregroundStyle(.teal)
+                    .foregroundStyle(.secondary)
             }
 
             if !ext.requestedPermissionLabels.isEmpty || !ext.requestedHostLabels.isEmpty {
@@ -381,8 +368,16 @@ private struct ExtensionRow: View {
                     diag("Options page", ext.webExtension.hasOptionsPage ? "yes" : "no")
                     diag("Commands", ext.webExtension.hasCommands ? "yes" : "no")
                     diag("Loaded", ext.context.isLoaded ? "running" : "stopped")
-                    Text("Coverage is Safari-class via WebKit's runtime — some Chrome-only APIs may no-op.")
-                        .font(.caption2).foregroundStyle(.secondary).padding(.top, 2)
+                    if !coverage.bridged.isEmpty {
+                        diag("Filled in by Artemis", coverage.bridged.joined(separator: ", "))
+                    }
+                    if !coverage.missing.isEmpty {
+                        diag("Not available", coverage.missing.joined(separator: ", "))
+                    }
+                    if let errorText = ext.loadErrorText {
+                        Text("Reported by the extension").font(.caption).padding(.top, 2)
+                        Text(errorText).font(.caption2.monospaced()).textSelection(.enabled)
+                    }
                 }
                 .foregroundStyle(.secondary)
                 .padding(.top, 2)
@@ -391,7 +386,8 @@ private struct ExtensionRow: View {
 
             HStack(spacing: 12) {
                 Button(ext.isPinned ? "Unpin from URL Bar" : "Pin to URL Bar") {
-                    extensions.togglePin(ext)
+                    Binding(get: { ext.isPinned }, set: { _ in extensions.togglePin(ext) })
+                        .undoable("URL Bar Pin").wrappedValue.toggle()
                 }
                 .controlSize(.small)
                 .disabled(!ext.isEnabled)
@@ -412,7 +408,7 @@ private struct ExtensionRow: View {
             }
         }
         .padding(.vertical, 4)
-        .onAppear { coverage = extensions.permissionCoverage(for: ext) }
+        .onAppear { coverage = ExtensionManager.permissionCoverage(of: ext.webExtension.manifest) }
     }
 
     private func diag(_ label: String, _ value: String) -> some View {

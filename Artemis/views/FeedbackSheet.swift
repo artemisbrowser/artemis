@@ -52,7 +52,7 @@ final class FeedbackDraft {
         window.makeKeyAndOrderFront(nil)
         guard manager.feedback == nil else { return }
         let isPrivate = manager.kind == .incognito || manager.selectedTab?.isPrivate == true
-        let draft = FeedbackDraft(page: manager.selectedTab?.url, isPrivate: isPrivate)
+        let draft = FeedbackDraft(page: manager.unlockedContentTab?.url, isPrivate: isPrivate)
         if !isPrivate { draft.capture(window) }
         manager.feedback = draft
     }

@@ -17,17 +17,19 @@ struct IntelligenceSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Use the on-device model", isOn: $isEnabled)
+                Toggle("Use the on-device model", isOn: Binding(
+                    get: { isEnabled },
+                    set: { on in
+                        isEnabled = on
+                        guard !on else { return }
+                        // switching off puts every generated name back to the
+                        // page's own; names you typed yourself are untouched
+                        TabNameStore.shared.clearAllGenerated()
+                        Task { await Intelligence.shared.reset() }
+                    }
+                ).undoable("On-Device Model"))
                     // only turning it on needs the model; turning it off is what restores page names
                     .disabled(!isReady && !isEnabled)
-                    .onChange(of: isEnabled) { _, on in
-                        if !on {
-                            // switching off puts every generated name back to the
-                            // page's own; names you typed yourself are untouched
-                            TabNameStore.shared.clearAllGenerated()
-                            Task { await Intelligence.shared.reset() }
-                        }
-                    }
                 Label(readiness.explanation, systemImage: isReady ? "checkmark.seal" : "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(isReady ? Color.secondary : Color.orange)
@@ -48,13 +50,13 @@ struct IntelligenceSettings: View {
             }
 
             Section("Features") {
-                Toggle(isOn: $tidyTitles) {
+                Toggle(isOn: $tidyTitles.undoable("Tidy Tab Names")) {
                     InfoLabel(
                         "Tidy tab names",
                         info: "Gives pinned tabs and favourites short names. Tabs you named yourself are never changed."
                     )
                 }
-                Toggle(isOn: $askPage) {
+                Toggle(isOn: $askPage.undoable("Ask About This Page")) {
                     InfoLabel(
                         "Ask about this page (⌘F)",
                         info: "Adds a question mode to Find that answers only from the current page."

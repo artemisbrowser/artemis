@@ -62,13 +62,13 @@ struct AutofillSettings: View {
             }
 
             Section {
-                Toggle(isOn: $fillsAddresses) {
+                Toggle(isOn: $fillsAddresses.undoable("Fill Addresses")) {
                     InfoLabel("Fill addresses", info: "Suggests a saved address when you click into an address field.")
                 }
-                Toggle(isOn: $fillsCards) {
+                Toggle(isOn: $fillsCards.undoable("Fill Cards")) {
                     InfoLabel("Fill cards", info: "Suggests a saved card when you click into a card field on a secure page.")
                 }
-                Toggle(isOn: $offersToSave) {
+                Toggle(isOn: $offersToSave.undoable("Offer to Save")) {
                     InfoLabel(
                         "Offer to save",
                         info: "Asks to save a new address or card after you submit a form. Incognito windows never save.")

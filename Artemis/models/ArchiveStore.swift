@@ -11,13 +11,19 @@ nonisolated struct ArchiveEntry: Codable, Identifiable {
     var archivedAt: Date
     /// the name of the space the tab was archived from
     var spaceName: String
+    /// the name you gave the tab, which it takes back when restored
+    var name: String?
 
-    init(id: UUID = UUID(), url: URL, title: String, archivedAt: Date = Date(), spaceName: String) {
+    init(
+        id: UUID = UUID(), url: URL, title: String, archivedAt: Date = Date(), spaceName: String,
+        name: String? = nil
+    ) {
         self.id = id
         self.url = url
         self.title = title
         self.archivedAt = archivedAt
         self.spaceName = spaceName
+        self.name = name
     }
 }
 
@@ -36,10 +42,11 @@ final class ArchiveStore {
         entries = AppStorageLocation.loadDurable([ArchiveEntry].self, from: fileURL) ?? []
     }
 
-    /// file a freshly-archived tab at the front
-    func add(url: URL, title: String, spaceName: String) {
+    /// file a freshly-archived tab at the front, under the tab's own id: a tab is filed once
+    func add(id: UUID, url: URL, title: String, spaceName: String, name: String?) {
+        entries.removeAll { $0.id == id }
         entries.insert(
-            ArchiveEntry(url: url, title: title, spaceName: spaceName), at: 0)
+            ArchiveEntry(id: id, url: url, title: title, spaceName: spaceName, name: name), at: 0)
         if entries.count > Self.maxEntries {
             entries.removeLast(entries.count - Self.maxEntries)
         }
@@ -59,6 +66,16 @@ final class ArchiveStore {
         scheduleSave()
         let ids = Set(fresh.map(\.id))
         return entries.count { ids.contains($0.id) }
+    }
+
+    /// give each unnamed entry the name `name` finds for its url
+    func nameUnnamed(_ name: (URL) -> String?) {
+        var named = false
+        for i in entries.indices where entries[i].name == nil {
+            entries[i].name = name(entries[i].url)
+            named = named || entries[i].name != nil
+        }
+        if named { scheduleSave() }
     }
 
     func remove(_ entry: ArchiveEntry) {

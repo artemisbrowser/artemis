@@ -76,14 +76,18 @@ struct UrlField: View {
         .animation(Motion.fade, value: tabManager.addressBarOrigin == nil)
     }
 
+    /// the committed page's address, or one the user asked for that hasn't answered yet; never a
+    /// load the page started that hasn't committed
     static func displayText(for tab: BrowserTab?, full: Bool = false) -> String {
         // attempted url keeps the pill honest when a load fails
-        let url = tab?.url ?? tab?.lastAttemptedURL
-        guard let host = url?.host() else {
+        let url = tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL
+        guard let url, let host = url.host() else {
             return "Search or enter URL"
         }
-        if full, let url { return url.absoluteString }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        if full { return url.absoluteString }
+        let shown = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        guard let port = url.port, port != (url.scheme == "https" ? 443 : 80) else { return shown }
+        return "\(shown):\(port)"
     }
 }
 
@@ -392,7 +396,8 @@ private struct PasswordPanel: View {
     }
 
     private var logins: [SavedLogin] {
-        target.map { PasswordStore.shared.matches(for: $0.origin, in: tab.loginProfile) } ?? []
+        guard let target, tab.offersCredentials(to: target.origin) else { return [] }
+        return PasswordStore.shared.matches(for: target.origin, in: tab.loginProfile)
     }
 
     var body: some View {
@@ -611,9 +616,6 @@ private struct SiteSettingsPanel: View {
     @State private var menuHover = false
     @State private var showActions = false
 
-    private var isSecure: Bool {
-        tab?.url?.scheme == "https" && !isTrustedManually && tab?.exceptionHost != tab?.url?.host()
-    }
     private var isTrustedManually: Bool {
         guard let tab, let host = tab.url?.host() else { return false }
         return CertificateTrust.hasException(for: host, ephemeral: tab.isPrivate)
@@ -642,7 +644,8 @@ private struct SiteSettingsPanel: View {
     }
 
     private var connectionRow: some View {
-        HStack(spacing: 10) {
+        let isSecure = tab?.isSecure == true
+        return HStack(spacing: 10) {
             // opens the native certificate-trust panel for the page's server trust
             Button {
                 let trust = tab?.webView.serverTrust

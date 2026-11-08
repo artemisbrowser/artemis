@@ -4,8 +4,8 @@
 import AppKit
 import WebKit
 
-/// what every browser window shares: the profiles, the spaces and their tabs,
-/// the undo stacks. a `TabManager` is per window and holds only its selection
+/// what every browser window shares: the profiles, the spaces and their tabs, the
+/// closed tabs ⇧⌘T reopens. a `TabManager` is per window and holds its selection and ⌘Z
 @Observable
 @MainActor
 final class BrowserCore {

@@ -485,7 +485,7 @@ struct Sidebar: View {
     /// neighbour's panel is the same view, so it becomes live without a rebuild;
     /// only the live one reports frames and pointer to the shared state
     private func tabArea(_ space: Space, live: Bool) -> some View {
-        let selectedID = live ? tabManager.selectedTabID : tabManager.selectedTabID(in: space)
+        let selectedID = live ? tabManager.selectedTabID : tabManager.shownPage(in: space)?.id
         let ink = live ? self.ink : space.appearance.chromeInk
         return ScrollView {
             VStack(spacing: metrics.tabSpacing) {
@@ -585,16 +585,29 @@ struct Sidebar: View {
     @ViewBuilder
     private var sidebarMenu: some View {
         Button {
-            switch menuPoint.value.flatMap({ resolveDrop(at: $0, excluding: []) }) {
-            case .list(let container, let index, _, _):
-                tabManager.newFolder(in: container, at: index)
-            case .intoFolder(let id):
-                tabManager.newFolder(in: .folder(id), at: 0)
-            case nil:
-                tabManager.newFolder()
-            }
+            let slot = menuSlot()
+            tabManager.newFolder(in: slot.container, at: slot.index)
         } label: {
             Label("New Folder", systemImage: "folder.badge.plus").labelStyle(.titleAndIcon)
+        }
+        if tabManager.kind == .main {
+            Button {
+                let slot = menuSlot()
+                tabManager.liveFolderDraft = LiveFolderDraft(
+                    in: slot.container, at: slot.index, page: tabManager.unlockedContentTab?.url)
+            } label: {
+                Label("New Live Folder…", systemImage: "antenna.radiowaves.left.and.right").labelStyle(.titleAndIcon)
+            }
+        }
+    }
+
+    /// where the click that opened the menu landed. read in the action: the menu's content is built
+    /// with the body, and hovering moves `menuPoint` without redrawing it
+    private func menuSlot() -> (container: SidebarContainer, index: Int?) {
+        switch menuPoint.value.flatMap({ resolveDrop(at: $0, excluding: []) }) {
+        case .list(let container, let index, _, _): (container, index)
+        case .intoFolder(let id): (.folder(id), 0)
+        case nil: (.section(.today), nil)
         }
     }
 
@@ -607,11 +620,11 @@ struct Sidebar: View {
     private func draggableRow(
         _ tab: BrowserTab, in row: SidebarRow, selectedID: BrowserTab.ID?
     ) -> some View {
-        let folder: String? =
-            if case .folder(let id) = row.container { tabManager.currentSpace.folder(id)?.name } else { nil }
+        let folder: TabFolder? =
+            if case .folder(let id) = row.container { tabManager.currentSpace.folder(id) } else { nil }
         return TabRow(
             tab: tab, isSelected: tab.id == selectedID,
-            dragInProgress: drag.isDragging, folder: folder
+            dragInProgress: drag.isDragging, folder: folder?.name, liveFolder: folder?.live
         )
         // source slot stays in place, dimmed, while it's being dragged
         .opacity(drag.tab?.id == tab.id ? 0.6 : 1)
@@ -2111,6 +2124,8 @@ struct TabRow: View {
     var dragInProgress = false
     /// the folder the row is filed under, for VoiceOver
     var folder: String?
+    /// the live folder holding the row's tab, which marks it while it's new
+    var liveFolder: LiveFolder?
     @State private var isHovering = false
     @State private var iconHovering = false
     @State private var textHovering = false
@@ -2151,6 +2166,11 @@ struct TabRow: View {
     private var offPinned: Bool { tab.isOffPinnedURL }
     /// only a pinned row carries the unread badge
     private var shownTitle: String { tab.isPinned ? tab.badgedTitle : tab.displayTitle }
+    /// a pinned page's own count, else a dot on a live folder's new item
+    private var badge: AppBadge? {
+        if tab.isPinned, let unread = tab.unread { return unread }
+        return liveFolder?.isUnread(tab) == true ? .flag : nil
+    }
     /// staged for a split via ⌘/⇧-click
     private var multiSelected: Bool { tabManager.selection.contains(tab.id) }
     /// the accent of the space this row is drawn for — a neighbour panel in the
@@ -2221,7 +2241,7 @@ struct TabRow: View {
         // a name that changed by itself: point out that it's yours to change.
         // keyed off the stored *name*, not the displayed text — a page
         // retitling itself mid-load is not a rename
-        .onChange(of: TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) ?? "") { old, new in
+        .onChange(of: tab.name ?? "") { old, new in
             guard isSelected, !isEditing, !old.isEmpty, old != new else { return }
             hintTask?.cancel()
             hintTask = Task { @MainActor in
@@ -2239,6 +2259,7 @@ struct TabRow: View {
             justRenamed = false
         }
         .onHover { isHovering = $0 }
+        .modifier(TabPreviewHover(tab: tab))
         .onDisappear { stopFlagsMonitor() }
         .contextMenu { TabRowMenu(row: self) }
     }
@@ -2299,10 +2320,7 @@ struct TabRow: View {
                 tabManager.togglePin(tab)
             })
         if tab.isOffPinnedURL, let here = tab.url {
-            entries.append(.button("Make This the Pinned Page", "pin.circle") {
-                tab.pinnedURL = here
-                tabManager.scheduleSave()
-            })
+            entries.append(.button("Make This the Pinned Page", "pin.circle") { tabManager.rehome(tab, at: here) })
         }
         entries.append(
             .button(tab.isMuted ? "Unmute Tab" : "Mute Tab", tab.isMuted ? "speaker.wave.2" : "speaker.slash") {
@@ -2323,8 +2341,7 @@ struct TabRow: View {
             .button(
                 tab.keepsLoaded ? "Stop Keeping Loaded" : "Keep Loaded", tab.keepsLoaded ? "lock.open" : "lock"
             ) {
-                tab.keepsLoaded.toggle()
-                tabManager.scheduleSave()
+                tabManager.toggleKeepsLoaded(tab)
             })
         if !isIncognito, tabManager.spaces.count > 1 {
             entries.append(MenuEntry(
@@ -2337,7 +2354,7 @@ struct TabRow: View {
             entries.append(.button("Rename Tab…", "pencil") { tabManager.renamingTab = tab })
             // only offered when there's something to revert *to* — a tab showing
             // its own page title has nothing to put back
-            if TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) != nil {
+            if tab.name != nil {
                 entries.append(.button("Use Page Title", "arrow.uturn.backward") { tabManager.usePageTitle(for: tab) })
             }
         }
@@ -2500,14 +2517,7 @@ struct TabRow: View {
         .overlay {
             if !iconHovering && (isSelected || !textHovering) {
                 GeometryReader { geo in
-                    // a slim capsule leaning less than a glyph "/" would, so it
-                    // reads as a divider rather than a slash
-                    Capsule()
-                        // same dimmed grey as a disabled nav arrow
-                        .fill(ink.opacity(0.3))
-                        .frame(width: 2.5, height: 16)
-                        .rotationEffect(.degrees(10))
-                        .position(x: metrics.rowHeight - 2, y: geo.size.height / 2)  // 2pt left of the seam
+                    OffHomeSlash().position(x: metrics.rowHeight - 2, y: geo.size.height / 2)  // 2pt left of the seam
                 }
                 .allowsHitTesting(false)
             }
@@ -2548,7 +2558,7 @@ struct TabRow: View {
                 title: shownTitle,
                 // the stored name, not the text on screen: a page retitling
                 // itself is not a rename
-                renameToken: TabNameStore.shared.name(for: tab.url ?? tab.pendingURL) ?? "",
+                renameToken: tab.name ?? "",
                 identity: (tab.url ?? tab.pendingURL)?.absoluteString ?? "",
                 fontSize: metrics.fontSize,
                 ink: ink)
@@ -2581,7 +2591,7 @@ struct TabRow: View {
         if tab.isMuted { parts.append("muted") }
         else if tab.isPlayingMediaContent { parts.append("playing audio") }
         if tab.isHibernated { parts.append("asleep") }
-        if tab.isPinned, let unread = tab.unread { parts.append(UnreadBadge.spoken(unread)) }
+        if let badge { parts.append(UnreadBadge.spoken(badge)) }
         if let host = (tab.url ?? tab.pendingURL)?.host() { parts.append(host) }
         return parts.joined(separator: ", ")
     }
@@ -2642,8 +2652,8 @@ struct TabRow: View {
                 .transition(.opacity)
             }
             // the ✕ takes the badge's place while hovered
-            if tab.isPinned, !visible, let unread = tab.unread {
-                UnreadBadge(badge: unread)
+            if !visible, let badge {
+                UnreadBadge(badge: badge)
                     .frame(height: 16)
                     .transition(.opacity)
             }
@@ -2666,7 +2676,7 @@ struct TabRow: View {
         }
         .animation(Motion.hover, value: showsAudioControl)
         .animation(Motion.hover, value: tab.isCapturing)
-        .animation(Motion.hover, value: tab.isPinned ? tab.unread : nil)
+        .animation(Motion.hover, value: badge)
         // the ✕ takes width from the title as it appears; easing it means the
         // name reflows rather than snapping to a new truncation mid-hover
         .animation(Motion.hover, value: visible)
@@ -2675,6 +2685,19 @@ struct TabRow: View {
     /// a tab gets the speaker while it's playing, and keeps it while muted (else
     /// muting would hide the only way to undo it)
     private var showsAudioControl: Bool { tab.isPlayingMediaContent || tab.isMuted }
+}
+
+/// a pinned tab's or favourite's mark beside its favicon while it is off its home: a slim
+/// capsule leaning less than a "/" would, in a disabled nav arrow's grey
+struct OffHomeSlash: View {
+    @Environment(\.chromeInk) private var ink
+
+    var body: some View {
+        Capsule()
+            .fill(ink.opacity(0.3))
+            .frame(width: 2.5, height: 16)
+            .rotationEffect(.degrees(10))
+    }
 }
 
 /// a pinned tab's or favourite's unread mark: a count, or a dot for a bare flag

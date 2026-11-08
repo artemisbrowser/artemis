@@ -10,7 +10,7 @@ by normalised error signature (largest group first), missing-API frequency.
 import collections, json, os, re, sys
 
 path = next((a for a in sys.argv[1:] if not a.startswith("--") and a.endswith(".jsonl")),
-            os.path.expanduser("~/Downloads/artemis-extlab/results.jsonl"))
+            os.path.expanduser("~/.cache/artemis/extlab/results.jsonl"))
 only = sys.argv[sys.argv.index("--ext") + 1] if "--ext" in sys.argv else None
 
 def signature(text):

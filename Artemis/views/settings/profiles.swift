@@ -245,7 +245,8 @@ private struct ProfileDetail: View {
                     .popover(isPresented: $showingIconPicker, arrowEdge: .bottom) {
                         IconPicker(
                             icon: Binding(
-                                get: { profile.icon }, set: { tabManager.updateProfile(profile, icon: $0) }))
+                                get: { profile.icon }, set: { tabManager.updateProfile(profile, icon: $0) }
+                            ).undoable("Profile Icon"))
                     }
                     if isRenaming {
                         TextField("Name", text: $name, prompt: Text("Profile name"))
@@ -285,14 +286,14 @@ private struct ProfileDetail: View {
             }
 
             Section("Search") {
-                Picker("Search engine", selection: bind(\.searchEngine)) {
+                Picker("Search engine", selection: bind(\.searchEngine, "Search Engine")) {
                     ForEach(SearchEngine.allCases) { engine in
                         Text(engine.label).tag(engine)
                     }
                 }
                 // the ⓘ stays outside the disabled toggle: it's what says why it's off
                 LabeledContent {
-                    Toggle("Search engine suggestions", isOn: bind(\.suggestsSearches))
+                    Toggle("Search engine suggestions", isOn: bind(\.suggestsSearches, "Search Suggestions"))
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .disabled(!SearchSuggest.supports(profile.searchEngine))
@@ -309,7 +310,7 @@ private struct ProfileDetail: View {
             }
 
             Section("Tabs") {
-                Picker(selection: bind(\.archiveAfterHours)) {
+                Picker(selection: bind(\.archiveAfterHours, "Archive Timing")) {
                     ForEach([0.0, 6, 12, 24, 48, 168], id: \.self) { hours in
                         Text(Self.archiveLabel(hours)).tag(hours)
                     }
@@ -354,13 +355,14 @@ private struct ProfileDetail: View {
     }
 
     /// a profile setting that saves with the session when it changes
-    private func bind<Value>(_ key: ReferenceWritableKeyPath<Profile, Value>) -> Binding<Value> {
+    private func bind<Value: Equatable>(_ key: ReferenceWritableKeyPath<Profile, Value>, _ setting: String) -> Binding<Value> {
         Binding(
             get: { profile[keyPath: key] },
             set: {
                 profile[keyPath: key] = $0
                 tabManager.scheduleSave()
-            })
+            }
+        ).undoable(setting)
     }
 
     private static func archiveLabel(_ hours: Double) -> String {
@@ -415,7 +417,10 @@ private struct ProfileDetail: View {
 
     private func commitName() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed != profile.name { tabManager.updateProfile(profile, name: trimmed) }
+        if !trimmed.isEmpty, trimmed != profile.name {
+            Binding(get: { profile.name }, set: { tabManager.updateProfile(profile, name: $0) })
+                .undoable("Profile Name").wrappedValue = trimmed
+        }
         isRenaming = false
     }
 }
@@ -430,7 +435,8 @@ private struct TranslationSection: View {
             Picker(
                 selection: Binding(
                     get: { targets.first { PageTranslation.sameTarget($0, rules.target) } ?? rules.target },
-                    set: { rules.setTarget($0) })
+                    set: { rules.setTarget($0) }
+                ).undoable("Translation Language")
             ) {
                 ForEach(targets, id: \.self) { Text(PageTranslation.name(of: $0)).tag($0) }
             } label: {

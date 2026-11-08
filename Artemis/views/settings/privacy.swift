@@ -20,7 +20,7 @@ struct PrivacySettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Block ads and trackers", isOn: blockingBinding)
+                Toggle("Block ads and trackers", isOn: blockingBinding.undoable("Content Blocking"))
                 Text(blocker.statusLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -29,7 +29,8 @@ struct PrivacySettings: View {
                     Toggle(
                         isOn: Binding(
                             get: { list.isEnabled },
-                            set: { blocker.setList(list, enabled: $0) })
+                            set: { blocker.setList(list, enabled: $0) }
+                        ).undoable(list.name)
                     ) {
                         InfoLabel(list.name, info: list.detail)
                     }
@@ -74,7 +75,7 @@ struct PrivacySettings: View {
             }
 
             Section("Fingerprint Defence") {
-                Toggle(isOn: $fingerprintDefence) {
+                Toggle(isOn: $fingerprintDefence.undoable("Fingerprint Defence")) {
                     InfoLabel(
                         "Randomise fingerprintable readings",
                         info: "Gives each site slightly different hardware readings, so trackers can't build a stable fingerprint. Takes effect on the next launch.")
@@ -84,7 +85,7 @@ struct PrivacySettings: View {
             Section {
                 if permissions.sorted.isEmpty {
                     Text(
-                        "No site has been given the camera, the microphone, your location or notifications yet. Artemis asks the first time a site wants one, and remembers your answer here."
+                        "No site has been given the camera, the microphone, your location, notifications or downloads yet. Artemis asks the first time a site wants one, and remembers your answer here."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -100,7 +101,7 @@ struct PrivacySettings: View {
                                     Label(
                                         permission.label,
                                         systemImage: decision == .allow
-                                            ? permission.icon : "\(permission.icon).slash"
+                                            ? permission.icon : permission.blockedIcon
                                     )
                                     .labelStyle(.iconOnly)
                                     .foregroundStyle(decision == .allow ? .green : .secondary)
@@ -125,26 +126,28 @@ struct PrivacySettings: View {
             }
 
             Section("Automation") {
-                Toggle(isOn: $allowsScriptedJavaScript) {
+                Toggle(isOn: $allowsScriptedJavaScript.undoable("JavaScript from Apple Events")) {
                     InfoLabel(
                         "Allow JavaScript from Apple Events",
                         info: "Lets AppleScript and Shortcuts run code inside your pages. Only turn this on for scripts you trust.")
                 }
-                Toggle(isOn: $showsIncognitoToScripts) {
+                Toggle(isOn: $showsIncognitoToScripts.undoable("Incognito in AppleScript")) {
                     InfoLabel(
                         "Incognito tabs visible in AppleScript",
                         info: "When off, scripts can't see or change incognito windows' tabs.")
                 }
-                Toggle(isOn: $showsInSpotlight) {
+                Toggle(isOn: Binding(
+                    get: { showsInSpotlight },
+                    set: { showsInSpotlight = $0; SpotlightIndex.enabledDidChange() }
+                ).undoable("Spotlight")) {
                     InfoLabel(
                         "Show spaces and tabs in Spotlight",
                         info: "Spotlight can find your spaces and open tabs, and Siri can go to a space by name. Incognito and locked spaces never appear.")
                 }
-                .onChange(of: showsInSpotlight) { SpotlightIndex.enabledDidChange() }
             }
 
             Section("Reports") {
-                Toggle(isOn: $sendsErrorReports) {
+                Toggle(isOn: $sendsErrorReports.undoable("Error Reports")) {
                     InfoLabel("Send error reports", info: Reports.disclosure)
                 }
                 Button("Send Feedback…") { FeedbackDraft.open(in: tabManager) }

@@ -16,16 +16,30 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
 
     /// tabs that may still have a notification in Notification Center
     private var posted: Set<BrowserTab.ID> = []
-    /// documents that have already raised the prompt; the page reports its own user activation
+    /// documents that have already raised the prompt
     private var prompted: Set<BrowserTab.ID> = []
+    /// seconds a click or key press in the page stays good for raising the prompt
+    private static let gestureWindow: TimeInterval = 5
     /// an answer given without "remember", good for the document that asked
     private var pageAnswers: [BrowserTab.ID: (origin: String, decision: PermissionDecision)] = [:]
+
+    /// a notification as its page posted it, for the tab's preview card
+    struct Posted {
+        let id: String
+        let title: String
+        let body: String
+        let date: Date
+    }
+    /// each tab's last ten, newest first, cut as a row shows them, in memory until its document goes
+    var recent: [BrowserTab.ID: [Posted]] = [:]
+
     private lazy var authorization = Task {
         guard !ExtensionLab.isRequested else { return }
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 
     static func install(into controller: WKUserContentController) {
+        UserGesture.watch()
         controller.add(shared, name: WebNotificationPage.messageName)
         for source in [WebNotificationPage.source, badgeSource] {
             controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -42,6 +56,7 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
     /// the tab's document is gone: its notifications and one-off answer go with it
     func forgetPage(in tabID: BrowserTab.ID) {
         pageAnswers[tabID] = nil
+        recent[tabID] = nil
         prompted.remove(tabID)
         guard posted.remove(tabID) != nil else { return }
         let prefix = tabID.uuidString + "/"
@@ -84,8 +99,9 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
             reply([:], permission)
         case "requestPermission":
             let request = body["request"] as? Int ?? 0
-            // a prompt only answers a click or a keypress, never a page load
-            guard permission == "default", body["userActivation"] as? Bool == true,
+            // a prompt only answers a native click or keypress made since this document committed
+            let pressed = UserGesture.recent(in: webView, within: Self.gestureWindow)
+            guard permission == "default", let pressed, pressed > tab.committedAt,
                 prompted.insert(tab.id).inserted
             else {
                 return reply(["type": "permission", "request": request], permission)
@@ -120,6 +136,11 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
             content.userInfo = ["tag": tag]
             if body["silent"] as? Bool != true { content.sound = .default }
             posted.insert(tab.id)
+            if !tab.isPrivate {
+                let text = body["body"] as? String ?? ""
+                let entry = Posted(id: id, title: LiveRow.plain(title), body: LiveRow.plain(text), date: Date())
+                recent[tab.id] = Array(([entry] + (recent[tab.id] ?? [])).prefix(10))
+            }
             Task {
                 await authorization.value
                 let center = UNUserNotificationCenter.current()

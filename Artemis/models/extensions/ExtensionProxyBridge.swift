@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import CoreGraphics
 import Foundation
 import Network
 import Security
@@ -21,10 +20,16 @@ final class ExtensionProxyBridge {
         var value: [String: Any]?
         /// the context that set it; Chrome reverts the setting when it goes
         var owner: String?
-        var credentials: (username: String, password: String)?
+        /// the last `onAuthRequired` answer and the extension that gave it
+        var credentials: (supplier: String, username: String, password: String)?
         var active: BuiltProxy?
         /// a clear held briefly so a server switch doesn't fall through to direct
         var pendingClear: Task<Void, Never>?
+
+        /// credentials reach only the proxy of the extension that supplied them
+        var ownersCredentials: (username: String, password: String)? {
+            credentials.flatMap { $0.supplier == owner ? ($0.username, $0.password) : nil }
+        }
     }
     private var slots: [UUID: Slot] = [:]
     private static let ownerKey = "artemisOwner"
@@ -46,25 +51,29 @@ final class ExtensionProxyBridge {
 
     func chromeProxyValue(in profile: UUID) -> [String: Any]? { slots[profile]?.value }
 
-    /// the proxy credentials for the navigation delegate's 407 challenges, which otherwise
-    /// raise macOS's own proxy-password dialog
-    func proxyURLCredential(in profile: UUID) -> URLCredential? {
-        guard let credentials = slots[profile]?.credentials else { return nil }
-        return URLCredential(
-            user: credentials.username, password: credentials.password, persistence: .forSession)
+    /// the navigation delegate's answer to a 407 from the active proxy, which otherwise raises
+    /// macOS's own proxy-password dialog; nil for any other proxy, which gets no credentials
+    func proxyChallengeAnswer(
+        _ space: URLProtectionSpace, in profile: UUID
+    ) -> (disposition: URLSession.AuthChallengeDisposition, credential: URLCredential?)? {
+        guard let slot = slots[profile], let active = slot.active,
+            space.host.lowercased() == active.host.lowercased(), space.port == Int(active.port)
+        else { return nil }
+        guard let credentials = slot.ownersCredentials else { return (.cancelAuthenticationChallenge, nil) }
+        return (.useCredential, URLCredential(
+            user: credentials.username, password: credentials.password, persistence: .forSession))
     }
 
-    /// chrome.idle's "locked" state; the distributed notifications are the only public signal
+    /// chrome.idle's "locked" state, kept by `lockSignals`
     private var screenIsLocked = false
 
     private init() {
-        let center = DistributedNotificationCenter.default()
-        let locked = "com.apple.screenIsLocked", unlocked = "com.apple.screenIsUnlocked"
+        let (center, locked, unlocked) = Self.lockSignals
         center.addObserver(
-            forName: .init(locked), object: nil, queue: .main
+            forName: locked, object: nil, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.screenIsLocked = true } }
         center.addObserver(
-            forName: .init(unlocked), object: nil, queue: .main
+            forName: unlocked, object: nil, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.screenIsLocked = false } }
     }
 
@@ -102,7 +111,10 @@ final class ExtensionProxyBridge {
                 // another extension may take the proxy over, but only its owner takes it off
                 guard value?["mode"] as? String == "fixed_servers" || isOwner(sender, in: profile)
                 else { return ["ok": true] }
-                if value != nil { slots[profile, default: Slot()].owner = sender }
+                if value != nil {
+                    slots[profile, default: Slot()].owner = sender
+                    if slots[profile]?.credentials?.supplier != sender { slots[profile]?.credentials = nil }
+                }
                 setProxy(value, in: profile)
             } else {
                 if let value = message["value"] { settingValues[name] = value }
@@ -130,8 +142,7 @@ final class ExtensionProxyBridge {
             // the ledger is the current tab's (never a private one), and only an extension in its profile may read it;
             // the shim has already answered empty for any other tab
             let blocked = await MainActor.run { () -> [[String: Any]] in
-                guard let tab = ExtensionManager.shared.currentTab else { return [] }
-                guard tab.profileID == profile else { return [] }
+                guard let tab = ExtensionManager.shared.currentTab, tab.profileID == profile else { return [] }
                 return tab.blockedRequests.compactMap { entry in
                     if let since, entry.at <= since { return nil }
                     return [
@@ -152,10 +163,7 @@ final class ExtensionProxyBridge {
             return ["enabled": AppStorageLocation.isExtensionsDiag]
 
         case "idle.query":
-            // seconds since the last input event
-            let seconds = CGEventSource.secondsSinceLastEventType(
-                .hidSystemState, eventType: CGEventType(rawValue: ~0)!)
-            return ["seconds": Int(seconds), "locked": screenIsLocked]
+            return ["seconds": Int(Self.secondsSinceInput), "locked": screenIsLocked]
 
         case "log":
             // extension-side console errors / unhandled rejections, forwarded
@@ -185,9 +193,6 @@ final class ExtensionProxyBridge {
             await WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie)
             return ["ok": true]
 
-        case "fetch.perform":
-            return await Self.performBridgedFetch(message, in: profile)
-
         case "probe.report":
             // the self-test's probe extension reports live runtime behaviour
             // (tabs.query results etc.) through the same channel
@@ -197,7 +202,7 @@ final class ExtensionProxyBridge {
         case "proxy.credentials":
             // WebKit ignores onAuthRequired's return value, so the shim forwards what it returned
             guard let username = message["username"] as? String else { return [:] }
-            slots[profile, default: Slot()].credentials = (username, message["password"] as? String ?? "")
+            slots[profile, default: Slot()].credentials = (sender, username, message["password"] as? String ?? "")
             // rebuild so applyCredential lands on the active config
             if let value = slots[profile]?.value { applyProxy(value, in: profile) }
             persist(profile)
@@ -240,8 +245,10 @@ final class ExtensionProxyBridge {
                 let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
             var slot = Slot()
-            slot.credentials = Self.loadCredentials(profile)
             slot.owner = value[Self.ownerKey] as? String
+            if let owner = slot.owner, let saved = Self.loadCredentials(profile) {
+                slot.credentials = (owner, saved.username, saved.password)
+            }
             slot.value = value.filter { $0.key != Self.ownerKey }
             slots[profile] = slot
             applyProxy(slot.value ?? [:], in: profile, reloadTabs: false)  // nothing is loaded yet
@@ -261,7 +268,7 @@ final class ExtensionProxyBridge {
             return
         }
         AppStorageLocation.writeDurableNow(data, to: url)
-        Self.saveCredentials(slot?.credentials, profile)
+        Self.saveCredentials(slot?.ownersCredentials, profile)
     }
 
     private static func saveCredentials(_ credentials: (username: String, password: String)?, _ profile: UUID) {
@@ -313,11 +320,11 @@ final class ExtensionProxyBridge {
     }
 
     /// the extension that set a profile's proxy is gone from it (removed, disabled,
-    /// or not back after a relaunch): clear at once, since no switch can follow
+    /// or not back after a relaunch): clear it and its credentials at once, since no switch can follow
     func release(owner id: String, in profile: UUID) {
         guard slots[profile]?.owner == id else { return }
         slots[profile]?.pendingClear?.cancel()
-        slots[profile] = Slot(credentials: slots[profile]?.credentials)
+        slots[profile] = Slot()
         persist(profile)
         clearProxy(in: profile)
     }
@@ -382,7 +389,7 @@ final class ExtensionProxyBridge {
     private func applyProxy(_ value: [String: Any], in profile: UUID, reloadTabs: Bool = true) {
         switch value["mode"] as? String {
         case "fixed_servers":
-            guard let built = Self.build(from: value, credentials: slots[profile]?.credentials) else {
+            guard let built = Self.build(from: value, credentials: slots[profile]?.ownersCredentials) else {
                 debugLog("compat: proxy rules unusable, clearing")
                 return clearProxy(in: profile)
             }
@@ -488,26 +495,50 @@ final class ExtensionProxyBridge {
         }
     }
 
+    /// the profile's cookies a request to `url` carries, as a Cookie header: RFC 6265 domain, path,
+    /// secure and expiry matching, where a domain without a leading dot is that host alone
+    static func cookieHeader(for url: URL, in profile: UUID) async -> String? {
+        guard let host = url.host()?.lowercased() else { return nil }
+        let path = url.path(percentEncoded: true).isEmpty ? "/" : url.path(percentEncoded: true)
+        let now = Date()
+        let matching = await ProfileStore.dataStore(for: profile).httpCookieStore.allCookies().filter { cookie in
+            let domain = cookie.domain.lowercased()
+            let domainOK = domain.hasPrefix(".") ? host == domain.dropFirst() || host.hasSuffix(domain) : host == domain
+            let pathOK =
+                path == cookie.path
+                || path.hasPrefix(cookie.path)
+                    && (cookie.path.hasSuffix("/") || path.dropFirst(cookie.path.count).hasPrefix("/"))
+            return domainOK && pathOK && (!cookie.isSecure || url.scheme == "https")
+                && (cookie.expiresDate ?? .distantFuture) > now
+        }
+        guard !matching.isEmpty else { return nil }
+        return matching.sorted { $0.path.count > $1.path.count }.map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
+    }
+
+    /// cookie-blind and cacheless, so the WebKit store stays the only jar, and out through the
+    /// profile's proxy
+    static func sessionConfiguration(in profile: UUID) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        if let active = shared.activeProxy(in: profile) { configuration.proxyConfigurations = [active.config] }
+        return configuration
+    }
+
     /// perform the request natively with the jar's cookies attached, as Chrome's SameSite exemption
-    /// for extensions would; Set-Cookie responses go back into the jar
-    private static func performBridgedFetch(_ message: [String: Any], in profile: UUID) async -> [String: Any] {
+    /// for extensions would; Set-Cookie responses go back into the jar. a redirect to a url the
+    /// context can't access ends the fetch in a network error, which hides where it pointed
+    static func performBridgedFetch(
+        _ message: [String: Any], for context: WKWebExtensionContext, in profile: UUID
+    ) async -> [String: Any] {
         guard let raw = message["url"] as? String, let url = URL(string: raw),
-            let scheme = url.scheme, scheme == "https" || scheme == "http"
+            url.scheme == "https" || url.scheme == "http"
         else { return [:] }
 
         let cookieStore = ProfileStore.dataStore(for: profile).httpCookieStore
-        let jar = await cookieStore.allCookies()
-        let matching = jar.filter { cookie in
-            let domain = cookie.domain.hasPrefix(".")
-                ? String(cookie.domain.dropFirst()) : cookie.domain
-            guard let host = url.host() else { return false }
-            let domainOK = host == domain || host.hasSuffix("." + domain)
-            let pathOK = url.path.isEmpty || url.path.hasPrefix(cookie.path)
-                || cookie.path == "/"
-            let secureOK = !cookie.isSecure || scheme == "https"
-            return domainOK && pathOK && secureOK
-        }
-
         var request = URLRequest(url: url)
         request.httpMethod = (message["method"] as? String) ?? "GET"
         for (key, value) in (message["headers"] as? [String: String]) ?? [:] {
@@ -515,22 +546,15 @@ final class ExtensionProxyBridge {
             guard !["cookie", "host", "content-length"].contains(key.lowercased()) else { continue }
             request.setValue(value, forHTTPHeaderField: key)
         }
-        if !matching.isEmpty {
-            request.setValue(
-                matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
-                forHTTPHeaderField: "Cookie")
+        if let cookies = await cookieHeader(for: url, in: profile) {
+            request.setValue(cookies, forHTTPHeaderField: "Cookie")
         }
         if let body = message["bodyBase64"] as? String { request.httpBody = Data(base64Encoded: body) }
         request.httpShouldHandleCookies = false
 
-        // cookie-blind, so the WebKit store stays the only jar, and out through the profile's proxy
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieAcceptPolicy = .never
-        configuration.httpShouldSetCookies = false
-        if let active = ExtensionProxyBridge.shared.activeProxy(in: profile) {
-            configuration.proxyConfigurations = [active.config]
-        }
-        let session = URLSession(configuration: configuration, delegate: BridgedFetchRedirects(), delegateQueue: nil)
+        let session = URLSession(
+            configuration: sessionConfiguration(in: profile),
+            delegate: BridgedFetchRedirects { context.hasAccess(to: $0) }, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         do {
             let (data, response) = try await session.data(for: request)
@@ -555,6 +579,9 @@ final class ExtensionProxyBridge {
                 "headers": headers,
                 "bodyBase64": data.base64EncodedString(),
             ]
+        } catch URLError.cancelled {
+            debugLog("compat: bridged fetch \(url.host() ?? "?") redirected out of reach")
+            return ["networkError": true]
         } catch {
             debugLog("compat: bridged fetch failed — \(error.localizedDescription)")
             return [:]
@@ -578,19 +605,32 @@ final class ExtensionProxyBridge {
     }
 }
 
-/// a bridged fetch's redirects: the cookie header it attached is for the first url's scheme and
-/// host only, and URLSession would carry it to wherever the server points
+/// a cookie-carrying fetch's redirects: the cookie header it attached is for the first url's scheme
+/// and host only, and URLSession would carry it to wherever the server points. a redirect to a url
+/// `reaches` refuses cancels the task
 nonisolated final class BridgedFetchRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+    private let reaches: (@MainActor @Sendable (URL) -> Bool)?
+
+    init(reaches: (@MainActor @Sendable (URL) -> Bool)? = nil) {
+        self.reaches = reaches
+    }
+
     func urlSession(
         _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
         let from = task.originalRequest?.url, to = request.url
-        guard to?.host() == from?.host(), to?.scheme == from?.scheme else {
-            var stripped = request
-            stripped.setValue(nil, forHTTPHeaderField: "Cookie")
-            return completionHandler(stripped)
+        var next = request
+        if to?.host() != from?.host() || to?.scheme != from?.scheme {
+            next.setValue(nil, forHTTPHeaderField: "Cookie")
         }
-        completionHandler(request)
+        guard let reaches else { return completionHandler(next) }
+        Task { @MainActor [next] in
+            guard to.map(reaches) == true else {
+                task.cancel()
+                return completionHandler(nil)
+            }
+            completionHandler(next)
+        }
     }
 }

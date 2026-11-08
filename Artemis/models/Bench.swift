@@ -8,7 +8,7 @@ import WebKit
 
 /// dev-only performance harness: `ARTEMIS_BENCH=1` drives the running app through a fixed
 /// script and logs each phase's CPU, footprint, frames and SwiftUI body counts to
-/// `artemis-bench-<ARTEMIS_BENCH_LABEL>.log` in Downloads (or `ARTEMIS_BENCH_DIR`)
+/// `artemis-bench-<ARTEMIS_BENCH_LABEL>.log` in ~/Library/Logs/Artemis (or `ARTEMIS_BENCH_DIR`)
 @MainActor
 enum Bench {
     static var isRequested: Bool {
@@ -149,14 +149,10 @@ enum Bench {
     private nonisolated(unsafe) static var lines: [String] = []
 
     private static func flush() {
-        // ARTEMIS_BENCH_DIR: the perf bundle has no Downloads access (tools/perflab.sh)
-        let custom = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_DIR"].map { URL(fileURLWithPath: $0) }
-        guard let folder = custom ?? FileManager.default.urls(
-            for: .downloadsDirectory, in: .userDomainMask
-        ).first?.resolvingSymlinksInPath() else { return }
-        try? lines.joined(separator: "\n").write(
-            to: folder.appendingPathComponent("artemis-bench-\(runLabel).log"),
-            atomically: true, encoding: .utf8)
+        let name = "artemis-bench-\(runLabel)"
+        let url = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_DIR"]
+            .map { URL(fileURLWithPath: $0).appending(path: "\(name).log") } ?? AppStorageLocation.devFile(name, "log")
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     private struct PhaseResult {
@@ -369,6 +365,8 @@ enum Bench {
         results = []
 
         takeFront()
+        // a launch onto an empty space opens the ⌘T bar; every phase runs without it
+        manager.isCommandBarVisible = false
         try? await Task.sleep(for: .seconds(2))
         // one size on the fastest panel, so a 60Hz main display can't cap the run
         if let screen = NSScreen.screens.max(by: { $0.maximumFramesPerSecond < $1.maximumFramesPerSecond }),

@@ -25,6 +25,8 @@ struct CommandBar: View {
     /// item list can stay a synchronous function of what's typed
     @State private var textHits: [PageTextHit] = []
     @State private var suggestions: [String] = []
+    /// the page's declared feeds, read once the bar is up
+    @State private var pageFeeds: [URL] = []
     /// hover only takes the selection once the pointer has actually moved, so a
     /// list scrolling under a resting cursor can't steal the arrow keys' place
     @State private var pointerMoved = false
@@ -66,7 +68,7 @@ struct CommandBar: View {
 
     private var fieldHeight: CGFloat { grown ? Self.addressFieldHeight : Metrics.fieldHeight }
 
-    private var engine: CommandBarEngine { CommandBarEngine(manager: tabManager) }
+    private var engine: CommandBarEngine { CommandBarEngine(manager: tabManager, pageFeeds: pageFeeds) }
 
     var body: some View {
         // a capsule while it's only the field, a card once results hang from it
@@ -89,11 +91,26 @@ struct CommandBar: View {
             refresh()
             DispatchQueue.main.async { isFocused = true }
         }
+        .onChange(of: tabManager.commandBarSeed, initial: true) {
+            guard !address, let seed = tabManager.commandBarSeed else { return }
+            tabManager.commandBarSeed = nil
+            scope = nil
+            query = seed
+        }
         .onChange(of: tabManager.commandBarFocusRequest) {
             if address && !grown { startOnAddress() }
             isFocused = true
         }
         .onDisappear { scope = nil }
+        .task {
+            guard tabManager.kind == .main, let tab = tabManager.selectedTab,
+                !SpaceLock.shared.isLocked(tabManager.currentSpace)
+            else { return }
+            let feeds = await tab.declaredFeeds()
+            guard !feeds.isEmpty, tabManager.selectedTab === tab else { return }
+            pageFeeds = feeds
+            refresh()
+        }
         // folding re-hosts the field, which drops its focus
         .onChange(of: isFolded) { isFocused = true }
         .onModifierKeysChanged(mask: [.shift, .command, .option]) { _, now in
@@ -186,7 +203,9 @@ struct CommandBar: View {
 
     private func startOnAddress() {
         scope = nil
-        query = tabManager.displayedContentTab?.url?.absoluteString ?? ""
+        // the address the pill shows: a tab waking or mid-load has no committed url yet
+        let tab = tabManager.displayedContentTab
+        query = (tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL ?? tab?.pendingURL)?.absoluteString ?? ""
         // centred, the whole address is selected so typing replaces it
         if !grown { selection = TextSelection(range: query.startIndex..<query.endIndex) }
     }
@@ -523,7 +542,7 @@ struct CommandBar: View {
     private func rowIcon(_ item: CommandItem, size: CGFloat) -> some View {
         switch item.kind {
         case .tab(let tab):
-            favicon(tab.favicon, size: size)
+            favicon(for: tab.faviconHost, size: size)
         case .space(let space):
             SpaceGlyph(icon: space.icon, size: size - 4)
                 .foregroundStyle(space.appearance.accent)
@@ -532,15 +551,16 @@ struct CommandBar: View {
         case .suggestion, .search: symbol("magnifyingglass", size: size - 4)
         case .scope(let mode): symbol(mode.symbol, size: size - 4)
         case .closed, .history, .pageText, .openURL:
-            favicon(FaviconStore.shared.icon(for: item.url?.host()), size: size)
+            favicon(for: item.url?.host(), size: size)
         }
     }
 
-    /// favicons are drawn for white pages, so they sit on a white tile: a black
-    /// logo on the dark panel would otherwise vanish
+    /// favicons are drawn for white pages, so in dark mode they sit on a white tile.
+    /// a light one, drawn for a dark page, sits bare there and on a black tile in light mode
     @ViewBuilder
-    private func favicon(_ image: NSImage?, size: CGFloat) -> some View {
-        if let image {
+    private func favicon(for host: String?, size: CGFloat) -> some View {
+        if let image = FaviconStore.shared.icon(for: host) {
+            let isLight = FaviconStore.shared.isLightIcon(for: host)
             Image(nsImage: image)
                 .resizable()
                 .scaledToFit()
@@ -548,7 +568,10 @@ struct CommandBar: View {
                 .frame(width: size + 2, height: size + 2)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(.white.opacity(colorScheme == .dark ? 0.92 : 0)))
+                        .fill(
+                            isLight
+                                ? .black.opacity(colorScheme == .light ? 0.92 : 0)
+                                : .white.opacity(colorScheme == .dark ? 0.92 : 0)))
         } else {
             symbol("globe", size: size - 4)
         }

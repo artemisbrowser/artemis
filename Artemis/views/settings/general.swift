@@ -3,6 +3,7 @@
 
 import AppKit
 import SwiftUI
+import WebKit
 
 /// whether Artemis is the browser macOS hands links to, and the one-click way to make it so
 @MainActor
@@ -32,9 +33,23 @@ struct GeneralSettings: View {
     @AppStorage(MiniPlayer.cornerRadiusKey) private var pipCornerRadius = MiniPlayer.defaultCornerRadius
     @AppStorage(MiniPlayer.skipSecondsKey) private var pipSkipSeconds = MiniPlayer.defaultSkipSeconds
     @AppStorage(Updates.channelKey) private var updateChannel = "release"
+    @AppStorage(DownloadManager.folderKey) private var downloadsFolder = ""
+    @AppStorage(DownloadManager.asksEachTimeKey) private var downloadsAsk = false
+    @AppStorage(TabManager.swipeNavigationKey) private var swipeNavigation = true
     private static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     /// bumped after the default-browser prompt, so the section reads the new answer
     @State private var defaultBrowserCheck = 0
+
+    private func chooseDownloadsFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = DownloadManager.folder
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        $downloadsFolder.undoable("Download Folder").wrappedValue = url.path
+    }
 
     private var currentBrowserLine: String {
         guard let name = DefaultBrowser.currentName else {
@@ -78,7 +93,10 @@ struct GeneralSettings: View {
 
             if Updates.shared.isEnabled {
                 Section("Updates") {
-                    Picker(selection: $updateChannel) {
+                    Picker(selection: Binding(
+                        get: { updateChannel },
+                        set: { updateChannel = $0; Updates.shared.channelChanged() }
+                    ).undoable("Update Channel")) {
                         Text("Release").tag("release")
                         Text("Beta").tag("beta")
                     } label: {
@@ -86,18 +104,47 @@ struct GeneralSettings: View {
                             "Channel",
                             info: "Beta gets new features first and may have bugs. Leaving Beta takes effect at the next release.")
                     }
-                    .onChange(of: updateChannel) { Updates.shared.channelChanged() }
                     Toggle("Check for updates automatically", isOn: Binding(
                         get: { Updates.shared.checksAutomatically },
-                        set: { Updates.shared.checksAutomatically = $0 }))
+                        set: { Updates.shared.checksAutomatically = $0 }
+                    ).undoable("Automatic Updates"))
                     LabeledContent("Artemis \(Self.version)") {
                         Button("Check Now") { Updates.shared.checkNow() }
                     }
                 }
             }
 
+            Section("Navigation") {
+                Toggle(isOn: Binding(
+                    get: { swipeNavigation },
+                    set: { on in
+                        swipeNavigation = on
+                        for manager in BrowserWindows.shared.allManagers {
+                            for tab in manager.allTabs { tab.webView.allowsBackForwardNavigationGestures = on }
+                        }
+                    }
+                ).undoable("Swipe Navigation")) {
+                    InfoLabel("Swipe between pages", info: "Swipe left or right with two fingers to go back or forward.")
+                }
+            }
+
+            Section("Downloads") {
+                LabeledContent {
+                    HStack {
+                        Text(downloadsFolder.isEmpty ? "Downloads" : DownloadManager.folder.lastPathComponent)
+                            .foregroundStyle(.secondary)
+                        Button("Choose…") { chooseDownloadsFolder() }
+                    }
+                } label: {
+                    InfoLabel("Save downloads to", info: "Where files you download go.")
+                }
+                Toggle(isOn: $downloadsAsk.undoable("Download Prompt")) {
+                    InfoLabel("Ask where to save each file", info: "Pick a folder and name for every download.")
+                }
+            }
+
             Section("Memory") {
-                Picker(selection: $hibernateAfterMinutes) {
+                Picker(selection: $hibernateAfterMinutes.undoable("Tab Sleep")) {
                     ForEach([0.0, 5, 15, 30, 60, 180], id: \.self) { minutes in
                         Text(sleepLabel(for: minutes)).tag(minutes)
                     }
@@ -109,10 +156,10 @@ struct GeneralSettings: View {
             }
 
             Section("Picture in Picture") {
-                Toggle(isOn: $autoPictureInPicture) {
+                Toggle(isOn: $autoPictureInPicture.undoable("Auto Picture in Picture")) {
                     InfoLabel(
-                        "Auto-enter when switching away",
-                        info: "A playing video moves to a mini-player when you switch away and returns when you come back. ⌘⇧P toggles it any time.")
+                        "Auto-enter when another app covers the window",
+                        info: "A playing video moves to a mini-player when another app hides it, and returns when you come back. ⌘⇧P toggles it any time.")
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -125,7 +172,7 @@ struct GeneralSettings: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $pipCornerRadius, in: 0...28, step: 1)
+                    Slider(value: $pipCornerRadius.undoable("Mini-Player Corners"), in: 0...28, step: 1)
                         .accessibilityLabel("Corner rounding")
                 }
 
@@ -209,6 +256,7 @@ private struct PiPSiteButtonsList: View {
             set: { on in
                 PiPSiteButtons.setAllowed(on, host: host, label: label)
                 catalog[host]?[label] = on
-            })
+            }
+        ).undoable("Mini-Player Buttons")
     }
 }

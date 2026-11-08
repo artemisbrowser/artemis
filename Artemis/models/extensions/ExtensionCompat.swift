@@ -12,7 +12,8 @@ nonisolated enum ExtensionCompat {
     /// which the shim fills, bridging to native code where the page can't
     static let shimmedPermissions: Set<String> = [
         "proxy", "privacy", "idle", "notifications", "offscreen", "identity", "sidePanel",
-        "tabGroups", "management", "downloads", "search",
+        "tabGroups", "management", "downloads", "search", "browsingData", "history", "topSites",
+        "sessions", "fontSettings", "system", "tts", "userScripts",
     ]
 
     /// service-worker globals that keep a background in a real worker; any other background
@@ -40,7 +41,7 @@ nonisolated enum ExtensionCompat {
     /// to whether they exist (an empty file) or not (a failed fetch)
     private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    private static let shimVersion = 52
+    static let shimVersion = 53
 
     // MARK: - Entry point
 
@@ -50,6 +51,7 @@ nonisolated enum ExtensionCompat {
     @concurrent static func prepare(storedID id: String) async -> URL? {
         guard var root = await migrateZipIfNeeded(id: id), !holdsLink(root) else { return nil }
         if let dir = ExtensionInstaller.manifestRoot(under: root) { root = dir }
+        dropShippedOrigin(storedID: id, packageRoot: root)
         patchIfNeeded(packageRoot: root, storedID: id)
         return root
     }
@@ -67,15 +69,9 @@ nonisolated enum ExtensionCompat {
         }
         let unpacked = dir.appendingPathComponent("unpacked", isDirectory: true)
         try? fm.removeItem(at: unpacked)
-        let ditto = Process()
-        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        ditto.arguments = ["-x", "-k", zip.path, unpacked.path]
-        let launched = await withCheckedContinuation { finished in
-            ditto.terminationHandler = { _ in finished.resume(returning: true) }
-            do { try ditto.run() } catch { finished.resume(returning: false) }
-        }
-        let extracted = launched && ditto.terminationStatus == 0
-        guard extracted, ExtensionInstaller.manifestRoot(under: unpacked) != nil else {
+        guard await ZipArchive.extract(zip, to: unpacked), let root = ExtensionInstaller.manifestRoot(under: unpacked),
+            (try? stripPatchKeys(packageRoot: root)) != nil
+        else {
             debugLog("compat: unzip failed for \(id)")
             try? fm.removeItem(at: unpacked)
             return zip  // fall back to the zip; WebKit still loads it unpatched
@@ -83,6 +79,31 @@ nonisolated enum ExtensionCompat {
         try? fm.removeItem(at: zip)
         debugLog("compat: unpacked \(id) for patching")
         return dir
+    }
+
+    /// the installer writes the origin sidecar only beside an archive, which unpacks into `unpacked/`;
+    /// beside any other package, the package shipped it
+    private static func dropShippedOrigin(storedID id: String, packageRoot root: URL) {
+        // compared resolved: a directory listing hands back symlink-resolved paths
+        let dir = ExtensionInstaller.storageRoot.appendingPathComponent(id, isDirectory: true)
+        let archive = dir.appendingPathComponent("extension.zip").resolvingSymlinksInPath().path
+        let unpacked = dir.appendingPathComponent("unpacked", isDirectory: true).resolvingSymlinksInPath().path
+        let path = root.resolvingSymlinksInPath().path
+        guard path != archive, path != unpacked, !path.hasPrefix(unpacked + "/") else { return }
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(ExtensionInstaller.packageOriginFile))
+    }
+
+    /// a package as shipped carries no `artemis_` manifest keys, so the patch reads back only what
+    /// it wrote itself; a manifest it can't parse is left as it is
+    static func stripPatchKeys(packageRoot: URL) throws {
+        let url = packageRoot.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: url),
+            let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            manifest.keys.contains(where: { $0.hasPrefix("artemis_") })
+        else { return }
+        try JSONSerialization.data(
+            withJSONObject: manifest.filter { !$0.key.hasPrefix("artemis_") }, options: [.prettyPrinted, .sortedKeys]
+        ).write(to: url, options: .atomic)
     }
 
     /// WebKit serves a package's files through a link in it, and the patch would write through one
@@ -190,6 +211,11 @@ nonisolated enum ExtensionCompat {
                 scripts.insert("__artemis/compat.js", at: 0)
                 background["scripts"] = scripts
             }
+            if Bundle.main.object(forInfoDictionaryKey: "ArtemisNoPersistentBackgrounds") as? Bool == true,
+                (manifest["manifest_version"] as? Int) == 2, background["persistent"] as? Bool != false
+            {
+                background["persistent"] = false
+            }
             // background.page is covered by the HTML pass below
             manifest["background"] = background
         }
@@ -244,7 +270,7 @@ nonisolated enum ExtensionCompat {
     /// the OAuth redirect host the store registered: `<id>.chromiumapp.org` for
     /// a Web Store id, `<sha1 hex of the add-on id>.extensions.allizom.org` for an
     /// xpi, else the stored id, which no provider has registered
-    private static func redirectHost(storedID: String, manifest: [String: Any]) -> String {
+    static func redirectHost(storedID: String, manifest: [String: Any]) -> String {
         let sidecar = ExtensionInstaller.storageRoot
             .appendingPathComponent(storedID, isDirectory: true)
             .appendingPathComponent(ExtensionInstaller.packageOriginFile)

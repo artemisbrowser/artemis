@@ -54,12 +54,15 @@ final class BrowserWindows {
 
     func register(_ manager: TabManager, for window: NSWindow) {
         registry[ObjectIdentifier(window)] = (window, manager)
+        UndoRoute.shared.watch(window)
         if window.isKeyWindow || current == nil { current = manager }
         NotificationCenter.default.post(name: Self.didRegisterNotification, object: window)
+        LiveRefresh.shared.reschedule()
     }
 
     private func unregister(_ window: NSWindow) {
         guard let entry = registry.removeValue(forKey: ObjectIdentifier(window)) else { return }
+        UndoRoute.shared.unwatch(window)
         entry.manager.windowWillClose()
         if current === entry.manager { current = registry.values.first?.manager }
         if entry.manager.kind == .main, mainManagers.isEmpty { seed = entry.manager }

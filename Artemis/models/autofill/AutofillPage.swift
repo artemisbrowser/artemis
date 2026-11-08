@@ -26,13 +26,13 @@ enum AutofillPage {
       function visible(el) {
         if (el.disabled || el.readOnly || el.closest("[hidden],[inert],[aria-hidden=true]")) return false;
         if (!(el.checkVisibility?.({ opacityProperty: true, visibilityProperty: true }) ?? true)) return false;
-        const b = el.getBoundingClientRect(), doc = document.documentElement;
+        const b = el.getBoundingClientRect(), view = el.ownerDocument.defaultView, doc = el.ownerDocument.documentElement;
         if (b.width <= 1 || b.height <= 1) return false;
-        if (b.right + scrollX <= 0 || b.bottom + scrollY <= 0 || b.left + scrollX >= doc.scrollWidth
-          || b.top + scrollY >= doc.scrollHeight) return false;
+        if (b.right + view.scrollX <= 0 || b.bottom + view.scrollY <= 0 || b.left + view.scrollX >= doc.scrollWidth
+          || b.top + view.scrollY >= doc.scrollHeight) return false;
         let opacity = 1, l = b.left, t = b.top, r = b.right, bottom = b.bottom;
         for (let n = el; n instanceof Element; n = n.parentElement) {
-          const cs = getComputedStyle(n);
+          const cs = view.getComputedStyle(n);
           opacity *= +cs.opacity;
           if (opacity < 0.05 || zeroClip.test(cs.clipPath) || cs.clip === "rect(0px, 0px, 0px, 0px)") return false;
           if (n !== el && /hidden|clip/.test(cs.overflowX + cs.overflowY)) {
@@ -522,6 +522,15 @@ enum AutofillPage {
       if (document.readyState === "loading") addEventListener("DOMContentLoaded", start, { once: true });
       else start();
 
+      // the window that first posted each frame nonce here; the page learns a nonce only from that post
+      const posters = new Map(), waiters = new Map();
+      addEventListener("message", e => {
+        const nonce = typeof e.data === "string" && /^artemis-frame:([\w-]{36})$/.exec(e.data)?.[1];
+        if (!e.isTrusted || !nonce || posters.has(nonce)) return;
+        posters.set(nonce, e.source);
+        waiters.get(nonce)?.();
+      }, true);
+
       Object.defineProperty(globalThis, "__artemisAutofill", { value: Object.freeze({
         // `values` into one section of `kind`: the one the person picked from, else the first live one.
         // Returns how many fields took a value
@@ -551,6 +560,25 @@ enum AutofillPage {
             filling = false;
           }
           return count;
+        },
+        // whether the frame that posted `nonce` shows here: each iframe from this document down to it passes the
+        // check a field must, and every document on the way is one this one can read
+        async frameShown(nonce) {
+          if (!posters.has(nonce)) {
+            await new Promise(done => { waiters.set(nonce, done); setTimeout(done, 1000); });
+            waiters.delete(nonce);
+          }
+          let w = posters.get(nonce);
+          posters.delete(nonce);
+          if (!w || w === window) return false;
+          for (; w !== window; w = w.parent) {
+            if (w.parent === w) return false;
+            let doc;
+            try { doc = w.parent.document; } catch (e) { return false; }
+            const el = [...doc.querySelectorAll("iframe, frame")].find(f => f.contentWindow === w);
+            if (!el || !visible(el)) return false;
+          }
+          return true;
         },
         // the list under the field shows `count` rows, which ↑ and ↓ walk; 0 is closed
         listing(count) {

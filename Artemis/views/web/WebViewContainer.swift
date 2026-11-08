@@ -118,18 +118,14 @@ final class WebHostView: NSView {
 
     // MARK: - Resize settling
 
-    /// how far past the host a growing page is sized, so a run of growth frames
-    /// costs two relayouts rather than one per frame
-    private static let growthStep: CGFloat = 1.15
-
     /// fires once the host has stopped changing size
     private var settleTask: Task<Void, Never>?
     /// true between the first layout of a run and the settle
     private var isResizing = false
 
-    /// gives the page a frame that covers the host while the host animates, and
-    /// the exact frame once it stops: each `WKWebView` resize is a full relayout
-    /// and a new IOSurface, and the clipped excess looks identical
+    /// while the host animates, a page that still covers it keeps its frame, and the exact frame
+    /// lands once it stops: each `WKWebView` resize is a full relayout and a new IOSurface. a page
+    /// never grows past the host, which would clamp its scroll; a hidden one waits for the settle
     override func layout() {
         super.layout()
         guard let webView = subviews.first(where: { $0 is WKWebView }) as? WKWebView else { return }
@@ -138,16 +134,11 @@ final class WebHostView: NSView {
             return
         }
 
-        // a shrinking host keeps the larger page; a growing one is covered in steps
-        let page = webView.frame.size
-        let covering =
-            isResizing
-            ? CGSize(
-                width: page.width >= bounds.width ? page.width : bounds.width * Self.growthStep,
-                height: page.height >= bounds.height
-                    ? page.height : bounds.height * Self.growthStep)
-            : bounds.size
-        setPageFrame(webView, size: covering)
+        if !isHiddenOrHasHiddenAncestor {
+            let page = webView.frame.size
+            let covers = isResizing && page.width >= bounds.width && page.height >= bounds.height
+            setPageFrame(webView, size: covers ? page : bounds.size)
+        }
 
         isResizing = true
         settleTask?.cancel()
@@ -313,7 +304,10 @@ final class PageStackView: NSView {
             host.isHidden = hidden
             // a page that isn't first responder reads `document.hasFocus()` as
             // false, which focus-gated video players refuse to start on
-            if !hidden { host.focusHostedWebView() }
+            if !hidden {
+                host.needsLayout = true
+                host.focusHostedWebView()
+            }
         }
     }
 

@@ -9,9 +9,13 @@ nonisolated enum AppStorageLocation {
     /// whether this process runs inside an App Sandbox container
     static let isContainerised = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
 
+    /// the data folder's and Keychain services' name when the Info.plist's `ArtemisStorageName` gives one
+    static let storageName = Bundle.main.object(forInfoDictionaryKey: "ArtemisStorageName") as? String
+
     /// outside a container every build on the Mac shares ~/Library: the original
     /// bundle keeps "Artemis", any other (a tester build, a lab) gets its bundle ID
     static let folderName: String = {
+        if let storageName { return storageName }
         let id = Bundle.main.bundleIdentifier ?? "dev.findles.Artemis"
         return isContainerised || id == "dev.findles.Artemis" ? "Artemis" : id
     }()
@@ -33,6 +37,17 @@ nonisolated enum AppStorageLocation {
 
     static func file(_ name: String) -> URL {
         directory.appendingPathComponent(name)
+    }
+
+    /// `~/Library/Logs/Artemis/<stem>.<ext>`, the one folder for self-test, diag and bench output;
+    /// a lab copy "Artemis <ID>" gets `<stem>-<ID>.<ext>`, so parallel runs never share a file
+    static func devFile(_ stem: String, _ ext: String) -> URL {
+        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appending(path: "Logs/Artemis", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Artemis"
+        let lab = bundleName.dropFirst("Artemis".count).trimmingCharacters(in: .whitespaces)
+        return logs.appending(path: lab.isEmpty ? "\(stem).\(ext)" : "\(stem)-\(lab).\(ext)")
     }
 
     /// serialises every durable write in the process: overlapping rotations could

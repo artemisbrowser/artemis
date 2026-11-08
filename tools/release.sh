@@ -10,6 +10,7 @@
 #     N        1-99, the build of that version; CFBundleVersion = x*1e6 + y*1e4 + z*100 + N
 #     CHANNEL  release | beta (beta items reach only users on the Beta channel)
 #     --dry-run builds, signs and writes the appcast locally; publishes nothing
+#   COLLAGE=spec.json the Discord post's feature collage: required for release, with "approved": true
 #
 # Needs: ~/Library/Application Support/ArtemisRelease/{sparkle_ed25519, sparkle/bin, venv}
 # and a checkout of the public repo at $ARTEMIS_PUBLIC (default ~/artemis).
@@ -23,6 +24,11 @@ VERSION=$1 N=$2 CHANNEL=$3 NOTES=$4 DRY=${5:-}
 ((N >= 1 && N <= 99)) || { echo "N must be 1-99" >&2; exit 2; }
 [[ $CHANNEL == release || $CHANNEL == beta ]] || { echo "CHANNEL must be release or beta" >&2; exit 2; }
 [[ -f $NOTES ]] || { echo "no notes file $NOTES" >&2; exit 2; }
+# a release from the private tree announces itself on Discord, and that post needs a collage Fin approved
+if [[ $CHANNEL == release && -f discord/release/post.mjs ]]; then
+  [[ -n ${COLLAGE:-} && -f $COLLAGE ]] && grep -q '"approved": *true' "$COLLAGE" ||
+    { echo "a release needs COLLAGE=spec.json, with \"approved\": true once Fin has seen it" >&2; exit 2; }
+fi
 BUILD=$((BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 10000 + BASH_REMATCH[3] * 100 + N))
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
@@ -122,4 +128,13 @@ git -C "$PUBLIC" -c user.name=Fin -c user.email=188496222+devfindles@users.norep
   commit -q -m "release: Artemis $VERSION ($BUILD), $CHANNEL"
 git -C "$PUBLIC" push -q origin main
 (cd "$PUBLIC/website" && npx --yes wrangler@4 deploy | grep "Current Version")
+# the Discord announcement, only from a checkout that carries the private bot and its token;
+# COLLAGE (checked at the top) is the collage; only release posts carry it
+if [[ -f discord/release/post.mjs && -f "$R/discord-token" ]]; then
+  [[ -d discord/node_modules ]] || npm --prefix discord ci --silent || true
+  DL=$URL
+  if [[ $CHANNEL == release ]]; then DL=https://artemisbrowser.app/download; fi
+  node discord/release/post.mjs "$VERSION" "$N" "$CHANNEL" "$NOTES" \
+    "https://github.com/artemisbrowser/artemis/releases/tag/$TAG" "$DL" ${COLLAGE:+"$COLLAGE"} || echo "Discord post failed" >&2
+fi
 echo "done: $URL"

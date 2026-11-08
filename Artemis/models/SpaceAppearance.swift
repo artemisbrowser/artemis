@@ -24,7 +24,7 @@ extension SpaceAppearance {
         fill == .solid ? Array(colors.prefix(1)) : effectiveMeshPoints.map(\.color)
     }
 
-    /// changes that cross-fade the backdrop. mesh points and `glassBlur` are left
+    /// changes that cross-fade the backdrop. mesh points and the frosts are left
     /// out so dragging them applies live
     var transitionSignature: Int {
         var hasher = Hasher()

@@ -169,6 +169,9 @@ struct MainView: View {
         .onChange(of: tabManager.isSidebarPopoverOpen) { _, open in
             if !open { releaseOverlayHold() }
         }
+        .onChange(of: isEditingPillAddress) { _, editing in
+            if !editing { releaseOverlayHold() }
+        }
         .onChange(of: isSidebarRevealed && !overlayEntering, initial: true) { was, settled in
             pinSlide?.cancel()
             guard settled, !was, !isSidebarCollapsed else { return tabManager.isSidebarSettled = settled }
@@ -233,7 +236,16 @@ struct MainView: View {
             feedbackOverlay
                 .animation(Motion.fade, value: tabManager.feedback == nil)
         }
-        .background { WindowBackdrop() }
+        .overlay {
+            liveFolderOverlay
+                .animation(Motion.fade, value: tabManager.liveFolderDraft == nil)
+        }
+        .background {
+            WindowBackdrop(sidebarWidth: isSidebarCollapsed ? 0 : sidebarWidth + libraryRailExtra)
+                // in step with the shell's slide; pinning from the peek swaps in place
+                .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
+                .animation(Motion.panel, value: tabManager.isLibraryOpen)
+        }
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { windowSize = $0 }
         .background {
             WindowTransparency(onWindow: { window in
@@ -249,10 +261,9 @@ struct MainView: View {
         .frame(minWidth: max(440, isSidebarCollapsed ? 0 : pinnedFootprint), minHeight: 280)
         .onAppear { SettingsView.openSettingsAction = openSettings }
         .task {
-            // first-launch: focus the url field once the field is listening
-            if tabManager.selectedTab?.url == nil {
-                try? await Task.sleep(for: .milliseconds(250))
-                tabManager.urlFieldFocusRequest += 1
+            // a window opening on an empty space or a blank page shows the ⌘T bar
+            if tabManager.selectedTab?.isBlank ?? true, !SpaceLock.shared.isLocked(tabManager.currentSpace) {
+                tabManager.openNewTabBar()
             }
             // everything below runs once per app, not per window
             guard BrowserWindows.shared.claimLaunchWork() else { return }
@@ -388,6 +399,20 @@ struct MainView: View {
         }
     }
 
+    /// New Live Folder, modal like Send Feedback
+    @ViewBuilder
+    private var liveFolderOverlay: some View {
+        if let draft = tabManager.liveFolderDraft {
+            ZStack {
+                Color.black.opacity(0.25)
+                    .contentShape(Rectangle())
+                    .onTapGesture { tabManager.liveFolderDraft = nil }
+                LiveFolderSheet(draft: draft)
+                    .offset(y: -20)
+            }
+        }
+    }
+
     /// a menu or popover that held the overlay open has let go: dismiss it if the
     /// cursor wandered off meanwhile. the delay lets a follow-on popover claim it
     private func releaseOverlayHold() {
@@ -440,7 +465,9 @@ struct MainView: View {
     }
 
     /// what every dismiss path asks before letting the overlay go
-    private var overlayHeld: Bool { isOverlayHovered || pointerInsideRig }
+    private var overlayHeld: Bool { isOverlayHovered || pointerInsideRig || isEditingPillAddress }
+    /// the address bar grown out of the overlay's pill keeps the overlay up until it closes
+    private var isEditingPillAddress: Bool { tabManager.addressBarOrigin.map { !$0.isEmpty } ?? false }
 
     /// the grab strip beside the sidebar: its own width in the overlay, the rim
     /// when pinned, or nothing when the rim is too thin to grab (the seam handle covers it)
@@ -506,7 +533,7 @@ struct MainView: View {
                     try? await Task.sleep(for: .milliseconds(150))
                     if Task.isCancelled { return }
                 }
-                guard !Task.isCancelled, !isOverlayHovered, !isResizingSidebar,
+                guard !Task.isCancelled, !isOverlayHovered, !isEditingPillAddress, !isResizingSidebar,
                     !tabManager.isDraggingWindow, !overlayEntering, !isMenuOpen,
                     !tabManager.isSidebarPopoverOpen
                 else { return }
@@ -540,7 +567,7 @@ struct MainView: View {
         tabManager.peekTab != nil || tabManager.isSpaceCreatorVisible
             || tabManager.arcImport != nil || tabManager.browserImport != nil
             || tabManager.gradientPreview != nil
-            || tabManager.feedback != nil
+            || tabManager.feedback != nil || tabManager.liveFolderDraft != nil
     }
 
     /// a hosted region gets none of the window root's environment on its own
@@ -607,10 +634,19 @@ struct MainView: View {
     /// the grab strip's width when it straddles the seam rather than sitting in a rim
     private static let seamGrabWidth: CGFloat = 16
 
+    /// flush to a pinned sidebar, the card rounds its sidebar side so the sidebar reads as tucked behind it
+    private var cardShape: UnevenRoundedRectangle {
+        let radius = isEdgeToEdge ? 0 : WindowChrome.cardRadius(inset: edgeInset)
+        let leading = radius == 0 && !isSidebarCollapsed ? WindowChrome.outerWindowRadius : radius
+        return UnevenRoundedRectangle(
+            topLeadingRadius: leading, bottomLeadingRadius: leading,
+            bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous)
+    }
+
     @ViewBuilder
     private var webCard: some View {
         GeometryReader { geo in
-            CardStack(cornerRadius: isEdgeToEdge ? 0 : WindowChrome.cardRadius(inset: edgeInset))
+            CardStack(shape: cardShape)
             // GeometryReader places content at its natural size
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // the rearrange gesture, the panes' frames and this overlay all share
@@ -791,9 +827,11 @@ private struct CommandBarPageShield: View {
 private struct WindowBackdrop: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(TooltipState.self) private var tooltipState
+    let sidebarWidth: CGFloat
 
     var body: some View {
-        SpaceBackdrop(spaces: tabManager.stripSpaces, position: tabManager.backdropPosition)
+        SpaceBackdrop(
+            spaces: tabManager.stripSpaces, position: tabManager.backdropPosition, sidebarWidth: sidebarWidth)
             .onChange(of: tabManager.blendedAccent, initial: true) { _, accent in
                 tooltipState.accent = accent
             }
@@ -811,7 +849,7 @@ private struct CardCornerControls: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 0) {
-            if tabManager.isFindBarVisible, let tab = tabManager.selectedTab {
+            if tabManager.isFindBarVisible, let tab = tabManager.unlockedContentTab {
                 FindBar(tab: tab)
                     .id(tab.id)
             }
@@ -831,7 +869,7 @@ private struct CardCornerControls: View {
 private struct CardStack: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(RearrangeDragState.self) private var rearrange
-    let cornerRadius: CGFloat
+    let shape: UnevenRoundedRectangle
     // the spaces whose pages are kept mounted (current ± 1), refreshed after a
     // switch settles so the set never changes mid-gesture
     @State private var warmSpaceIDs: Set<Space.ID> = []
@@ -850,10 +888,7 @@ private struct CardStack: View {
                     .background(alignment: .top) { WindowDragStrip().frame(height: PageDragBand.height) }
                     .background(tabManager.currentSpace.appearance.cardBase)
                     .environment(\.chromeInk, tabManager.currentSpace.appearance.cardInk)
-                    .clipShape(
-                        RoundedRectangle(
-                            cornerRadius: cornerRadius,
-                            style: .continuous))
+                    .clipShape(shape)
             } else if let split = tabManager.displayedSplitGroup {
                 // panes carry their own base, rounding and shadow. keyed, so another split
                 // starts with no pane frames or link pick of this one's
@@ -898,8 +933,11 @@ private struct CardStack: View {
         // what's shown, even before the warm set refreshes
         add(tabManager.displayedContentTab)
         for space in tabManager.spaces where warmSpaceIDs.contains(space.id) {
-            add(tabManager.selectedTab(in: space) ?? space.tabs.first)
+            add(tabManager.shownPage(in: space))
         }
+        // under a favourite the space's own tab stays mounted, so going back unhides it
+        let current = tabManager.currentSpace
+        add(tabManager.selectedTab(in: current) ?? current.firstOpenTab)
         return tabs
     }
 
@@ -919,7 +957,9 @@ private struct CardStack: View {
                     .allowsHitTesting(tab.id == shownID)
             }
 
-            if let tab = shown, tab.loadError != nil {
+            if let tab = shown, tab.isMiniPlayerActive {
+                MiniPlayerAway()
+            } else if let tab = shown, tab.loadError != nil {
                 ErrorPage(tab: tab)
             } else if shown?.url == nil {
                 // an empty space reveals the window's backdrop
@@ -943,7 +983,7 @@ private struct CardStack: View {
                     .id(shown.id)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(shape)
         // no shadow over an empty space, so the card melts into the backdrop
         .shadow(color: .black.opacity(isEmptySpace ? 0 : 0.35), radius: 12, y: 3)
     }
@@ -995,4 +1035,18 @@ private final class CardFrames {
     var contentFrame: CGRect = .zero
     /// inside the padding: maps the cursor into the rearrange/drop space
     var cardFrame: CGRect = .zero
+}
+
+/// a page out in the mini-player leaves its card empty: this says where it went
+private struct MiniPlayerAway: View {
+    @Environment(\.chromeInk) private var ink
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "pip").font(.system(size: 28)).foregroundStyle(ink.opacity(0.5))
+            Text("Playing in the mini-player").font(.system(size: 13, weight: .medium)).foregroundStyle(ink.opacity(0.7))
+            Button("Bring It Back") { BrowserCore.shared.miniPlayer.returnToBrowser() }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }

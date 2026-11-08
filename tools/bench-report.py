@@ -4,7 +4,7 @@
 
 """Join the in-app bench log with the outside sampler into one table.
 
-    tools/bench-report.py ~/Downloads/artemis-bench-before.log /tmp/sample-before.csv
+    tools/bench-report.py ~/Library/Logs/Artemis/artemis-bench-before.log /tmp/sample-before.csv
 
 CPU is diffed per process and then summed: content processes start and exit
 mid-run, so diffing a category's sum would count an exit as negative CPU.

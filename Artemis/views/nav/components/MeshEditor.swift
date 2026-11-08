@@ -86,6 +86,7 @@ struct MeshEditor: View {
                         if dragOrigin == nil {
                             dragOrigin = CGPoint(x: point.x * size.width, y: point.y * size.height)
                             didDrag = false
+                            endTextEditing()
                         }
                         if abs(value.translation.width) > 2 || abs(value.translation.height) > 2 {
                             didDrag = true
@@ -152,6 +153,7 @@ struct MeshEditor: View {
             color: RGBA(1, 1, 1))
         draft.append(point)
         selectedID = point.id
+        endTextEditing()
     }
 
     private func move(_ point: MeshPoint, to location: CGPoint, in size: CGSize) {
@@ -190,6 +192,11 @@ struct MeshEditor: View {
 
     private func isEditingText() -> Bool {
         NSApp.keyWindow?.firstResponder is NSText
+    }
+
+    /// a blob gesture never takes focus, so the name field would keep ⌫
+    private func endTextEditing() {
+        if isEditingText() { NSApp.keyWindow?.makeFirstResponder(nil) }
     }
 
     // MARK: Selection plumbing

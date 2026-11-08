@@ -189,10 +189,23 @@ final class RoutingStore {
         scheduleSave()
     }
 
-    /// a deleted space takes its rules with it, written through at once
-    func forget(spaceID: UUID) {
-        guard rules.contains(where: { $0.spaceID == spaceID }) else { return }
+    /// a deleted space takes its rules with it, written through at once. returns
+    /// each with its slot, for `reinsert`
+    @discardableResult
+    func forget(spaceID: UUID) -> [(Int, RoutingRule)] {
+        let removed = rules.enumerated().filter { $0.element.spaceID == spaceID }.map { ($0.offset, $0.element) }
+        guard !removed.isEmpty else { return [] }
         rules.removeAll { $0.spaceID == spaceID }
+        saveNow()
+        return removed
+    }
+
+    /// put back what `forget` removed, each in its old slot
+    func reinsert(_ removed: [(Int, RoutingRule)]) {
+        guard !removed.isEmpty else { return }
+        for (index, rule) in removed where !rules.contains(where: { $0.id == rule.id }) {
+            rules.insert(rule, at: min(index, rules.count))
+        }
         saveNow()
     }
 

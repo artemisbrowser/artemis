@@ -21,4 +21,4 @@ ARTEMIS_BENCH=1 ARTEMIS_BENCH_LABEL="$label" ARTEMIS_PERF_OFF="$off" \
   /Applications/Artemis.app/Contents/MacOS/Artemis >/dev/null 2>&1
 kill "$sampler" 2>/dev/null
 echo "=== $label (off: ${off:-none}) ==="
-./tools/bench-report.py "$HOME/Downloads/artemis-bench-$label.log" "$dir/sample-$label.csv"
+./tools/bench-report.py "$HOME/Library/Logs/Artemis/artemis-bench-$label.log" "$dir/sample-$label.csv"

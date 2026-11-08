@@ -18,7 +18,7 @@ enum ScoutWindow {
     static func open(_ url: URL, like opener: Space? = nil) -> NSWindow {
         let manager = TabManager(kind: .scout)
         manager.openScoutSpace(on: url, like: opener)
-        return present(manager, size: glanceSize(), centred: true)
+        return present(manager, size: glanceSize(), centred: true, activates: true)
     }
 
     /// `window.open`: the web view must come back synchronously and already belong
@@ -28,7 +28,7 @@ enum ScoutWindow {
     ) -> WKWebView? {
         let manager = TabManager(kind: .scout)
         let tab = manager.openScoutSpace(adopting: configuration)
-        present(manager, size: popupSize(features), centred: false)
+        present(manager, size: popupSize(features), centred: false, activates: false)
         return tab.webView
     }
 
@@ -39,7 +39,7 @@ enum ScoutWindow {
     }
 
     @discardableResult
-    private static func present(_ manager: TabManager, size: NSSize, centred: Bool) -> NSWindow {
+    private static func present(_ manager: TabManager, size: NSSize, centred: Bool, activates: Bool) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
@@ -69,7 +69,12 @@ enum ScoutWindow {
         window.contentView?.wantsLayer = true
         window.alphaValue = 0
         window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // a page's popup never brings Artemis in front of another app
+        if activates {
+            NSApp.activate(ignoringOtherApps: true)
+        } else if !NSApp.isActive {
+            NSApp.requestUserAttention(.informationalRequest)
+        }
         PanelMotion.appear(window)
 
         self.open.append(window)

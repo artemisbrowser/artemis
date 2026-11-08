@@ -67,7 +67,10 @@ nonisolated enum ExtensionInstaller {
                 for entry in entries {
                     try fm.copyItem(at: entry, to: dest.appendingPathComponent(entry.lastPathComponent))
                 }
-                guard manifestRoot(under: dest) != nil else { throw InstallError.noManifest }
+                // the origin sidecar is the installer's to write; the volume may match its name in any case
+                try? fm.removeItem(at: dest.appendingPathComponent(packageOriginFile))
+                guard let root = manifestRoot(under: dest) else { throw InstallError.noManifest }
+                try ExtensionCompat.stripPatchKeys(packageRoot: root)
             } else {
                 let data = try Data(contentsOf: source)
                 let kind = source.pathExtension.lowercased()

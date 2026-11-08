@@ -13,6 +13,9 @@ final class Space: Identifiable {
     var appearance: SpaceAppearance
     var tabs: [BrowserTab]
     var selectedTabID: BrowserTab.ID?
+    /// the favourite this space last showed over its own tab, nil when it showed
+    /// its own: where a new window and the next launch start in it
+    var selectedEssentialID: BrowserTab.ID?
     /// when true the pinned section is folded away under the space header
     var pinnedCollapsed = false
     /// Touch ID or the account password opens it; see `SpaceLock`
@@ -55,6 +58,9 @@ final class Space: Identifiable {
     var selectedTab: BrowserTab? {
         tabs.first { $0.id == selectedTabID }
     }
+
+    /// the first tab with a page to land on; nil when only dormant pins remain
+    var firstOpenTab: BrowserTab? { tabs.first { !$0.isDormantPin } }
 
     /// the split group a tab belongs to, if any
     func splitGroup(containing id: BrowserTab.ID) -> SplitGroup? {

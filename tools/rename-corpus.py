@@ -4,7 +4,7 @@
 
 """Build the URL list the tab-rename corpus is captured from.
 
-Writes `category<TAB>url` lines to ~/Downloads/artemis-corpus-urls.txt, where
+Writes `category<TAB>url` lines to ~/Library/Logs/Artemis/artemis-corpus-urls.txt, where
 `ARTEMIS_DIAG=corpus` picks them up. The list aims for spread, not size: each
 category breaks tab naming differently.
 """
@@ -291,7 +291,8 @@ def build() -> list[tuple[str, str]]:
 
 def main() -> None:
     rows = build()
-    destination = os.path.expanduser("~/Downloads/artemis-corpus-urls.txt")
+    destination = os.path.expanduser("~/Library/Logs/Artemis/artemis-corpus-urls.txt")
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
     with open(destination, "w") as handle:
         handle.write("\n".join(f"{c}\t{u}" for c, u in rows) + "\n")
     print(f"{len(rows)} urls → {destination}")

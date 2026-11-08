@@ -220,13 +220,13 @@ private struct SpaceIcon: View {
     }
 }
 
-/// a delete takes every tab, pin and folder with the space for good, so it is confirmed;
+/// a delete takes every tab, pin and folder with the space, so it is confirmed;
 /// a locked space has the owner open it before its tab count shows
 private func confirmDeleting(_ space: Space, in tabManager: TabManager) async {
     guard await SpaceLock.shared.unlock(space, to: "delete the \u{201C}\(space.name)\u{201D} space") else { return }
     let tabs = space.tabs.count
     let detail = tabs == 0 ? "" : tabs == 1 ? "Its 1 tab goes with it. " : "Its \(tabs) tabs go with it. "
-    guard confirmDelete("Delete \u{201C}\(space.name)\u{201D}?", detail + "This can't be undone.") else { return }
+    guard confirmDelete("Delete \u{201C}\(space.name)\u{201D}?", detail + "You can undo this.") else { return }
     tabManager.deleteSpace(space)
 }
 
@@ -382,13 +382,21 @@ struct SpaceEditor: View {
             case .gradient:
                 MeshEditor(appearance: $appearance)
             case .glass:
-                // clear (left) → blurred (right), matching the macOS slider
-                HStack(spacing: 10) {
-                    GlassEndIcon(blurred: false)
-                        .offset(x: 3.5)  // nudge the clear icon toward the slider
-                    Slider(value: $appearance.glassBlur, in: 0...1)
-                    GlassEndIcon(blurred: true)
-                }
+                frostSlider("Sidebar", $appearance.sidebarFrost)
+                frostSlider("Background", $appearance.backgroundFrost)
+            }
+        }
+    }
+
+    /// clear (left) → frosted (right), matching the macOS slider
+    private func frostSlider(_ title: String, _ value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 12)).foregroundStyle(.primary.opacity(0.7))
+            HStack(spacing: 10) {
+                GlassEndIcon(blurred: false)
+                    .offset(x: 3.5)  // nudge the clear icon toward the slider
+                Slider(value: value, in: 0...1)
+                GlassEndIcon(blurred: true)
             }
         }
     }
@@ -529,7 +537,7 @@ private struct EditorField: ViewModifier {
 }
 
 /// a liquid-glass segmented control: one continuous glass capsule with a single
-/// highlighted pill that slides to the selected option — the iOS Apple Music tab
+/// highlighted pill that slides to the selected option — the Apple Music tab
 /// bar look. sizes to its content so it can sit flush-left beside siblings
 struct GlassSegmented<Value: Hashable>: View {
     let options: [(value: Value, label: String)]

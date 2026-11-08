@@ -31,8 +31,7 @@ if [[ "${1-}" != "--launch" ]]; then
     -c "Set :CFBundleExecutable Artemis $ID" -c "Set :CFBundleName Artemis $ID" \
     -c "Delete :CFBundleURLTypes" -c "Delete :CFBundleDocumentTypes" "$LAB/Contents/Info.plist" || true
   # nothing that can raise a consent prompt or reach the user's own data: no
-  # Downloads, camera, microphone, location, Arc folder or installed app; one
-  # sandbox exception for the lab folder in /private/tmp, which macOS never guards
+  # Downloads, camera, microphone, location, Arc folder or installed app
   LAB_ENTITLEMENTS=".build/$ID/lab.entitlements"
   cp "$ENTITLEMENTS" "$LAB_ENTITLEMENTS"
   for key in com.apple.security.files.downloads.read-write com.apple.security.device.camera \
@@ -41,10 +40,6 @@ if [[ "${1-}" != "--launch" ]]; then
     com.apple.security.temporary-exception.files.absolute-path.read-write; do
     /usr/libexec/PlistBuddy -c "Delete :$key" "$LAB_ENTITLEMENTS" 2>/dev/null || true
   done
-  /usr/libexec/PlistBuddy \
-    -c "Add :com.apple.security.temporary-exception.files.absolute-path.read-write array" \
-    -c "Add :com.apple.security.temporary-exception.files.absolute-path.read-write:0 string /private/tmp/artemis-extlab/" \
-    "$LAB_ENTITLEMENTS"
   codesign --force --deep --sign "$IDENTITY" \
     --entitlements "$LAB_ENTITLEMENTS" --generate-entitlement-der "$LAB"
 fi

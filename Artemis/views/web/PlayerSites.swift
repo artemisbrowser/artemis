@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-/// what both apps' media controls know of particular players, as page-world script. `nativeCC(getVideo)`,
-/// `youTubeCaptions` and `netflixCaptions` each list (id, label, lang), select and turn off caption tracks;
+/// what the media controls know of particular players, as page-world script. `nativeCC(getVideo)`,
+/// `youTubeCaptions(getPlayer)` and `netflixCaptions` each list (id, label, lang), select and turn off caption tracks;
 /// `skipAdSelectors` find an ad's skip control
 nonisolated enum PlayerSites {
     static let script = """
@@ -40,8 +40,8 @@ nonisolated enum PlayerSites {
         };
       }
 
-      var youTubeCaptions = (function () {
-          function P() { return document.getElementById('movie_player') || document.querySelector('.html5-video-player'); }
+      function youTubeCaptions(getP) {
+          function P() { return getP() || document.getElementById('movie_player') || document.querySelector('.html5-video-player'); }
           function trackName(t) {
             if (!t) return '';
             if (t.name) return t.name.simpleText || (t.name.runs && t.name.runs[0] && t.name.runs[0].text) || '';
@@ -93,7 +93,7 @@ nonisolated enum PlayerSites {
             },
             off: function () { var p = P(); if (!p) return; try { p.setOption('captions', 'track', {}); } catch (e) {} }
           };
-        })();
+        }
 
       var netflixCaptions = (function () {
           function P() {

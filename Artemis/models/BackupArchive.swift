@@ -10,6 +10,8 @@ extension BackupArchive {
     fileprivate static let preferenceKeys: [String] = [
         TabManager.autoArchiveHoursKey,
         TabManager.autoPictureInPictureKey,
+        TabManager.swipeNavigationKey,
+        DownloadManager.asksEachTimeKey,
         TabManager.hibernateAfterMinutesKey,
         SearchEngine.storageKey,
         SearchSuggest.enabledKey,
@@ -29,7 +31,8 @@ extension BackupArchive {
         "autoResizeSplitOnDrag",
         "defaultSplitLinked",
         "showSplitDropGuides",
-    ]
+        TabPreviewCard.enabledKey,
+    ] + TabPreviewCard.Kind.allCases.map(\.storageKey)
 
     @MainActor
     static func make(from manager: TabManager) -> BackupArchive {
@@ -133,7 +136,15 @@ enum BackupIO {
             // the backup doesn't name stays, or the reload would sweep its jar
             var session = archive.session
             let named = Set(session.profiles.map(\.id))
-            session.profiles += manager.sessionSnapshot().profiles.filter { !named.contains($0.id) }
+            // a kept profile's favourite can be a tab the backup holds too: one id, one tab
+            let taken = Set(
+                session.spaces.flatMap(\.tabs).map(\.id) + session.profiles.flatMap(\.favourites).map(\.id))
+            for var profile in manager.sessionSnapshot().profiles where !named.contains(profile.id) {
+                for i in profile.favourites.indices where taken.contains(profile.favourites[i].id) {
+                    profile.favourites[i].id = UUID()
+                }
+                session.profiles.append(profile)
+            }
             SessionStore.save(session)
             manager.reloadFromDisk()
         }

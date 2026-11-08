@@ -57,13 +57,20 @@ final class BrowserTab: NSObject, Identifiable {
 
     private(set) var title = "New Tab"
 
-    /// the sidebar's title: the user's name for the tab, else the model's short
-    /// name for the page title, else the page title; an incognito page's own
-    /// title only. see `TabNameStore`
+    /// what you called this tab, kept on its record wherever the tab goes; never
+    /// set on an incognito tab
+    var customName: String?
+
+    /// your name for the tab, else the model's for its page; nil shows the page
+    /// title. an incognito tab has neither
     @MainActor
-    var displayTitle: String {
-        isPrivate ? title : TabNameStore.shared.name(for: url ?? pendingURL) ?? title
+    var name: String? {
+        isPrivate ? nil : customName ?? TabNameStore.shared.generated(for: url ?? pendingURL)
     }
+
+    /// the sidebar's title: `name`, else the page title
+    @MainActor
+    var displayTitle: String { name ?? title }
     private(set) var url: URL?
     private(set) var isLoading = false
     private(set) var progress: Double = 0
@@ -75,6 +82,22 @@ final class BrowserTab: NSObject, Identifiable {
     /// the url last asked of `load`, or the main-frame url that last failed;
     /// survives failed loads, unlike `webView.url`
     private(set) var lastAttemptedURL: URL?
+    /// the url `load` asked for, until that navigation commits or otherwise ends
+    private(set) var requestedURL: URL?
+    /// never asked to load anything
+    var isBlank: Bool { url == nil && pendingURL == nil && lastAttemptedURL == nil }
+    @ObservationIgnored private var requestedNavigation: WKNavigation?
+    /// when the main frame's current document committed
+    @ObservationIgnored private(set) var committedAt = Date.distantPast
+    /// the origin of the frame that opened this page with `window.open` or a link to a new window,
+    /// until the page commits another site
+    @ObservationIgnored private var openerOrigin: String?
+    /// the press that last let a download through; each press lets through one
+    @ObservationIgnored private var spentDownloadGesture = Date.distantPast
+    /// frames (`_WKFrameHandle`) whose latest navigation WebKit counts as the user's
+    @ObservationIgnored private var userInitiatedFrames: Set<NSObject> = []
+    /// seconds a press in this tab's page stays good for one download
+    private static let downloadGestureWindow: TimeInterval = 10
     /// human-readable load failure, nil when fine; drives the error page
     private(set) var loadError: String?
     static let crashLoopError = "Artemis stopped reloading it after it crashed twice in a minute."
@@ -91,7 +114,7 @@ final class BrowserTab: NSObject, Identifiable {
     }
 
     /// the host whose favicon represents this tab
-    private var faviconHost: String? { (url ?? lastAttemptedURL ?? pendingURL)?.host() }
+    var faviconHost: String? { (url ?? lastAttemptedURL ?? pendingURL)?.host() }
 
     /// from the persistent per-host store, so it shows before a restored tab loads
     var favicon: NSImage? { FaviconStore.shared.icon(for: faviconHost) }
@@ -105,8 +128,8 @@ final class BrowserTab: NSObject, Identifiable {
     /// a favourite: shown in the grid shared by every space
     var isEssential = false
 
-    /// the url a pinned tab is anchored to; when the tab navigates away from it
-    /// the row reads as "off" its pinned page. nil for unpinned tabs
+    /// the home a pinned tab or favourite returns to when closed; away from it, the
+    /// row or tile reads as "off" its page. nil for a Today tab
     var pinnedURL: URL?
 
     /// the connected coding agent that has driven this tab; nil once it disconnects
@@ -136,6 +159,9 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// when the tab was last viewed or navigated; persisted, and drives auto-archive
     var lastAccessed = Date()
+
+    /// a pin with no page: closed to its url, or restored unloaded. A sleeping pin still has one
+    var isDormantPin: Bool { isPinned && pendingURL != nil && !isHibernated }
 
     /// live text in the url field; user edits happen here until submit,
     /// and committed navigations write the new url back into it
@@ -209,14 +235,38 @@ final class BrowserTab: NSObject, Identifiable {
     /// dialogs since the last commit — the second one earns a suppression offer
     private var dialogsThisPage = 0
 
-    /// this load failed on a certificate the user could choose to accept
-    private(set) var canOverrideCertificate = false
+    enum CertificateFailure {
+        case overridable
+        /// the site requires a secure connection: there is no way past
+        case final
+    }
+    /// this load failed on a certificate the system refused
+    private(set) var certificateFailure: CertificateFailure?
     /// each host's trust from this page's challenges, until the next commit. a failed
     /// load carries none, so the certificate its error page asks about is kept here
     @ObservationIgnored private(set) var serverTrusts: [String: SecTrust] = [:]
     /// the main-frame host a certificate exception let through; holds until a page on another host commits,
     /// as the connection it opened can carry that host's later loads, exception or not
     private(set) var exceptionHost: String?
+    /// an https page on a connection no certificate exception could have opened
+    var isSecure: Bool {
+        guard url?.scheme == "https", let host = url?.host(), exceptionHost != host else { return false }
+        return !CertificateTrust.hasException(for: host, ephemeral: isPrivate)
+            || CertificateTrust.requiresSecureConnection(host, ephemeral: isPrivate)
+    }
+
+    /// whether saved logins, passkeys and cards may reach `origin`, a frame under the top document on `top`
+    /// (this page's by default): no certificate exception lets either through on https. Schemes are the callers' gate
+    func offersCredentials(to origin: String, under top: String? = nil) -> Bool {
+        [origin, top ?? SitePermissionStore.originString(webView.url) ?? origin].allSatisfy { each in
+            let url = URL(string: each)
+            guard url?.scheme == "https" else { return true }
+            guard let host = url?.host() else { return false }
+            return host != exceptionHost
+                && (!CertificateTrust.hasException(for: host, ephemeral: isPrivate)
+                    || CertificateTrust.requiresSecureConnection(host))
+        }
+    }
 
     // MARK: - Translation
 
@@ -422,8 +472,22 @@ final class BrowserTab: NSObject, Identifiable {
             in: mediaFrame, in: .page)
     }
 
-    /// a fresh document or web view plays nothing
-    private func resetMediaState() {
+    /// documents whose focused element takes typing, by the token each one draws for itself;
+    /// fed by `EditingFocusReporter`
+    @ObservationIgnored private var editingFrames: Set<String> = []
+
+    /// a field or editor in the page has focus, so ⌘Z belongs to the page
+    var isEditingText: Bool { !editingFrames.isEmpty }
+
+    func setFrameEditing(_ editing: Bool, frame: String) {
+        let was = isEditingText
+        if editing { editingFrames.insert(frame) } else { editingFrames.remove(frame) }
+        if was != isEditingText { UndoRoute.shared.refresh() }
+    }
+
+    /// a fresh document or web view plays nothing and edits nothing
+    private func resetFrameState() {
+        editingFrames.removeAll()
         playingFrames.removeAll()
         isPlayingMediaContent = false
         mediaFrames.removeAll()
@@ -603,16 +667,15 @@ final class BrowserTab: NSObject, Identifiable {
         // extension context menus need to know which tab the menu is for
         (webView as? ArtemisWebView)?.owningTab = self
 
-        // swipe-to-navigate would take horizontal scrolling on wide pages
-        webView.allowsBackForwardNavigationGestures = false
+        // WebKit swipes back and forward only once the page can't scroll further sideways
+        webView.allowsBackForwardNavigationGestures = TabManager.swipesNavigate
         webView.allowsMagnification = true
-        webView.isInspectable = true
         webView.uiDelegate = self
         webView.navigationDelegate = self
         // carries zoom and mute across a rebuild
         webView.pageZoom = zoomLevel
         applyMuteState()
-        resetMediaState()
+        resetFrameState()
     }
 
     /// move the tab to another profile's jar: a fresh web view reloads the page,
@@ -672,9 +735,9 @@ final class BrowserTab: NSObject, Identifiable {
         title = restoredTitle
     }
 
-    /// a pinned tab that has navigated away from its anchored `pinnedURL`
+    /// a pinned tab or favourite that has navigated away from its home `pinnedURL`
     var isOffPinnedURL: Bool {
-        guard isPinned, let pinnedURL,
+        guard isPinned || isEssential, let pinnedURL,
             let current = url ?? lastAttemptedURL ?? pendingURL
         else { return false }
         return BrowserTab.normalizedLocation(current) != BrowserTab.normalizedLocation(pinnedURL)
@@ -724,11 +787,11 @@ final class BrowserTab: NSObject, Identifiable {
         }
     }
 
-    /// until the current load finishes, at most 15 s
+    /// until the current load finishes, at most 15 s, or the task is cancelled
     func settle() async {
         try? await Task.sleep(for: .milliseconds(200))
         let deadline = Date(timeIntervalSinceNow: 15)
-        while webView.isLoading, Date() < deadline {
+        while webView.isLoading, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
         }
     }
@@ -875,7 +938,7 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// the installed Safari's short version, for the UA's `Version/` token: streaming
     /// players gate DRM on it
-    private static let currentSafariVersion: String = {
+    static let currentSafariVersion: String = {
         if let dict = NSDictionary(contentsOfFile: "/Applications/Safari.app/Contents/Info.plist"),
             let v = dict["CFBundleShortVersionString"] as? String, !v.isEmpty {
             return v
@@ -902,6 +965,8 @@ final class BrowserTab: NSObject, Identifiable {
         if let dataStore { configuration.websiteDataStore = dataStore }
         configuration.applicationNameForUserAgent = "Version/\(currentSafariVersion) Safari/605.1.15"
         configuration.preferences.isElementFullscreenEnabled = true
+        // `window.open` and target=_blank need the user's click or key press
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         // Writing Tools rewrites in place inside the page's editors
         configuration.writingToolsBehavior = .complete
         // the in-app Web Inspector needs this as well as `isInspectable`
@@ -933,15 +998,18 @@ final class BrowserTab: NSObject, Identifiable {
     func load(_ url: URL) {
         debugLog("tab load: \(url.absoluteString)")
         lastAttemptedURL = url
+        requestedURL = url
         loadError = nil
         lastAccessed = Date()
         addressText = url.absoluteString
-        guard url.isFileURL else {
-            webView.load(URLRequest(url: url))
-            return
-        }
-        // read access to the file alone: a sibling stylesheet won't load
-        webView.loadFileURL(url, allowingReadAccessTo: url)
+        // a local page reads the home folder it sits in, or else its own folder, so its
+        // stylesheets, images and linked pages load. each file stays its own origin
+        let home = URL.homeDirectory
+        requestedNavigation =
+            url.isFileURL
+            ? webView.loadFileURL(
+                url, allowingReadAccessTo: url.path.hasPrefix(home.path + "/") ? home : url.deletingLastPathComponent())
+            : webView.load(URLRequest(url: url))
     }
 
     func retry() {
@@ -1056,6 +1124,7 @@ final class BrowserTab: NSObject, Identifiable {
     func reloadFromOrigin() { webView.reloadFromOrigin() }
     func stopLoading() {
         stopRequested = true
+        endRequestedLoad()
         webView.stopLoading()
     }
 
@@ -1072,19 +1141,38 @@ final class BrowserTab: NSObject, Identifiable {
     /// whether the Web Inspector is open; turns true a beat after `toggleInspector`
     var isInspectorVisible: Bool { inspectorSPI?.isVisible ?? false }
 
-    /// ⌥⌘I / menu: open this tab's Web Inspector, or close it if already up
+    /// ⌥⌘I / menu: open this tab's Web Inspector, or close it if already up. The page is
+    /// inspectable, Safari's Develop menu included, only while this has it open
     func toggleInspector() {
         guard let inspector = inspectorSPI else { return }
-        if inspector.isVisible {
-            inspector.close()
-        } else {
-            inspector.show()
-            // a docked inspector never paints inside the rounded card
-            inspector.detach()
-        }
+        if inspector.isVisible { return closeInspector() }
+        webView.isInspectable = true
+        inspector.show()
+        // a docked inspector never paints inside the rounded card
+        inspector.detach()
+    }
+
+    func closeInspector() {
+        if let inspector = inspectorSPI, inspector.isVisible { inspector.close() }
+        webView.isInspectable = false
     }
 
     // MARK: - State mirroring
+
+    /// the main frame's committed url, same-document changes included; SPI, else `webView.url`
+    private var committedURL: URL? {
+        guard webView.responds(to: Selector(("_committedURL"))) else { return webView.url }
+        return webView.value(forKey: "_committedURL") as? URL
+    }
+
+    private func adoptCommittedURL() {
+        let committed = committedURL
+        guard committed != url else { return }
+        url = committed
+        if let committed { addressText = committed.absoluteString }
+        hasUnsavedState = true
+        ExtensionManager.shared.tabDidChange(.URL, for: self)
+    }
 
     private func observeWebView() {
         observations = [
@@ -1100,14 +1188,12 @@ final class BrowserTab: NSObject, Identifiable {
                 }
                 ExtensionManager.shared.tabDidChange(.title, for: self)
             },
+            // `webView.url` runs ahead to a provisional load, which may never commit
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 guard let self else { return }
-                self.url = webView.url
-                if let url = webView.url {
-                    self.addressText = url.absoluteString
-                }
-                self.hasUnsavedState = true
-                ExtensionManager.shared.tabDidChange(.URL, for: self)
+                self.adoptCommittedURL()
+                // back on the committed page: the request was cancelled or stayed in the document
+                if self.requestedURL != nil, webView.url == self.committedURL { self.endRequestedLoad() }
             },
             webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
                 guard let self else { return }
@@ -1123,7 +1209,7 @@ final class BrowserTab: NSObject, Identifiable {
                     self.isFinishingLoad = false
                 }
                 if loading != self.isLoading { self.stopRequested = false }
-                if loading { self.progress = webView.estimatedProgress }
+                if loading { self.progress = webView.estimatedProgress } else { self.endRequestedLoad() }
                 self.isLoading = loading
                 self.hasUnsavedState = true
                 ExtensionManager.shared.tabDidChange(.loading, for: self)
@@ -1161,17 +1247,14 @@ extension BrowserTab: WKNavigationDelegate {
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         let space = challenge.protectionSpace
-        if space.isProxy() || space.authenticationMethod == "NSURLAuthenticationMethodHTTPProxy" {
-            if let credential = ExtensionProxyBridge.shared.proxyURLCredential(in: ProfileStore.proxyProfile(of: dataStore)) {
-                completionHandler(.useCredential, credential)
-                return
-            }
-            // our proxy, credentials not yet in: fail rather than raise a system
-            // dialog; the tabs reload once they land
-            if ExtensionProxyBridge.shared.activeProxy(in: ProfileStore.proxyProfile(of: dataStore)) != nil {
-                completionHandler(.cancelAuthenticationChallenge, nil)
-                return
-            }
+        // our proxy without its credentials yet fails rather than raise a system dialog;
+        // the tabs reload once they land
+        if space.isProxy() || space.authenticationMethod == "NSURLAuthenticationMethodHTTPProxy",
+            let answer = ExtensionProxyBridge.shared.proxyChallengeAnswer(
+                space, in: ProfileStore.proxyProfile(of: dataStore))
+        {
+            completionHandler(answer.disposition, answer.credential)
+            return
         }
         // the only chance to keep the certificate: a load failure carries no trust
         if space.authenticationMethod == NSURLAuthenticationMethodServerTrust,
@@ -1232,14 +1315,15 @@ extension BrowserTab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         debugLog("didStartProvisionalNavigation url=\(webView.url?.absoluteString ?? "nil")")
+        if navigation !== requestedNavigation { endRequestedLoad() }
         blockedRequests.removeAll()
         // the old page's frames are gone; anything they were playing has stopped
-        resetMediaState()
+        resetFrameState()
         // dialog silencing is per page; reset here because `didCommit` can arrive
         // after the new document's first `alert()`
         suppressesDialogs = false
         dialogsThisPage = 0
-        canOverrideCertificate = false
+        certificateFailure = nil
         WebNotifications.shared.forgetPage(in: id)
         // navigating anywhere leaves the reader, except the reader's own load
         if isLoadingReaderDocument {
@@ -1252,6 +1336,17 @@ extension BrowserTab: WKNavigationDelegate {
 
     /// adopt the new site's zoom here, before the page paints
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        committedAt = Date()
+        endRequestedLoad()
+        adoptCommittedURL()
+        // every response before this commit has been decided
+        userInitiatedFrames = []
+        // about:blank holds its opener's origin
+        if let committedURL, committedURL.scheme != "about",
+            SitePermissionStore.originString(committedURL) != openerOrigin
+        {
+            openerOrigin = nil
+        }
         serverTrusts = [:]
         webView.setValue(true, forKey: "drawsBackground")
         webView.underPageBackgroundColor = nil
@@ -1290,7 +1385,13 @@ extension BrowserTab: WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        if navigation === requestedNavigation { endRequestedLoad() }
         handleLoadError(error)
+    }
+
+    private func endRequestedLoad() {
+        requestedNavigation = nil
+        requestedURL = nil
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -1303,7 +1404,7 @@ extension BrowserTab: WKNavigationDelegate {
         debugLog("web content process terminated: \(url?.absoluteString ?? "-")")
         Diagnostics.record(area: "webcontent", message: "web content process ended", inPrivate: isPrivate)
         abandonDialog()
-        resetMediaState()
+        resetFrameState()
         let now = Date()
         defer { lastCrash = now }
         if let lastCrash, now.timeIntervalSince(lastCrash) < 60 {
@@ -1330,7 +1431,15 @@ extension BrowserTab: WKNavigationDelegate {
         // a link, redirect or back/forward fails without passing through `load`
         if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL { lastAttemptedURL = failing }
         loadError = nsError.localizedDescription
-        canOverrideCertificate = CertificateTrust.isOverridable(nsError)
+        if !CertificateTrust.isOverridable(nsError) {
+            certificateFailure = nil
+        } else if let host = lastAttemptedURL?.host(),
+            CertificateTrust.requiresSecureConnection(host, ephemeral: isPrivate)
+        {
+            certificateFailure = .final
+        } else {
+            certificateFailure = .overridable
+        }
         if let host = lastAttemptedURL?.host() {
             title = host
         }
@@ -1340,10 +1449,11 @@ extension BrowserTab: WKNavigationDelegate {
     /// that one certificate by `SecTrustCopyExceptions`
     @MainActor
     func acceptCertificateAndRetry() {
-        guard let host = lastAttemptedURL?.host(), let trust = serverTrusts[host],
+        guard certificateFailure == .overridable,
+            let host = lastAttemptedURL?.host(), let trust = serverTrusts[host],
             CertificateTrust.addException(for: host, trust: trust, ephemeral: isPrivate)
         else { return }
-        canOverrideCertificate = false
+        certificateFailure = nil
         retry()
     }
 
@@ -1354,11 +1464,23 @@ extension BrowserTab: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         preferences: WKWebpagePreferences
     ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        let source = Self.sourceFrame(of: navigationAction)
+        let userInitiated =
+            navigationAction.responds(to: Selector(("_isUserInitiated")))
+            && navigationAction.value(forKey: "_isUserInitiated") as? Bool == true
+        if let frame = Self.handle(of: navigationAction.targetFrame) {
+            if userInitiated { userInitiatedFrames.insert(frame) } else { userInitiatedFrames.remove(frame) }
+        }
         // a link that asks to be downloaded is, whatever is held
         if navigationAction.shouldPerformDownload {
-            return (.download, preferences)
+            let allowed = await mayDownload(
+                from: source.map { SitePermissionStore.originString($0.securityOrigin) }, userInitiated: userInitiated)
+            return (allowed ? .download : .cancel, preferences)
         }
-        if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
+        // only a person's click is re-routed (new tab, Scout, a linked pane): those loads count as the
+        // app's own. a scripted click runs as a plain navigation; without the SPI every click routes
+        let routable = userInitiated || !navigationAction.responds(to: Selector(("_isUserInitiated")))
+        if navigationAction.navigationType == .linkActivated, routable, let url = navigationAction.request.url {
             // WebKit reports the button as a mask bit: 1 << 2 is the middle one
             let middle = navigationAction.buttonNumber == 1 << 2
             if let click = LinkClick.route(navigationAction.modifierFlags, middle: middle) {
@@ -1378,7 +1500,10 @@ extension BrowserTab: WKNavigationDelegate {
         if let url = navigationAction.request.url, !ExternalSchemes.isInternal(url.scheme) {
             // only the main frame or a new window may ask; a subframe is cancelled silently
             let fromMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
-            if fromMainFrame, ExternalSchemes.canOffer(url) { offerExternal(url) }
+            // the asking frame's host; a new window's first load may name none, so its opener's
+            let asker = source?.securityOrigin.host ?? ""
+            let site = asker.isEmpty ? openerOrigin.flatMap { URL(string: $0)?.host() } ?? "" : asker
+            if fromMainFrame, ExternalSchemes.canOffer(url) { offerExternal(url, site: site) }
             return (.cancel, preferences)
         }
         // set here, the UA already reaches this navigation's own request
@@ -1397,20 +1522,79 @@ extension BrowserTab: WKNavigationDelegate {
         _ webView: WKWebView,
         decidePolicyFor navigationResponse: WKNavigationResponse
     ) async -> WKNavigationResponsePolicy {
+        let response = navigationResponse.response
         debugLog(
-            "navigationResponse url=\(navigationResponse.response.url?.absoluteString ?? "nil") "
-                + "mime=\(navigationResponse.response.mimeType ?? "nil") "
+            "navigationResponse url=\(response.url?.absoluteString ?? "nil") "
+                + "mime=\(response.mimeType ?? "nil") "
                 + "canShow=\(navigationResponse.canShowMIMEType)")
-
-        // an attachment downloads even when its mime type is displayable
-        if let http = navigationResponse.response as? HTTPURLResponse,
-            let disposition = http.value(forHTTPHeaderField: "Content-Disposition"),
-            disposition.lowercased().contains("attachment")
+        let http = response as? HTTPURLResponse
+        if let http, let host = response.url?.host(), response.url?.scheme == "https",
+            let header = http.value(forHTTPHeaderField: "Strict-Transport-Security"),
+            !CertificateTrust.hasException(for: host, ephemeral: isPrivate)
         {
-            return .download
+            CertificateTrust.noteStrictTransport(header, host: host, ephemeral: isPrivate)
         }
 
-        return navigationResponse.canShowMIMEType ? .allow : .download
+        // an attachment downloads even when its mime type is displayable
+        let attachment =
+            http?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().contains("attachment") == true
+        guard attachment || !navigationResponse.canShowMIMEType else { return .allow }
+        // SPI: the frame that started the navigation, not always the one it loads in; nil when the app did
+        let initiator: String?
+        if navigationResponse.responds(to: Selector(("_navigationInitiatingFrame"))) {
+            initiator = (navigationResponse.value(forKey: "_navigationInitiatingFrame") as? WKFrameInfo).map {
+                SitePermissionStore.originString($0.securityOrigin)
+            }
+        } else if navigationResponse.isForMainFrame {
+            initiator = nil
+        } else {
+            // a subframe's own response stands in, where a blob's origin is the one inside it
+            let loaded = response.url.flatMap {
+                $0.scheme == "blob" ? URL(string: String($0.absoluteString.dropFirst(5))) : $0
+            }
+            initiator = SitePermissionStore.originString(loaded) ?? ""
+        }
+        let frame =
+            navigationResponse.responds(to: Selector(("_frame")))
+            ? Self.handle(of: navigationResponse.value(forKey: "_frame") as? WKFrameInfo) : nil
+        let userInitiated = frame.flatMap { userInitiatedFrames.remove($0) } != nil
+        let started = navigationResponse.isForMainFrame && requestedURL != nil
+        return await mayDownload(from: initiator, userInitiated: userInitiated, appStarted: started)
+            ? .download : .cancel
+    }
+
+    /// a download goes ahead for a load the app started, on the site's allow, or on a press in this
+    /// tab's page that no other download spent. a frame from another origin is never asked about, and
+    /// its press counts only on a navigation WebKit also saw the user start
+    private func mayDownload(from initiator: String?, userInitiated: Bool, appStarted: Bool = false) async -> Bool {
+        let site = SitePermissionStore.originString(committedURL) ?? openerOrigin
+        let decision = site.flatMap { SitePermissionStore.shared.decision(for: $0, .downloads, ephemeral: isPrivate) }
+        guard decision != .deny else { return false }
+        if appStarted { return true }
+        let crossOrigin = initiator.map { $0 != site && $0 != openerOrigin } ?? false
+        if let pressed = UserGesture.recent(in: webView, within: Self.downloadGestureWindow),
+            pressed > spentDownloadGesture, userInitiated || !crossOrigin
+        {
+            spentDownloadGesture = pressed
+            return true
+        }
+        guard !crossOrigin else { return false }
+        if decision == .allow { return true }
+        guard let site, let manager else { return false }
+        return await withCheckedContinuation { asked in
+            manager.requestPermission([.downloads], origin: site, tab: self) { asked.resume(returning: $0 == .allow) }
+        }
+    }
+
+    /// `sourceFrame` is declared nonnull, but is nil for a load the app started
+    private static func sourceFrame(of action: WKNavigationAction) -> WKFrameInfo? {
+        action.value(forKey: "sourceFrame") as? WKFrameInfo
+    }
+
+    /// SPI `_WKFrameHandle`: equal for every info of one frame
+    private static func handle(of frame: WKFrameInfo?) -> NSObject? {
+        guard let frame, frame.responds(to: Selector(("_handle"))) else { return nil }
+        return frame.value(forKey: "_handle") as? NSObject
     }
 
     func webView(
@@ -1451,13 +1635,22 @@ extension BrowserTab: WKNavigationDelegate {
 // MARK: - WKUIDelegate
 
 extension BrowserTab: WKUIDelegate {
+    /// WebKit's own Download Image and Download Linked File items hand their download here
+    @objc(_webView:contextMenuDidCreateDownload:)
+    func webView(_ webView: WKWebView, contextMenuDidCreateDownload download: WKDownload) {
+        DownloadManager.shared.register(download)
+    }
+
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        onRequestNewTab?(configuration, windowFeatures)
+        let opened = onRequestNewTab?(configuration, windowFeatures)
+        let opener = Self.sourceFrame(of: navigationAction).map { SitePermissionStore.originString($0.securityOrigin) }
+        (opened?.navigationDelegate as? BrowserTab)?.openerOrigin = opener
+        return opened
     }
 
     /// `window.close()`
@@ -1582,11 +1775,11 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// hand a link in a scheme WebKit can't render to its app, once the user agrees
+    /// hand a link in a scheme WebKit can't render to its app, once the user agrees. `site` is the
+    /// host of the frame that asked, empty when none is known
     @MainActor
-    private func offerExternal(_ url: URL) {
+    private func offerExternal(_ url: URL, site: String) {
         let scheme = url.scheme?.lowercased() ?? ""
-        let site = (self.url ?? lastAttemptedURL)?.host() ?? ""
         guard !ExternalSchemes.isAllowed(site: site, scheme: scheme) else {
             NSWorkspace.shared.open(url)
             return
@@ -1596,8 +1789,8 @@ extension BrowserTab: WKUIDelegate {
         pendingDialog = PageDialogRequest(
             kind: .openExternal(scheme: scheme, appName: appName), message: "",
             host: site,
-            // nothing is offered to remember when nothing would open, or from incognito
-            checkbox: appName == nil || isPrivate ? nil : .rememberChoice
+            // nothing is offered to remember when nothing would open, from incognito, or for no site
+            checkbox: appName == nil || isPrivate || site.isEmpty ? nil : .rememberChoice
         ) { [weak self] answer in
             self?.pendingDialog = nil
             guard answer.confirmed else { return }

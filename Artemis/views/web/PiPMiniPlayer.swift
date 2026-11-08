@@ -50,7 +50,7 @@ final class MiniPlayer {
     @ObservationIgnored private let motion = PanelMotion()
     /// last polled position, to catch a looping short wrapping back to 0
     @ObservationIgnored private var lastTime = 0.0
-    @ObservationIgnored private var switchingShort = false
+    @ObservationIgnored private(set) var switchingShort = false
     /// a seek just sent: poll results stay ignored until the video reports
     /// near it, so the thumb doesn't snap back to where it was
     @ObservationIgnored private var seekTarget: (time: Double, until: Date)?
@@ -59,6 +59,10 @@ final class MiniPlayer {
     /// the page in the panel, `tab`'s view when it was borrowed; every control acts on it
     @ObservationIgnored private var webView: WKWebView?
     @ObservationIgnored var onReturnToBrowser: ((BrowserTab) -> Void)?
+    /// the panel opened as its window was hidden, so coming back to Artemis closes it
+    @ObservationIgnored private var openedWhileAway = false
+    /// a tab whose auto-opened or background panel was closed with ✕; it stays closed until Artemis or its window is back
+    @ObservationIgnored private var dismissedWhileAway: BrowserTab.ID?
 
     @ObservationIgnored private var pollTimer: Timer?
     /// a faster timer for caption text alone
@@ -79,7 +83,18 @@ final class MiniPlayer {
     /// pauses volume readback
     var isAdjustingVolume = false
     /// the pointer is over the panel; set from a tracking area, so it never blocks clicks
-    var chromeHovering = false
+    var chromeHovering = false { didSet { pointerMoved() } }
+    /// the caption menu, in a child window so a long track list spills past the panel's edge
+    var captionMenuOpen = false {
+        didSet { if captionMenuOpen != oldValue { captionMenuOpen ? showCaptionMenu() : hideCaptionMenu() } }
+    }
+    @ObservationIgnored private var captionMenu: NSWindow?
+    /// the menu's content height, which its window takes as far as the screen allows
+    @ObservationIgnored fileprivate var captionMenuHeight: CGFloat = 0 { didSet { layoutCaptionMenu() } }
+    @ObservationIgnored private var menuHovering = false { didSet { pointerMoved() } }
+    /// the video chrome's bottom bar, in the chrome's flipped coordinates: a press there
+    /// goes straight to its sliders, never held back as a panel drag
+    @ObservationIgnored fileprivate(set) var controlsFrame = CGRect.zero
     /// an ad is playing, which blocks seeking
     private(set) var adActive = false
     /// the site's ad-skip control is up; it is pinned, invisible, under our Skip
@@ -139,6 +154,25 @@ final class MiniPlayer {
         open(tab)
     }
 
+    /// the auto mini-player, as another app hides `tab`'s window
+    func enterAsHidden(_ tab: BrowserTab) {
+        guard !isActive, tab.id != dismissedWhileAway else { return }
+        enterIfPlaying(tab)
+        openedWhileAway = isActive
+    }
+
+    /// Artemis is active again: a panel opened while away goes back to its tab
+    func artemisDidBecomeActive() {
+        dismissedWhileAway = nil
+        if openedWhileAway, let tab { exitIfActive(for: tab) }
+    }
+
+    /// the window selecting `tab` is in view again with Artemis active: as `artemisDidBecomeActive`, for that tab alone
+    func windowDidShow(selecting tab: BrowserTab?) {
+        guard let tab, tab === self.tab || tab.id == dismissedWhileAway else { return }
+        artemisDidBecomeActive()
+    }
+
     /// `tab` is closing or replacing its web view, which the panel must not keep alive
     func exitIfActive(for tab: BrowserTab) {
         guard isActive, self.tab === tab else { return }
@@ -146,7 +180,10 @@ final class MiniPlayer {
     }
 
     /// the ✕ button: closes and pauses, but leaves a call running
-    func dismiss() { close(returnToBrowser: false, pauseVideo: !isCall) }
+    func dismiss() {
+        if openedWhileAway || !NSApp.isActive { dismissedWhileAway = tab?.id }
+        close(returnToBrowser: false, pauseVideo: !isCall)
+    }
     /// hands the page back to the browser, still playing
     func returnToBrowser() { close(returnToBrowser: true) }
 
@@ -239,9 +276,18 @@ final class MiniPlayer {
             panel.isDragHandle = { [weak page] p in !(page?.frame.contains(p) ?? false) }
             panel.locksAspect = false
         } else {
+            panel.isDragHandle = { [weak self, weak chrome] p in
+                guard let self, let chrome else { return true }
+                return !controlsFrame.insetBy(dx: -4, dy: -6).contains(chrome.convert(p, from: nil))
+            }
             panel.contentAspectRatio = NSSize(width: 16, height: 9)
         }
-        panel.onGestureBegan = { [weak self] in self?.motion.stop() }
+        panel.onGestureBegan = { [weak self] in
+            guard let self else { return }
+            motion.stop()
+            // runs on every live gesture event: an unchanged write still invalidates the chrome
+            if captionMenuOpen { captionMenuOpen = false }
+        }
         panel.onFling = { [weak self, weak panel] target, velocity in
             guard let self, let panel else { return }
             self.motion.animate(panel, to: target, velocity: velocity)
@@ -252,7 +298,7 @@ final class MiniPlayer {
             let r = NSRectFromString(saved)
             if r.width > 100, r.height > 60,
                 NSScreen.screens.contains(where: { $0.frame.intersects(r) }) {
-                target = r
+                target = PiPGesture.clamp(r, anchor: NSPoint(x: r.midX, y: r.midY), in: PiPGesture.screens)
             }
         }
         // a video panel stays invisible until isolation, or the whole page flashes in it
@@ -262,7 +308,9 @@ final class MiniPlayer {
         self.panel = panel
         if isCall { PanelMotion.appear(panel) }
         let save: (Notification) -> Void = { [weak self, weak panel] _ in
-            guard let self, let panel, !self.motion.isRunning else { return }
+            guard let self, let panel else { return }
+            self.layoutCaptionMenu()
+            guard !self.motion.isRunning else { return }
             UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: frameKey)
         }
         let nc = NotificationCenter.default
@@ -282,6 +330,7 @@ final class MiniPlayer {
     }
 
     private func close(returnToBrowser: Bool, pauseVideo: Bool = false) {
+        captionMenuOpen = false
         pollTimer?.invalidate()
         pollTimer = nil
         captionTimer?.invalidate()
@@ -290,6 +339,7 @@ final class MiniPlayer {
         frameObservers.forEach(NotificationCenter.default.removeObserver)
         frameObservers = []
         switchingShort = false
+        openedWhileAway = false
         guard let webView, let panel else { return }
         setOcclusionDetection(true, on: webView)
 
@@ -399,6 +449,71 @@ final class MiniPlayer {
         }
     }
 
+    private func showCaptionMenu() {
+        guard let panel else { return }
+        let content = PiPContentView(frame: NSRect(x: 0, y: 0, width: CaptionMenu.width, height: 1))
+        content.onHover = { [weak self] in self?.menuHovering = $0 }
+        let host = NSHostingView(rootView: CaptionMenu(player: self))
+        host.sizingOptions = []
+        host.frame = content.bounds
+        host.autoresizingMask = [.width, .height]
+        content.addSubview(host)
+        let menu = PiPMenuPanel(
+            contentRect: content.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        menu.contentView = content
+        menu.isOpaque = false
+        menu.backgroundColor = .clear
+        menu.hasShadow = false
+        menu.appearance = NSAppearance(named: .darkAqua)
+        menu.isReleasedWhenClosed = false
+        menu.hidesOnDeactivate = false
+        menu.level = panel.level
+        menu.collectionBehavior = panel.collectionBehavior
+        // unseen until its first layout, which waits on the content's height
+        menu.alphaValue = 0
+        panel.addChildWindow(menu, ordered: .above)
+        captionMenu = menu
+        layoutCaptionMenu()
+    }
+
+    private func hideCaptionMenu() {
+        guard let menu = captionMenu else { return }
+        menu.parent?.removeChildWindow(menu)
+        menu.orderOut(nil)
+        captionMenu = nil
+        captionMenuHeight = 0
+        menuHovering = false
+    }
+
+    private func layoutCaptionMenu() {
+        guard let panel, let menu = captionMenu, captionMenuHeight > 0,
+            let area = PiPGesture.screen(
+                for: NSPoint(x: panel.frame.midX, y: panel.frame.midY), in: PiPGesture.screens)?.visible
+        else { return }
+        let size = NSSize(width: CaptionMenu.width, height: captionMenuHeight)
+        menu.setFrame(Self.captionMenuFrame(size, over: panel.frame, area: area), display: true)
+        menu.alphaValue = 1
+    }
+
+    /// the caption menu's frame in screen points: its bottom-right just above the panel's captions
+    /// button, shifted sideways and cut at the top to fit `area`; what is cut scrolls
+    static func captionMenuFrame(_ size: NSSize, over panel: NSRect, area: NSRect) -> NSRect {
+        let a = area.insetBy(dx: 8, dy: 8)
+        let bottom = max(panel.minY + 48, a.minY)
+        return NSRect(
+            x: max(min(panel.maxX - 16 - size.width, a.maxX - size.width), a.minX),
+            y: bottom, width: size.width, height: max(min(size.height, a.maxY - bottom), 0))
+    }
+
+    /// the caption menu closes once the pointer has been off both it and the panel for a beat
+    private func pointerMoved() {
+        guard captionMenuOpen, !chromeHovering, !menuHovering else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, !self.chromeHovering, !self.menuHovering else { return }
+            self.captionMenuOpen = false
+        }
+    }
+
     /// "" turns captions off
     func selectCaption(_ id: String) {
         activeCaptionID = id
@@ -452,8 +567,8 @@ final class MiniPlayer {
             webView.alphaValue = 0
             self.eval("window.__artemisPip && window.__artemisPip.remove()")
             self.eval(Self.stepJS(direction))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-                guard let self, self.panel === session else { return }
+            self.awaitStep(session, tries: 20) { [weak self] in
+                guard let self else { return }
                 self.aspectApplied = false
                 webView.evaluateJavaScript(Self.applyJS) { [weak self] _, _ in
                     self?.shapeToVideo { [weak self] in
@@ -464,6 +579,26 @@ final class MiniPlayer {
             }
         }
     }
+
+    /// `done` once a video other than the one the step left is playing, checked every
+    /// 0.1s, or after `tries` checks whatever the feed did
+    private func awaitStep(_ session: PiPPanel, tries: Int, then done: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.panel === session, let webView = self.webView else { return }
+            webView.evaluateJavaScript(Self.steppedJS) { [weak self] result, _ in
+                guard let self, self.panel === session else { return }
+                if (result as? Bool) == true || tries <= 1 { done() } else { self.awaitStep(session, tries: tries - 1, then: done) }
+            }
+        }
+    }
+
+    private static let steppedJS = """
+        (function (f) {
+          return !f || Array.prototype.some.call(document.querySelectorAll('video'), function (v) {
+            return !v.paused && v.readyState > 2 && (v !== f.v || v.currentSrc !== f.src || v.srcObject !== f.obj);
+          });
+        })(window.__artemisStepFrom)
+        """
 
     /// the old video leaves past one edge as the new one arrives from the other
     private func slide(from still: NSView, to webView: NSView, direction: Int) {
@@ -488,6 +623,9 @@ final class MiniPlayer {
     private static func stepJS(_ direction: Int) -> String {
         """
         (function(dir){
+          var vs = Array.prototype.filter.call(document.querySelectorAll('video'), function (v) { return v.readyState > 0; });
+          var from = vs.filter(function (v) { return !v.paused; })[0] || vs[0];
+          window.__artemisStepFrom = from ? { v: from, src: from.currentSrc, obj: from.srcObject } : null;
           var h = location.hostname;
           var btn = h.indexOf('youtube.com') >= 0
             ? document.querySelector('#navigation-button-' + (dir > 0 ? 'down' : 'up') + ' button')
@@ -736,9 +874,8 @@ private struct MiniPlayerChrome: View {
     @AppStorage(MiniPlayer.customCaptionsKey) private var customCaptions = true
     @AppStorage(MiniPlayer.skipSecondsKey) private var skipSeconds = MiniPlayer.defaultSkipSeconds
     @AppStorage("pipShowRemaining") private var showRemaining = false
-    @State private var showCaptions = false
 
-    private var visible: Bool { player.chromeHovering || showCaptions }
+    private var visible: Bool { player.chromeHovering || player.captionMenuOpen }
 
     var body: some View {
         if player.isCall {
@@ -807,19 +944,10 @@ private struct MiniPlayerChrome: View {
             .padding(12)
             .opacity(visible ? 1 : 0)
             .allowsHitTesting(visible)
-
-            if showCaptions {
-                captionMenu
-                    .padding(.trailing, 16).padding(.bottom, 48)
-                    .opacity(visible ? 1 : 0)
-            }
         }
         .animation(.easeInOut(duration: 0.18), value: visible)
         .animation(.easeInOut(duration: 0.1), value: player.captionText)
         .animation(.easeInOut(duration: 0.18), value: player.pageButtons)
-        .onChange(of: player.chromeHovering) { _, hovering in
-            if !hovering { showCaptions = false }
-        }
         .onChange(of: cornerRadius) { _, r in player.setCornerRadius(r) }
     }
 
@@ -850,6 +978,12 @@ private struct MiniPlayerChrome: View {
                 player.returnToBrowser()
             }
             Spacer()
+            if player.isShortForm {
+                ChromeButton(
+                    symbol: player.autoScroll ? "play.square.stack.fill" : "play.square.stack",
+                    label: player.autoScroll ? "Stop auto-scroll" : "Auto-scroll", glass: true
+                ) { player.autoScroll.toggle() }
+            }
             ChromeButton(symbol: "xmark", label: "Close mini player", glass: true) { player.dismiss() }
         }
     }
@@ -877,19 +1011,12 @@ private struct MiniPlayerChrome: View {
             } else if player.pageButtons.isEmpty {
                 VolumeControl(player: player)
 
-                if player.isShortForm {
-                    ChromeButton(
-                        symbol: player.autoScroll ? "play.square.stack.fill" : "play.square.stack",
-                        label: player.autoScroll ? "Stop auto-scroll" : "Auto-scroll"
-                    ) { player.autoScroll.toggle() }
-                } else {
-                    ChromeButton(
-                        symbol: player.captionsOn ? "captions.bubble.fill" : "captions.bubble",
-                        label: "Captions"
-                    ) {
-                        player.refreshCaptionTracks()
-                        showCaptions.toggle()
-                    }
+                ChromeButton(
+                    symbol: player.captionsOn ? "captions.bubble.fill" : "captions.bubble",
+                    label: "Captions"
+                ) {
+                    player.refreshCaptionTracks()
+                    player.captionMenuOpen.toggle()
                 }
             } else {
                 ForEach(player.pageButtons, id: \.self) { label in
@@ -901,6 +1028,7 @@ private struct MiniPlayerChrome: View {
         .padding(.trailing, 4)
         .padding(.vertical, 2)
         .glassEffect(.regular, in: .capsule)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { player.controlsFrame = $0 }
     }
 
     /// a time readout; tapping either flips the leading one between elapsed
@@ -923,32 +1051,52 @@ private struct MiniPlayerChrome: View {
             ? "\(base).\(n)" : base
     }
 
-    /// our own caption picker — a Custom/Website style switch on top, then the
-    /// track list. selecting a row drives the site's native track API.
-    private var captionMenu: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            stylePicker
-            Divider().overlay(.white.opacity(0.18)).padding(.vertical, 4)
-            CaptionRow(label: "Off", active: !player.captionsOn) {
-                player.selectCaption("")
-                showCaptions = false
-            }
-            if player.captionTracks.isEmpty {
-                Text("No captions detected")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .padding(.horizontal, 8)
-                    .frame(height: 26, alignment: .leading)
-            }
-            ForEach(player.captionTracks) { track in
-                CaptionRow(label: track.label, active: track.id == player.activeCaptionID) {
-                    player.selectCaption(track.id)
-                    showCaptions = false
+    /// seconds → m:ss (or h:mm:ss past an hour)
+    static func clock(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        let s = total % 60, m = (total / 60) % 60, h = total / 3600
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+}
+
+/// our own caption picker: a Custom/Website style switch, then the track list, whose rows drive
+/// the site's native track API. it reports its height for its window, which scrolls what won't fit
+private struct CaptionMenu: View {
+    static let width: CGFloat = 210
+    @Bindable var player: MiniPlayer
+    @AppStorage(MiniPlayer.customCaptionsKey) private var customCaptions = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
+                stylePicker
+                Divider().overlay(.white.opacity(0.18)).padding(.vertical, 4)
+                CaptionRow(label: "Off", active: !player.captionsOn) {
+                    player.selectCaption("")
+                    player.captionMenuOpen = false
+                }
+                if player.captionTracks.isEmpty {
+                    Text("No captions detected")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.horizontal, 8)
+                        .frame(height: 26, alignment: .leading)
+                }
+                ForEach(player.captionTracks) { track in
+                    CaptionRow(label: track.label, active: track.id == player.activeCaptionID) {
+                        player.selectCaption(track.id)
+                        player.captionMenuOpen = false
+                    }
                 }
             }
+            .padding(6)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { player.captionMenuHeight = $0 }
         }
-        .padding(6)
-        .frame(width: 210, alignment: .leading)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: Self.width)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
     }
 
@@ -979,16 +1127,6 @@ private struct MiniPlayerChrome: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    /// seconds → m:ss (or h:mm:ss past an hour)
-    static func clock(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        let s = total % 60, m = (total / 60) % 60, h = total / 3600
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
     }
 }
 
@@ -1281,21 +1419,161 @@ private struct GlassCircle: ViewModifier {
     }
 }
 
+/// the panel's two-finger gestures, free of any window: a swipe moves the frame, a pinch scales
+/// it about the pointer, a flicked release glides to a corner. every frame it returns lies inside
+/// a screen's visible frame less `margin`, crossing only an edge two screens share while moving
+struct PiPGesture {
+    struct Screen { var frame: NSRect; var visible: NSRect }
+    enum Move: Equatable { case to(NSRect), glide(NSRect, velocity: Double) }
+    static let margin: CGFloat = 0
+    static var screens: [Screen] { NSScreen.screens.map { Screen(frame: $0.frame, visible: $0.visibleFrame) } }
+
+    private struct Swipe {
+        var start: NSRect
+        var travel = CGVector.zero
+        var samples: [(point: NSPoint, time: TimeInterval)] = []
+        /// a pinch joined: the fingers no longer move the panel, nor flick it
+        var spent: Bool
+    }
+    private var swipe: Swipe?
+    private var pinching = false
+    /// the last magnify event's time: a pinch whose ended went missing stops counting after a beat
+    private var pinchedAt: TimeInterval = 0
+
+    /// a precise scroll event; nil leaves the frame where it is. momentum and touch-down
+    /// events never move it, and a gesture whose began went missing starts on its first change
+    mutating func scroll(_ e: NSEvent, frame: NSRect, screens: [Screen]) -> Move? {
+        guard e.momentumPhase.isEmpty, !e.phase.isEmpty, !e.phase.contains(.mayBegin) else { return nil }
+        let lifted = !e.phase.isDisjoint(with: [.ended, .cancelled])
+        if e.phase.contains(.began) || (swipe == nil && !lifted) {
+            swipe = Swipe(start: frame, spent: pinching && e.timestamp - pinchedAt < 0.5)
+        }
+        guard var s = swipe else { return nil }
+        if lifted {
+            swipe = nil
+            let fling = e.phase.contains(.ended) && !s.spent
+                ? Self.flick(frame, velocity: Self.velocity(s.samples, liftedAt: e.timestamp), screens: screens) : nil
+            return fling ?? Self.settle(frame, in: screens)
+        }
+        // the fingers' direction, whatever the scroll-direction setting
+        let flip: CGFloat = e.isDirectionInvertedFromDevice ? 1 : -1
+        let d = CGVector(dx: e.scrollingDeltaX * flip, dy: -e.scrollingDeltaY * flip)
+        guard !s.spent, d != .zero else { return nil }
+        s.travel = CGVector(dx: s.travel.dx + d.dx, dy: s.travel.dy + d.dy)
+        s.samples.append((NSPoint(x: s.travel.dx, y: s.travel.dy), e.timestamp))
+        s.samples.removeAll { e.timestamp - $0.time > 0.15 }
+        let moved = frame.offsetBy(dx: d.dx, dy: d.dy)
+        swipe = s
+        return .to(Self.clampLive(moved, anchor: NSPoint(x: moved.midX, y: moved.midY), in: screens))
+    }
+
+    /// a magnify event: the frame scaled by `1 + m` about the pointer `anchor`, kept to `aspect`, at
+    /// least `minWidth` wide. a pinch joining a barely-moved swipe takes its drift back, `anchor` too
+    mutating func magnify(
+        _ phase: NSEvent.Phase, by m: CGFloat, at anchor: inout NSPoint, time: TimeInterval, frame: NSRect,
+        aspect: CGFloat, minWidth: CGFloat, screens: [Screen]
+    ) -> Move? {
+        if !phase.isDisjoint(with: [.ended, .cancelled]) { pinching = false; return nil }
+        guard !phase.contains(.mayBegin) else { return nil }
+        var r = frame
+        if phase.contains(.began) || !pinching, var s = swipe, !s.spent {
+            if hypot(s.travel.dx, s.travel.dy) < 40 {
+                r = s.start
+                anchor = NSPoint(x: anchor.x + r.minX - frame.minX, y: anchor.y + r.minY - frame.minY)
+            }
+            s.spent = true
+            swipe = s
+        }
+        pinching = true
+        pinchedAt = time
+        guard let area = Self.screen(for: NSPoint(x: r.midX, y: r.midY), in: screens)?.visible
+            .insetBy(dx: Self.margin, dy: Self.margin), r.width > 0, r.height > 0, aspect > 0
+        else { return nil }
+        let w = min(max(r.width * (1 + m), minWidth), area.width, area.height * aspect)
+        let h = w / aspect
+        let fx = min(max((anchor.x - r.minX) / r.width, 0), 1), fy = min(max((anchor.y - r.minY) / r.height, 0), 1)
+        let scaled = NSRect(x: anchor.x - fx * w, y: anchor.y - fy * h, width: w, height: h)
+        return .to(Self.clamp(scaled, anchor: NSPoint(x: scaled.midX, y: scaled.midY), in: screens))
+    }
+
+    /// pt/s over the last 0.1s of movement; zero when the fingers or mouse stopped before letting go
+    static func velocity(_ samples: [(point: NSPoint, time: TimeInterval)], liftedAt end: TimeInterval) -> CGVector {
+        guard let last = samples.last, end - last.time < 0.05,
+            let first = samples.first(where: { last.time - $0.time <= 0.1 }), last.time - first.time > 0.008
+        else { return .zero }
+        let dt = last.time - first.time
+        return CGVector(dx: (last.point.x - first.point.x) / dt, dy: (last.point.y - first.point.y) / dt)
+    }
+
+    /// the corner of `r`'s screen nearest where `v` would carry it; nil below flick speed.
+    /// the glide's velocity is a fraction of its distance per second
+    static func flick(_ r: NSRect, velocity v: CGVector, screens: [Screen]) -> Move? {
+        let speed = hypot(v.dx, v.dy)
+        guard speed > 700,
+            let area = screen(for: NSPoint(x: r.midX, y: r.midY), in: screens)?.visible.insetBy(dx: margin, dy: margin)
+        else { return nil }
+        let flung = NSPoint(x: r.midX + v.dx * 0.25, y: r.midY + v.dy * 0.25)
+        let target = NSRect(
+            x: flung.x < area.midX ? area.minX : area.maxX - r.width,
+            y: flung.y < area.midY ? area.minY : area.maxY - r.height, width: r.width, height: r.height)
+        let distance = hypot(target.minX - r.minX, target.minY - r.minY)
+        return .glide(target, velocity: distance > 1 ? speed / distance : 0)
+    }
+
+    /// the screen holding `p`, else the nearest
+    static func screen(for p: NSPoint, in screens: [Screen]) -> Screen? {
+        func gap(_ r: NSRect) -> CGFloat {
+            hypot(max(r.minX - p.x, 0, p.x - r.maxX), max(r.minY - p.y, 0, p.y - r.maxY))
+        }
+        return screens.first { $0.frame.contains(p) } ?? screens.min { gap($0.frame) < gap($1.frame) }
+    }
+
+    /// `r` moved inside the visible frame, less `margin`, of the screen holding `anchor`;
+    /// one too big keeps its left and top edges on screen
+    static func clamp(_ r: NSRect, anchor: NSPoint, in screens: [Screen]) -> NSRect {
+        guard let a = screen(for: anchor, in: screens)?.visible.insetBy(dx: margin, dy: margin) else { return r }
+        return NSRect(
+            x: max(min(r.minX, a.maxX - r.width), a.minX), y: min(max(r.minY, a.minY), a.maxY - r.height),
+            width: r.width, height: r.height)
+    }
+
+    /// `clamp` under live input: a side whose neighbouring screen continues the panel's centre line
+    /// holds nothing, so the panel crosses displays in one motion; `settle` puts it on one when let go
+    static func clampLive(_ r: NSRect, anchor: NSPoint, in screens: [Screen]) -> NSRect {
+        guard let s = screen(for: anchor, in: screens) else { return r }
+        let a = s.visible.insetBy(dx: margin, dy: margin), f = s.frame
+        func open(_ x: CGFloat, _ y: CGFloat) -> Bool { screens.contains { $0.frame.contains(NSPoint(x: x, y: y)) } }
+        let minX = open(f.minX - 1, r.midY) ? -CGFloat.infinity : a.minX
+        let maxX = open(f.maxX, r.midY) ? CGFloat.infinity : a.maxX
+        let minY = open(r.midX, f.minY - 1) ? -CGFloat.infinity : a.minY
+        let maxY = open(r.midX, f.maxY) ? CGFloat.infinity : a.maxY
+        return NSRect(
+            x: max(min(r.minX, maxX - r.width), minX), y: min(max(r.minY, minY), maxY - r.height),
+            width: r.width, height: r.height)
+    }
+
+    /// a spring onto the screen holding `r`'s centre; nil when it is already there
+    static func settle(_ r: NSRect, in screens: [Screen]) -> Move? {
+        let c = clamp(r, anchor: NSPoint(x: r.midX, y: r.midY), in: screens)
+        return c == r ? nil : .glide(c, velocity: 0)
+    }
+}
+
 /// the mini-player's panel. drag and resize are resolved by geometry in `sendEvent`,
 /// so clicks still reach the web view as trusted events; it must be able to become
 /// key, or web-content clicks are silently dropped
 private final class PiPPanel: NSPanel {
     /// where a click-drag moves the panel (window coords); clicks there still
-    /// reach the controls on release. default: the top band
-    var isDragHandle: ((NSPoint) -> Bool)?
-    /// a drag, swipe or pinch started: stop any spring in flight
+    /// reach the page or controls on release
+    var isDragHandle: (NSPoint) -> Bool = { _ in true }
+    /// a drag, swipe or pinch is live: stop any spring in flight
     var onGestureBegan: (() -> Void)?
-    private var swipeTravel = NSPoint.zero
-    private var swipeCursorStart = NSPoint.zero
-    private var swipeRecent: [(point: NSPoint, time: TimeInterval)] = []
+    private var gesture = PiPGesture()
+    /// the cursor and panel origin as a swipe started, so the cursor rides along with the panel
+    private var ride: (cursor: NSPoint, origin: NSPoint)?
     /// false in call mode, where the page reflows to any shape
     var locksAspect = true
-    /// a flicked release: where to settle (a screen corner) and the release
+    /// a flicked release or a spring back on screen: the frame to settle at and the
     /// speed as a fraction of that distance per second
     var onFling: ((NSRect, Double) -> Void)?
     /// how far from an edge still grabs the resize
@@ -1303,6 +1581,40 @@ private final class PiPPanel: NSPanel {
 
     private var pendingDown: NSEvent?
     private var dragStart: NSPoint?
+    /// a pinch over the panel: the fingers' spread as it began and last
+    private var rawPinch: (start: Double, last: Double, began: Bool)?
+
+    override init(
+        contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool
+    ) {
+        super.init(contentRect: contentRect, styleMask: style, backing: backing, defer: flag)
+        TrackpadSpread.start { [weak self] in self?.spread($0) }
+    }
+
+    override func close() {
+        TrackpadSpread.stop()
+        super.close()
+    }
+
+    /// the only pinch source: a magnify event never reaches this panel, active app or not
+    private func spread(_ d: Double?) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let d, isVisible, rawPinch?.began == true || frame.contains(NSEvent.mouseLocation) else {
+            if rawPinch?.began == true { pinch(.ended, by: 0, time: now) }
+            rawPinch = nil
+            return
+        }
+        guard var p = rawPinch else { return rawPinch = (d, d, false) }
+        if p.began {
+            pinch(.changed, by: d / max(p.last, 0.01) - 1, time: now)
+        } else if abs(d - p.start) > 0.04 {
+            // the fingers spread or closed rather than moving together: a pinch, not a swipe
+            p.began = true
+            pinch(.began, by: d / max(p.start, 0.01) - 1, time: now)
+        }
+        p.last = d
+        rawPinch = p
+    }
     private var dragging = false
 
     override var canBecomeKey: Bool { true }
@@ -1315,7 +1627,7 @@ private final class PiPPanel: NSPanel {
             if event.modifierFlags.contains(.command) { drag(); return }
             if let edge = resizeEdge(at: p) { startResize(edge, from: event); return }
             // withheld, and forwarded on release, so a button on the handle still clicks
-            if isDragHandle?(p) ?? (p.y > (contentView?.bounds.height ?? 0) - 46) {
+            if isDragHandle(p) {
                 pendingDown = event; dragStart = p; dragging = false
                 return
             }
@@ -1338,48 +1650,51 @@ private final class PiPPanel: NSPanel {
             }
             super.sendEvent(event)
         case .scrollWheel where event.hasPreciseScrollingDeltas:
-            swipe(event)
-        case .magnify:
-            pinch(event)
+            if !event.phase.isDisjoint(with: [.mayBegin, .began]) { ride = nil }
+            // a gesture whose began went missing must still stop a spring before it moves the panel
+            if event.momentumPhase.isEmpty, !event.phase.isEmpty, event.phase.isDisjoint(with: [.ended, .cancelled]) {
+                onGestureBegan?()
+            }
+            switch gesture.scroll(event, frame: frame, screens: PiPGesture.screens) {
+            case .to(let r)?: swipe(to: r.origin)
+            case .glide(let r, let v)?: onFling?(r, v)
+            case nil: break
+            }
+            if !event.phase.isDisjoint(with: [.ended, .cancelled]) { ride = nil }
+        case .magnify, .smartMagnify:
+            // the trackpad's own contacts drive the pinch; the page would zoom itself inside the panel
+            break
         default:
             super.sendEvent(event)
         }
     }
 
-    /// two fingers move the panel with the cursor riding along; a flick settles it
-    /// in a corner instead of the system's momentum
-    private func swipe(_ e: NSEvent) {
-        guard e.momentumPhase.isEmpty else { return }
-        if e.phase.contains(.began) {
-            onGestureBegan?()
-            swipeTravel = .zero
-            swipeRecent = []
-            swipeCursorStart = NSEvent.mouseLocation
-        }
-        // fingers' direction, whatever the scroll-direction setting
-        let flip: CGFloat = e.isDirectionInvertedFromDevice ? 1 : -1
-        let dx = e.scrollingDeltaX * flip, dy = -e.scrollingDeltaY * flip
-        setFrameOrigin(NSPoint(x: frame.minX + dx, y: frame.minY + dy))
-        swipeTravel = NSPoint(x: swipeTravel.x + dx, y: swipeTravel.y + dy)
-        // Quartz's global space is top-left origin, measured off the primary display
-        let top = NSScreen.screens.first?.frame.maxY ?? 0
-        CGWarpMouseCursorPosition(CGPoint(
-            x: swipeCursorStart.x + swipeTravel.x, y: top - (swipeCursorStart.y + swipeTravel.y)))
-        CGAssociateMouseAndMouseCursorPosition(1)
-        swipeRecent.append((swipeTravel, e.timestamp))
-        swipeRecent.removeAll { e.timestamp - $0.time > 0.08 }
-        if e.phase.contains(.ended) { fling(swipeRecent) }
+    private func pinch(_ phase: NSEvent.Phase, by m: CGFloat, time: TimeInterval) {
+        if phase.isDisjoint(with: [.ended, .cancelled]) { onGestureBegan?() }
+        let ar = contentAspectRatio
+        let aspect = locksAspect && ar.height > 0 ? ar.width / ar.height : frame.width / max(frame.height, 1)
+        let pointer = NSEvent.mouseLocation
+        var anchor = pointer
+        let move = gesture.magnify(
+            phase, by: m, at: &anchor, time: time,
+            frame: frame, aspect: aspect, minWidth: max(contentMinSize.width, contentMinSize.height * aspect, 200), screens: PiPGesture.screens)
+        if case .to(let r)? = move { setFrame(r, display: true) }
+        if anchor != pointer { warp(to: anchor); ride = nil }
     }
 
-    /// pinch grows or shrinks the panel about its centre, keeping its shape
-    private func pinch(_ e: NSEvent) {
-        if e.phase.contains(.began) { onGestureBegan?() }
-        defer { if e.phase.contains(.ended) { keepOnScreen() } }
-        let aspect = frame.width / max(frame.height, 1)
-        let minW = max(contentMinSize.width, contentMinSize.height * aspect, 200)
-        let w = min(max(frame.width * (1 + e.magnification), minW), screen?.visibleFrame.width ?? 2000)
-        let h = w / aspect
-        setFrame(NSRect(x: frame.midX - w / 2, y: frame.midY - h / 2, width: w, height: h), display: true)
+    /// moves the panel with the cursor riding along, so the rest of the gesture still lands here
+    private func swipe(to origin: NSPoint) {
+        let start = ride ?? (NSEvent.mouseLocation, frame.origin)
+        ride = start
+        setFrameOrigin(origin)
+        warp(to: NSPoint(x: start.cursor.x + origin.x - start.origin.x, y: start.cursor.y + origin.y - start.origin.y))
+    }
+
+    /// `p` in Cocoa screen points; Quartz's global space is top-left origin, off the primary display
+    private func warp(to p: NSPoint) {
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        CGWarpMouseCursorPosition(CGPoint(x: p.x, y: top - p.y))
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 
     private func drag() {
@@ -1390,47 +1705,31 @@ private final class PiPPanel: NSPanel {
         while let e = NSApp.nextEvent(
             matching: [.leftMouseDragged, .leftMouseUp],
             until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            if e.type == .leftMouseUp {
+                let v = PiPGesture.velocity(recent, liftedAt: e.timestamp)
+                let screens = PiPGesture.screens
+                if case .glide(let r, let speed)? = PiPGesture.flick(frame, velocity: v, screens: screens)
+                    ?? PiPGesture.settle(frame, in: screens) {
+                    onFling?(r, speed)
+                }
+                return
+            }
             let m = NSEvent.mouseLocation
             recent.append((m, e.timestamp))
-            recent.removeAll { e.timestamp - $0.time > 0.08 }
-            if e.type == .leftMouseUp { break }
-            setFrameOrigin(NSPoint(
-                x: startFrame.minX + m.x - startMouse.x, y: startFrame.minY + m.y - startMouse.y))
+            recent.removeAll { e.timestamp - $0.time > 0.15 }
+            let r = startFrame.offsetBy(dx: m.x - startMouse.x, dy: m.y - startMouse.y)
+            setFrameOrigin(PiPGesture.clampLive(r, anchor: m, in: PiPGesture.screens).origin)
         }
-        fling(recent)
     }
 
-    /// a fast release glides on into the screen corner nearest where momentum
-    /// would carry it; a slow one stays put
-    private func fling(_ recent: [(point: NSPoint, time: TimeInterval)]) {
-        guard let first = recent.first, let last = recent.last, last.time > first.time,
-            let area = screen?.visibleFrame.insetBy(dx: 16, dy: 16)
-        else { return }
-        let dt = last.time - first.time
-        let v = CGVector(dx: (last.point.x - first.point.x) / dt, dy: (last.point.y - first.point.y) / dt)
-        let speed = hypot(v.dx, v.dy)
-        guard speed > 700 else { return keepOnScreen() }
-        // where momentum would carry it, then the corner nearest that
-        let flung = NSPoint(x: frame.midX + v.dx * 0.25, y: frame.midY + v.dy * 0.25)
-        let x = flung.x < area.midX ? area.minX : area.maxX - frame.width
-        let y = flung.y < area.midY ? area.minY : area.maxY - frame.height
-        let target = NSRect(origin: NSPoint(x: x, y: y), size: frame.size)
-        let distance = hypot(target.minX - frame.minX, target.minY - frame.minY)
-        onFling?(target, distance > 1 ? speed / distance : 0)
-    }
-
-    /// dragged, swiped or pinched partly off screen: spring back fully onto it
+    /// springs back fully onto the screen holding the panel's centre
     private func keepOnScreen() {
         let r = onScreen(frame)
         if r != frame { onFling?(r, 0) }
     }
 
     private func onScreen(_ r: NSRect) -> NSRect {
-        guard let area = (screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: 16, dy: 16) else { return r }
-        var o = r.origin
-        o.x = min(max(o.x, area.minX), area.maxX - r.width)
-        o.y = min(max(o.y, area.minY), area.maxY - r.height)
-        return NSRect(origin: o, size: r.size)
+        PiPGesture.clamp(r, anchor: NSPoint(x: r.midX, y: r.midY), in: PiPGesture.screens)
     }
 
     /// `r` at the video's `aspect`, keeping its area and the corner nearest the
@@ -1438,7 +1737,7 @@ private final class PiPPanel: NSPanel {
     func reshaped(_ r: NSRect, aspect: CGFloat) -> NSRect {
         let w = (r.width * r.height * aspect).squareRoot().rounded()
         let h = (w / aspect).rounded()
-        let area = (screen ?? NSScreen.main)?.visibleFrame ?? r
+        let area = PiPGesture.screen(for: NSPoint(x: r.midX, y: r.midY), in: PiPGesture.screens)?.visible ?? r
         let x = r.midX > area.midX ? r.maxX - w : r.minX
         let y = r.midY > area.midY ? r.maxY - h : r.minY
         return onScreen(NSRect(x: x, y: y, width: w, height: h))
@@ -1463,12 +1762,17 @@ private final class PiPPanel: NSPanel {
 
     /// the grabbed corner moves; the opposite one stays put
     private func startResize(_ edge: Edge, from down: NSEvent) {
+        onGestureBegan?()
         let start = frame
         let startMouse = NSEvent.mouseLocation
         let ar = contentAspectRatio
         let aspect = ar.height > 0 ? ar.width / ar.height : start.width / max(start.height, 1)
         let minW = max(contentMinSize.width, 200)
-        let maxW = (screen?.visibleFrame.width ?? 2000)
+        let a = PiPGesture.screen(for: NSPoint(x: start.midX, y: start.midY), in: PiPGesture.screens)?
+            .visible.insetBy(dx: PiPGesture.margin, dy: PiPGesture.margin) ?? start
+        // the room the fixed corner leaves on its screen
+        let roomW = edge.contains(.left) ? start.maxX - a.minX : a.maxX - start.minX
+        let roomH = edge.contains(.top) ? a.maxY - start.minY : start.maxY - a.minY
         while let e = NSApp.nextEvent(
             matching: [.leftMouseDragged, .leftMouseUp],
             until: .distantFuture, inMode: .eventTracking, dequeue: true) {
@@ -1480,12 +1784,12 @@ private final class PiPPanel: NSPanel {
             else if edge.contains(.left) { w = start.width - dx }
             else if edge.contains(.top) { w = (start.height + dy) * aspect }
             else if edge.contains(.bottom) { w = (start.height - dy) * aspect }
-            w = min(max(w, minW), maxW)
+            w = min(max(w, minW), roomW, locksAspect ? roomH * aspect : .infinity)
             var h = w / aspect
             if !locksAspect {
                 h = start.height
                 if edge.contains(.top) { h = start.height + dy } else if edge.contains(.bottom) { h = start.height - dy }
-                h = max(h, contentMinSize.height)
+                h = min(max(h, contentMinSize.height), roomH)
                 if !edge.contains(.left), !edge.contains(.right) { w = start.width }
             }
             var origin = start.origin
@@ -1507,6 +1811,8 @@ final class PanelMotion: NSObject {
     private var velocity = 0.0
     private var start: CFTimeInterval = 0
     private var link: CADisplayLink?
+    /// the visible frame the spring's overshoot stays inside, when it starts and ends on one screen
+    private var bounds: NSRect?
     var isRunning: Bool { link != nil }
 
     func animate(_ panel: NSWindow, to frame: NSRect, velocity: Double = 0) {
@@ -1514,6 +1820,8 @@ final class PanelMotion: NSObject {
         self.panel = panel
         from = panel.frame.origin
         to = frame.origin
+        let area = PiPGesture.screen(for: NSPoint(x: frame.midX, y: frame.midY), in: PiPGesture.screens)?.visible
+        bounds = area.flatMap { $0.contains(panel.frame) && $0.contains(frame) ? $0 : nil }
         self.velocity = velocity
         start = CACurrentMediaTime()
         let link = panel.contentView?.displayLink(target: self, selector: #selector(step))
@@ -1533,10 +1841,17 @@ final class PanelMotion: NSObject {
         guard t < spring.settlingDuration else {
             // stopped first: the panel's frame is saved only on a move with no motion running
             stop()
-            return panel.setFrameOrigin(to)
+            let end = NSRect(origin: to, size: panel.frame.size)
+            return panel.setFrameOrigin(
+                PiPGesture.clamp(end, anchor: NSPoint(x: end.midX, y: end.midY), in: PiPGesture.screens).origin)
         }
         let p = CGFloat(spring.value(fromValue: 0.0, toValue: 1.0, initialVelocity: velocity, time: t))
-        panel.setFrameOrigin(NSPoint(x: from.x + (to.x - from.x) * p, y: from.y + (to.y - from.y) * p))
+        var o = NSPoint(x: from.x + (to.x - from.x) * p, y: from.y + (to.y - from.y) * p)
+        if let b = bounds {
+            let size = panel.frame.size
+            o = NSPoint(x: min(max(o.x, b.minX), b.maxX - size.width), y: min(max(o.y, b.minY), b.maxY - size.height))
+        }
+        panel.setFrameOrigin(o)
     }
 
     /// the panel's entrance: fades up while its content springs from 94% scale,
@@ -1561,6 +1876,11 @@ final class PanelMotion: NSObject {
             panel.animator().alphaValue = 1
         }
     }
+}
+
+/// the caption menu's window; it must become key, or its first click is dropped
+private final class PiPMenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }
 
 /// reports hover from a tracking area, which never takes a click from the web view
@@ -1651,6 +1971,8 @@ extension MiniPlayer {
         cap: ['.ytp-caption-window-container', '.caption-window'],
         // the player's only children left showing
         keep: ['.html5-video-container', '.ytp-caption-window-container', '.video-ads', '.ytp-ad-module'],
+        // the video's wrapper: YouTube leaves it 0px high and sizes the video itself only on a resize
+        fill: ['.html5-video-player > .html5-video-container'],
         // never swept: a display:none'd button can't take the real click a skip needs
         alive: ['.ytp-skip-ad', '.ytp-skip-ad-button', '.ytp-ad-skip-button', '.ytp-ad-skip-button-modern'],
         // role=button content, not controls: kept out of the button catalog
@@ -1664,7 +1986,8 @@ extension MiniPlayer {
                '.iv-branding', '.annotation', '.ytp-videowall-still', '.ytp-endscreen-content',
                '.html5-endscreen', '.ytp-suggested-action', '.ytp-ce-video', '.ytp-ce-channel',
                '#masthead-container', 'ytd-masthead', '#guide', 'tp-yt-app-drawer', 'ytd-mini-guide-renderer'],
-        cc: youTubeCaptions
+        // the player holding the video: a Shorts page also carries the watch page's hidden one
+        cc: youTubeCaptions(function () { return st.root; })
       };
 
       var NF = {
@@ -1725,7 +2048,7 @@ extension MiniPlayer {
         + 'height:100vh !important;max-width:none !important;max-height:none !important;'
         + 'margin:0 !important;z-index:2147483647 !important;background:#000 !important;';
 
-      var st = { video: null, root: null, saved: [], prevV: '', prevR: '', mode: '', prof: null, ttModes: null, capCustom: true, btnCache: null, btnAt: 0, swept: [], lifted: []  };
+      var st = { video: null, root: null, saved: [], prevV: '', prevR: '', prevPop: null, mediaDoc: false, prevControls: false, mode: '', prof: null, ttModes: null, capCustom: true, btnCache: null, btnAt: 0, swept: [], lifted: [] };
 
       function findVideo(p) {
         var vids = qa(p ? p.video : 'video');
@@ -1741,10 +2064,11 @@ extension MiniPlayer {
         while (node && node !== document.documentElement) {
           saved.push({ el: node, style: node.getAttribute('style') || '' });
           var s = node.style;
+          // any stacking context left on an ancestor holds the player under the backdrop
           s.transform = 'none'; s.filter = 'none'; s.perspective = 'none'; s.willChange = 'auto';
           s.contain = 'none'; s.opacity = '1'; s.zIndex = 'auto'; s.mixBlendMode = 'normal';
           s.isolation = 'auto'; s.clipPath = 'none'; s.webkitClipPath = 'none';
-          s.mask = 'none'; s.webkitMaskImage = 'none'; s.overflow = 'visible';
+          s.mask = 'none'; s.webkitMaskImage = 'none'; s.overflow = 'visible'; s.viewTransitionName = 'none';
           node = node.parentElement;
         }
         return saved;
@@ -1752,7 +2076,8 @@ extension MiniPlayer {
 
       function styleEl(id) {
         var s = document.getElementById(id);
-        if (!s) { s = document.createElement('style'); s.id = id; document.head.appendChild(s); }
+        // a media document (a direct .mp4 url) has no <head>
+        if (!s) { s = document.createElement('style'); s.id = id; (document.head || document.documentElement).appendChild(s); }
         return s;
       }
 
@@ -1765,8 +2090,7 @@ extension MiniPlayer {
       function apply() {
         var p = profile(); st.prof = p;
         var v = findVideo(p); if (!v) return false;
-        st.video = v; v.controls = false;
-        backdrop();
+        st.video = v; st.prevControls = v.controls; v.controls = false;
 
         // stash native text-track modes; `setCaptionRender` decides whether to
         // draw them (website style) or hide+scrape them (our custom style)
@@ -1779,6 +2103,7 @@ extension MiniPlayer {
 
         if (rootEl) {
           st.mode = 'root'; st.root = rootEl;
+          backdrop();
           st.saved = neutralize(rootEl);
           st.prevR = rootEl.getAttribute('style') || '';
           rootEl.style.cssText = st.prevR + ';' + FILL;
@@ -1788,6 +2113,8 @@ extension MiniPlayer {
             + 'max-width:none !important;max-height:none !important;object-fit:contain !important;';
           var css = '';
           if (p.hide) css += p.hide.join(',') + '{display:none !important;}';
+          if (p.fill) css += p.fill.join(',') + '{position:absolute !important;inset:0 !important;'
+            + 'width:100% !important;height:100% !important;}';
           // anything else the player draws over the video
           if (p.keep) css += p.root.map(function (r) {
             return r + ' > :not(' + p.keep.join('):not(') + ')';
@@ -1797,13 +2124,26 @@ extension MiniPlayer {
           styleEl('__artemis_pip_hide').textContent = css;
         } else {
           st.mode = 'bare';
-          st.saved = neutralize(v);
           st.prevV = v.getAttribute('style') || '';
-          v.style.cssText = st.prevV + ';' + FILL + 'object-fit:contain !important;';
+          st.prevPop = v.getAttribute('popover');
+          // a media document's `.media-document` rules sit !important in the video's shadow
+          // root, which outranks every page style
+          st.mediaDoc = v.classList.contains('media-document');
+          v.classList.remove('media-document');
+          v.style.cssText = st.prevV + ';' + FILL + 'object-fit:contain !important;border:0 !important;padding:0 !important;';
+          // the top layer lifts the video out of every ancestor's stacking context, transform and clip
+          v.setAttribute('popover', 'manual');
+          try { v.showPopover(); } catch (e) {
+            // a fullscreen or already-shown video refuses it: pin it full-window over a backdrop instead
+            if (st.prevPop == null) v.removeAttribute('popover'); else v.setAttribute('popover', st.prevPop);
+            backdrop();
+            st.saved = neutralize(v);
+          }
         }
 
         document.documentElement.style.overflow = 'hidden';
-        styleEl('__artemis_pip_native').textContent = 'video::-webkit-media-controls{display:none !important;}';
+        styleEl('__artemis_pip_native').textContent = 'video::-webkit-media-controls{display:none !important;}'
+          + 'video:popover-open::backdrop{background:#000 !important;}';
         setCaptionRender(true);
         try { sweep(); } catch (e) {}
         return true;
@@ -1847,14 +2187,20 @@ extension MiniPlayer {
         if (st.video && st.video.textTracks && st.ttModes)
           for (var ti = 0; ti < st.ttModes.length; ti++)
             if (st.video.textTracks[ti]) st.video.textTracks[ti].mode = st.ttModes[ti];
+        if (st.video) st.video.controls = st.prevControls;
         if (st.mode === 'root' && st.root) { st.root.setAttribute('style', st.prevR); if (st.video) st.video.setAttribute('style', st.prevV); }
-        else if (st.video) st.video.setAttribute('style', st.prevV);
+        else if (st.video) {
+          st.video.setAttribute('style', st.prevV);
+          if (st.mediaDoc) st.video.classList.add('media-document');
+          // dropping the attribute closes the popover
+          if (st.prevPop == null) st.video.removeAttribute('popover'); else st.video.setAttribute('popover', st.prevPop);
+        }
         for (var i = 0; i < st.saved.length; i++) st.saved[i].el.setAttribute('style', st.saved[i].style);
         ['__artemis_pip_bg', '__artemis_pip_hide', '__artemis_pip_native', '__artemis_pip_cap'].forEach(function (id) {
           var e = document.getElementById(id); if (e) e.remove();
         });
         document.documentElement.style.overflow = '';
-        st = { video: null, root: null, saved: [], prevV: '', prevR: '', mode: '', prof: null, ttModes: null, capCustom: true, btnCache: null, btnAt: 0, swept: [], lifted: [] };
+        st = { video: null, root: null, saved: [], prevV: '', prevR: '', prevPop: null, mediaDoc: false, prevControls: false, mode: '', prof: null, ttModes: null, capCustom: true, btnCache: null, btnAt: 0, swept: [], lifted: [] };
         return true;
       }
 
@@ -1876,8 +2222,9 @@ extension MiniPlayer {
         }
 
         // the site's rendered overlay first, then native cues
+        var scope = st.root || document;
         for (var k = 0; k < sels.length; k++) {
-          var el = q(sels[k]);
+          var el = null; try { el = scope.querySelector(sels[k]); } catch (e) {}
           if (el) {
             var t = (el.innerText || el.textContent || '').replace(/\\s*\\n\\s*/g, '\\n').replace(/[ \\t]+/g, ' ').trim();
             if (t) return t;

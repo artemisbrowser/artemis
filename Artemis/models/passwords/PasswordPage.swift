@@ -40,7 +40,7 @@ struct LoginTarget {
     let focused: Bool
 }
 
-/// what both apps share of password autofill: the script that watches login forms in every frame
+/// the page half of password autofill: the script that watches login forms in every frame
 /// from an isolated world, how it talks back, and the strong passwords it fills
 enum PasswordPage {
     static let world = WKContentWorld.world(name: "Artemis.Passwords")

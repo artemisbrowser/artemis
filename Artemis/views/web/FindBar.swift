@@ -15,7 +15,13 @@ struct FindBar: View {
 
     /// the bar asks a question about the page instead of finding text
     @State private var isAsking = false
-    @State private var answer: String?
+    @State private var reply: Reply?
+    @State private var asked = ""
+    /// what the page was read as when the question was asked, for making it stand alone
+    @State private var askedPage: String?
+    /// the question as general knowledge and search take it
+    @State private var resolved = ""
+    @State private var isRecalling = false
     @State private var isThinking = false
     @State private var answerTask: Task<Void, Never>?
 
@@ -26,7 +32,7 @@ struct FindBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             bar
-            if isAsking, isThinking || answer != nil {
+            if isAsking, isThinking || reply != nil {
                 answerPanel
             }
         }
@@ -60,10 +66,10 @@ struct FindBar: View {
                 Button {
                     isAsking.toggle()
                     answerTask?.cancel()
-                    answer = nil
+                    reply = nil
                     isThinking = false
                     isFocused = true
-                    if !isAsking { startSearch() } else { clearSelection() }
+                    if !isAsking { startSearch() }
                 } label: {
                     Image(systemName: isAsking ? "sparkle.magnifyingglass" : "magnifyingglass")
                         .foregroundStyle(isAsking ? Color.accentColor : Color.secondary)
@@ -124,20 +130,43 @@ struct FindBar: View {
         .padding(.vertical, 8)
     }
 
-    /// the answer and where on the page it came from
+    private enum Reply {
+        case page(String)
+        case notStated
+        case known(String)
+        case excuse(String)
+    }
+
+    private static let excuses = [
+        "No way am I getting that right.", "Sorry, too small for that one.", "You've befuddled me.",
+        "That one's above my pay grade.", "I'd only be guessing.", "My tiny brain says no.",
+        "Computer says no.",
+    ]
+
+    /// the answer and where it came from
     private var answerPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()
-            if let answer {
-                Text(answer)
-                    .font(.system(size: 12))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Answered from this page only, on this Mac.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            } else {
-                Text("Reading the page…")
+            switch reply {
+            case .page(let text):
+                answerText(text)
+                footnote("Answered from this page only, on this Mac.")
+            case .known(let text):
+                resolvedQuestion
+                answerText(text)
+                footnote("From general knowledge, not this page.")
+            case .notStated:
+                offer("Not on this page.", action: "Use general knowledge", recall)
+            case .excuse(let text):
+                resolvedQuestion
+                // Scout has no command bar to search from
+                if tabManager.kind == .scout {
+                    Text(text).font(.system(size: 12))
+                } else {
+                    offer(text, action: "Search instead", searchInstead)
+                }
+            case nil:
+                Text(isRecalling ? "Thinking…" : "Reading the page…")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -147,27 +176,105 @@ struct FindBar: View {
         .frame(width: 340, alignment: .leading)
     }
 
+    /// the question as answered or searched, when the page changed it; search
+    /// sends exactly this, so it shows before the link is clicked
+    @ViewBuilder private var resolvedQuestion: some View {
+        if resolved != asked {
+            Text("“\(resolved)”")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func answerText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func footnote(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+    }
+
+    private func offer(_ text: String, action: String, _ run: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(text).font(.system(size: 12))
+            Button(action, action: run)
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+        }
+    }
+
     // MARK: - Ask
 
     private func ask() {
         let question = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canAsk, !question.isEmpty else { return }
         answerTask?.cancel()
-        answer = nil
+        reply = nil
+        asked = question
+        askedPage = nil
+        isRecalling = false
         isThinking = true
         // a replaced task still resumes; only the current one may touch the panel
         answerTask = Task {
             defer { if !Task.isCancelled { isThinking = false } }
-            let text = await PageText.extract(from: tab.webView)
+            let page = await PageText.focus(from: tab.webView)
             guard !Task.isCancelled else { return }
-            guard let text else {
-                answer = "There's no readable text on this page."
+            askedPage = page?.text
+            guard let page else {
+                reply = Intelligence.asksForSummary(question)
+                    ? .page("There's no readable text on this page.") : .notStated
                 return
             }
-            let reply = await Intelligence.shared.answer(question: question, pageText: text)
+            var answer = await Intelligence.shared.answer(
+                question: question, pageText: page.text, actions: page.actions)
             guard !Task.isCancelled else { return }
-            answer = reply ?? "Couldn't answer that one."
+            // a fact outside the main region, such as a footer's phone number
+            if !Intelligence.asksForSummary(question),
+                answer?.localizedCaseInsensitiveContains("not stated") == true,
+                let whole = await PageText.extract(from: tab.webView), whole != page.text
+            {
+                answer = await Intelligence.shared.answer(question: question, pageText: whole)
+                guard !Task.isCancelled else { return }
+            }
+            let sentinel = answer?.lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) == "not stated"
+            reply = sentinel && !Intelligence.asksForSummary(question)
+                ? .notStated : .page(answer ?? "Couldn't answer that one.")
         }
+    }
+
+    private func recall() {
+        answerTask?.cancel()
+        reply = nil
+        isRecalling = true
+        isThinking = true
+        answerTask = Task {
+            defer { if !Task.isCancelled { isThinking = false } }
+            let question = await Intelligence.shared.standalone(question: asked, pageText: askedPage)
+            guard !Task.isCancelled else { return }
+            resolved = question
+            // freshness is judged on the words typed: a rewrite can drop "still" or "now"
+            let recalled: Intelligence.Recall =
+                Intelligence.needsLiveData(asked) ? .unsure : await Intelligence.shared.recall(question: question)
+            guard !Task.isCancelled else { return }
+            if case .known(let text) = recalled {
+                reply = .known(text)
+            } else {
+                reply = .excuse(Self.excuses.randomElement()!)
+            }
+        }
+    }
+
+    /// ⌘T with the question typed in, so Return searches it
+    private func searchInstead() {
+        tabManager.commandBarSeed = resolved
+        close()
+        tabManager.openNewTabBar()
     }
 
     // MARK: - Search

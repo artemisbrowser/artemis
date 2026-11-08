@@ -84,7 +84,8 @@ struct CommandItem: Identifiable {
 
     var url: URL? {
         switch kind {
-        case .tab(let tab): tab.url
+        // a first load not yet committed still names its page
+        case .tab(let tab): tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL
         case .closed(let closed): closed.url
         case .history(let entry): entry.url
         case .pageText(let hit): hit.url
@@ -113,6 +114,8 @@ struct CommandItem: Identifiable {
 @MainActor
 struct CommandBarEngine {
     let manager: TabManager
+    /// the feeds the page on screen declares, which a live folder can follow
+    var pageFeeds: [URL] = []
 
     /// an incognito window reaches only its own tabs: no spaces, no undo stack
     private var spaces: [Space] { manager.kind == .main ? manager.spaces : [] }
@@ -271,11 +274,11 @@ struct CommandBarEngine {
         if scope == nil || scope == .tabs {
             var scored: [CommandItem] = []
             for tab in manager.switchableTabs {
-                let address = ((tab.url ?? tab.pendingURL)?.absoluteString ?? "").lowercased()
+                let address = ((tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL)?.absoluteString ?? "").lowercased()
                 let title = CommandMatcher.match(needle, tab.displayTitle.lowercased())
                 let best = max(title?.score ?? -1, CommandMatcher.match(needle, address)?.score ?? -1)
                 guard best >= 0 else { continue }
-                let boost = tab.url.map { boosts[$0.absoluteString] ?? 0 } ?? 0
+                let boost = (tab.url ?? tab.lastAttemptedURL).map { boosts[$0.absoluteString] ?? 0 } ?? 0
                 scored.append(
                     tabItem(
                         tab, score: best + Weight.tab + boost,
@@ -402,7 +405,7 @@ struct CommandBarEngine {
             offer(entry.autofillHost, frecency)
         }
         for tab in manager.switchableTabs {
-            guard var host = tab.url?.host()?.lowercased() else { continue }
+            guard var host = tab.faviconHost?.lowercased() else { continue }
             if host.hasPrefix("www.") { host = String(host.dropFirst(4)) }
             guard host.hasPrefix(typed) else { continue }
             offer(host, 6)
@@ -470,7 +473,12 @@ struct CommandBarEngine {
     private func open(_ url: URL, _ launch: CommandLaunch) {
         switch launch {
         case .normal:
-            manager.newTab(url: url)
+            // a blank tab takes the page rather than gaining an empty sibling
+            if let tab = manager.selectedTab, tab.isBlank, !tab.isPinned, !tab.isEssential {
+                tab.load(url)
+            } else {
+                manager.newTab(url: url)
+            }
         case .current:
             if let tab = manager.selectedTab { tab.load(url) } else { manager.newTab(url: url) }
         case .scout:
@@ -489,7 +497,7 @@ struct CommandBarEngine {
     private func tabItem(_ tab: BrowserTab, score: Int, ranges: [Range<Int>]) -> CommandItem {
         CommandItem(
             id: "tab-\(tab.id)", kind: .tab(tab), title: tab.displayTitle,
-            hint: (tab.url ?? tab.pendingURL).map(Self.address) ?? "", ranges: ranges, score: score)
+            hint: (tab.url ?? tab.lastAttemptedURL ?? tab.pendingURL).map(Self.address) ?? "", ranges: ranges, score: score)
     }
 
     private func spaceItem(_ space: Space, score: Int, ranges: [Range<Int>]) -> CommandItem {
@@ -577,6 +585,10 @@ struct CommandBarEngine {
                 keywords: ["create", "workspace"],
                 run: { manager.isSpaceCreatorVisible = true }),
             CommandAction(
+                id: "new-live-folder", title: "New Live Folder…", symbol: "antenna.radiowaves.left.and.right",
+                keywords: ["github", "pull requests", "reviews", "issues", "rss", "atom", "feed", "subscribe"],
+                run: { manager.liveFolderDraft = LiveFolderDraft(page: manager.unlockedContentTab?.url) }),
+            CommandAction(
                 id: "incognito", title: "New Incognito Window", symbol: "eyeglasses",
                 keywords: ["private", "burner", "ephemeral", "secret"],
                 run: { IncognitoWindow.open() }),
@@ -627,7 +639,9 @@ struct CommandBarEngine {
         ]
         // an incognito window has no spaces to add to and no way back out of the Library
         if manager.kind != .main {
-            out.removeAll { ["new-space", "import", "library", "history", "archive", "downloads"].contains($0.id) }
+            out.removeAll {
+                ["new-space", "new-live-folder", "import", "library", "history", "archive", "downloads"].contains($0.id)
+            }
         }
 
         if Updates.shared.isEnabled {
@@ -658,7 +672,15 @@ struct CommandBarEngine {
                     run: { manager.reopenLastClosedTab() }))
         }
 
-        guard let tab = manager.selectedTab else { return out }
+        guard let tab = manager.unlockedContentTab else { return out }
+
+        if manager.kind == .main, let feed = pageFeeds.first {
+            out.append(
+                CommandAction(
+                    id: "live-folder-feed", title: "Live Folder from This Page’s Feed",
+                    symbol: "antenna.radiowaves.left.and.right", keywords: ["rss", "atom", "subscribe", "follow"],
+                    run: { manager.newLiveFolder(fromFeed: feed, page: tab) }))
+        }
 
         if tab.isReaderAvailable || tab.isReaderMode {
             out.append(
@@ -667,9 +689,7 @@ struct CommandBarEngine {
                     symbol: "doc.plaintext", keywords: ["article", "reading", "clean"],
                     run: { Task { await tab.toggleReader() } }))
         }
-        if let target = PasswordAutofill.shared.target(in: tab),
-            let login = PasswordStore.shared.matches(for: target.origin, in: tab.loginProfile).first
-        {
+        if let target = PasswordAutofill.shared.target(in: tab), let login = PasswordAutofill.shared.logins(in: tab).first {
             out.append(
                 CommandAction(
                     id: "fill-password", title: "Fill Password", symbol: "key.fill",

@@ -26,10 +26,10 @@ struct LinkHoverCapsule: View {
     }
 
     private func capsule(for url: URL) -> some View {
-        Text(label(for: url))
+        label(for: url)
             .font(.system(size: 11))
             .lineLimit(1)
-            .foregroundStyle(.primary.opacity(0.85))
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .glassEffect(.regular, in: .rect(cornerRadius: 12))
@@ -37,17 +37,20 @@ struct LinkHoverCapsule: View {
             .fixedSize()
     }
 
-    private func label(for url: URL) -> String {
-        let host = url.host() ?? trimmed(url)
+    /// a modified click's site is drawn at full strength, so the place it opens stands out
+    private func label(for url: URL) -> Text {
         let isPrivate = tabManager.displayedContentTab?.isPrivate == true
+        let place: String
         switch click.flatMap({ tabManager.destination(of: $0, isPrivate: isPrivate) }) {
-        case .peek: return "Open \(host) in Peek"
-        case .backgroundTab: return "Open \(host) in a Background Tab"
-        case .foregroundTab: return "Open \(host) in a New Tab"
-        case .split: return "Open \(host) in Split View"
-        case .scout: return "Open \(host) in Scout"
-        case nil: return trimmed(url)
+        case .peek: place = "in Peek"
+        case .backgroundTab: place = "in a Background Tab"
+        case .foregroundTab: place = "in a New Tab"
+        case .split: place = "in Split View"
+        case .scout: place = "in Scout"
+        case nil: return Text(verbatim: trimmed(url))
         }
+        let host = Text(verbatim: url.host() ?? trimmed(url)).foregroundStyle(.primary)
+        return Text("Open \(host) \(place)")
     }
 
     /// a tidy, length-capped form of the url: drop the scheme, ellipsise the middle

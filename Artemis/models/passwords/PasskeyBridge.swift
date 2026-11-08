@@ -24,12 +24,9 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         case refused(prompted: Bool)
     }
 
-    /// the last click or key press Artemis itself received, and its window
-    private var gesture: (at: Date, window: NSWindow?) = (.distantPast, nil)
     /// when each tab's last ceremony ended; the next needs a gesture made after it
     private var finished: [BrowserTab.ID: Date] = [:]
     private var busy: Set<BrowserTab.ID> = []
-    private var monitor: Any?
     /// UV is claimed only while the passwords policy asks the owner at all; the gesture is always UP
     private static var verifies: Bool { OwnerUnlock.Kind.passwords.policy != .never }
 
@@ -37,11 +34,7 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         controller.addScriptMessageHandler(shared, contentWorld: .page, name: PasskeyPage.messageName)
         controller.addUserScript(
             WKUserScript(source: PasskeyPage.source, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
-        guard shared.monitor == nil else { return }
-        shared.monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { event in
-            MainActor.assumeIsolated { shared.gesture = (Date(), event.window) }
-            return event
-        }
+        UserGesture.watch()
     }
 
     func userContentController(
@@ -70,9 +63,9 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         let rpID = ((body["rpId"] as? String) ?? host).lowercased()
         let now = Date()
         let last = finished[tab.id] ?? .distantPast
-        guard PasswordStore.isSecure(origin), Passkeys.isValid(rpID: rpID, for: host),
-            gesture.window != nil, gesture.window === webView.window, gesture.at > last,
-            now.timeIntervalSince(gesture.at) < Self.gestureWindow, now.timeIntervalSince(last) > Self.spacing,
+        guard PasswordStore.isSecure(origin), tab.offersCredentials(to: origin), Passkeys.isValid(rpID: rpID, for: host),
+            let pressed = UserGesture.recent(in: webView, within: Self.gestureWindow), pressed > last,
+            now.timeIntervalSince(last) > Self.spacing,
             busy.insert(tab.id).inserted
         else { return .refused(prompted: false) }
         defer {

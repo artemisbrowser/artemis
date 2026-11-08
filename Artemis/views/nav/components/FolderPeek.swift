@@ -64,7 +64,7 @@ struct FolderPeek: View {
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(rows, id: \.first?.id) { panes in
-                            FolderPeekRow(panes: panes, detail: detail) { tab in
+                            FolderPeekRow(panes: panes, detail: detail, live: folder.live) { tab in
                                 tabManager.clearSelection()
                                 tabManager.selectedTabID = tab.id
                                 tabManager.isCommandBarVisible = false
@@ -134,6 +134,8 @@ private struct FolderPeekRow: View {
     @Environment(\.chromeInk) private var ink
     let panes: [BrowserTab]
     let detail: FolderPeekDetail
+    /// marks a live folder's new items
+    let live: LiveFolder?
     let pick: (BrowserTab) -> Void
     @State private var isHovering = false
 
@@ -186,6 +188,9 @@ private struct FolderPeekRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if live?.isUnread(tab) == true {
+                UnreadBadge(badge: .flag).accessibilityLabel(UnreadBadge.spoken(.flag))
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, subtitle == nil ? 6 : 5)

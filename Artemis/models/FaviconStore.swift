@@ -16,6 +16,8 @@ final class FaviconStore {
     @ObservationIgnored private var cache: [String: NSImage] = [:]
     /// host → vivid colour sampled from its icon, computed lazily on first ask
     @ObservationIgnored private var accentCache: [String: Color] = [:]
+    /// host → whether its icon is light throughout, computed lazily on first ask
+    @ObservationIgnored private var lightCache: [String: Bool] = [:]
     /// hosts with a fetch in flight
     @ObservationIgnored private var inFlight: Set<String> = []
     /// hosts already missed on disk, so a render never repeats a failing
@@ -86,6 +88,16 @@ final class FaviconStore {
         return color
     }
 
+    /// whether the host's icon reads as light (see `isLight`); false until the icon resolves
+    func isLightIcon(for host: String?) -> Bool {
+        guard let host, !host.isEmpty, let image = icon(for: host) else { return false }
+        let key = Self.key(for: host)
+        if let cached = lightCache[key] { return cached }
+        let light = Self.isLight(image)
+        lightCache[key] = light
+        return light
+    }
+
     /// kick off a fetch for a host if we don't already have its icon. cheap to
     /// call repeatedly — it no-ops when cached or already loading.
     func prefetch(host: String?, profile: UUID, isPrivate: Bool) {
@@ -108,14 +120,26 @@ final class FaviconStore {
 
     // MARK: - Fetch pipeline
 
-    /// in order: the page-declared icon if it is on the web or inline, the site's
-    /// /favicon.ico, then, outside incognito only, Google's favicon service, which learns the host
+    /// in order: the page-declared icon if it is on the web or inline, the site's /favicon.ico,
+    /// then Google's favicon service, which learns the host: outside incognito, for public names only
     static func sources(for key: String, declared: URL?, isPrivate: Bool) -> [URL] {
         [
             declared.flatMap { ["http", "https", "data"].contains($0.scheme?.lowercased()) ? $0 : nil },
             URL(string: "https://\(key)/favicon.ico"),
-            isPrivate ? nil : URL(string: "https://www.google.com/s2/favicons?domain=\(key)&sz=64"),
+            isPrivate || !isPublicName(key)
+                ? nil : URL(string: "https://www.google.com/s2/favicons?domain=\(key)&sz=64"),
         ].compactMap { $0 }
+    }
+
+    /// a name under a listed top-level domain with a registrable part: never an IP literal,
+    /// a single label, localhost, a reverse-DNS or .onion name, or a private suffix like .local
+    static func isPublicName(_ key: String) -> Bool {
+        let host = String(key.prefix { $0 != ":" })
+        let labels = host.split(separator: ".")
+        guard labels.count > 1, let tld = labels.last.map(String.init), !["arpa", "onion"].contains(tld),
+            !PasswordStore.isIPAddress(host), PasswordStore.isPublicSuffix?(tld as CFString).boolValue == true
+        else { return false }
+        return PasswordStore.registrableDomain(host) != nil
     }
 
     /// the first decodable image wins and is cached, and saved unless private. each fetch has a
@@ -142,7 +166,9 @@ final class FaviconStore {
                 else { continue }
                 cache[key] = image
                 knownMissing.remove(key)
-                accentCache[key] = nil  // recompute the ring colour from the new icon
+                // resample the ring colour and tone from the new icon
+                accentCache[key] = nil
+                lightCache[key] = nil
                 generation &+= 1
                 if !isPrivate { try? png.write(to: fileURL(for: key)) }
                 return
@@ -186,7 +212,7 @@ final class FaviconStore {
         return rep?.representation(using: .png, properties: [:])
     }
 
-    // MARK: - Dominant colour
+    // MARK: - Sampling
 
     /// the icon's strongest hue, weighted by saturation × brightness and clamped to
     /// a legible ring tint; a monochrome icon gets its own average tone instead
@@ -239,6 +265,24 @@ final class FaviconStore {
             hue: Double(h),
             saturation: Double(min(max(s, 0.55), 0.9)),
             brightness: Double(max(b, 0.85)))
+    }
+
+    /// true when under one in twenty of the icon's opaque pixels would show on white,
+    /// being neither dark nor coloured
+    static func isLight(_ image: NSImage) -> Bool {
+        let dim = 24
+        guard let rep = bitmap(of: image, width: dim, height: dim) else { return false }
+        var opaque = 0, ink = 0
+        for y in 0..<dim {
+            for x in 0..<dim {
+                guard let raw = rep.colorAt(x: x, y: y), raw.alphaComponent > 0.5,
+                    let c = raw.usingColorSpace(.sRGB)
+                else { continue }
+                opaque += 1
+                if c.brightnessComponent < 0.75 || c.saturationComponent > 0.25 { ink += 1 }
+            }
+        }
+        return opaque > 0 && ink * 20 < opaque
     }
 
     /// render an icon into an RGBA bitmap of the given pixel size

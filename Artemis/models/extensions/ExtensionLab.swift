@@ -25,9 +25,9 @@ enum ExtensionLab {
         unsafeBitCast(preferences, to: WKPreferencesPeerConnectionSPI.self)._setPeerConnectionEnabled(false)
     }
 
-    /// outside every folder macOS asks consent for; the lab's signature carries a
-    /// sandbox exception for exactly this path (tools/extlab.sh)
-    private static let root = URL(fileURLWithPath: "/private/tmp/artemis-extlab", isDirectory: true)
+    /// outside every folder macOS asks consent for
+    private static let root = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".cache/artemis/extlab", directoryHint: .isDirectory)
 
     /// `ARTEMIS_EXTLAB_RUN=name` keeps a run's verdicts and shots in runs/name,
     /// so two builds can sweep the same queue side by side
@@ -51,6 +51,8 @@ enum ExtensionLab {
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled], reason: "extension lab")
         defer { ProcessInfo.processInfo.endActivity(activity) }
+        // a launch onto an empty space opens the ⌘T bar; the lab's pages keep the keyboard
+        manager.isCommandBarVisible = false
         try? await Task.sleep(for: .seconds(3))
 
         let em = ExtensionManager.shared
@@ -355,7 +357,7 @@ enum ExtensionLab {
         verdict["version"] = ext.version ?? ""
         verdict["mv"] = Int(ext.webExtension.manifestVersion)
         verdict["parseErrors"] = ext.webExtension.errors.map(describe)
-        verdict["unsupported"] = em.permissionCoverage(for: ext).missing
+        verdict["unsupported"] = ExtensionManager.permissionCoverage(of: ext.webExtension.manifest).missing
 
         em.setEnabled(ext, true)
         verdict["loaded"] = ext.context.isLoaded

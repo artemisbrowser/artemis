@@ -108,7 +108,7 @@ struct PasswordsSettings: View {
                 Button("Add Suggested Password…") {
                     editingRecipe = PasswordRecipe(profileID: PasswordStore.stored(profileID))
                 }
-                Toggle(isOn: $checksLeaks) {
+                Toggle(isOn: $checksLeaks.undoable("Leak Checks")) {
                     InfoLabel(
                         "Check roots against known leaks",
                         info: "Asks Have I Been Pwned whether a root has leaked. Only the first 5 characters of its hash leave this Mac.")
@@ -120,12 +120,12 @@ struct PasswordsSettings: View {
             }
 
             Section {
-                Toggle(isOn: $offerToSave) {
+                Toggle(isOn: $offerToSave.undoable("Offer to Save Passwords")) {
                     InfoLabel(
                         "Offer to save passwords",
                         info: "Asks to save a login to your keychain after you sign in. Incognito windows never save.")
                 }
-                Toggle(isOn: $fillFromSuggestions) {
+                Toggle(isOn: $fillFromSuggestions.undoable("Fill from Suggestions")) {
                     InfoLabel("Fill from suggestions", info: "Suggests saved logins when you click into a login field.")
                 }
             } header: {
@@ -277,16 +277,22 @@ private struct PasswordSite: Identifiable {
     }
 }
 
-/// the site's favicon on a soft tile, or a monogram in a colour of its own when it has none
+/// the site's favicon on a soft tile, black under a light icon in light mode, or a monogram
+/// in a colour of its own when it has none
 private struct SiteIcon: View {
     let host: String
     let size: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
         ZStack {
             if let icon = FaviconStore.shared.icon(for: host) {
-                shape.fill(.background.secondary)
+                if colorScheme == .light, FaviconStore.shared.isLightIcon(for: host) {
+                    shape.fill(.black.opacity(0.92))
+                } else {
+                    shape.fill(.background.secondary)
+                }
                 Image(nsImage: icon).resizable().interpolation(.high).scaledToFit().padding(size * 0.18)
             } else {
                 shape.fill(Self.tint(for: host).gradient)

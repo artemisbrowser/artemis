@@ -26,6 +26,8 @@ struct ArtemisApp: App {
     /// the focused window's manager, mirrored into `@State`: menu items refresh
     /// only against `@State`, never against `windows.current`
     @State private var focusedManager: TabManager?
+    /// the Edit menu's Undo and Redo, which `UndoRoute` names and routes
+    @State private var undoRoute = UndoRoute.shared
     /// which pinned extension ⌘E reaches next
     @State private var extensionCycleIndex = 0
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
@@ -108,13 +110,13 @@ struct ArtemisApp: App {
                 }
                 .keyboardShortcut("n")
 
-                Button(strip?.selectedTab == nil ? "Close Window" : "Close Tab") {
+                Button(strip == nil ? "Close Window" : "Close Tab") {
                     handleCloseShortcut()
                 }
                 .keyboardShortcut("w")
 
-                // hidden while ⌘W itself says "Close Window"
-                if strip?.selectedTab != nil {
+                // hidden in Scout, where ⌘W itself says "Close Window"
+                if strip != nil {
                     Button("Close Window") {
                         NSApp.keyWindow?.performClose(nil)
                     }
@@ -157,16 +159,16 @@ struct ArtemisApp: App {
                 Divider()
 
                 Button("Copy Page Link") {
-                    tabManager.selectedTab?.copyLink()
+                    tabManager.unlockedContentTab?.copyLink()
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Button("Copy Page Link as Markdown") {
-                    tabManager.selectedTab?.copyLink(asMarkdown: true)
+                    tabManager.unlockedContentTab?.copyLink(asMarkdown: true)
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift, .option])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Divider()
 
@@ -199,7 +201,7 @@ struct ArtemisApp: App {
                 }
                 .keyboardShortcut("f", modifiers: [.command, .option])
                 .disabled(
-                    tabManager.selectedTab?.url == nil
+                    tabManager.unlockedContentTab?.url == nil
                         || !Intelligence.isOn(Intelligence.askPageKey) || !Intelligence.isReady)
 
                 Divider()
@@ -215,17 +217,26 @@ struct ArtemisApp: App {
                 Divider()
 
                 Button("Print…") {
-                    tabManager.selectedTab?.printPage()
+                    tabManager.unlockedContentTab?.printPage()
                 }
                 .keyboardShortcut("p")
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Menu("Export Page") {
                     Button("PDF") { exportPage(.pdf) }
                     Button("Web Archive") { exportPage(.webArchive) }
                     Button("Full-Page Image") { exportPage(.fullPageImage) }
                 }
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
+            }
+
+            CommandGroup(replacing: .undoRedo) {
+                Button(undoRoute.undoTitle) { undoRoute.perform(redo: false) }
+                    .keyboardShortcut("z")
+                    .disabled(!undoRoute.canUndo)
+                Button(undoRoute.redoTitle) { undoRoute.perform(redo: true) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!undoRoute.canRedo)
             }
 
             CommandGroup(replacing: .sidebar) {}
@@ -255,28 +266,28 @@ struct ArtemisApp: App {
 
                 Divider()
 
-                Button((tabManager.selectedTab?.isReaderMode ?? false) ? "Hide Reader" : "Show Reader") {
-                    let tab = tabManager.selectedTab
+                Button((tabManager.unlockedContentTab?.isReaderMode ?? false) ? "Hide Reader" : "Show Reader") {
+                    let tab = tabManager.unlockedContentTab
                     Task { await tab?.toggleReader() }
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(
-                    !(tabManager.selectedTab?.isReaderAvailable ?? false)
-                        && !(tabManager.selectedTab?.isReaderMode ?? false))
+                    !(tabManager.unlockedContentTab?.isReaderAvailable ?? false)
+                        && !(tabManager.unlockedContentTab?.isReaderMode ?? false))
 
                 Button("Translate Selection…") {
-                    let tab = tabManager.selectedTab
+                    let tab = tabManager.unlockedContentTab
                     Task { await tab?.translateSelection() }
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift, .option])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
-                Button(tabManager.selectedTab?.pageTranslation.isActive == true ? "Show Original" : "Translate Page") {
-                    let tab = tabManager.selectedTab
+                Button(tabManager.unlockedContentTab?.pageTranslation.isActive == true ? "Show Original" : "Translate Page") {
+                    let tab = tabManager.unlockedContentTab
                     Task { await tab?.toggleTranslation() }
                 }
                 .keyboardShortcut("t", modifiers: [.command, .option])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Divider()
 
@@ -356,23 +367,23 @@ struct ArtemisApp: App {
                     tabManager.togglePictureInPicture()
                 }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Button(
-                    (tabManager.selectedTab?.isInspectorVisible ?? false)
+                    (tabManager.unlockedContentTab?.isInspectorVisible ?? false)
                         ? "Close Web Inspector" : "Show Web Inspector"
                 ) {
-                    tabManager.selectedTab?.toggleInspector()
+                    tabManager.unlockedContentTab?.toggleInspector()
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 // F12: AppKit sends function keys from U+F704 in the private use area
                 Button("Web Inspector ") {
-                    tabManager.selectedTab?.toggleInspector()
+                    tabManager.unlockedContentTab?.toggleInspector()
                 }
                 .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(0xF70F)!)), modifiers: [])
-                .disabled(tabManager.selectedTab?.url == nil)
+                .disabled(tabManager.unlockedContentTab?.url == nil)
 
                 Divider()
 
@@ -561,6 +572,8 @@ struct ArtemisApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
+        // a scene's own Close (⌘W) shows while its window has focus and would close it outright
+        .commands { CommandGroup(replacing: .saveItem) {} }
 
         Settings {
             SettingsView()
@@ -673,18 +686,17 @@ struct ArtemisApp: App {
         return true
     }
 
-    /// ⌘W: close the focused window's tab. a window with no tab, a Scout window,
-    /// and every auxiliary window close outright
+    /// ⌘W closes a browser window's tab and never the window itself, which ⇧⌘W closes; Scout and
+    /// every other window close
     private func handleCloseShortcut() {
         guard let window = NSApp.keyWindow else { return }
-        guard let manager = BrowserWindows.shared.manager(for: window),
-            manager.kind != .scout, manager.selectedTab != nil
+        guard let manager = BrowserWindows.shared.manager(for: window), manager.kind != .scout
         else { return window.performClose(nil) }
         manager.closeSelectedTab()
     }
 
     private func exportPage(_ kind: BrowserTab.PageExport) {
-        guard let tab = tabManager.selectedTab else { return }
+        guard let tab = tabManager.unlockedContentTab else { return }
         Task { await tab.export(kind) }
     }
 

@@ -52,6 +52,7 @@ nonisolated enum Keychain {
     /// the login keychain is shared by every build on the Mac: any bundle ID but the
     /// original keeps its own items, and the original keeps the names its items have
     static let owner: String = {
+        if let name = AppStorageLocation.storageName { return name }
         let id = Bundle.main.bundleIdentifier ?? "dev.findles.Artemis"
         return id == "dev.findles.Artemis" ? "Artemis" : id
     }()
@@ -473,10 +474,10 @@ final class PasswordStore {
 
     // MARK: - Sites
 
-    private typealias SuffixCheck = @convention(c) (CFString) -> DarwinBoolean
+    typealias SuffixCheck = @convention(c) (CFString) -> DarwinBoolean
     /// CFNetwork's copy of the Public Suffix List, ICANN and private sections with their wildcards
     /// and exceptions: the one WebKit reads. Looked up in every loaded image (RTLD_DEFAULT).
-    private nonisolated static let isPublicSuffix = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_CFHostIsDomainTopLevel")
+    nonisolated static let isPublicSuffix = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_CFHostIsDomainTopLevel")
         .map { unsafeBitCast($0, to: SuffixCheck.self) }
 
     /// The site boundary for passkey rpIds, verification codes, recipes and Settings' grouping: one
