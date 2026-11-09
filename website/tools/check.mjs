@@ -124,6 +124,8 @@ export async function check(out) {
   for (const f of textFiles) {
     const r = rel(f);
     if (/^assets\/js\/sections\/07-arc\.\w+\.js$/.test(r)) continue;
+    // release notes, not site copy; Fin reads them in #staff before each publish
+    if (r === "appcast.xml") continue;
     let text = fs.readFileSync(f, "utf8");
     if (r.endsWith(".html")) text = withoutArc(text);
     // Fin's note may name Arc in either build
