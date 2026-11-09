@@ -1,9 +1,9 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<!-- The 1200x630 sharing card: the hero on a white page, the Tide window showing the night page, flat glass so headless renders are faithful.
+<!-- The 1200x630 sharing card: the hero on a white page, the Tide window showing a Wikipedia page, flat glass so headless renders are faithful.
      Render: PLAYWRIGHT_BROWSERS_PATH=… node shot.mjs file://…/tools/og.html <out> --engine chromium --w 1200 --h 630 --steps 1 --dark --wait 1500
-     then copy the PNG to src/img/og-home.png. -->
+     then copy the PNG to src/img/og-home.png. Serve the site folder so the page shot and favicons load. -->
 <html lang="en-GB">
 <head>
 <meta charset="utf-8" />
@@ -32,7 +32,7 @@
   .lit { background: rgb(255 255 255 / 0.16); }
   .lockup { position: absolute; top: 64px; left: 72px; right: 72px; display: flex; align-items: center; gap: 22px; }
   .lockup img { width: 76px; height: 76px; }
-  h1 { font: 600 60px/1.04 system-ui, -apple-system, sans-serif; letter-spacing: -0.015em; }
+  h1 { max-width: 880px; font: 600 48px/1.06 system-ui, -apple-system, sans-serif; letter-spacing: -0.015em; }
   .sb { position: absolute; left: 12px; top: 8px; width: 236px; }
   .toprow { position: relative; height: 36px; }
   .tl { position: absolute; top: 11px; width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.22); }
@@ -52,26 +52,24 @@
   .fav { flex: 1; height: 48px; border-radius: 10px; display: grid; place-items: center; background: rgb(255 255 255 / 0.06); }
   .fi { display: block; flex: none; width: 16px; height: 16px; border-radius: 4px; background: 0 0 / 100% 100% no-repeat; }
   .fav .fi { width: 20px; height: 20px; border-radius: 5px; }
-  .fi-lowlight { background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23101112'/><path fill='%23ECECEC' d='M15.8 11.75A6 6 0 1 1 8.25 4.2a6.07 6.07 0 0 0 7.55 7.55Z'/></svg>"); }
-  .fi-slowloaf { background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23F3E3C6'/><path fill='%23C98A4B' d='M3.8 13C3.8 8.9 6.6 6.2 10 6.2s6.2 2.7 6.2 6.8v.6c0 .8-.6 1.4-1.4 1.4H5.2c-.8 0-1.4-.6-1.4-1.4Z'/><path d='m7.4 9.4 1.3 1.7m1.7-2.5 1.3 1.7' stroke='%23F3E3C6' stroke-width='1.1' stroke-linecap='round'/></svg>"); }
-  .fi-plot { background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%233F9D5A'/><path fill='%23D9F7C8' d='M15.6 4.4C9.4 4.4 5.6 7.2 5.6 11.2c0 1 .3 1.8.7 2.4l-1.6 1.6.8.8 1.6-1.6c.6.4 1.4.7 2.4.7 4.2 0 6.1-4.4 6.1-10.7Z'/></svg>"); }
+  .fi-gmail { background-image: url("../src/img/fav/fav-gmail.png"); }
+  .fi-calendar { background-image: url("../src/img/fav/fav-calendar.png"); }
+  .fi-youtube { background-image: url("../src/img/fav/fav-youtube.png"); }
+  .fi-spotify { background-image: url("../src/img/fav/fav-spotify.png"); }
+  .fi-wikipedia { background-image: url("../src/img/fav/fav-wikipedia.png"); }
+  .fi-notion { background-image: url("../src/img/fav/fav-notion.png"); }
   .shead { margin-top: 8px; height: 36px; padding-left: 11px; display: flex; align-items: center; gap: 8px; font-weight: 700; color: rgb(255 255 255 / 0.7); }
   .shead .gl { width: 13px; height: 13px; color: #3b73eb; }
-  .row { height: 36px; margin-top: 5px; border-radius: 10px; padding: 0 7px 0 11px; display: flex; align-items: center; gap: 8px; }
+  .row { white-space: nowrap; overflow: hidden; height: 36px; margin-top: 5px; border-radius: 10px; padding: 0 7px 0 11px; display: flex; align-items: center; gap: 8px; }
   .row.new { color: rgb(255 255 255 / 0.7); }
   .row.new .gl { width: 12px; height: 12px; stroke-width: 2.9; }
   .pin-line { height: 1px; margin: 10px 4px; border: 0; background: rgb(255 255 255 / 0.12); }
   .card {
     position: absolute; left: 262px; right: 10px; top: 10px; bottom: 10px;
-    border-radius: 10px; overflow: hidden; background: #101112; color: #ececec;
+    border-radius: 10px; overflow: hidden;
+    background: url("../src/img/shots/shot-wp-orion-hero-light.webp") 0 0 / 100% auto no-repeat #fff;
     box-shadow: 0 3px 24px rgb(0 0 0 / 0.35);
   }
-  .mast { height: 64px; display: flex; align-items: center; justify-content: center; gap: 8px; border-bottom: 1px solid rgb(255 255 255 / 0.1); font: 600 20px/1 "Iowan Old Style", Palatino, Georgia, serif; }
-  .mast .gl { width: 14px; height: 14px; color: #ececec; }
-  .fig { position: relative; height: 310px; background: linear-gradient(180deg, #04060b, #0a0f1a 70%, #0e1522); overflow: hidden; }
-  .fig .st { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .fig .con { position: absolute; left: 50%; top: 10px; width: 374px; height: 288px; translate: -50% 0; }
-  .fig .hz { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 22px; }
 </style>
 </head>
 <body>
@@ -93,17 +91,10 @@
 <symbol id="i-reload" viewBox="0 0 24 24"><path d="M18.6 13.2a6.8 6.8 0 1 1-1.9-6.1M17.4 3.6v4.3h-4.3"/></symbol>
 <symbol id="i-link" viewBox="0 0 24 24"><path d="M10.6 13.4a3.6 3.6 0 0 0 5.1 0l2.9-2.9a3.6 3.6 0 0 0-5.1-5.1l-1 1M13.4 10.6a3.6 3.6 0 0 0-5.1 0l-2.9 2.9a3.6 3.6 0 0 0 5.1 5.1l1-1"/></symbol>
 <symbol id="i-tune" viewBox="0 0 16 12"><path d="M1 3h7.1M13.4 3H15M1 9h1.5M7.8 9H15M13.35 3a2.6 2.6 0 1 1-5.2 0 2.6 2.6 0 1 1 5.2 0ZM7.75 9a2.6 2.6 0 1 1-5.2 0 2.6 2.6 0 1 1 5.2 0Z"/></symbol>
-<symbol id="orion" viewBox="0 0 520 400"><g fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="1.1"><path d="M193 76 278 34 321 95 291 207 274 223 253 235 193 76M253 235l-30 132M291 207l74 135"/></g><circle cx="278" cy="295" r="17" fill="url(#g-neb)"/><circle cx="193" cy="76" r="15" fill="url(#g-betel)"/><circle cx="365" cy="342" r="17" fill="url(#g-rigel)"/><g fill="url(#g-star)"><circle cx="321" cy="95" r="9"/><circle cx="278" cy="34" r="7"/><circle cx="291" cy="207" r="9"/><circle cx="274" cy="223" r="10"/><circle cx="253" cy="235" r="9.5"/><circle cx="223" cy="367" r="8.5"/><circle cx="275" cy="277" r="4.5"/><circle cx="280" cy="311" r="4"/></g><g font-family="system-ui,-apple-system,sans-serif" font-size="12" letter-spacing=".02em"><text x="171" y="80" text-anchor="end" fill="#e8a77c">Betelgeuse</text><text x="339" y="99" fill="#fff" fill-opacity=".6">Bellatrix</text><text x="311" y="217" fill="#fff" fill-opacity=".6">The belt</text><text x="386" y="346" fill="#cfe0f5">Rigel</text><text x="202" y="371" text-anchor="end" fill="#fff" fill-opacity=".6">Saiph</text></g></symbol>
-<symbol id="horizon"><path fill="#101112" d="M0 28V15c170-10 330 3 520-2s320-12 470-6 300 9 450 0V28Z"/></symbol>
-<symbol id="stars-1440" viewBox="0 0 1440 470"><g fill="none" stroke-linecap="round"><path stroke="#fff" stroke-opacity="0.55" stroke-width="1" d="M711 156h0M50 326h0M854 281h0M1307 414h0M19 241h0M740 458h0M123 124h0M797 379h0M1271 321h0M515 86h0M754 190h0M695 4h0M101 223h0M1017 43h0M714 286h0M860 208h0M1105 372h0M1293 370h0M327 213h0M1209 266h0M199 159h0M1224 342h0M849 349h0M571 372h0M233 192h0M1097 363h0M654 416h0M908 338h0M184 326h0M1163 244h0M683 3h0M894 197h0M200 203h0M412 201h0M33 39h0M1293 249h0M869 89h0M232 398h0M1113 332h0M1312 231h0M1032 457h0M42 169h0M676 451h0M616 274h0M470 120h0M172 51h0M341 414h0M932 135h0M1249 248h0M1437 99h0M751 267h0M686 455h0M642 136h0M261 220h0M1316 141h0M405 100h0M682 303h0M345 109h0M1030 211h0M791 57h0M1340 350h0M1249 78h0M1393 122h0M382 443h0M489 39h0M1072 179h0M589 43h0M915 385h0M1421 60h0M586 368h0M74 322h0M207 358h0"/><path stroke="#cfe0ff" stroke-opacity="0.85" stroke-width="3" d="M570 194h0"/><path stroke="#fff" stroke-opacity="0.7" stroke-width="1.6" d="M1326 290h0M1074 256h0M221 318h0M668 236h0M971 283h0M259 252h0M1094 357h0M64 147h0M480 94h0M709 148h0M19 98h0M1086 347h0M738 183h0M789 307h0M760 251h0M487 109h0M1346 99h0M646 415h0M486 404h0M1297 172h0M978 384h0M228 207h0M1160 0h0M1182 70h0M1002 440h0M1413 150h0M1144 167h0M148 182h0M15 459h0M244 163h0M370 289h0M1271 32h0M191 104h0M360 167h0M1373 107h0M190 199h0M281 253h0M763 166h0M1077 297h0M656 218h0M955 333h0M1030 143h0"/><path stroke="#fff" stroke-opacity="0.85" stroke-width="3" d="M1088 425h0M51 183h0M1381 25h0M906 428h0M33 59h0M1091 449h0"/><path stroke="#ffe6cc" stroke-opacity="0.85" stroke-width="2.2" d="M647 393h0M903 385h0M606 368h0M962 203h0"/><path stroke="#ffe6cc" stroke-opacity="0.7" stroke-width="1.6" d="M1349 197h0M119 226h0M841 306h0M498 108h0M1354 401h0"/><path stroke="#fff" stroke-opacity="0.85" stroke-width="2.2" d="M945 190h0M608 150h0M747 24h0M331 271h0M1029 402h0M1392 432h0M1217 62h0M1041 371h0M529 330h0M23 361h0M311 141h0M1102 368h0M717 260h0M667 461h0M498 196h0M770 290h0M1023 11h0M511 8h0M544 208h0M701 450h0M1039 241h0M911 299h0"/><path stroke="#cfe0ff" stroke-opacity="0.55" stroke-width="1" d="M869 310h0M1383 270h0M603 196h0M366 240h0M304 140h0M1162 176h0M726 351h0M645 362h0M553 113h0M380 238h0M444 468h0M1041 356h0"/><path stroke="#cfe0ff" stroke-opacity="0.7" stroke-width="1.6" d="M433 128h0M539 379h0M131 143h0M74 457h0M164 19h0M452 259h0"/><path stroke="#cfe0ff" stroke-opacity="0.85" stroke-width="2.2" d="M170 51h0M1306 252h0M53 305h0M5 357h0M509 234h0M239 326h0"/><path stroke="#ffe6cc" stroke-opacity="0.55" stroke-width="1" d="M1033 420h0M733 208h0M1328 415h0M541 385h0M64 376h0M596 222h0M273 246h0M796 100h0M1245 246h0M1395 147h0M1339 10h0M492 302h0M174 253h0M1423 328h0"/></g></symbol>
-<radialGradient id="g-rigel"><stop offset="0" stop-color="#f4f8fd"/><stop offset=".25" stop-color="#cfe0f5" stop-opacity=".9"/><stop offset="1" stop-color="#cfe0f5" stop-opacity="0"/></radialGradient>
-<radialGradient id="g-betel"><stop offset="0" stop-color="#fff1e4"/><stop offset=".25" stop-color="#e8a77c" stop-opacity=".9"/><stop offset="1" stop-color="#e8a77c" stop-opacity="0"/></radialGradient>
-<radialGradient id="g-star"><stop offset="0" stop-color="#fff"/><stop offset=".3" stop-color="#e6edf5" stop-opacity=".7"/><stop offset="1" stop-color="#e6edf5" stop-opacity="0"/></radialGradient>
-<radialGradient id="g-neb"><stop offset="0" stop-color="#e3e7ea" stop-opacity=".4"/><stop offset="1" stop-color="#e3e7ea" stop-opacity="0"/></radialGradient>
 </svg>
 <div class="lockup">
   <img src="../src/img/icon-rigel-light-192.png" width="76" height="76" alt="" />
-  <h1>A native browser for&nbsp;your&nbsp;Mac.</h1>
+  <h1>A native, private Mac browser you can make your&nbsp;own.</h1>
 </div>
 <div class="win">
   <div class="sb">
@@ -113,26 +104,19 @@
       <span class="g circ back"><svg class="gl"><use href="#i-chev-l" /></svg></span>
       <span class="g circ reload"><svg class="gl"><use href="#i-reload" /></svg></span>
     </div>
-    <div class="g url"><span class="dom">lowlight.press</span><svg class="gl"><use href="#i-link" /></svg><svg class="gl" viewBox="0 0 16 12"><use href="#i-tune" /></svg></div>
+    <div class="g url"><span class="dom">en.wikipedia.org</span><svg class="gl"><use href="#i-link" /></svg><svg class="gl" viewBox="0 0 16 12"><use href="#i-tune" /></svg></div>
     <div class="favs">
-      <span class="g fav lit"><i class="fi fi-lowlight"></i></span><span class="g fav"><i class="fi fi-slowloaf"></i></span><span class="g fav"><i class="fi fi-plot"></i></span>
+      <span class="g fav"><i class="fi fi-gmail"></i></span><span class="g fav"><i class="fi fi-calendar"></i></span><span class="g fav"><i class="fi fi-youtube"></i></span><span class="g fav"><i class="fi fi-spotify"></i></span><span class="g fav"><i class="fi fi-wikipedia"></i></span>
     </div>
     <div class="shead"><svg class="gl"><use href="#i-moon" /></svg>Personal</div>
-    <div class="row"><i class="fi fi-slowloaf"></i>Recipes to try</div>
-    <div class="row"><i class="fi fi-lowlight"></i>Reading list</div>
+    <div class="row"><i class="fi fi-notion"></i>Notion</div>
     <hr class="pin-line" />
     <div class="row new"><svg class="gl"><use href="#i-plus" /></svg>New Tab</div>
-    <div class="row g lit"><i class="fi fi-lowlight"></i>Orion, star by star</div>
-    <div class="row"><i class="fi fi-lowlight"></i>Sky tonight</div>
+    <div class="row g lit"><i class="fi fi-wikipedia"></i>Orion (constellation) - Wikipedia</div>
+    <div class="row"><i class="fi fi-wikipedia"></i>Sourdough - Wikipedia</div>
+    <div class="row"><i class="fi fi-wikipedia"></i>Night sky - Wikipedia</div>
   </div>
-  <div class="card">
-    <div class="mast"><svg class="gl"><use href="#i-moon" /></svg>Low Light</div>
-    <div class="fig">
-      <svg class="st" viewBox="0 0 1440 470" preserveAspectRatio="xMidYMid slice"><use href="#stars-1440" /></svg>
-      <svg class="con" viewBox="0 0 520 400"><use href="#orion" /></svg>
-      <svg class="hz" viewBox="0 0 1440 28" preserveAspectRatio="none"><use href="#horizon" /></svg>
-    </div>
-  </div>
+  <div class="card"></div>
 </div>
 </body>
 </html>

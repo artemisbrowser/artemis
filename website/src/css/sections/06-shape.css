@@ -1,0 +1,459 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+/* Yours to shape: one window on a desktop, one radio per setting, so it plays without script.
+   Window lengths are points (--u), 1000 pt across 70% of the stage. */
+@property --w1 {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #ffd2a8;
+}
+@property --w2 {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #8ec5ff;
+}
+@property --sh-e {
+  syntax: "<integer>";
+  inherits: true;
+  initial-value: 10;
+}
+
+.shape {
+  padding-block: 112px;
+}
+.sh-stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  margin-top: 48px;
+  overflow: clip;
+  border-radius: var(--r-island);
+  container-type: inline-size;
+  background:
+    radial-gradient(90% 110% at 8% 0%, var(--w1), transparent 72%),
+    radial-gradient(50% 60% at 75% 25%, rgb(255 255 255 / 0.3), transparent),
+    var(--w2);
+  transition:
+    --w1 0.8s var(--ease-in-out),
+    --w2 0.8s var(--ease-in-out);
+}
+@media (prefers-color-scheme: dark) {
+  .sh-stage::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgb(0 0 0 / 0.42);
+  }
+}
+.sh:has(#sh-icon:checked) .sh-stage {
+  --w1: #c8f0dc;
+  --w2: #6db3d4;
+}
+.sh:has(#sh-edge:checked) .sh-stage {
+  --w1: #ffe2a0;
+  --w2: #f29d84;
+}
+.sh:has(#sh-side:checked) .sh-stage {
+  --w1: #d4e6fb;
+  --w2: #7d9fe0;
+}
+.sh:has(#sh-bar:checked) .sh-stage {
+  --w1: #f3e6a2;
+  --w2: #93c58f;
+}
+.sh:has(#sh-bang:checked) .sh-stage {
+  --w1: #ffd0c4;
+  --w2: #8fcde0;
+}
+
+.sh-rig {
+  --u: calc(70cqw / 1000);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(1000 * var(--u));
+  aspect-ratio: 1000 / 640;
+  translate: -50% -50%;
+  transition:
+    opacity var(--dur-fade) var(--ease-in-out),
+    scale var(--dur-pop) var(--spring-pop);
+}
+.shape .win {
+  --edge: var(--sh-e);
+}
+.shape :is(.sb-pin > *, .card-e, .sh-bar, .sh-ptr) {
+  transition:
+    translate var(--dur-sidebar) var(--spring-sidebar),
+    top var(--dur-sidebar) var(--spring-sidebar),
+    left var(--dur-sidebar) var(--spring-sidebar),
+    opacity var(--dur-fade) var(--ease-in-out);
+}
+
+/* Looks: each further look holds the window for a quarter of the cycle */
+.sh-lk {
+  z-index: 3;
+}
+.sh:has(#sh-looks:checked) .sh-lk:nth-child(2) {
+  opacity: 1;
+}
+
+/* App icon: the Settings grid, its ring stepping through the choices */
+.sh-icons {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  grid-template-columns: repeat(5, 8cqw);
+  gap: 1.6cqw 2.4cqw;
+  padding: 2.4cqw 3cqw 3cqw;
+  border-radius: 2.4cqw;
+  background: rgb(255 255 255 / 0.62);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 2cqw 5cqw rgb(0 0 0 / 0.18);
+  translate: -50% -50%;
+  opacity: 0;
+  scale: 0.96;
+  visibility: hidden;
+  transition:
+    opacity var(--dur-fade) var(--ease-in-out),
+    scale var(--dur-pop) var(--spring-pop),
+    visibility 0s var(--dur-fade);
+}
+.sh-icons b {
+  grid-column: 1 / -1;
+  font: 600 1.25cqw / 1 var(--font);
+  color: rgb(0 0 0 / 0.55);
+}
+.sh-icons picture {
+  position: relative;
+}
+.sh-icons img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.sh-icons picture::after {
+  content: "";
+  position: absolute;
+  inset: -0.5cqw;
+  border: 0.3cqw solid var(--focus);
+  border-radius: 2.2cqw;
+  opacity: 0;
+}
+.sh-icons > :nth-child(2)::after {
+  opacity: 1;
+}
+@media (prefers-color-scheme: dark) {
+  .sh-icons {
+    background: rgb(40 40 44 / 0.62);
+  }
+  .sh-icons b {
+    color: rgb(255 255 255 / 0.6);
+  }
+}
+.sh:has(#sh-icon:checked) .sh-icons {
+  opacity: 1;
+  scale: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.sh:has(#sh-icon:checked) .sh-rig {
+  opacity: 0;
+  scale: 0.96;
+}
+
+/* Edge: its value read out above the window */
+.sh-read {
+  position: absolute;
+  top: 2.4cqw;
+  left: 50%;
+  display: flex;
+  gap: 0.6em;
+  padding: 0.5em 1em;
+  border-radius: 99px;
+  font: 500 max(11px, 1.3cqw) / 1 var(--font);
+  translate: -50% 0;
+  opacity: 0;
+  transition: opacity var(--dur-fade) var(--ease-in-out);
+}
+.sh-read::after {
+  counter-reset: e var(--sh-e);
+  content: counter(e) " pt";
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.sh:has(#sh-edge:checked) .sh-stage {
+  --sh-e: 0;
+}
+.sh:has(#sh-edge:checked) .sh-read {
+  opacity: 1;
+}
+
+/* Sidebar: hidden, then out from the left edge under the pointer */
+.sh:has(#sh-side:checked) .sb-pin {
+  translate: calc(-262 * var(--u)) 0;
+}
+.sh:has(#sh-side:checked) .card-e {
+  left: calc(var(--edge) * var(--u));
+}
+.sh:has(#sh-side:checked) .fsb {
+  translate: 0 0;
+  visibility: visible;
+}
+.sh-ptr {
+  position: absolute;
+  top: calc(300 * var(--u));
+  left: calc(4 * var(--u));
+  z-index: 9;
+  width: calc(15 * var(--u));
+  fill: #000;
+  stroke: #fff;
+  stroke-width: 1.2;
+  opacity: 0;
+}
+.sh:has(#sh-side:checked) .sh-ptr {
+  opacity: 1;
+}
+
+/* Toolbar: the address and navigation leave the sidebar for a row above the page */
+.sh-bar {
+  position: absolute;
+  top: calc(8 * var(--u));
+  left: calc((250 + var(--grip)) * var(--u));
+  right: calc(max(var(--edge), 8) * var(--u));
+  display: flex;
+  gap: calc(6 * var(--u));
+  opacity: 0;
+}
+.sh-mid {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  gap: calc(6 * var(--u));
+  translate: -50% 0;
+}
+.sh-bar .url {
+  padding-right: calc(14 * var(--u));
+}
+.sh:has(#sh-bar:checked) .sh-bar {
+  opacity: 1;
+}
+.sh:has(#sh-bar:checked) .card-e {
+  top: calc((44 + max(var(--edge), 8)) * var(--u));
+}
+.sh:has(#sh-bar:checked) :is(.sb-pin > .url, .toprow .back, .toprow .reload) {
+  opacity: 0;
+}
+.sh:has(#sh-bar:checked) .sb-pin > :is(.favs, .pager) {
+  translate: 0 calc(-44 * var(--u));
+}
+
+/* Bangs: the trigger read as row 0 */
+.sh:not(:has(#sh-bang:checked)) .cmd {
+  opacity: 0;
+  scale: 0.97;
+  visibility: hidden;
+}
+.sh-q {
+  flex: 1;
+  font: 400 calc(22 * var(--u)) / 1 var(--font);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sh:has(#sh-looks:checked) .sh-lk {
+    animation: sh-look 10s 2.5s infinite backwards;
+  }
+  .sh:has(#sh-looks:checked) .sh-lk:nth-child(3) {
+    animation-delay: 5s;
+  }
+  .sh:has(#sh-looks:checked) .sh-lk:nth-child(4) {
+    animation-delay: 7.5s;
+  }
+  .sh-icons > *::after {
+    animation: sh-pick 12s calc(var(--n, 0) * 1.2s) infinite step-end;
+  }
+  .sh:has(#sh-edge:checked) .sh-stage {
+    animation: sh-edge 7s var(--ease-in-out) infinite;
+  }
+  .sh:has(#sh-side:checked) .fsb {
+    animation: sh-float 6s infinite;
+  }
+  .sh:has(#sh-side:checked) .sh-ptr {
+    animation: sh-point 6s infinite;
+  }
+}
+.sh-icons > :nth-child(3) {
+  --n: 1;
+}
+.sh-icons > :nth-child(4) {
+  --n: 2;
+}
+.sh-icons > :nth-child(5) {
+  --n: 3;
+}
+.sh-icons > :nth-child(6) {
+  --n: 4;
+}
+.sh-icons > :nth-child(7) {
+  --n: 5;
+}
+.sh-icons > :nth-child(8) {
+  --n: 6;
+}
+.sh-icons > :nth-child(9) {
+  --n: 7;
+}
+.sh-icons > :nth-child(10) {
+  --n: 8;
+}
+.sh-icons > :nth-child(11) {
+  --n: 9;
+}
+@keyframes sh-look {
+  0% {
+    opacity: 0;
+  }
+  4%,
+  29% {
+    opacity: 1;
+  }
+  33%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes sh-pick {
+  0% {
+    opacity: 1;
+  }
+  10%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes sh-edge {
+  0%,
+  10% {
+    --sh-e: 10;
+  }
+  30%,
+  45% {
+    --sh-e: 16;
+  }
+  70%,
+  88% {
+    --sh-e: 0;
+  }
+  100% {
+    --sh-e: 10;
+  }
+}
+@keyframes sh-float {
+  0%,
+  28% {
+    translate: calc(-272 * var(--u)) 0;
+  }
+  38%,
+  76% {
+    translate: 0 0;
+  }
+  86%,
+  100% {
+    translate: calc(-272 * var(--u)) 0;
+  }
+}
+@keyframes sh-point {
+  0% {
+    translate: calc(560 * var(--u)) calc(60 * var(--u));
+  }
+  22%,
+  80% {
+    translate: 0 0;
+  }
+  100% {
+    translate: calc(560 * var(--u)) calc(60 * var(--u));
+  }
+}
+
+/* the tabs: a segmented control with the chosen setting's line under it */
+.sh {
+  position: relative;
+  padding-bottom: 56px;
+}
+.sh-tabs {
+  width: fit-content;
+  margin: 24px auto 0;
+}
+.sh-tabs label {
+  display: grid;
+  place-items: center;
+  padding-inline: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sh-tabs input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.sh-cap {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: none;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--ink-2);
+  text-wrap: balance;
+}
+.sh-tabs label:has(:checked) .sh-cap {
+  display: block;
+}
+.sh-more {
+  margin: 32px auto 0;
+  max-width: 34em;
+  font-size: 15px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--ink-3);
+  text-wrap: balance;
+}
+
+@media (max-width: 734px) {
+  .shape {
+    padding-block: 64px;
+  }
+  .sh-stage {
+    aspect-ratio: 1000 / 720;
+    margin-top: 32px;
+  }
+  .sh-rig {
+    --u: calc(92cqw / 1000);
+  }
+  .sh-icons {
+    grid-template-columns: repeat(5, 13cqw);
+    gap: 3cqw;
+    padding: 4cqw;
+  }
+  .sh-icons b {
+    font-size: 12px;
+  }
+  .sh-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    width: auto;
+  }
+  .sh-tabs label {
+    padding-inline: 4px;
+  }
+  .sh {
+    padding-bottom: 76px;
+  }
+}

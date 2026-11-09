@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+.oss {
+  padding-block: 96px 112px;
+}
+.oss-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 20px;
+}
+@media (max-width: 734px) {
+  .oss {
+    padding-block: 48px 64px;
+  }
+}

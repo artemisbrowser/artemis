@@ -9,85 +9,15 @@
   /></picture>
   <h1>Artemis is downloading.</h1>
   <p class="solo-body">
-    If it doesn’t start, <a href="{{DOWNLOAD_URL}}">download it here</a>. Then
-    follow these four steps. You only do this once.
+    If it doesn’t start,
+    <a href="{{DOWNLOAD_URL}}" data-dmg>download it here</a>.
   </p>
-  <ol class="dl-steps">
-    <li>
-      <video
-        src="/assets/video/step-1-drag.mp4"
-        poster="/assets/video/step-1-drag.jpg"
-        width="1280"
-        height="832"
-        autoplay
-        muted
-        loop
-        playsinline
-        aria-hidden="true"
-      ></video>
-      <h2>Drag Artemis into Applications</h2>
-      <p>
-        Open the file you downloaded, then drag Artemis onto the Applications
-        folder.
-      </p>
-    </li>
-    <li>
-      <video
-        src="/assets/video/step-2-blocked.mp4"
-        poster="/assets/video/step-2-blocked.jpg"
-        width="1280"
-        height="832"
-        autoplay
-        muted
-        loop
-        playsinline
-        aria-hidden="true"
-      ></video>
-      <h2>Open Artemis</h2>
-      <p>
-        macOS stops it the first time, because this alpha isn’t checked by Apple
-        yet. Click Done.
-      </p>
-    </li>
-    <li>
-      <video
-        src="/assets/video/step-3-settings.mp4"
-        poster="/assets/video/step-3-settings.jpg"
-        width="1280"
-        height="832"
-        autoplay
-        muted
-        loop
-        playsinline
-        aria-hidden="true"
-      ></video>
-      <h2>Allow it in System Settings</h2>
-      <p>
-        Open Privacy &amp; Security, scroll down to Security and click Open
-        Anyway next to Artemis.
-      </p>
-    </li>
-    <li>
-      <video
-        src="/assets/video/step-4-open.mp4"
-        poster="/assets/video/step-4-open.jpg"
-        width="1280"
-        height="832"
-        autoplay
-        muted
-        loop
-        playsinline
-        aria-hidden="true"
-      ></video>
-      <h2>Confirm, and you’re in</h2>
-      <p>
-        Click Open Anyway once more and use Touch ID or your password. Artemis
-        opens.
-      </p>
-    </li>
-  </ol>
+  <h2>Open it in four steps</h2>
+  <p class="solo-body">You only do this once.</p>
+  <!-- @include _install -->
   <p class="solo-body">
     Stuck, or have an idea? Ask on <a href="https://discord.gg/Tn8CcPdt2x">Discord</a>.
   </p>
   <a class="btn" href="/">Back to Artemis</a>
 </main>
+<script type="module" src="{{DOWNLOAD_JS}}"></script>

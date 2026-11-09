@@ -53,10 +53,9 @@ const nameIO = new IntersectionObserver(
 );
 for (const s of secs) nameIO.observe(s);
 
-// The nav's Download joins once the hero's has scrolled away above, and in pin 1 not before the hold.
+// The nav's Download joins once the hero's has scrolled away above.
 const heroGet = document.getElementById("hero-get");
 const navGet = nav.querySelector(".get");
-const top = document.getElementById("top");
 // Rects are read fresh: after a restored scroll the observer's only entry can predate layout. The CTA is read only
 // while its section is on screen: inside a skipped content-visibility section, a read lays the section out.
 const closeGet = document.querySelector(".cta-close .get");
@@ -69,8 +68,7 @@ function syncGet() {
       closeGet &&
       shown(closeSec.getBoundingClientRect()) &&
       shown(closeGet.getBoundingClientRect())
-    ) &&
-    !(cls.contains("pin") && /^(rise|inside|c1|c2)$/.test(top.dataset.beat));
+    );
   nav.classList.toggle("has-get", on);
   navGet.tabIndex = on ? 0 : -1;
   navGet.setAttribute("aria-hidden", !on);
@@ -79,9 +77,6 @@ if (heroGet) {
   const io = new IntersectionObserver(syncGet);
   io.observe(heroGet);
   if (closeGet) io.observe(closeGet);
-  new MutationObserver(syncGet).observe(top, {
-    attributeFilter: ["data-beat"],
-  });
   addEventListener("pageshow", syncGet);
   addEventListener("load", () => requestAnimationFrame(syncGet));
 }

@@ -15,40 +15,48 @@
       </p>
     </header>
     <div class="island split-island">
-      <div
-        class="rig"
-        data-rig="split"
-        role="group"
-        aria-label="Split view window"
-        aria-keyshortcuts="ArrowLeft ArrowRight"
-        tabindex="-1"
-      >
-        <div class="win-shadow"></div>
-        <div
-          class="win"
-          data-space="0"
-          data-split="1"
-          data-sidebar="pinned"
-          data-float="hidden"
-          aria-hidden="true"
-          inert
-        >
-          <div class="win-bd" data-host>
-            <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
-          </div>
-          <div class="sb">
-            <div class="sb-pin">
-              <!-- @include _win/sidebar-top -->
-              <!-- @include _win/favs -->
-              <div class="pager">
-                <div class="strip"><!-- @include _win/panel-personal --></div>
+      <div class="mac mac-win">
+        <div class="screen">
+          <div class="desk">
+            <!-- @include _menubar -->
+            <div
+              class="deskwin rig"
+              data-rig="split"
+              role="group"
+              aria-label="Split view window"
+              aria-keyshortcuts="ArrowLeft ArrowRight"
+              tabindex="-1"
+            >
+              <div class="win-shadow"></div>
+              <div
+                class="win"
+                data-space="0"
+                data-split="1"
+                data-sidebar="pinned"
+                data-float="hidden"
+                aria-hidden="true"
+                inert
+              >
+                <div class="win-bd" data-host>
+                  <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+                </div>
+                <div class="sb">
+                  <div class="sb-pin">
+                    <!-- @include _win/sidebar-top -->
+                    <!-- @include _win/favs -->
+                    <div class="pager">
+                      <div class="strip"><!-- @include _win/panel-personal --></div>
+                    </div>
+                    <!-- @include _win/bottombar -->
+                  </div>
+                </div>
+                <!-- @include _win/panes -->
+                <i class="rim"></i>
               </div>
-              <!-- @include _win/bottombar -->
             </div>
           </div>
-          <!-- @include _win/panes -->
-          <i class="rim"></i>
         </div>
+        <i class="mac-base"></i>
       </div>
     </div>
     <div class="split-ctl">

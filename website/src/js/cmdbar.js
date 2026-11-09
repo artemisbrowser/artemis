@@ -361,7 +361,7 @@ const ACTIONS = [
   {
     kind: "action",
     title: "Download Artemis",
-    sub: "macOS 26 or later",
+    sub: "macOS 26 or later, M1 or newer",
     icon: glyph("i-download"),
     verb: "Open",
     run: () => document.querySelector("[data-get]").click(),

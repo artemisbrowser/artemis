@@ -1,83 +1,83 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-/* Hero, and the first frame of pin 1. The static composition is the base; html.pin only pins the stage.
-   Both put the window top at --win-top with width 0.8 × (track − 2 × inset). */
+/* Hero: the copy, then a MacBook whose 1352 × 878 pt screen is one point per --mu. Pinned, the MacBook
+   sits under the nav with a caption's room below. */
 .track-oow {
-  --u: max(1px, min(calc(100vw / 1600), calc(100svh / 900)));
-  --win-top: max(calc(344 * var(--s)), calc(242 * var(--s) + 102px));
+  --mac-w: min(100vw - 2 * var(--gutter), (100svh - 180px) * 1606 / 968, 1280px);
+  --u: calc(var(--mac-w) / 1606);
   position: relative;
-  overflow-x: clip;
 }
 
 .hero-copy {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  z-index: var(--z-copy);
-  box-sizing: border-box;
-  width: calc(0.8 * (100% - 2 * var(--inset)));
-  height: var(--win-top);
-  padding-top: calc(137 * var(--s));
-  translate: -50% 0;
-}
-.hero-copy h1 {
-  margin: 0;
-  font: 600 var(--t-display) / var(--lh-display) var(--font);
-  letter-spacing: var(--tr-display);
-  white-space: nowrap;
-}
-.hero-row {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 32px;
-  margin-top: calc(22 * var(--s));
+  align-items: flex-end;
+  gap: 48px;
+  box-sizing: border-box;
+  width: var(--mac-w);
+  margin-inline: auto;
+  padding-top: calc(var(--nav-bottom) + 64 * var(--s));
 }
-.hero-row .lede {
+.hero-copy h1 {
+  flex: none;
   margin: 0;
-  max-width: calc(560 * var(--s));
-  font-size: max(16px, calc(21 * var(--s)));
+  font: 600 max(40px, calc(68 * var(--s))) / var(--lh-display) var(--font);
+  letter-spacing: var(--tr-display);
+}
+.hero-copy h1 span {
+  display: block;
+}
+.hero-side {
+  max-width: calc(480 * var(--s));
+}
+.hero-side .lede {
+  margin: 0;
+  font-size: max(16px, calc(19 * var(--s)));
   font-weight: 500;
-  line-height: 1.38;
+  line-height: 1.4;
   letter-spacing: var(--tr-intro);
   color: var(--ink-2);
   text-wrap: pretty;
 }
-.hero-row .get-block {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  align-items: flex-end;
+.hero-side .get-block {
+  margin-top: calc(24 * var(--s));
 }
-/* above 1440 the pill and fine print grow with the artboard; line height 1.4 keeps the fine print 16 px clear of the window */
-.hero-row .get {
+.hero-side .get {
   height: max(56px, calc(56 * var(--s)));
   gap: max(10px, calc(10 * var(--s)));
   padding: 0 max(26px, calc(26 * var(--s))) 0 max(6px, calc(6 * var(--s)));
   font-size: max(17px, calc(17 * var(--s)));
 }
-.hero-row .get-well img {
+.hero-side .get-well img {
   width: max(44px, calc(44 * var(--s)));
   height: max(44px, calc(44 * var(--s)));
 }
-.hero-row .fine {
+.hero-side .fine {
   margin: 12px 0 0;
   font-size: max(12px, calc(12.5 * var(--s)));
   line-height: 1.4;
-  text-align: right;
 }
 
 .track-oow .stage {
-  display: flow-root;
-  position: static;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 40px;
 }
 html.pin .track-oow .stage {
   position: sticky;
   top: 0;
+  box-sizing: border-box;
   height: 100svh;
-  overflow: clip;
+  padding-top: calc(var(--nav-bottom) + 12px);
 }
+
+.track-oow .rig {
+  position: absolute;
+  inset: calc(29 * var(--u)) 0 0;
+}
+
 /* the hero's meshes come from the 110×74 renders, so the H1 stays the largest paint (LCP) */
 .track-oow [data-look="nebula"] {
   --look-img: url("/assets/spaces/space-nebula-110x74.png");
@@ -98,25 +98,7 @@ html.pin .track-oow .stage {
   --look-img: url("/assets/spaces/space-bloom-110x74.png");
 }
 
-/* Static and pinned share one layout box (top and sides at --inset), so html.pin moves nothing (no CLS).
-   The window reaches --win-top by translate, scaled .8 from its top edge; static flow resumes under it. */
-.track-oow .rig {
-  z-index: var(--z-rig);
-  height: calc(100svh - 2 * var(--inset));
-  margin: var(--inset) var(--inset)
-    calc(var(--win-top) - var(--inset) - (100svh - 2 * var(--inset)) * 0.2);
-  transform-origin: 50% 0;
-  translate: 0 calc(var(--win-top) - var(--inset));
-  scale: 0.8;
-}
-html.pin .track-oow .rig {
-  position: absolute;
-  inset: var(--inset);
-  height: auto;
-  margin: 0;
-}
-
-/* The page is laid out at the card's sidebar-hidden width in every mode, from the card's left edge, so pinning
+/* The page is laid out at the card's sidebar-hidden width from the card's left edge, so hiding the sidebar
    moves no box; with the sidebar shown it is centred on the card by translate. */
 .track-oow .page {
   right: auto;
@@ -127,88 +109,31 @@ html.pin .track-oow .rig {
 .track-oow .win[data-sidebar="hidden"] .page {
   translate: 0 0;
 }
-.track-oow .win[data-sidebar="pinned"] .ll .pcol {
-  width: min(calc(640 * var(--u)), 100% - calc((298 - var(--edge) + var(--grip)) * var(--u)));
-}
-.track-oow .win[data-sidebar="pinned"] .ll .pt {
-  font-size: min(calc(50 * var(--u)), 8.5cqw - calc(21.25 * var(--u)));
-}
 
-/* M: the width-bound --s would tuck the headline under the nav; the copy needs 280 px with a three-line lede */
-@media (min-width: 735px) and (max-width: 1023px) {
-  .track-oow {
-    --win-top: max(calc(242 * var(--s) + 102px), 280px);
-  }
+@media (max-width: 1023px) {
   .hero-copy {
-    padding-top: calc(var(--nav-bottom) + 54px);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 20px;
   }
-  .hero-row .lede {
-    max-width: 360px;
-    font-size: 18px;
-  }
-}
-@media (min-width: 1024px) and (max-width: 1199px) {
-  .track-oow {
-    --win-top: max(calc(344 * var(--s)), calc(242 * var(--s) + 118px));
-  }
-  .hero-copy {
-    padding-top: calc(var(--nav-bottom) + 63px);
-  }
-  .hero-row .lede {
-    max-width: 26.7em;
-    font-size: 19px;
+  .hero-side {
+    max-width: 34em;
   }
 }
 @media (max-width: 734px) {
-  .track-oow {
-    --u: 0.62px;
-    overflow-x: clip;
-  }
   .hero-copy {
-    position: relative;
-    left: auto;
     width: auto;
-    height: auto;
     padding: 92px var(--gutter) 0;
-    translate: 0 0;
   }
   .hero-copy h1 {
     font-size: min(44px, 11.25vw);
     line-height: 1.07;
-    white-space: normal;
   }
-  .hero-row {
-    flex-direction: column;
-    gap: 24px;
-    margin-top: 16px;
-  }
-  .hero-row .lede {
-    max-width: none;
+  .hero-side .lede {
     font-size: 17px;
     line-height: 1.47;
   }
-  .hero-row .get-block {
-    align-items: flex-start;
-  }
-  .hero-row .fine {
-    text-align: left;
-  }
-  .track-oow .rig {
-    height: calc(612 * var(--u));
-    margin: 32px var(--gutter) 0;
-    translate: 0 0;
-    scale: none;
-  }
-}
-
-/* entrance: the window rises once; the copy is simply there */
-@media (prefers-reduced-motion: no-preference) {
-  html:not(.nosettle) .track-oow :is(.win, .win-shadow) {
-    animation: hero-moonrise 1300ms var(--ease-reveal) 60ms backwards;
-  }
-}
-@keyframes hero-moonrise {
-  from {
-    translate: 0 56px;
+  .track-oow .stage {
+    padding-top: 32px;
   }
 }

@@ -2,120 +2,54 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 export const SPACES = [
-  {
-    name: "Personal",
-    glyph: "i-moon",
-    profile: "personal",
-    page: "lowlight-orion",
-  },
-  { name: "Work", glyph: "i-case", profile: "work", page: "ashgrove-print" },
-  { name: "Garden", glyph: "i-leaf", profile: "personal", page: "plot14-sow" },
+  { name: "Personal", glyph: "i-moon", profile: "personal", page: "wp-orion" },
+  { name: "Work", glyph: "i-case", profile: "work", page: "gh-artemis" },
+  { name: "Skye", glyph: "i-leaf", profile: "personal", page: "osm-skye" },
 ];
-export const HOST = {
-  sky: "lowlight.press",
-  bake: "slowloaf.kitchen",
-  plot: "plot14.garden",
-  studio: "wiki.ashgrove.studio",
-};
-// tab: [title, hostKey, favicon, page or dek]; the first Today tab is selected
+const WP = "en.wikipedia.org";
+// tab: [title, host, favicon, page]; a tab with no page opens the model note; the first Today tab is selected
 export const TABS = [
   {
     pinned: [
-      [
-        "Recipes to try",
-        "bake",
-        "slowloaf",
-        "Twelve recipes saved for slow weekends.",
-      ],
-      [
-        "Reading list",
-        "sky",
-        "lowlight",
-        "Long reads about the night sky, saved for later.",
-      ],
+      ["Notion", "www.notion.so", "notion"],
     ],
     today: [
-      ["Orion, star by star", "sky", "lowlight", "lowlight-orion"],
-      [
-        "Sky tonight",
-        "sky",
-        "lowlight",
-        "What’s up after dark this week, and when to look.",
-      ],
-      ["Sourdough, day six", "bake", "slowloaf", "slowloaf-sourdough"],
-      [
-        "Choosing binoculars",
-        "sky",
-        "lowlight",
-        "Why 10×50 is where most people start.",
-      ],
+      ["Orion (constellation) - Wikipedia", WP, "wikipedia", "wp-orion"],
+      ["Sourdough - Wikipedia", WP, "wikipedia", "wp-sourdough"],
+      ["Night sky - Wikipedia", WP, "wikipedia"],
     ],
   },
   {
     pinned: [
-      ["Team calendar", "studio", "studio", "This week at the studio."],
-      ["Inbox", "studio", "mail", "Three new messages since this morning."],
+      ["Slack", "app.slack.com", "slack"],
+      ["Linear", "linear.app", "linear"],
     ],
     today: [
-      ["Print checklist", "studio", "studio", "ashgrove-print"],
-      [
-        "Cover photo options",
-        "studio",
-        "studio",
-        "Three shots for the spring cover, with notes.",
-      ],
-      [
-        "Supplier quotes",
-        "studio",
-        "studio",
-        "Paper and binding, side by side.",
-      ],
-      ["Q4 planning", "studio", "studio", "What ships before the new year."],
+      ["artemisbrowser/artemis", "github.com", "github", "gh-artemis"],
+      ["Figma", "www.figma.com", "figma"],
+      ["Google Calendar", "calendar.google.com", "calendar"],
     ],
   },
   {
-    pinned: [["Plot plan", "plot", "plot", "Where everything goes this year."]],
+    pinned: [["Gmail", "mail.google.com", "gmail"]],
     today: [
-      ["What to sow in November", "plot", "plot", "plot14-sow"],
-      ["Garlic varieties to try", "plot", "plot", "plot14-garlic"],
-      ["Seed order", "plot", "plot", "Everything to order before spring."],
-      [
-        "Frost dates",
-        "plot",
-        "plot",
-        "When the first and last frosts usually fall here.",
-      ],
-      [
-        "Compost bin plans",
-        "plot",
-        "plot",
-        "A three-bay bin from old pallets.",
-      ],
+      ["OpenStreetMap", "www.openstreetmap.org", "osm", "osm-skye"],
+      ["Isle of Skye - Wikipedia", WP, "wikipedia", "wp-skye"],
     ],
   },
 ];
 export const HISTORY = [
-  ["Betelgeuse, the red shoulder", "sky", "lowlight", "lowlight-betelgeuse"],
-  [
-    "Seed potatoes, when to chit",
-    "plot",
-    "plot",
-    "Set them out somewhere light and cool about six weeks before planting.",
-  ],
-  [
-    "Paper weights explained",
-    "studio",
-    "studio",
-    "What the numbers mean, and which to use for covers.",
-  ],
+  ["Betelgeuse - Wikipedia", WP, "wikipedia", "wp-betelgeuse"],
 ];
 export const SITE_SECTIONS = [
   ["top", "Overview", "Top of the page"],
-  ["window", "Sidebar", "The page gets the whole window"],
-  ["spaces", "Spaces", "Separate sets of tabs"],
+  ["native", "Native", "Made for macOS 26"],
+  ["privacy", "Privacy", "Private by default"],
+  ["spaces", "Spaces", "Spaces and profiles"],
   ["command-bar", "Command bar", "Try it on this page"],
   ["split-view", "Split view", "Up to four pages side by side"],
-  ["privacy", "Privacy", "No account and no telemetry"],
+  ["shape", "Make it yours", "Yours to shape"],
+  ["open-source", "Open source", "GPL 3.0, on GitHub"],
   ["fin", "Made by Fin", "A note, and the download"],
 ];
 export const ICONS = [

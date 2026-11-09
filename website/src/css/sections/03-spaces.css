@@ -64,17 +64,12 @@
 .sp-island {
   position: relative;
   z-index: 1;
-  width: min(1000px, 100%);
+  width: min(1280px, 100%);
   margin-top: 56px;
   container-type: inline-size;
 }
 .sp-dolly {
   position: relative;
-}
-@media (min-width: 735px) {
-  html:not(.pin) .sp-dolly {
-    --u: calc(100cqw / 1000);
-  }
 }
 .track-spaces .rig {
   width: calc(1000 * var(--u));
@@ -296,10 +291,7 @@ html.pin .track-spaces {
   );
   /* under the rig: 20 s, the controls (two rows of 44 + 12), 12, the caption 25, 20 of air */
   --sp-below: calc(20 * var(--s) + 157px);
-  --u: min(
-    calc(0.92 * var(--s)),
-    calc((100svh - var(--inset) - var(--sp-rig-top) - var(--sp-below)) / 640)
-  );
+  --mac-h: calc(100svh - var(--inset) - var(--sp-rig-top) - var(--sp-below));
   height: 220svh;
   view-timeline: --spaces block;
   view-timeline-inset: 0px;
@@ -309,12 +301,6 @@ html.pin .track-spaces {
 }
 /* portrait: the window takes the content width and the block centres in the spare height */
 @media (orientation: portrait) {
-  html.pin .track-spaces {
-    --u: min(
-      calc((100vw - 2 * var(--gutter)) / 1000),
-      calc((100svh - var(--inset) - var(--sp-rig-top) - var(--sp-below)) / 640)
-    );
-  }
   html.pin .panel-sky {
     justify-content: safe center;
     padding-bottom: calc(var(--sp-h2-top) - var(--inset));
@@ -337,29 +323,18 @@ html.pin .sp-sky {
   position: absolute;
   inset: 0;
 }
-/* the mesh ends 10 s under the window on a solid floor that holds the controls and caption */
-html.pin .sp-controls::before {
-  content: "";
-  position: absolute;
-  inset: calc(-10 * var(--s)) -100vw -100vh;
-  z-index: -1;
-  background: var(--sc-void);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1);
-}
 html.pin .sp-head h2 {
   margin-top: 0;
   font-size: var(--sp-h2);
   line-height: 1.083;
 }
 html.pin .sp-island {
-  width: calc(1000 * var(--u));
+  width: calc(100% - 2 * var(--gutter));
   margin-top: calc(var(--sp-rig-top) - var(--sp-h2-top) - 1.083 * var(--sp-h2));
 }
-/* chips start at the sidebar's 12 pt inset, the picker ends on the card's right edge */
 html.pin .sp-controls {
-  width: calc(1000 * var(--u));
+  width: min(1000px, 100% - 2 * var(--gutter));
   margin-top: calc(20 * var(--s));
-  padding-inline: calc(12 * var(--u)) calc(10 * var(--u));
 }
 /* frameless, sliding rows fade over 10 pt at the window's former left edge and into the card */
 html.pin .track-spaces .pager {
@@ -383,7 +358,6 @@ html.pin .sp-cap {
     --sp-below: calc(20 * var(--s) + 101px);
   }
   html.pin .sp-controls {
-    width: max(calc(1000 * var(--u)), 812px);
     flex-wrap: nowrap;
   }
 }
@@ -527,12 +501,6 @@ html.pin .peek-content .lede.static-only {
   .sp-picker {
     gap: 4px;
     padding-inline: 12px 8px;
-  }
-}
-/* short static screens: the window is sized by the height so it is seen whole */
-@media (min-width: 735px) and (max-height: 760px) {
-  html:not(.pin) :is(.sp-island, .sp-controls) {
-    width: min(1000px, 100%, calc((100svh - 120px) * 1000 / 640));
   }
 }
 @media (forced-colors: active) {

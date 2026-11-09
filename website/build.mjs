@@ -26,11 +26,13 @@ const kb = (n) => (n / 1024).toFixed(1) + " KB";
 // Page order. A missing partial becomes an empty stub; 07-arc never gets one (it is deletable).
 const SECTIONS = [
   ["01-hero", "top", "Overview"],
-  ["02-out-of-the-way", "window", "Sidebar"],
+  ["02-out-of-the-way", "native", "Native"],
+  ["06-privacy", "privacy", "Privacy"],
   ["03-spaces", "spaces", "Spaces"],
   ["04-command-bar", "command-bar", "Command bar"],
   ["05-split-view", "split-view", "Split view"],
-  ["06-privacy", "privacy", "Privacy"],
+  ["06-shape", "shape", "Make it yours"],
+  ["06-open-source", "open-source", "Open source"],
   ["07-arc", "arc", null],
   ["08-close", "fin", "Made by Fin"],
 ];
@@ -304,6 +306,8 @@ export async function build(out) {
       code,
     ]);
   }
+  const dl = sources.get("download.js");
+  if (dl) shipped.set("download.js", [`download.${hash(dl)}.js`, dl]);
   const jsUrl = {};
   for (const [rel, [file, code]] of shipped) {
     write(`assets/js/${file}`, code);
@@ -351,12 +355,6 @@ export async function build(out) {
       .replace(/<!-- @price -->/g, () => (cfg.PRICE ? ` ${cfg.PRICE}.` : ""))
       .replace(/<!-- @stage -->/g, () =>
         cfg.STAGE ? `<span class="stage-tag">${cfg.STAGE}</span> ` : "",
-      )
-      .replace(
-        /<!-- @unsigned -->/g,
-        cfg.UNSIGNED
-          ? '<p class="fine fine-warn">Opens with a Gatekeeper warning. <a href="#peek-open-it" data-peek="open-it">Here’s how.</a></p>'
-          : "",
       )
       .replace(
         /<!-- @if (\w+) -->([\s\S]*?)<!-- @endif -->/g,
@@ -418,20 +416,20 @@ export async function build(out) {
   const amount = free ? "0" : cfg.PRICE?.replace(/[^\d.]/g, "");
   const moveIn =
     "Bring your Arc spaces and tabs over before Arc stops working on 22 December.";
-  const about = `Artemis is a${free} native browser for macOS 26${stage}, with vertical tabs grouped into spaces. There’s no account and no telemetry.`;
-  const share = `A${free} native browser for your Mac${stage}. No account, no telemetry.`;
+  const about = `Artemis is a${free} native, private browser for macOS 26${stage}. Spaces, profiles and a sidebar, shaped how you like. Ads and trackers blocked out of the box. Open source, no account, no telemetry.`;
+  const share = `A${free} native, private Mac browser you can make your own${stage}.`;
   const home = {
     ...PAGES["index.html"],
-    title: `Artemis: a native browser for your Mac${arc ? ". Move in from Arc." : ""}`,
+    title: `Artemis: a native, private Mac browser you can make your own${arc ? ". Move in from Arc." : ""}`,
     description: arc
-      ? `A${free} native browser for macOS 26${stage}, with vertical tabs. ${moveIn}`
+      ? `A${free} native, private browser for macOS 26${stage}. Spaces, profiles and a sidebar, shaped how you like. ${moveIn}`
       : about,
-    og: arc ? `A${free} native browser for your Mac${stage}. ${moveIn}` : share,
+    og: arc ? `${share} ${moveIn}` : share,
   };
   const og = assets.get("/assets/img/og-home.png");
   const ogImage = `https://${cfg.DOMAIN}/og/home.png${og ? "?v=" + hash(fs.readFileSync(og.file)) : ""}`;
   const ogAlt =
-    "A native browser for your Mac. The Artemis window, with tabs down the side and a star chart open.";
+    "A native, private Mac browser you can make your own. The Artemis window, with tabs down the side and a Wikipedia article open.";
   // Discord shows this card in place of the Open Graph preview; it drops the whole card past 3000 bytes
   const discord = JSON.stringify({
     component: {
@@ -474,16 +472,22 @@ export async function build(out) {
         "@type": "SoftwareApplication",
         name: "Artemis",
         operatingSystem: "macOS 26 or later",
+        processorRequirements: "arm64 (M1 or newer)",
         applicationCategory: "BrowserApplication",
         description: about,
         featureList: [
           "Vertical tabs in a sidebar",
           "Spaces",
+          "Profiles with their own logins",
           "Command bar",
           "Split view with up to four pages",
           "Ad and tracker blocking",
-          "Fingerprint defence",
+          "Fingerprinting defence",
+          "Copy Link drops tracking parameters",
+          "Incognito windows that can lock with Touch ID",
           "Built-in passwords",
+          "Import from other browsers",
+          "Open source under GPL 3.0",
         ],
         license: "https://www.gnu.org/licenses/gpl-3.0.html",
         author: { "@type": "Person", name: "Fin" },
@@ -517,6 +521,8 @@ export async function build(out) {
         .replace(/\{\{OG_IMAGE\}\}/g, ogImage)
         .replace(/\{\{OG_IMAGE_ALT\}\}/g, escape(ogAlt))
         .replace(/\{\{ROBOTS\}\}/g, page.robots)
+        .replace(/\{\{DOWNLOAD_URL\}\}/g, escape(cfg.DOWNLOAD_URL ?? ""))
+        .replace(/\{\{DOWNLOAD_JS\}\}/g, jsUrl["download.js"])
         .replace(
           /<!-- @canonical -->/g,
           isIndex
@@ -571,20 +577,14 @@ export async function build(out) {
       PAGES["404.html"],
     ),
   );
-  // with a release, /download starts it a second after the page shows how to open it
+  // with a release, /download shows how to open it and starts it, by script once the steps load
   write(
     "download/index.html",
     cfg.DOWNLOAD_URL
-      ? shell(
-          include(read(path.join(SRC, "pages/download.html")), 1).replace(
-            /\{\{DOWNLOAD_URL\}\}/g,
-            escape(cfg.DOWNLOAD_URL),
-          ),
-          {
-            ...PAGES["download/index.html"],
-            robots: `${PAGES["download/index.html"].robots}\n<meta http-equiv="refresh" content="1;url=${escape(cfg.DOWNLOAD_URL)}" />`,
-          },
-        )
+      ? shell(include(read(path.join(SRC, "pages/download.html")), 1), {
+          ...PAGES["download/index.html"],
+          robots: `${PAGES["download/index.html"].robots}\n<noscript><meta http-equiv="refresh" content="1;url=${escape(cfg.DOWNLOAD_URL)}" /></noscript>`,
+        })
       : shell(
           include(read(path.join(SRC, "pages/download-none.html")), 1),
           PAGES["download/index.html"],
@@ -681,13 +681,27 @@ export function sizes(out, sources) {
     jsTotal += gz(buf);
     jsLines.push(row(path.relative(out, f).split(path.sep).join("/"), buf));
   }
+  // a template's images load only once cloned, a 2x screen takes the last srcset candidate,
+  // and the hero's page shot is a CSS background that paints at once
   const eager = [
     ...html
       .toString()
+      .replace(/<template\b[\s\S]*?<\/template>/g, "")
       .matchAll(/<img\b[^>]*>|<link rel="preload" as="image"[^>]*>/g),
   ]
     .filter((m) => !/loading="lazy"/.test(m[0]))
-    .map((m) => m[0].match(/(?:src|href)="\/([^"?]+)"/)?.[1])
+    .map(
+      (m) =>
+        m[0].match(/srcset="(?:[^"]*,)?\s*\/([^"\s,?]+)[^",]*"/)?.[1] ??
+        m[0].match(/(?:src|href)="\/([^"?]+)"/)?.[1],
+    )
+    .concat(
+      [
+        ...css
+          .toString()
+          .matchAll(/url\("?\/(assets\/shot-[\w-]+-hero-light\.[\w.]+)"?\)/g),
+      ].map((m) => m[1]),
+    )
     .filter((rel) => rel && fs.existsSync(path.join(out, rel)));
   const images = [...new Set(eager)].reduce(
     (n, rel) => n + fs.statSync(path.join(out, rel)).size,
@@ -731,6 +745,8 @@ const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".png": "image/png",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".json": "application/json",

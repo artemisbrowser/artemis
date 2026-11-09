@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import { SPACES, HOST, TABS, HISTORY } from "./data.js";
+import { SPACES, TABS, HISTORY } from "./data.js";
 import { state, paint, subscribe, setLook as pickLook } from "./looks.js";
 import { registerReplica, mq } from "./core.js";
 import { createCommandBar } from "./cmdbar.js";
 import { openPeek } from "./peek.js";
 
 const ALL = [...TABS.flatMap((s) => [...s.pinned, ...s.today]), ...HISTORY];
-// a tab's page is a full page id, or its own title when it only has a dek (rendered into the lite page)
-const pid = (t) => (t[3].includes(" ") ? t[0] : t[3]);
+// a tab's page id, or its own title when it has no page
+const pid = (t) => t[3] ?? t[0];
 const tabOf = (id) => ALL.find((t) => pid(t) === id);
 const EASE = "cubic-bezier(.42,0,.58,1)";
 const OUT = "cubic-bezier(0,0,.58,1)";
@@ -85,25 +85,20 @@ export function mountWindow(rig, opts = {}) {
         el.classList.remove("in");
       };
   }
-  function lite([title, host, , dek]) {
-    const el = pages.querySelector('[data-page="lite"]');
-    const masthead = ALL.find((t) => t[1] === host && pid(t) === t[3])[3];
-    const skin = pages.querySelector(`[data-page="${masthead}"]`);
-    const col = make("div", "pcol");
-    col.append(make("p", "pt", title), make("p", "pd", dek));
-    el.className = `pg ${skin.classList[1]}${el === front ? " on" : ""}`;
-    el.replaceChildren(skin.firstElementChild.cloneNode(true), col);
-    return el;
-  }
   function render(id, query, note) {
-    let el = pages.querySelector(`[data-page="${id}"]`);
     const tab = tabOf(id);
+    let el = pages.querySelector(`[data-page="${id}"]`);
+    if (!el) {
+      el = pages.querySelector('[data-page="model-note"]');
+      query ??= tab[0];
+      note ??= "u";
+    }
     if (query !== undefined) {
       el.querySelector(".pt").textContent = query;
       el.dataset.note = note;
-    } else if (!el) el = lite(tab);
+    }
     swap(el);
-    dom.textContent = tab ? HOST[tab[1]] : el.querySelector(".pt").textContent;
+    dom.textContent = tab ? tab[1] : query;
   }
   function select(title, fav) {
     const panel = strip.children[S.space];
@@ -197,7 +192,7 @@ export function mountWindow(rig, opts = {}) {
       const pill = make("span", "spill g lit");
       pill.append(make("i", "fi fi-" + fav), make("span", "t", title));
       row.append(pill);
-      if (k === S.focus) dom.textContent = HOST[host] ?? title;
+      if (k === S.focus) dom.textContent = host ?? title;
     });
     sel.after(row);
   }
@@ -337,7 +332,7 @@ export function mountWindow(rig, opts = {}) {
         [...sp.pinned, ...sp.today].map((t) => ({
           kind: "tab",
           title: t[0],
-          sub: HOST[t[1]],
+          sub: t[1],
           icon: fav(t),
           tag:
             s === S.space
@@ -351,7 +346,7 @@ export function mountWindow(rig, opts = {}) {
       ...HISTORY.map((t) => ({
         kind: "history",
         title: t[0],
-        sub: HOST[t[1]],
+        sub: t[1],
         icon: fav(t),
         verb: "Open",
         run: () => showPage(pid(t), { load: true }),

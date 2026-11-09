@@ -177,16 +177,17 @@
   <ul class="peek-list">
     <li>There’s no account and no telemetry.</li>
     <li>
-      Your history, tabs and settings are files on this Mac. Passwords, passkeys
-      and codes live in its keychain.
+      Your history and tabs stay on your Mac. Passwords, passkeys and codes
+      live in its keychain.
     </li>
     <li>
       Handoff can show the page you’re reading on your other Apple devices that
       use the same Apple Account.
     </li>
     <li>
-      Artemis goes online to load the pages you open and to update its filter
-      lists. When a site has no icon, a public icon service supplies one.
+      Artemis goes online to load the pages you open, to update its filter
+      lists and to check for its own updates every 4 hours. When a site has no
+      icon, Google’s icon service supplies one.
       Search suggestions and the leaked-password check also go online, and
       both are off until you turn them on.
     </li>
@@ -208,23 +209,20 @@
     <li>
       The Artemis name and icon are trademarks, so your version needs its own.
     </li>
-    <li>Keep a “Based on Artemis by Fin” credit in your version.</li>
+    <li>
+      Show the notice “Based on Artemis by Fin (https://artemisbrowser.app)” in
+      your version’s About window.
+    </li>
     <li>Copyright © 2026 Fin.</li>
   </ul>
 </template>
-<!-- @if UNSIGNED -->
-<template id="peek-open-it">
-  <h2 id="peek-title">How to open it</h2>
-  <ol class="peek-list">
-    <li>
-      The first time you open Artemis, macOS stops it because this alpha
-      isn’t checked by Apple yet.
-    </li>
-    <li>
-      Open System Settings, go to Privacy &amp; Security, and click Open Anyway
-      next to Artemis.
-    </li>
-    <li>macOS asks once more. Click Open.</li>
-  </ol>
+<!-- @if DOWNLOAD_URL -->
+<template id="peek-get">
+  <h2 id="peek-title">Artemis is downloading</h2>
+  <p>
+    Open it in four steps. You only do this once. If the download doesn’t
+    start, <a href="{{DOWNLOAD_URL}}" data-dmg>download it here</a>.
+  </p>
+  <!-- @include _install -->
 </template>
 <!-- @endif -->

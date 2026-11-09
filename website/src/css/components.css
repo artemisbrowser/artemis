@@ -91,10 +91,6 @@ html.peek-open .nav,
 html.sitebar-open .nav-sb {
   opacity: 0;
 }
-.nav.away:not(:focus-within) {
-  translate: 0 -110%;
-  opacity: 0;
-}
 /* the row sits on --content, which is the hero column up to 1832 px wide */
 .nav-cap {
   position: relative;
@@ -787,9 +783,6 @@ html.coarse .circ30::after {
   color: var(--accent-text);
   white-space: nowrap;
 }
-.fine-warn {
-  margin-top: 2px;
-}
 
 /* ---------- keycaps: neutral Mac keys; a pressed key sinks 1 px and takes Rigel ---------- */
 .kc {
@@ -1100,6 +1093,156 @@ html.coarse .peek-ctl {
   }
 }
 
+/* ---------- MacBook: drawn, and it never moves; --mu is a device unit, the screen 1352 × 878 of them ---------- */
+.mac {
+  --mu: calc(var(--mac-w) / 1606);
+  --mac-rim: #b8babd;
+  --mac-deck: linear-gradient(#f3f4f5, #d6d8db 40%, #a7aaae);
+  --mac-scoop: linear-gradient(#b9bcc0, #e2e4e6);
+  --mac-foot: rgb(60 60 64 / 0.55);
+  position: relative;
+  flex: none;
+  width: var(--mac-w);
+  aspect-ratio: 1606 / 968;
+}
+@media (prefers-color-scheme: dark) {
+  .mac {
+    --mac-rim: #36373a;
+    --mac-deck: linear-gradient(#5d5e62, #303134 40%, #1b1c1e);
+    --mac-scoop: linear-gradient(#202123, #3b3c3f);
+    --mac-foot: rgb(0 0 0 / 0.7);
+  }
+}
+/* the lid: black glass inside an aluminium rim, square at the hinge */
+.mac::before {
+  content: "";
+  position: absolute;
+  inset: 0 calc(110 * var(--mu)) auto;
+  height: calc(938 * var(--mu));
+  border-radius: calc(36 * var(--mu)) calc(36 * var(--mu)) 0 0;
+  background: #060607;
+  box-shadow:
+    inset 0 0 0 calc(3 * var(--mu)) var(--mac-rim),
+    0 0 0 0.5px rgb(0 0 0 / 0.25);
+}
+.mac-base {
+  position: absolute;
+  inset: calc(938 * var(--mu)) 0 auto;
+  height: calc(22 * var(--mu));
+  border-radius: 0 0 calc(30 * var(--mu)) calc(30 * var(--mu)) / 0 0
+    calc(20 * var(--mu)) calc(20 * var(--mu));
+  background: var(--mac-deck);
+  box-shadow: 0 calc(14 * var(--mu)) calc(24 * var(--mu)) calc(-10 * var(--mu))
+    rgb(0 0 0 / 0.35);
+}
+.mac-base::before {
+  content: "";
+  position: absolute;
+  inset: 0 calc(678 * var(--mu)) auto;
+  height: calc(8 * var(--mu));
+  border-radius: 0 0 calc(10 * var(--mu)) calc(10 * var(--mu));
+  background: var(--mac-scoop);
+}
+/* the left foot, and the right one as its shadow */
+.mac-base::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: calc(90 * var(--mu));
+  width: calc(96 * var(--mu));
+  height: calc(5 * var(--mu));
+  border-radius: 0 0 calc(4 * var(--mu)) calc(4 * var(--mu));
+  background: var(--mac-foot);
+  box-shadow: calc(1330 * var(--mu)) 0 var(--mac-foot);
+}
+.screen {
+  position: absolute;
+  top: calc(17 * var(--mu));
+  left: calc(127 * var(--mu));
+  width: calc(1352 * var(--mu));
+  height: calc(878 * var(--mu));
+  overflow: clip;
+  border-radius: calc(12 * var(--mu)) calc(12 * var(--mu)) 0 0;
+  background: #000;
+}
+/* the notch with its camera, as tall as the menu bar */
+.screen::after {
+  content: "";
+  position: absolute;
+  inset: 0 calc(591 * var(--mu)) auto;
+  height: calc(29 * var(--mu));
+  border-radius: 0 0 calc(10 * var(--mu)) calc(10 * var(--mu));
+  background:
+    radial-gradient(
+      circle at 50% 46%,
+      #1c2533 calc(3 * var(--mu)),
+      transparent calc(3.6 * var(--mu))
+    ),
+    #060607;
+}
+.desk {
+  position: absolute;
+  inset: 0;
+  background: url("/assets/spaces/space-aurora-880x592.png") 50% / cover;
+}
+/* a section's Mac: as wide as its island and short enough to see whole, its 1000 × 640 pt window
+   drawn at 1.25 screen points a point and centred under the menu bar */
+.mac-win {
+  --mac-w: min(100cqw, var(--mac-h, calc(100svh - 160px)) * 1606 / 968, 1280px);
+  --u: calc(1.25 * var(--mu));
+  margin-inline: auto;
+}
+.deskwin {
+  position: absolute;
+  top: calc(53.5 * var(--mu));
+  left: calc(51 * var(--mu));
+  width: calc(1000 * var(--u));
+  aspect-ratio: 1000 / 640;
+}
+/* phones show the window alone, at a size its demo can be used */
+@media (max-width: 734px) {
+  .mac-win {
+    --u: calc(100cqw / 1000);
+  }
+  .mac-win,
+  .mac-win .screen,
+  .mac-win .desk {
+    display: contents;
+  }
+  .mac-win::before,
+  .mac-win .screen::after,
+  .mac-win .mac-base,
+  .mac-win .menubar {
+    display: none;
+  }
+  .deskwin {
+    position: relative;
+    inset: auto;
+    width: auto;
+    aspect-ratio: auto;
+  }
+}
+/* menus left of the notch, the clock right of it */
+.menubar {
+  position: absolute;
+  inset: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: calc(19 * var(--mu));
+  height: calc(29 * var(--mu));
+  padding-inline: calc(20 * var(--mu)) calc(16 * var(--mu));
+  background: rgb(0 0 0 / 0.16);
+  font: 500 calc(13 * var(--mu)) / 1 var(--font);
+  color: #fff;
+  white-space: nowrap;
+}
+.menubar b {
+  font-weight: 700;
+}
+.menubar time {
+  margin-left: auto;
+}
+
 /* ---------- buttons ---------- */
 .btn,
 .ctl {
@@ -1239,21 +1382,28 @@ button.ctl:active {
   color: inherit;
   text-decoration: underline;
 }
-.dl-steps {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 40px 32px;
-  width: min(1120px, 100%);
-  margin: 56px 0 0;
+.dl > h2 {
+  margin-top: 72px;
+  font-size: var(--t-section);
+  line-height: var(--lh-section);
+  letter-spacing: var(--tr-section);
+}
+.dl > h2 + .solo-body {
+  margin-top: 12px;
+}
+
+/* ---------- install steps: a grid on /download, one at a time under tabs in the Download Peek ---------- */
+.steps {
+  margin: 0;
   padding: 0;
   list-style: none;
   counter-reset: step;
   text-align: left;
 }
-.dl-steps li {
+.steps li {
   counter-increment: step;
 }
-.dl-steps video {
+.steps img {
   display: block;
   width: 100%;
   height: auto;
@@ -1261,25 +1411,77 @@ button.ctl:active {
   border: 1px solid var(--hairline);
   background: var(--band);
 }
-.dl-steps h2 {
+.steps h3 {
   margin-top: 16px;
   font-size: var(--t-card);
   line-height: var(--lh-card);
   letter-spacing: var(--tr-card);
 }
-.dl-steps h2::before {
+.steps h3::before {
   content: counter(step) ". ";
   color: var(--ink-3);
 }
-.dl-steps p {
+.steps p {
   margin-top: 6px;
   color: var(--ink-2);
+}
+.dl .steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 40px 32px;
+  width: min(1120px, 100%);
+  margin-top: 40px;
+}
+.peek-content .steps {
+  margin-top: 16px;
+}
+.peek-content .steps li:not(.on) {
+  display: none;
+}
+.step-tabs,
+.sh-tabs {
+  display: flex;
+  margin-top: 24px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--seg-track);
+}
+.step-tabs button,
+.sh-tabs label {
+  flex: 1;
+  height: 32px;
+  border-radius: 7px;
+  font: 500 15px/1 var(--font);
+  color: var(--ink-2);
+  transition: color var(--dur-fade) var(--ease-in-out);
+}
+.step-tabs b {
+  margin-right: 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.step-tabs [aria-selected="true"],
+.sh-tabs label:has(:checked) {
+  background: var(--seg-thumb);
+  box-shadow: var(--seg-lift);
+  color: var(--ink);
+}
+.step-tabs button:focus-visible,
+.sh-tabs label:has(:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .step-tabs button:hover,
+  .sh-tabs label:hover {
+    color: var(--ink);
+  }
 }
 @media (max-width: 734px) {
   .dl {
     padding-top: 64px;
   }
-  .dl-steps {
+  .dl .steps {
     grid-template-columns: minmax(0, 1fr);
   }
 }

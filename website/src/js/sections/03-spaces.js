@@ -20,7 +20,7 @@ const sws = $$(".sp-sw");
 const has = (c) => root.classList.contains(c);
 const show = (i) => say(`Showing the ${SPACES[i].name} space.`);
 const slot = () => swipe.firstElementChild.getBoundingClientRect().width;
-const beatSpace = (b) => ({ work: 1, garden: 2 })[b] ?? 0;
+const beatSpace = (b) => ({ work: 1, skye: 2 })[b] ?? 0;
 let jump = false; // a pinned chip has switched already; beats wait until its scroll lands
 
 // pinned, the caption cell says how to switch until the Personal beat
@@ -48,7 +48,7 @@ track(sec, {
     ["frame", 0.06, 0.26],
     ["personal", 0.26, 0.38],
     ["work", 0.38, 0.7],
-    ["garden", 0.7, 1],
+    ["skye", 0.7, 1],
   ],
   onBeat: (b, prev) => {
     sync();

@@ -8,58 +8,67 @@
 >
   <div class="stage">
     <div class="panel-sky">
-      <div class="sp-sky" data-host aria-hidden="true">
-        <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
-      </div>
       <header class="sp-head head c" data-peek-summary>
-        <h2 id="spaces-h">Spaces keep your tabs apart.</h2>
+        <h2 id="spaces-h">Organised your way.</h2>
         <p class="lede static-only">
-          Every space has its own name, icon and colours, and can have its own
-          profile. Swipe with two fingers to move between them.
+          Spaces keep your tabs apart. Each has its own name, icon and colours,
+          and can have its own profile with its own logins. Swipe with two
+          fingers to move between them.
         </p>
       </header>
       <div class="island sp-island">
-        <div class="sp-dolly">
-          <div
-            class="rig"
-            data-rig="spaces"
-            role="img"
-            aria-label="The Artemis window. Its sidebar floats on the colours of the current space."
-          >
-            <div class="win-shadow"></div>
-            <div
-              class="win"
-              data-space="0"
-              data-split="1"
-              data-sidebar="pinned"
-              data-float="hidden"
-              aria-hidden="true"
-              inert
-            >
-              <div class="win-bd" data-host>
+        <div class="mac mac-win">
+          <div class="screen">
+            <div class="desk">
+              <div class="sp-sky" data-host aria-hidden="true">
                 <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
               </div>
-              <div class="sb">
-                <div class="sb-pin">
-                  <!-- @include _win/sidebar-top -->
-                  <!-- @include _win/favs -->
-                  <div class="pager">
-                    <div class="strip">
-                      <!-- @include _win/panel-personal -->
-                      <!-- @include _win/panel-work -->
-                      <!-- @include _win/panel-garden -->
+              <!-- @include _menubar -->
+              <div class="deskwin sp-dolly">
+                <div
+                  class="rig"
+                  data-rig="spaces"
+                  role="img"
+                  aria-label="The Artemis window. Its sidebar floats on the colours of the current space."
+                >
+                  <div class="win-shadow"></div>
+                  <div
+                    class="win"
+                    data-space="0"
+                    data-split="1"
+                    data-sidebar="pinned"
+                    data-float="hidden"
+                    aria-hidden="true"
+                    inert
+                  >
+                    <div class="win-bd" data-host>
+                      <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
                     </div>
+                    <div class="sb">
+                      <div class="sb-pin">
+                        <!-- @include _win/sidebar-top -->
+                        <!-- @include _win/favs -->
+                        <div class="pager">
+                          <div class="strip">
+                            <!-- @include _win/panel-personal -->
+                            <!-- @include _win/panel-work -->
+                            <!-- @include _win/panel-skye -->
+                          </div>
+                        </div>
+                        <!-- @include _win/bottombar -->
+                      </div>
+                    </div>
+                    <!-- @include _win/card -->
+                    <i class="rim"></i>
                   </div>
-                  <!-- @include _win/bottombar -->
+                </div>
+                <div class="sp-swipe static-only" aria-hidden="true" tabindex="-1">
+                  <i></i><i></i><i></i>
                 </div>
               </div>
-              <!-- @include _win/card -->
-              <i class="rim"></i>
             </div>
           </div>
-          <div class="sp-swipe static-only" aria-hidden="true" tabindex="-1">
-            <i></i><i></i><i></i>
-          </div>
+          <i class="mac-base"></i>
         </div>
       </div>
       <p class="sp-hint static-only">
@@ -97,7 +106,7 @@
           >
             <kbd class="kc sm" data-k="ctrl" aria-hidden="true">⌃</kbd
             ><kbd class="kc sm" data-k="3" aria-hidden="true">3</kbd
-            ><span>Garden</span>
+            ><span>Skye</span>
           </button>
         </div>
         <div
@@ -196,7 +205,7 @@
           ><b>Work.</b> Give a space its own profile and it keeps its own
           logins.</span
         ><span
-          ><b>Garden.</b> Every space paints the whole window in its own
+          ><b>Skye.</b> Every space paints the whole window in its own
           colours.</span
         ><span
           ><span class="fine-only">Press ⌃1, ⌃2 or ⌃3 to switch spaces.</span

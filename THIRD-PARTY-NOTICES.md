@@ -224,3 +224,28 @@ POSSIBILITY OF SUCH DAMAGE.
 ## Filter lists
 
 The content blocker downloads EasyList, EasyPrivacy and the Fanboy lists when it runs. They aren't included in this repository. Thanks to the EasyList authors, who publish them under GPLv3 and CC BY-SA 3.0.
+
+## Website screenshots and site icons
+
+The website shows real third-party pages and site icons inside its drawn browser window. These files aren't covered by LICENSE or LICENSE-ADDITIONAL-TERMS. Each stays under its owner's terms, and no owner endorses Artemis.
+
+`website/src/img/shots/shot-wp-*.webp` and `website/src/img/og-home.png` are screenshots of English Wikipedia articles, captured November 2026 and cropped: [Orion (constellation)](https://en.wikipedia.org/wiki/Orion_(constellation)), [Betelgeuse](https://en.wikipedia.org/wiki/Betelgeuse), [Sourdough](https://en.wikipedia.org/wiki/Sourdough) and [Isle of Skye](https://en.wikipedia.org/wiki/Isle_of_Skye). Article text is by Wikipedia contributors under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). Wikipedia and its logo are trademarks of the Wikimedia Foundation. The images in them:
+
+| Image | Author | Licence | Shots |
+| --- | --- | --- | --- |
+| [Orion_IAU.svg](https://commons.wikimedia.org/wiki/File:Orion_IAU.svg) | IAU and Sky & Telescope magazine (Roger Sinnott, Rick Fienberg) | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) | wp-orion, og-home |
+| [OrionCC.jpg](https://commons.wikimedia.org/wiki/File:OrionCC.jpg) | Till Credner, AlltheSky.com | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) | wp-orion-hero |
+| [Orion_constellation_map.svg](https://commons.wikimedia.org/wiki/File:Orion_constellation_map.svg) | Torsten Bronger, derivative by Kxx | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) | wp-betelgeuse |
+| [Sourdough_bread_loaf.jpg](https://commons.wikimedia.org/wiki/File:Sourdough_bread_loaf.jpg) | Nhall0901 | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) | wp-sourdough |
+| [Flag_of_the_Isle_of_Skye.svg](https://commons.wikimedia.org/wiki/File:Flag_of_the_Isle_of_Skye.svg) | Hogweard | Public domain | wp-skye |
+| [A misty morning in Portree (cropped)](https://commons.wikimedia.org/wiki/File:A_misty_morning_in_Portree_-_geograph.org.uk_-_3986755_(cropped).jpg) | John Allan, via Geograph | [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/) | wp-skye |
+| [Cattle_near_Neist_Point_Lighthouse.jpg](https://commons.wikimedia.org/wiki/File:Cattle_near_Neist_Point_Lighthouse.jpg) | JoachimKohler-HB | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) | wp-skye-page |
+| [Old Man of Storr](https://commons.wikimedia.org/wiki/File:Isle_of_Skye_-_Old_Man_of_Storr_-_2020_-_by_Sanshiro_Kubota.jpg) | Sanshiro Kubota | [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/) | wp-skye-page |
+
+Being built on CC BY-SA material, these screenshots are shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), with the credits above.
+
+`website/src/img/shots/shot-osm-*.webp` show openstreetmap.org. Map data © OpenStreetMap contributors, see [openstreetmap.org/copyright](https://www.openstreetmap.org/copyright).
+
+`website/src/img/shots/shot-gh-*.webp` show this repository's page on github.com. The page design, name and logo are GitHub's.
+
+`website/src/img/fav/*.png` are the named sites' favicons, trademarks of their owners, shown only to stand for those sites in the drawn window.

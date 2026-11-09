@@ -85,8 +85,10 @@
   container-type: inline-size;
 }
 .cmd-island .rig {
-  --u: calc(100cqw / 1000);
   aspect-ratio: 1000 / 640;
+}
+.sec-cmd .desk {
+  background-image: url("/assets/spaces/space-tide-880x592.png");
 }
 .cmd-deco {
   position: absolute;

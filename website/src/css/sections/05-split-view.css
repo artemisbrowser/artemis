@@ -88,16 +88,10 @@
   container-type: inline-size;
 }
 .split-island .rig {
-  --u: calc(100cqw / 1000);
   aspect-ratio: 1000 / 640;
 }
-/* a Low Light figure gives way in short panes, so the title stays on screen */
-.split-island .ll-fig {
-  height: clamp(
-    calc(96 * var(--u)),
-    100cqh - calc(210 * var(--u)),
-    calc(200 * var(--u))
-  );
+.sec-split .desk {
+  background-image: url("/assets/spaces/space-ember-880x592.png");
 }
 .split-readout,
 .split-try {
@@ -113,26 +107,6 @@
   outline-offset: 6px;
   border-radius: calc(16 * var(--u));
 }
-/* a pane's last line fades into its paper, under the pane ring (window.css .pane::after) */
-.split-island .pane::before {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  z-index: 4;
-  height: calc(36 * var(--u));
-  background: linear-gradient(transparent, var(--paper));
-  pointer-events: none;
-}
-.split-island .pane:has(> .ll) {
-  --paper: #101112;
-}
-.split-island .pane:has(> .pl) {
-  --paper: #f5f7f4;
-}
-.split-island .pane:has(> .sl) {
-  --paper: #fbf6ee;
-}
-
 .split-links {
   margin-top: 80px;
 }
@@ -193,29 +167,12 @@ html.fine[data-mods="alt meta"] .split-legend [data-mods="alt meta"] {
   }
 }
 
-/* row 1 holds the copy beside the window, row 2 the controls under it; the key list starts on the window's left edge */
+/* the key list sits beside its heading */
 @media (min-width: 1024px) {
-  .split-grid,
   .split-links {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
     column-gap: 24px;
-  }
-  .split-grid {
-    row-gap: 20px;
-    align-items: center;
-  }
-  .split-head {
-    grid-column: 1 / 6;
-    grid-row: 1;
-  }
-  .split-island,
-  .split-ctl {
-    grid-column: 6 / 13;
-    margin-top: 0;
-  }
-  .split-ctl {
-    grid-row: 2;
   }
   .split-links {
     align-items: start;
@@ -232,12 +189,9 @@ html.fine[data-mods="alt meta"] .split-legend [data-mods="alt meta"] {
   }
 }
 @media (min-width: 1280px) {
-  .split-head,
   .split-links h3 {
     grid-column: 1 / 5;
   }
-  .split-island,
-  .split-ctl,
   .split-keys {
     grid-column: 5 / 13;
   }

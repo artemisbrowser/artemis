@@ -41,7 +41,7 @@ const STOPS = {
   S06: ["", ["oow", 0.82]],
   S07: ["hold=open", ["oow", 0.9]],
   S08: ["hold=pinned", ["oow", 0.9]],
-  S09: ["", "#window"],
+  S09: ["", "#native"],
   S10: ["", ["spaces", 0]],
   S11: ["", ["spaces", 0.3]],
   S12: ["", ["spaces", 0.54]],

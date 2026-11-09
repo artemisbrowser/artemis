@@ -746,32 +746,44 @@
   }
 }
 
-/* favicons: generic drawn glyphs on their own tiles */
+/* favicons: the sites' own, from tools/shots.mjs; the chrome is dark in both appearances */
 .fi {
   display: block;
   flex: none;
   background: 0 0 / 100% 100% no-repeat;
 }
-.fi-lowlight {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23101112'/><path fill='%23ECECEC' d='M15.8 11.75A6 6 0 1 1 8.25 4.2a6.07 6.07 0 0 0 7.55 7.55Z'/></svg>");
+.fi-wikipedia {
+  background-image: url("/assets/img/fav-wikipedia.png");
 }
-.fi-slowloaf {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23F3E3C6'/><path fill='%23C98A4B' d='M3.8 13C3.8 8.9 6.6 6.2 10 6.2s6.2 2.7 6.2 6.8v.6c0 .8-.6 1.4-1.4 1.4H5.2c-.8 0-1.4-.6-1.4-1.4Z'/><path d='m7.4 9.4 1.3 1.7m1.7-2.5 1.3 1.7' stroke='%23F3E3C6' stroke-width='1.1' stroke-linecap='round'/></svg>");
+.fi-osm {
+  background-image: url("/assets/img/fav-osm.png");
 }
-.fi-plot {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%233F9D5A'/><path fill='%23D9F7C8' d='M15.6 4.4C9.4 4.4 5.6 7.2 5.6 11.2c0 1 .3 1.8.7 2.4l-1.6 1.6.8.8 1.6-1.6c.6.4 1.4.7 2.4.7 4.2 0 6.1-4.4 6.1-10.7Z'/></svg>");
+.fi-youtube {
+  background-image: url("/assets/img/fav-youtube.png");
 }
-.fi-studio {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%2334495E'/><g fill='white'><circle cx='10' cy='7.3' r='3.3'/><circle cx='7.1' cy='9.6' r='2.7'/><circle cx='12.9' cy='9.6' r='2.7'/><rect x='9.3' y='10' width='1.4' height='6.2' rx='.6'/></g></svg>");
+.fi-spotify {
+  background-image: url("/assets/img/fav-spotify.png");
 }
-.fi-mail {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%235B6B7F'/><rect x='4' y='5.8' width='12' height='8.6' rx='1.6' fill='white'/><path d='M4.7 6.7 10 10.8l5.3-4.1' fill='none' stroke='%235B6B7F' stroke-width='1.3' stroke-linejoin='round'/></svg>");
+.fi-figma {
+  background-image: url("/assets/img/fav-figma.png");
 }
-.fi-docs {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%23C9932F'/><path fill='white' d='M6.6 4h4.8l3 3v8.2c0 .5-.4.8-.8.8H6.6a.8.8 0 0 1-.8-.8V4.8c0-.4.4-.8.8-.8Z'/><path d='M7.9 10h4.2M7.9 12.4h4.2' stroke='%23C9932F' stroke-width='1' stroke-linecap='round'/></svg>");
+.fi-notion {
+  background-image: url("/assets/img/fav-notion.png");
 }
-.fi-chat {
-  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><rect width='20' height='20' rx='5' fill='%233C8D6E'/><path fill='white' d='M10 4.8c3.3 0 5.8 2 5.8 4.6S13.3 14 10 14c-.6 0-1.2-.1-1.8-.2l-2.6 1.6.6-2.5c-1.2-.8-2-2-2-3.5 0-2.6 2.5-4.6 5.8-4.6Z'/></svg>");
+.fi-slack {
+  background-image: url("/assets/img/fav-slack.png");
+}
+.fi-linear {
+  background-image: url("/assets/img/fav-linear.png");
+}
+.fi-gmail {
+  background-image: url("/assets/img/fav-gmail.png");
+}
+.fi-calendar {
+  background-image: url("/assets/img/fav-calendar.png");
+}
+.fi-github {
+  background-image: url("/assets/img/fav-github-dark.png");
 }
 .fi-globe {
   background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='white' stroke-opacity='.6' stroke-width='1.3'><path d='M16.4 10a6.4 6.4 0 1 1-12.8 0 6.4 6.4 0 1 1 12.8 0ZM3.6 10h12.8M10 3.6c-1.8 1.7-2.7 3.9-2.7 6.4s.9 4.7 2.7 6.4c1.8-1.7 2.7-3.9 2.7-6.4S11.8 5.3 10 3.6Z'/></svg>");

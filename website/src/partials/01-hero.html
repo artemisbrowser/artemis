@@ -1,17 +1,16 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<section
-  class="track track-oow"
-  id="top"
-  data-name="Overview"
-  aria-labelledby="h1"
->
+<section class="track track-oow" id="top" data-name="Overview" aria-labelledby="h1">
   <div class="hero-copy">
-    <h1 id="h1">A native browser for&nbsp;your&nbsp;Mac.</h1>
-    <div class="hero-row">
+    <h1 id="h1">
+      <span>Native to your Mac.</span> <span>Private by default.</span>
+      <span>Yours to shape.</span>
+    </h1>
+    <div class="hero-side">
       <p class="lede">
-        Your tabs live down the side, grouped into spaces, and everything opens
-        from the command bar.
+        A browser made natively for macOS 26. Spaces, profiles and a sidebar,
+        shaped how you like. Ads and trackers blocked out of the box. Open
+        source, no account, no telemetry.
       </p>
       <div class="get-block">
         <a class="get" id="hero-get" data-get href="/download"
@@ -27,45 +26,57 @@
                 alt="" /></picture></span
           ><span class="get-label">Download for Mac</span></a
         >
-        <p class="fine"><!-- @stage -->Needs macOS 26 or later.<!-- @price --></p>
-        <!-- @unsigned -->
+        <p class="fine">
+          <!-- @stage -->Needs macOS 26 or later on a Mac with M1 or newer.<!-- @price -->
+        </p>
       </div>
     </div>
   </div>
-  <div class="stage">
-    <div
-      class="rig"
-      data-rig="oow"
-      role="img"
-      aria-label="The Artemis window. Tabs run down the left side, and a night-sky page about the constellation Orion fills the rest."
-    >
-      <div class="win-shadow"></div>
-      <div
-        class="win"
-        data-space="0"
-        data-sidebar="pinned"
-        data-float="hidden"
-        aria-hidden="true"
-        inert
-      >
-        <div class="win-bd" data-host>
-          <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
-        </div>
-        <div class="sb">
-          <div class="sb-pin">
-            <!-- @include _win/sidebar-top -->
-            <!-- @include _win/favs -->
-            <div class="pager">
-              <div class="strip"><!-- @include _win/panel-personal --></div>
+  <div class="run" id="oow">
+    <div class="stage">
+      <div class="mac">
+        <div class="screen">
+          <div
+            class="desk"
+            role="img"
+            aria-label="A MacBook Pro showing the Artemis window. Tabs run down the left side, and the Wikipedia article on the constellation Orion fills the rest."
+          >
+            <!-- @include _menubar -->
+            <div class="rig" data-rig="oow">
+              <div class="win-shadow"></div>
+              <div
+                class="win"
+                data-space="0"
+                data-sidebar="pinned"
+                data-float="hidden"
+                aria-hidden="true"
+                inert
+              >
+                <div class="win-bd" data-host>
+                  <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
+                </div>
+                <div class="sb">
+                  <div class="sb-pin">
+                    <!-- @include _win/sidebar-top -->
+                    <!-- @include _win/favs -->
+                    <div class="pager">
+                      <div class="strip">
+                        <!-- @include _win/panel-personal -->
+                      </div>
+                    </div>
+                    <!-- @include _win/bottombar -->
+                  </div>
+                </div>
+                <!-- @include _win/card -->
+                <!-- @include _win/fsb -->
+                <i class="rim"></i>
+              </div>
             </div>
-            <!-- @include _win/bottombar -->
           </div>
         </div>
-        <!-- @include _win/card -->
-        <!-- @include _win/fsb -->
-        <i class="rim"></i>
+        <i class="mac-base"></i>
       </div>
+      <!-- @include 02-oow-stage -->
     </div>
-    <!-- @include 02-oow-stage -->
   </div>
 </section>

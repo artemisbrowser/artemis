@@ -16,11 +16,11 @@ const authored = new Set(rig.querySelectorAll(".row"));
 const frame = params.get("cmd");
 const still = !!frame || mq.reduce.matches || params.has("nosettle");
 // one beat per chapter: Search, then the ⌘1–⌘4 scopes; Q[k] is typed with scope k, END[k] is what its ↵ did
-const Q = ["betelgeuse", "sow", "seed", "split", "work"];
+const Q = ["orion nebula", "map", "betel", "split", "work"];
 const END = [
   (via) => win.showPage("model-note", { load: !via, query: Q[0], note: "s" }),
   (via) => win.setSpace(2, { via }),
-  (via) => win.showPage("Seed potatoes, when to chit", { load: !via }),
+  (via) => win.showPage("wp-betelgeuse", { load: !via }),
   () => win.setSplit(2),
   (via) => (win.setSpace(1, { via }), unsplit()),
 ];
@@ -139,7 +139,7 @@ function drive() {
 
 // Split View pairs the page with the one shown before it: a fresh Personal holds Sourdough behind Orion.
 function fresh() {
-  win.showPage("slowloaf-sourdough");
+  win.showPage("wp-sourdough");
   win.showPage(SPACES[0].page);
 }
 

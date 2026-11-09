@@ -25,6 +25,12 @@
   inherits: true;
   initial-value: 1px;
 }
+/* one MacBook device unit in px, computed on the .mac that declares it */
+@property --mu {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 1px;
+}
 @property --mx {
   syntax: "<percentage>";
   inherits: false;

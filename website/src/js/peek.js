@@ -4,6 +4,7 @@
 import { root, mq, go } from "./core.js";
 import { mods, onMods } from "./keys.js";
 import { setSitebar } from "./sitebar.js";
+import { download } from "./download.js";
 
 const peek = document.getElementById("peek");
 const panel = peek.querySelector(".peek-panel");
@@ -42,6 +43,8 @@ export function openPeek(what, from = document.activeElement) {
   }
   content.replaceChildren(...nodes);
   content.querySelector("h2").id = "peek-title";
+  const steps = content.querySelector(".steps");
+  if (steps) stepper(steps);
   openBtn.hidden = !target;
   opener = from;
   setSitebar(false);
@@ -71,6 +74,38 @@ peek.addEventListener("click", (e) => {
     go(id);
   } else if (act === "close" || e.target.matches(".peek-scrim")) closePeek();
 });
+// the install steps one at a time, picked from a row of tabs under them
+function stepper(steps) {
+  const items = [...steps.children];
+  const tabs = document.createElement("div");
+  tabs.className = "step-tabs";
+  tabs.setAttribute("role", "tablist");
+  const show = (n, focus) => {
+    items.forEach((li, i) => li.classList.toggle("on", i === n));
+    [...tabs.children].forEach((b, i) => {
+      b.setAttribute("aria-selected", i === n);
+      b.tabIndex = i === n ? 0 : -1;
+      if (i === n && focus) b.focus();
+    });
+  };
+  items.forEach((li, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.append(document.createElement("b"), " " + li.dataset.tab);
+    b.firstChild.textContent = i + 1;
+    b.onclick = () => show(i);
+    tabs.append(b);
+  });
+  tabs.onkeydown = (e) => {
+    const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    const i = items.findIndex((li) => li.classList.contains("on"));
+    if (d && items[i + d]) show(i + d, true);
+  };
+  steps.before(tabs);
+  show(0);
+}
+
 // Tab cycles inside the box, through the panel itself so it can scroll again; everything behind it is inert.
 peek.addEventListener("keydown", (e) => {
   if (e.key !== "Tab") return;
@@ -92,6 +127,7 @@ const LINKS = 'a[href^="#"], a[data-peek], a[data-get]';
 const host = new URL(document.querySelector('link[rel="canonical"]').href).host;
 const domain = /artemis_domain/i.test(host) ? "" : host;
 let capFor = null;
+const getTpl = document.getElementById("peek-get");
 
 function label(a) {
   const href = a.getAttribute("href");
@@ -168,6 +204,12 @@ document.addEventListener("click", (e) => {
   if (a.dataset.peek) {
     e.preventDefault();
     openPeek(a.dataset.peek, from);
+  } else if (a.hasAttribute("data-get") && getTpl) {
+    e.preventDefault();
+    openPeek("get", from);
+    download(content.querySelector("[data-dmg]").href, [
+      ...content.querySelectorAll(".steps img"),
+    ]);
   } else if (href.startsWith("#") && href.length > 1) {
     const sec = document.getElementById(href.slice(1));
     if (!sec) return;

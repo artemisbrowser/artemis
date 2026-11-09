@@ -2,16 +2,16 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import { root, params, mq, say } from "../core.js";
-import { track, measure } from "../scroll.js";
+import { track } from "../scroll.js";
 import { setSitebar } from "../sitebar.js";
 import { mountWindow } from "../window.js";
 
 const top = document.getElementById("top");
-const outro = document.getElementById("window");
+const outro = document.getElementById("native");
+const run = document.getElementById("oow");
 const rig = top.querySelector('[data-rig="oow"]');
 const ctl = mountWindow(rig);
 const { win } = ctl;
-const nav = document.getElementById("nav");
 const caps = top.querySelectorAll(".cap");
 const pinBtn = top.querySelector(".cap-btn");
 const c3 = pinBtn.previousElementSibling;
@@ -20,8 +20,6 @@ const sideBtn = top.querySelector('[data-act="sidebar"]');
 const range = top.querySelector(".oow-controls input");
 const out = top.querySelector(".oow-controls output");
 let beat = "";
-let x0 = 0;
-let far = 0;
 let edgeT = 0;
 let dockT = 0;
 
@@ -35,11 +33,6 @@ function show() {
     c.classList.toggle("on", on);
     c.inert = !on;
   }
-  nav.classList.toggle(
-    "away",
-    /^(inside|c1|c2)$/.test(beat) ||
-      (live() && (docked() || ctl.state.float === "open")),
-  );
 }
 // Once a visit, the idle last Today tab tidies itself into the Library while the floating sidebar is open.
 // It stays tidied, docked or not, until the reader leaves the hold.
@@ -75,26 +68,6 @@ function float(v) {
   show();
 }
 
-// W and H are the window in points; the card chain's pinned animations wait for data-geo.
-new ResizeObserver(() => {
-  const u = Math.max(1, Math.min(innerWidth / 1600, innerHeight / 900));
-  const W = rig.clientWidth / u;
-  const H = rig.clientHeight / u;
-  const se = Math.max(W / (W - 20), H / (H - 20)) * 1.01;
-  x0 = rig.offsetLeft;
-  // the app's hover area: sidebar 250, overlay grip 18, buffer 10
-  far = x0 + 278 * u;
-  win.style.setProperty("--c0", ((W - 270) / (W - 20)).toFixed(4));
-  win.style.setProperty("--se", se.toFixed(4));
-  // the re-pinned card's left edge lands at 250 pt after the edge scale
-  win.style.setProperty(
-    "--cp",
-    ((W / 2 - 10 + (W / 2 - 250) / se) / (W - 20)).toFixed(4),
-  );
-  win.dataset.geo = "";
-  measure();
-}).observe(rig);
-
 // Pinned means the track is on screen and the outro is not yet; created after main.js's, so it writes last.
 const seen = {};
 function own() {
@@ -126,9 +99,9 @@ function dock(on, tell) {
   if (tell) say(on ? "Sidebar shown" : "Sidebar hidden");
 }
 
-track(top, {
+track(run, {
   beats: [
-    ["rise", 0, 0.3],
+    ["zoom", 0, 0.3],
     ["inside", 0.3, 0.4],
     ["c1", 0.4, 0.62],
     ["c2", 0.62, 0.81],
@@ -161,14 +134,21 @@ addEventListener("keydown", (e) => {
   e.preventDefault();
   if (!e.repeat) dock(!docked(), true);
 });
-// mouse or pen at the left edge for 100 ms brings the floating sidebar, as in the app
+// mouse or pen at the window's left edge for 100 ms brings the floating sidebar, as in the app
 addEventListener(
   "pointermove",
   (e) => {
     if (beat !== "hold" || e.pointerType === "touch" || docked()) return;
+    const r = rig.getBoundingClientRect();
     if (ctl.state.float === "open") {
-      if (e.clientX > far) float("hidden");
-    } else if (e.clientX <= x0 + 8 && live())
+      // the app's hover area: sidebar 250, overlay grip 18, buffer 10
+      if (e.clientX > r.left + (278 * r.width) / 1352) float("hidden");
+    } else if (
+      e.clientX <= r.left + 8 &&
+      e.clientY >= r.top &&
+      e.clientY <= r.bottom &&
+      live()
+    )
       edgeT ||= setTimeout(() => {
         edgeT = 0;
         if (live() && !docked()) float("open");

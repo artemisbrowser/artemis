@@ -101,7 +101,7 @@ html:not(.js) .arc-replay {
   top: calc(98 * var(--u));
 }
 /* The markup is the finished frame. 07-arc.js rewinds it and plays it forward; every rewind is instant.
-   Spaces: 0 Personal (the reader's), then Arc's Garden, Studio and Kitchen. Tide and Ember are never neighbours:
+   Spaces: 0 Personal (the reader's), then Arc's Skye, Work and Kitchen. Tide and Ember are never neighbours:
    their crossfade passes through purple. */
 .arc-island [data-space="1"] .strip {
   --si: 1;

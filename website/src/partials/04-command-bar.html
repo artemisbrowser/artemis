@@ -35,59 +35,67 @@
     <div class="island cmd-island">
       <p class="sr-only" id="cmd-demo-d" hidden>
         A model of the Artemis window. The demo opens the command bar five
-        times. It searches the web for “betelgeuse”, finds the What to sow in
-        November tab in the Garden space, opens Seed potatoes from history, runs
-        Split View, then jumps to the Work space.
+        times. It searches the web for “orion nebula”, finds the OpenStreetMap tab
+        in the Skye space, opens the Betelgeuse article from history, runs Split
+        View, then jumps to the Work space.
       </p>
-      <div class="rig" data-rig="cmd">
-        <button
-          class="take"
-          type="button"
-          aria-label="Try the command bar"
-          aria-describedby="cmd-demo-d"
-          aria-keyshortcuts="/"
-          data-tip="Click to try it"
-        ></button>
-        <div class="win-shadow"></div>
-        <div
-          class="win"
-          data-space="0"
-          data-split="1"
-          data-sidebar="pinned"
-          data-float="hidden"
-          data-cmd="closed"
-        >
-          <div class="cmd-deco" aria-hidden="true" inert>
-            <div class="win-bd" data-host>
-              <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
-            </div>
-            <div class="sb">
-              <div class="sb-pin">
-                <!-- @include _win/sidebar-top -->
-                <!-- @include _win/favs -->
-                <div class="pager">
-                  <div class="strip">
-                    <!-- @include _win/panel-personal -->
-                    <!-- @include _win/panel-work -->
-                    <!-- @include _win/panel-garden -->
+      <div class="mac mac-win">
+        <div class="screen">
+          <div class="desk">
+            <!-- @include _menubar -->
+            <div class="deskwin rig" data-rig="cmd">
+              <button
+                class="take"
+                type="button"
+                aria-label="Try the command bar"
+                aria-describedby="cmd-demo-d"
+                aria-keyshortcuts="/"
+                data-tip="Click to try it"
+              ></button>
+              <div class="win-shadow"></div>
+              <div
+                class="win"
+                data-space="0"
+                data-split="1"
+                data-sidebar="pinned"
+                data-float="hidden"
+                data-cmd="closed"
+              >
+                <div class="cmd-deco" aria-hidden="true" inert>
+                  <div class="win-bd" data-host>
+                    <i class="lk" data-look="tide" data-top></i><i class="lk"></i>
                   </div>
+                  <div class="sb">
+                    <div class="sb-pin">
+                      <!-- @include _win/sidebar-top -->
+                      <!-- @include _win/favs -->
+                      <div class="pager">
+                        <div class="strip">
+                          <!-- @include _win/panel-personal -->
+                          <!-- @include _win/panel-work -->
+                          <!-- @include _win/panel-skye -->
+                        </div>
+                      </div>
+                      <!-- @include _win/bottombar -->
+                    </div>
+                  </div>
+                  <!-- @include _win/card -->
+                  <div class="panes">
+                    <div class="pane"></div>
+                    <div class="pane"></div>
+                  </div>
+                  <!-- @include _win/overlays -->
                 </div>
-                <!-- @include _win/bottombar -->
+                <!-- @include _win/cmd -->
+                <div class="cmd-tab" aria-hidden="true">
+                  <i class="fi fi-wikipedia"></i>
+                  <p><b>Orion (constellation) - Wikipedia</b><span>en.wikipedia.org</span></p>
+                </div>
               </div>
             </div>
-            <!-- @include _win/card -->
-            <div class="panes">
-              <div class="pane"></div>
-              <div class="pane"></div>
-            </div>
-            <!-- @include _win/overlays -->
-          </div>
-          <!-- @include _win/cmd -->
-          <div class="cmd-tab" aria-hidden="true">
-            <i class="fi fi-lowlight"></i>
-            <p><b>Orion, star by star</b><span>lowlight.press</span></p>
           </div>
         </div>
+        <i class="mac-base"></i>
       </div>
     </div>
     <p class="fine">Type a bang like “!yt cats” to search one site directly.</p>

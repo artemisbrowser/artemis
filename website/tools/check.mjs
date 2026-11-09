@@ -339,18 +339,19 @@ export async function check(out) {
   for (const [, ref] of css.matchAll(/url\("?(\/[^")]+)"?\)/g))
     if (!exists(ref.slice(1))) fail("links", `css: ${ref} is not in the build`);
 
-  // the demo hosts in the build are exactly the gate-1 list in site.config.mjs
-  const hosts = new Set(Object.values(cfg.HOSTS));
-  const seen = new Set();
+  // invented demo hosts are gone for good; every real host is in the build, and the home page credits its shots
+  const home = fs.readFileSync(path.join(out, "index.html"), "utf8").replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
   for (const f of textFiles)
     for (const [h] of fs
       .readFileSync(f, "utf8")
-      .matchAll(/\b[\w-]+(?:\.[\w-]+)*\.(?:press|kitchen|garden|studio)\b/g)) {
-      seen.add(h);
-      if (!hosts.has(h)) fail("hosts", `${rel(f)}: ${h} is not in HOSTS`);
-    }
-  for (const h of hosts)
-    if (!seen.has(h)) fail("hosts", `${h} is in HOSTS but not in the build`);
+      .matchAll(/\b[\w-]+(?:\.[\w-]+)*\.(?:press|kitchen|garden|studio)\b/g))
+      fail("hosts", `${rel(f)}: ${h} is an invented host`);
+  for (const [h, credit] of Object.entries(cfg.HOSTS)) {
+    if (!textFiles.some((f) => fs.readFileSync(f, "utf8").includes(h)))
+      fail("hosts", `${h} is in HOSTS but not in the build`);
+    if (credit && !home.includes(credit))
+      fail("hosts", `index.html: no credit “${credit}” for ${h}`);
+  }
 
   for (const n of notes) console.log("note: " + n);
   for (const f of fails) console.error("fail: " + f);
