@@ -176,3 +176,14 @@ for (const l of document.querySelectorAll(
 
 if (params.has("peek")) openPeek(params.get("peek"));
 if (params.get("sitebar") === "1") setSitebar(true, { via: "edge" });
+
+const [day, hour] = [
+  { weekday: "short", day: "numeric", month: "short" },
+  { hour: "numeric", minute: "2-digit" },
+].map((o) => new Intl.DateTimeFormat(undefined, o));
+(function tick() {
+  const now = `${day.format().replace(/,/g, "")} ${hour.format()}`;
+  for (const t of document.querySelectorAll(".menubar time"))
+    t.textContent = now;
+  setTimeout(tick, 60000 - (Date.now() % 60000));
+})();
