@@ -87,9 +87,6 @@
 .cmd-island .rig {
   aspect-ratio: 1000 / 640;
 }
-.sec-cmd .desk {
-  background-image: url("/assets/spaces/space-tide-880x592.png");
-}
 .cmd-deco {
   position: absolute;
   inset: 0;

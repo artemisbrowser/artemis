@@ -90,9 +90,6 @@
 .split-island .rig {
   aspect-ratio: 1000 / 640;
 }
-.sec-split .desk {
-  background-image: url("/assets/spaces/space-ember-880x592.png");
-}
 .split-readout,
 .split-try {
   color: var(--ink-2);
