@@ -4,6 +4,16 @@
     <title>Artemis</title>
     <!-- items -->
     <item>
+      <title>Artemis 1.1.0</title>
+      <pubDate>Tue, 10 Nov 2026 17:02:09 +0000</pubDate>
+      <sparkle:version>1010001</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}h2{font-size:15px;margin:14px 0 6px}h3{font-size:13px;margin:10px 0 4px}</style><p>Bring everything over from the browser you're leaving, and get shown around on your first launch.</p><h2>New</h2><ul><li>Import from Arc, Chrome, Firefox, Safari and almost any browser like them. Spaces, profiles, pinned tabs, folders, splits, bookmarks, history and logins come over, and each profile of the old browser becomes its own.</li><li>Onboarding has been added, and I think it's pretty gorgeous!! Tell me what you think (Replay it from Settings › General).</li><li>Settings search finds single settings, not just pages, and takes you straight to them. Describe what you want and it finds the setting.</li><li>New spaces suggest icons from their name, and icon search knows what words mean, so "home" finds a house.</li><li>An empty space shows the Artemis mark. Drag it to spin it.</li><li>A Nightly update channel in Settings › General › Updates, for the newest builds.</li><li>Nebula, a new app icon colour.</li></ul><h2>Fixed</h2><ul><li>Pages an extension sends a tab to, like uBlock's blocked-site warning, load instead of showing an error.</li><li>Connecting a VPN extension no longer brings up a macOS proxy password prompt.</li><li>Uploads that only take images, like Bluesky's avatar picker, no longer grey out every file.</li><li>A link opened from another app brings Scout to the front.</li></ul>]]></description>
+      <sparkle:channel>beta</sparkle:channel>
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v1.1.0/Artemis-1.1.0.dmg" type="application/octet-stream" sparkle:edSignature="RFXVVwVJaUCkgIKboXOYXw9UqOono1AM7LEaSxGhrdLfamssRTKohtlVVOu9rasYz1j6x4XFs62gIPZMz9sBCQ==" length="27137139" />
+    </item>
+    <item>
       <title>Artemis 1.0.0</title>
       <pubDate>Sun, 08 Nov 2026 07:31:36 +0000</pubDate>
       <sparkle:version>1000002</sparkle:version>
