@@ -55,7 +55,7 @@ function press(el) {
   ptr.animate([{}, { scale: 0.86 }, {}], 160);
 }
 // [ms to wait, then step], in the app's own order: the key, cookies, then spaces and favourites land in the
-// sidebar, then history. After Done the pointer leaves and Arc's spaces show in turn. Time passes only in view.
+// sidebar, then history. After Done the pointer rests and Arc's spaces show in turn. Time passes only in view.
 const STEPS = [
   [
     0,
@@ -94,7 +94,7 @@ const STEPS = [
   [900, () => phase("sum")],
   [1800, () => aim(done, 0.5, 0.55)],
   [600, () => press(done)],
-  [160, () => (set("shut", 1), (ptr.style.opacity = 0))],
+  [160, () => set("shut", 1)],
   [250, () => (space(1, 420), set("fill", 1))],
   [2000, () => space(2, 420)],
   [2000, () => space(3, 420)],
