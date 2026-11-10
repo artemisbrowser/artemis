@@ -14,7 +14,7 @@
   initial-value: #8ec5ff;
 }
 @property --sh-e {
-  syntax: "<integer>";
+  syntax: "<number>";
   inherits: true;
   initial-value: 10;
 }
@@ -168,31 +168,50 @@
   scale: 0.96;
 }
 
-/* Edge: its value read out above the window */
+/* Edge: its value read out above the window. It stays display: none until shown,
+   or WebKit keeps the text widths from the stage's first, narrower layout */
 .sh-read {
   position: absolute;
   top: 2.4cqw;
   left: 50%;
-  display: flex;
+  display: none;
   gap: 0.6em;
   padding: 0.5em 1em;
   border-radius: 99px;
   font: 500 max(11px, 1.3cqw) / 1 var(--font);
   translate: -50% 0;
   opacity: 0;
-  transition: opacity var(--dur-fade) var(--ease-in-out);
+  transition:
+    opacity var(--dur-fade) var(--ease-in-out),
+    display var(--dur-fade) allow-discrete;
 }
-.sh-read::after {
-  counter-reset: e var(--sh-e);
-  content: counter(e) " pt";
+.sh-val {
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+}
+/* the value rolls through every point on its way, one 1em row per point */
+.sh-roll {
+  display: inline-block;
+  height: 1em;
+  overflow: clip;
+  vertical-align: top;
+}
+.sh-roll i {
+  display: block;
+  height: 1em;
+  font-style: normal;
+  text-align: right;
+  translate: 0 calc(var(--sh-e) * -1em);
 }
 .sh:has(#sh-edge:checked) .sh-stage {
   --sh-e: 0;
 }
 .sh:has(#sh-edge:checked) .sh-read {
+  display: flex;
   opacity: 1;
+  @starting-style {
+    opacity: 0;
+  }
 }
 
 /* Sidebar: hidden, then out from the left edge under the pointer */
