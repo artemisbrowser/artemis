@@ -483,7 +483,7 @@ export async function build(out) {
           "Split view with up to four pages",
           "Ad and tracker blocking",
           "Fingerprinting defence",
-          "Copy Link drops tracking parameters",
+          "Copy Page Link drops tracking parameters",
           "Incognito windows that can lock with Touch ID",
           "Built-in passwords",
           "Import from other browsers",

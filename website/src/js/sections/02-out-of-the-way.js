@@ -73,7 +73,7 @@ const seen = {};
 function own() {
   root.classList.toggle(
     "oow-on",
-    root.classList.contains("pin") && seen.top && !seen.window,
+    root.classList.contains("pin") && seen.top && !seen[outro.id],
   );
   show();
 }

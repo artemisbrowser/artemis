@@ -63,9 +63,11 @@ const out = path.join(ROOT, "src/img");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shots-"));
 const browser = await chromium.launch();
 
-// a visit as a first-time reader would see it, minus fundraising and cookie banners
+// a visit as a first-time reader would see it, minus banners, Wikipedia's coordinate and status icons,
+// and GitHub's counts and licence line, which go stale
 const HIDE = `#siteNotice, #centralNotice, .cn-fundraising, .frb, .mw-dismissable-notice, .vector-sticky-header,
-  [data-testid="cookie-banner"], .cookie-consent { display: none !important; }`;
+  #coordinates, .mw-indicators, .wmamapbutton, [class*="insights__"], .mt-2:has([class*="licensesTrigger"]),
+  .Counter, [class*="CounterLabel"], [data-testid="cookie-banner"], .cookie-consent { display: none !important; }`;
 
 async function capture([name, url, sizes], scheme) {
   for (const [label, w, h, scale] of sizes) {

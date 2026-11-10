@@ -109,6 +109,9 @@ html.pin .track-oow .stage {
 .track-oow .win[data-sidebar="hidden"] .page {
   translate: 0 0;
 }
+.track-oow .shot {
+  transition: background-position var(--dur-sidebar) var(--spring-sidebar);
+}
 
 @media (max-width: 1023px) {
   .hero-copy {
@@ -135,5 +138,9 @@ html.pin .track-oow .stage {
   }
   .track-oow .stage {
     padding-top: 32px;
+  }
+  /* the page starts left of the card by its translate, so the shot starts that far in */
+  .track-oow .win:not([data-sidebar="hidden"]) .shot {
+    background-position-x: calc((250 + var(--grip) - var(--edge)) / 2 * var(--u));
   }
 }

@@ -1183,7 +1183,7 @@ html.coarse .peek-ctl {
 .desk {
   position: absolute;
   inset: 0;
-  background: url("/assets/spaces/space-aurora-880x592.png") 50% / cover;
+  background: url("/assets/spaces/space-ember-880x592.png") 50% / cover;
 }
 /* a section's Mac: as wide as its island and short enough to see whole, its 1000 × 640 pt window
    drawn at 1.25 screen points a point and centred under the menu bar */

@@ -374,6 +374,7 @@ const ACTIONS = [
     "i-shield",
   ),
   peekRow("The licence", "Open source", "licence", "i-doc"),
+  peekRow("Credits", "Pages and images shown", "credits", "i-doc"),
   {
     kind: "action",
     title: "Source code",
