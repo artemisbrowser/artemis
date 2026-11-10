@@ -189,19 +189,33 @@
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
 }
-/* the value rolls through every point on its way, one 1em row per point */
+/* an odometer: each digit column rolls on its own, the tens only while the ones wrap past 9;
+   the window spans the pill's height and fades out top and bottom */
 .sh-roll {
-  display: inline-block;
-  height: 1em;
+  display: inline-flex;
+  height: 1.5em;
+  margin-block: -0.5em;
+  padding-top: 0.5em;
   overflow: clip;
   vertical-align: top;
+  -webkit-mask: linear-gradient(#0000 0.4em, #000 0.7em 1.3em, #0000 1.6em);
+  mask: linear-gradient(#0000 0.4em, #000 0.7em 1.3em, #0000 1.6em);
 }
 .sh-roll i {
   display: block;
   height: 1em;
   font-style: normal;
-  text-align: right;
-  translate: 0 calc(var(--sh-e) * -1em);
+}
+.sh-roll > span {
+  translate: 0 calc(var(--r) * -1em);
+}
+.sh-ones {
+  --r: mod(var(--sh-e), 10);
+}
+.sh-tens {
+  --r: calc(
+    round(down, var(--sh-e) / 10, 1) + clamp(0, mod(var(--sh-e), 10) - 9, 1)
+  );
 }
 .sh:has(#sh-edge:checked) .sh-stage {
   --sh-e: 0;
