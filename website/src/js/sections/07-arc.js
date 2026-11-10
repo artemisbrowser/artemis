@@ -10,11 +10,10 @@ const $ = (s) => isl.querySelector(s);
 const win = $(".win");
 const ptr = $(".arc-ptr");
 const sheet = $(".arc-sheet");
-const [imp, allow, done, pager, line, pw] = [
+const [imp, allow, done, line, pw] = [
   ".arc-pick .arc-go",
   ".arc-btns :last-child",
   ".arc-sum .arc-go",
-  ".pager",
   ".arc-step span",
   ".arc-pw",
 ].map($);
@@ -55,14 +54,8 @@ function press(el) {
   el.animate([{}, { scale: 0.96, filter: "brightness(1.3)" }, {}], 160);
   ptr.animate([{}, { scale: 0.86 }, {}], 160);
 }
-const swipe = (i, x) => (
-  (ptr.style.transitionTimingFunction = "cubic-bezier(0,0,.58,1)"),
-  aim(pager, x, 0.42),
-  space(i, 420)
-);
-
 // [ms to wait, then step], in the app's own order: the key, cookies, then spaces and favourites land in the
-// sidebar, then history. Done opens Arc's first space and a swipe walks the rest. Time passes only in view.
+// sidebar, then history. After Done the pointer leaves and Arc's spaces show in turn. Time passes only in view.
 const STEPS = [
   [
     0,
@@ -101,12 +94,10 @@ const STEPS = [
   [900, () => phase("sum")],
   [1800, () => aim(done, 0.5, 0.55)],
   [600, () => press(done)],
-  [160, () => set("shut", 1)],
+  [160, () => (set("shut", 1), (ptr.style.opacity = 0))],
   [250, () => (space(1, 420), set("fill", 1))],
-  [900, () => aim(pager, 0.8, 0.42)],
-  [900, () => swipe(2, 0.5)],
-  [1400, () => swipe(3, 0.2)],
-  [1300, () => (ptr.style.opacity = 0)],
+  [2000, () => space(2, 420)],
+  [2000, () => space(3, 420)],
 ];
 
 async function play() {
