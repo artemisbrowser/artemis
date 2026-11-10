@@ -23,6 +23,7 @@ struct ExtensionsSettings: View {
                         info: "Turning this off disables every extension and remembers which ones were on."
                     )
                 }
+                .settingsAnchor(.extensionsEnabled)
                 // the built-in blocker isn't an extension, but this is where people look for it
                 LabeledContent("Ad and tracker blocking") {
                     Button("Privacy & Security…") { SettingsView.open(.privacy) }
@@ -36,9 +37,11 @@ struct ExtensionsSettings: View {
                     Text("No extensions installed yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                        .settingsAnchor(.installedExtensions)
                 } else {
                     ForEach(extensions.installed) { ext in
                         ExtensionRow(ext: ext) { pendingRemoval = ext }
+                            .settingsAnchor(ext.id == extensions.installed.first?.id ? .installedExtensions : nil)
                     }
                 }
             }
@@ -51,6 +54,7 @@ struct ExtensionsSettings: View {
                         .disabled(isAdding || storeURL.trimmingCharacters(in: .whitespaces).isEmpty)
                         .tooltip("Install from this URL")
                 }
+                .settingsAnchor(.extensionStore)
             } header: {
                 InfoLabel(
                     "Add from a Store",
@@ -71,6 +75,7 @@ struct ExtensionsSettings: View {
                             .disabled(isAdding)
                             .tooltip("Install \(entry.name)")
                     }
+                    .settingsAnchor(entry.id == CatalogEntry.curated.first?.id ? .suggestedExtensions : nil)
                 }
             }
 
@@ -87,6 +92,7 @@ struct ExtensionsSettings: View {
                         "Installs an extension folder or a .zip, .xpi or .crx archive. Some extensions may only partly work."
                     )
                 }
+                .settingsAnchor(.extensionFromDisk)
 
                 if let addError {
                     Text(addError)
@@ -194,6 +200,7 @@ private struct BoostsSection: View {
                 Button("Add Boost", action: createBoost)
                     .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .settingsAnchor(.boosts)
         } header: {
             InfoLabel(
                 "Boosts",

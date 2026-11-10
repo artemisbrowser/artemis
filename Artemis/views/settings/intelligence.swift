@@ -30,6 +30,7 @@ struct IntelligenceSettings: View {
                 ).undoable("On-Device Model"))
                     // only turning it on needs the model; turning it off is what restores page names
                     .disabled(!isReady && !isEnabled)
+                    .settingsAnchor(.onDeviceModel)
                 Label(readiness.explanation, systemImage: isReady ? "checkmark.seal" : "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(isReady ? Color.secondary : Color.orange)
@@ -56,12 +57,14 @@ struct IntelligenceSettings: View {
                         info: "Gives pinned tabs and favourites short names. Tabs you named yourself are never changed."
                     )
                 }
+                .settingsAnchor(.tidyTabNames)
                 Toggle(isOn: $askPage.undoable("Ask About This Page")) {
                     InfoLabel(
                         "Ask about this page (⌘F)",
                         info: "Adds a question mode to Find that answers only from the current page."
                     )
                 }
+                .settingsAnchor(.askAboutPage)
             }
             .disabled(!isEnabled || !isReady)
 

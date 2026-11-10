@@ -30,6 +30,7 @@ struct AppearanceSettings: View {
                         step: 1)
                     .accessibilityLabel("Edge thickness")
                 }
+                .settingsAnchor(.edgeThickness)
             }
 
             Section("Sidebar") {
@@ -38,6 +39,7 @@ struct AppearanceSettings: View {
                         "Show Now Playing",
                         info: "Shows media controls above the spaces when a background tab plays audio or video.")
                 }
+                .settingsAnchor(.nowPlaying)
             }
 
             Section("Folders") {
@@ -50,6 +52,7 @@ struct AppearanceSettings: View {
                         "Second line",
                         info: "What each tab shows under its title when you hover a closed folder.")
                 }
+                .settingsAnchor(.folderSecondLine)
 
                 Picker(selection: $folderTabCountRaw.undoable("Folder Tab Count")) {
                     ForEach(FolderTabCount.allCases) { style in
@@ -60,6 +63,7 @@ struct AppearanceSettings: View {
                         "Tab count",
                         info: "How a folder shows the number of tabs it holds at the end of its header row.")
                 }
+                .settingsAnchor(.folderTabCount)
             }
 
             Section {
@@ -71,6 +75,7 @@ struct AppearanceSettings: View {
                         }
                     }
                 }
+                .settingsAnchor(.appIcon)
             } header: {
                 InfoLabel("App Icon", info: "Sets the icon shown in the Dock, ⌘Tab and Finder.")
             }
@@ -101,6 +106,7 @@ struct SearchSettings: View {
                     Button("Custom…") { isEditingBangs = true }
                         .disabled(!bangsEnabled)
                 }
+                .settingsAnchor(.bangs)
             } header: {
                 InfoLabel("Shortcuts", info: "Each profile picks its own search engine, in Profiles.")
             }
@@ -111,6 +117,7 @@ struct SearchSettings: View {
                         "Index the text of pages I visit",
                         info: "Lets the command bar search the text of pages you've read. Each profile has its own index on this Mac, and incognito pages are skipped.")
                 }
+                .settingsAnchor(.indexPageText)
                 HStack {
                     if let indexStatus {
                         Text(indexStatus)
@@ -127,6 +134,7 @@ struct SearchSettings: View {
                     }
                     .disabled(indexStatus == nil)
                 }
+                .settingsAnchor(.eraseIndex)
             }
         }
         .formStyle(.grouped)
@@ -168,6 +176,7 @@ struct SidebarSettings: View {
                 } maximumValueLabel: {
                     Text("Slow")
                 }
+                .settingsAnchor(.revealDelay)
 
                 Slider(value: $sidebarHoverAreaWidth.undoable("Hover Area"), in: 2...40, step: 1) {
                     InfoLabel(
@@ -178,6 +187,7 @@ struct SidebarSettings: View {
                 } maximumValueLabel: {
                     Text("Wide")
                 }
+                .settingsAnchor(.hoverArea)
 
                 // bind in whole milliseconds: a fractional-second step (0.05)
                 // doesn't divide the range evenly in floating point, so the
@@ -197,6 +207,7 @@ struct SidebarSettings: View {
                 } maximumValueLabel: {
                     Text("Slow")
                 }
+                .settingsAnchor(.revealSpeed)
             }
 
             Section("Spaces") {
@@ -215,6 +226,7 @@ struct SidebarSettings: View {
                 } maximumValueLabel: {
                     Text("Slow")
                 }
+                .settingsAnchor(.spaceSwitchSpeed)
             }
         }
         .formStyle(.grouped)
@@ -244,6 +256,7 @@ struct TabsSettings: View {
                         "When separating",
                         info: "⌘-click an off-anchor pinned tab's favicon to split it in two. This picks which one keeps the pinned slot.")
                 }
+                .settingsAnchor(.pinnedSeparation)
 
                 Picker(selection: $pinnedSeparationDestinationRaw.undoable("Split-Off Tab Destination")) {
                     ForEach(PinnedSeparationDestination.allCases) { dest in
@@ -252,6 +265,7 @@ struct TabsSettings: View {
                 } label: {
                     InfoLabel("Split-off tab goes to", info: "Where the tab that splits off lands.")
                 }
+                .settingsAnchor(.splitOffDestination)
             } header: {
                 InfoLabel("Pinned Tabs", info: "How long unpinned tabs stay before archiving is set per profile.")
             }
@@ -262,9 +276,11 @@ struct TabsSettings: View {
                         "Show previews",
                         info: "Rest the pointer on a pinned tab or favourite to see what's new there. Nothing is fetched in incognito or locked spaces.")
                 }
+                .settingsAnchor(.tabPreviews)
                 ForEach(TabPreviewCard.Kind.allCases) { kind in
                     PreviewKindToggle(kind: kind)
                         .disabled(!showsPreviews)
+                        .settingsAnchor(kind == TabPreviewCard.Kind.allCases.first ? .previewSites : nil)
                 }
             } header: {
                 Text("Previews")
@@ -280,28 +296,33 @@ struct TabsSettings: View {
                         "New splits open",
                         info: "The direction a new split opens in. Drag the handle at a pane's top right to rearrange it later.")
                 }
+                .settingsAnchor(.splitDirection)
 
                 Toggle(isOn: $autoResizeSplitOnDrag.undoable("Auto-Resize Panes")) {
                     InfoLabel(
                         "Auto-resize panes on drag",
                         info: "Rearranging panes evens out their sizes. Turn it off to keep the sizes you set by hand.")
                 }
+                .settingsAnchor(.autoResizePanes)
 
                 Toggle(isOn: $dimInactivePanes.undoable("Dim Inactive Panes")) {
                     InfoLabel("Dim inactive panes", info: "Fades the panes you're not using so the focused one stands out.")
                 }
+                .settingsAnchor(.dimInactivePanes)
 
                 Toggle(isOn: $defaultSplitLinked.undoable("Linked Splits")) {
                     InfoLabel(
                         "Open links in the next pane",
                         info: "New splits start linked, so a link clicked in one pane opens in the next. Change it per pane with the link button.")
                 }
+                .settingsAnchor(.linkedSplits)
 
                 Toggle(isOn: $showSplitDropGuides.undoable("Drop Guides")) {
                     InfoLabel(
                         "Show drop guides while dragging",
                         info: "Shows where to drop a pane for each split direction while you drag it.")
                 }
+                .settingsAnchor(.dropGuides)
             }
         }
         .formStyle(.grouped)

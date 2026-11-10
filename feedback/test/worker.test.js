@@ -422,6 +422,48 @@ describe("feedback issues", () => {
     assert.match(gh.issues[0].body, /Public issue \| ` https:\/\/github\.com\/artemisbrowser\/artemis\/issues\/1 `/);
   });
 
+  test("a beta or nightly build labels its issues and shows its channel and commit", async () => {
+    const app = {
+      version: "1.0.0 Nightly Nov 9",
+      build: "1000002.26110904",
+      channel: "nightly",
+      commit: "157d2c95",
+    };
+    await post({ ...feedback(), app });
+    assert.deepEqual(gh.shared[0].labels, ["from-app", "bug", "nightly"]);
+    assert.deepEqual(gh.issues[0].labels, [
+      "feedback",
+      "bug",
+      "nightly",
+      "public",
+    ]);
+    assert.match(
+      gh.issues[0].body,
+      /\| Channel \| ` nightly ` \|\n\| Commit \| ` 157d2c95 ` \|/,
+    );
+    await post(errors("100", ev("ab")));
+    await post({
+      ...errors("1000002.26110904", ev("ab")),
+      app: { ...app, channel: "beta" },
+    });
+    assert.deepEqual(gh.issues[1].labels, ["error"]);
+    assert.match(
+      gh.comments[0].body,
+      /^Build ` 1000002\.26110904 ` \(beta\) hits this\.\n/,
+    );
+    await post({ ...feedback(), app: { ...app, channel: "release" } });
+    assert.deepEqual(gh.issues.at(-1).labels, ["feedback", "bug", "public"]);
+  });
+
+  test("a malformed app.channel or app.commit is dropped, the report kept", async () => {
+    const app = { version: "1.0", build: "1", channel: "alpha", commit: "157d2c95-dirty" };
+    assert.equal((await post({ ...feedback(), app })).status, 201);
+    assert.deepEqual(gh.issues[0].labels, ["feedback", "bug", "public"]);
+    assert.doesNotMatch(gh.issues[0].body, /Channel|Commit|alpha|dirty/);
+    assert.equal((await post({ ...feedback(), app: { ...app, commit: 12345678 } })).status, 201);
+    assert.doesNotMatch(gh.issues.at(-1).body, /Commit/);
+  });
+
   test("a private report files nothing public", async () => {
     const res = await post(feedback({ private: true }));
     assert.equal(gh.shared.length, 0);

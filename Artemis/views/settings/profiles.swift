@@ -11,7 +11,7 @@ import SwiftUI
 final class ProfilesNavigator {
     static let shared = ProfilesNavigator()
 
-    enum Page { case passwords, autofill, clearData }
+    nonisolated enum Page { case passwords, autofill, clearData }
 
     var selected: Profile.ID?
     var page: Page?
@@ -33,7 +33,7 @@ final class ProfilesNavigator {
     }
 }
 
-extension ProfilesNavigator.Page {
+nonisolated extension ProfilesNavigator.Page {
     var title: String {
         switch self {
         case .passwords: "Passwords"
@@ -79,6 +79,7 @@ struct ProfilesSettings: View {
                     .padding([.horizontal, .top], 20)
                 HStack(alignment: .top, spacing: 0) {
                     ProfileList(selection: Binding(get: { profile.id }, set: { navigator.selected = $0 }))
+                        .settingsAnchor(.profileList)
                         .frame(width: 220)
                         .frame(maxHeight: .infinity)
                         .padding([.leading, .vertical], 20)
@@ -246,7 +247,7 @@ private struct ProfileDetail: View {
                         IconPicker(
                             icon: Binding(
                                 get: { profile.icon }, set: { tabManager.updateProfile(profile, icon: $0) }
-                            ).undoable("Profile Icon"))
+                            ).undoable("Profile Icon"), name: profile.name)
                     }
                     if isRenaming {
                         TextField("Name", text: $name, prompt: Text("Profile name"))
@@ -268,6 +269,7 @@ private struct ProfileDetail: View {
                         Button("Rename") { beginRename() }
                     }
                 }
+                .settingsAnchor(.profileName)
             }
 
             Section {
@@ -291,6 +293,7 @@ private struct ProfileDetail: View {
                         Text(engine.label).tag(engine)
                     }
                 }
+                .settingsAnchor(.searchEngine)
                 // the ⓘ stays outside the disabled toggle: it's what says why it's off
                 LabeledContent {
                     Toggle("Search engine suggestions", isOn: bind(\.suggestsSearches, "Search Suggestions"))
@@ -304,6 +307,7 @@ private struct ProfileDetail: View {
                             ? "Shows \(profile.searchEngine.label) completions in the command bar by sending them what you type. Never used in incognito windows."
                             : "Artemis can't get completions from \(profile.searchEngine.label), so this is unavailable.")
                 }
+                .settingsAnchor(.searchSuggestions)
                 LabeledContent("Bangs and shortcuts") {
                     Button("Search Settings…") { SettingsView.open(.search) }
                 }
@@ -311,14 +315,15 @@ private struct ProfileDetail: View {
 
             Section("Tabs") {
                 Picker(selection: bind(\.archiveAfterHours, "Archive Timing")) {
-                    ForEach([0.0, 6, 12, 24, 48, 168], id: \.self) { hours in
-                        Text(Self.archiveLabel(hours)).tag(hours)
+                    ForEach(Profile.archiveChoices, id: \.self) { hours in
+                        Text(Profile.archiveLabel(hours)).tag(hours)
                     }
                 } label: {
                     InfoLabel(
                         "Archive tabs after",
                         info: "Today tabs in this profile's spaces that you leave untouched move to the Library. Pinned tabs and favourites are never archived.")
                 }
+                .settingsAnchor(.archiveAfter)
             }
 
             TranslationSection(rules: profile.translationRules)
@@ -345,6 +350,7 @@ private struct ProfileDetail: View {
                         ProfilesNavigator.shared.selected = Profile.defaultID
                         tabManager.deleteProfile(profile)
                     }
+                    .settingsAnchor(.deleteProfile)
                 }
             }
         }
@@ -363,16 +369,6 @@ private struct ProfileDetail: View {
                 tabManager.scheduleSave()
             }
         ).undoable(setting)
-    }
-
-    private static func archiveLabel(_ hours: Double) -> String {
-        switch hours {
-        case 0: "Never"
-        case ..<24: "\(Int(hours)) hours"
-        case 24: "1 day"
-        case 168: "1 week"
-        default: "\(Int(hours / 24)) days"
-        }
     }
 
     private var passwordSummary: String {
@@ -444,13 +440,16 @@ private struct TranslationSection: View {
                     "Translate pages to",
                     info: "Pages are translated on this Mac. Rules are made from the translate button while a page is translated.")
             }
+            .settingsAnchor(.translateTo)
             ForEach(rules.languages, id: \.self) { code in
                 rule("Always translate \(PageTranslation.name(of: Locale.Language(identifier: code)))") {
                     rules.setAlways(code, false)
                 }
+                .settingsAnchor(code == rules.languages.first ? .translationRules : nil)
             }
             ForEach(rules.sites, id: \.self) { site in
                 rule("Never translate \(site)") { rules.setNever(site, false) }
+                    .settingsAnchor(rules.languages.isEmpty && site == rules.sites.first ? .translationRules : nil)
             }
         }
         .task { targets = await PageTranslation.targetLanguages() }
@@ -599,15 +598,16 @@ struct ClearBrowsingDataSettings: View {
                         Text(option.label.capitalizedFirst).tag(option)
                     }
                 }
+                .settingsAnchor(.clearTimeRange)
             }
 
             Section {
-                toggle("Browsing history", .history)
-                toggle("Cookies and site data", .siteData)
-                toggle("Cached files and images", .cache)
-                toggle("Archived tabs", .archive)
-                toggle("Indexed page text", .pageText)
-                toggle("Saved addresses and cards", .autofill)
+                toggle("Browsing history", .history).settingsAnchor(.clearHistory)
+                toggle("Cookies and site data", .siteData).settingsAnchor(.clearCookies)
+                toggle("Cached files and images", .cache).settingsAnchor(.clearCache)
+                toggle("Archived tabs", .archive).settingsAnchor(.clearArchive)
+                toggle("Indexed page text", .pageText).settingsAnchor(.clearPageText)
+                toggle("Saved addresses and cards", .autofill).settingsAnchor(.clearAutofill)
                 if targets.contains(.siteData) {
                     Label("Signs \(profile.name) out of sites.", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -625,9 +625,9 @@ struct ClearBrowsingDataSettings: View {
             }
 
             Section {
-                toggle("Downloads list", .downloads)
-                toggle("Per-site zoom levels", .zoom)
-                toggle("Site permissions", .permissions)
+                toggle("Downloads list", .downloads).settingsAnchor(.clearDownloads)
+                toggle("Per-site zoom levels", .zoom).settingsAnchor(.clearZoom)
+                toggle("Site permissions", .permissions).settingsAnchor(.clearPermissions)
             } header: {
                 InfoLabel(
                     "Every Profile",
@@ -646,6 +646,7 @@ struct ClearBrowsingDataSettings: View {
                     Button("Clear…", role: .destructive) { confirming = true }
                         .disabled(targets.isEmpty || working)
                 }
+                .settingsAnchor(.clearNow)
             }
         }
         .formStyle(.grouped)

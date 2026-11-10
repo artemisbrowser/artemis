@@ -28,6 +28,7 @@ struct AgentSettings: View {
                         "Allow coding agents to use Artemis",
                         info: "Lets MCP clients such as Claude Code read and drive tabs in the spaces you allow. Each new agent asks first.")
                 }
+                .settingsAnchor(.agentsEnabled)
                 if let error = bridge.socketError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -49,6 +50,7 @@ struct AgentSettings: View {
                         }
                         .controlSize(.small)
                     }
+                    .settingsAnchor(setup.name == Self.setups.first?.name ? .agentSetup : nil)
                 }
             }
 
@@ -63,19 +65,21 @@ struct AgentSettings: View {
                                     bridge.allowedSpaceIDs.remove(space.id)
                                 }
                             }))
+                    .settingsAnchor(space.id == BrowserCore.shared.spaces.first?.id ? .agentSpaces : nil)
                 }
                 Toggle(isOn: $bridge.allowsScripts) {
                     InfoLabel(
                         "Let agents run scripts in pages",
                         info: "Scripts run with the page's full access, including your signed-in session.")
                 }
+                .settingsAnchor(.agentScripts)
             } header: {
                 InfoLabel("Spaces Agents Can Reach", info: "Incognito windows are never shared.")
             }
 
             Section("Approved Agents") {
                 if bridge.approved.isEmpty {
-                    Text("None yet.").foregroundStyle(.secondary)
+                    Text("None yet.").foregroundStyle(.secondary).settingsAnchor(.approvedAgents)
                 }
                 ForEach(bridge.approved, id: \.self) { identity in
                     HStack {
@@ -84,12 +88,13 @@ struct AgentSettings: View {
                         Button("Forget") { bridge.forget(identity) }
                             .controlSize(.small)
                     }
+                    .settingsAnchor(identity == bridge.approved.first ? .approvedAgents : nil)
                 }
             }
 
             Section("Connected") {
                 if bridge.sessions.isEmpty {
-                    Text("No agents connected.").foregroundStyle(.secondary)
+                    Text("No agents connected.").foregroundStyle(.secondary).settingsAnchor(.connectedAgents)
                 }
                 ForEach(bridge.sessions) { session in
                     HStack {
@@ -103,6 +108,7 @@ struct AgentSettings: View {
                         Button("Disconnect") { session.close() }
                             .controlSize(.small)
                     }
+                    .settingsAnchor(session.id == bridge.sessions.first?.id ? .connectedAgents : nil)
                 }
             }
         }

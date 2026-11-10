@@ -30,7 +30,7 @@ struct LinksSettings: View {
                     ruleRow(rule)
                 }
                 .onMove { routing.move(fromOffsets: $0, toOffset: $1) }
-                addRow
+                addRow.settingsAnchor(.routingRules)
             } header: {
                 InfoLabel(
                     "Rules",
@@ -50,6 +50,7 @@ struct LinksSettings: View {
                     Button("Draft", action: ask)
                         .disabled(thinking || sentence.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .settingsAnchor(.describeRule)
                 if thinking {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
@@ -82,6 +83,7 @@ struct LinksSettings: View {
                         info: "Links that match no rule always open in Scout.")
                 }
                 .pickerStyle(.radioGroup)
+                .settingsAnchor(.externalLinks)
             }
 
             Section("Peek") {
@@ -94,10 +96,11 @@ struct LinksSettings: View {
                         "Controls corner",
                         info: "The corner that holds Peek's buttons. ⇧-click a link to open it in Peek.")
                 }
+                .settingsAnchor(.peekCorner)
             }
 
             Section("Scout") {
-                ScoutBarSetting()
+                ScoutBarSetting().settingsAnchor(.scoutFrame)
             }
         }
         .formStyle(.grouped)

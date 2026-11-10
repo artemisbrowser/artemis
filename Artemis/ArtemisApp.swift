@@ -60,6 +60,8 @@ struct ArtemisApp: App {
 
     init() {
         Bench.mark("ArtemisApp.init")
+        // before anything saves a session, which would read as an existing install
+        _ = Onboarding.isDue
         WindowChrome.clampStoredEdgeInset()
         // before any window exists, or AppKit's window-tab items stay in the menus
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -210,9 +212,9 @@ struct ArtemisApp: App {
                 Button("Restore from Backup…") { restoreBackup() }
                 Button("Import Bookmarks…") { importBookmarks() }
                 Button("Import from Arc…") { ArcMigration.run(into: browser) }
-                    .disabled(browser.arcImport != nil)
-                Button("Import from Browser…") { BrowserImportModel.open(in: browser) }
-                    .disabled(browser.browserImport != nil)
+                    .disabled(browser.importer != nil)
+                Button("Import from Browser…") { ImportModel.open(in: browser) }
+                    .disabled(browser.importer != nil)
 
                 Divider()
 
@@ -747,6 +749,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
         AppIconChoice.apply()
         SpotlightIndex.scheduleRefresh()
+        // Safari exports a quit or crash left unpacked
+        try? FileManager.default.removeItem(at: SafariImport.exports)
         if !SelfTest.isRequested, !AppStorageLocation.isExtensionLab {
             Task { await Reports.run() }
             Updates.shared.start()
@@ -756,13 +760,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if BrowserWindows.shared.mainManagers.isEmpty { self.openBrowserWindow() }
-        }
-        // the offer to move in from Arc, once, after the first window is up
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            Task { @MainActor in
-                guard let manager = BrowserWindows.shared.mainManagers.first else { return }
-                ArcMigration.offerOnFirstLaunch(into: manager)
-            }
         }
     }
 
@@ -824,6 +821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tab = manager.newTab(url: url, select: true)
             manager.revealTab(tab)
             NSApp.activate(ignoringOtherApps: true)
+            BrowserWindows.shared.window(of: manager)?.makeKeyAndOrderFront(nil)
             return
         }
         ScoutWindow.open(url)

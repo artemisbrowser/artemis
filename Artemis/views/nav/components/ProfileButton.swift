@@ -95,7 +95,7 @@ private struct ProfilePanel: View {
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showingIconPicker, arrowEdge: .trailing) {
-                IconPicker(icon: $icon)
+                IconPicker(icon: $icon, name: name)
             }
             TextField("Profile name", text: $name)
                 .textFieldStyle(.plain)

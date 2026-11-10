@@ -624,7 +624,7 @@ struct CommandBarEngine {
             CommandAction(
                 id: "import", title: "Import from Browser…", symbol: "square.and.arrow.down",
                 keywords: ["bookmarks", "history", "passwords", "move", "migrate", "chrome", "safari", "firefox", "zen"],
-                run: { BrowserImportModel.open(in: manager) }),
+                run: { ImportModel.open(in: manager) }),
             CommandAction(
                 id: "settings", title: "Settings", symbol: "gearshape",
                 keywords: ["preferences", "config", "options"], run: { SettingsView.open() }),
@@ -648,7 +648,7 @@ struct CommandBarEngine {
             out.append(
                 CommandAction(
                     id: "check-updates", title: "Check for Updates…", symbol: "arrow.down.circle",
-                    keywords: ["update", "upgrade", "new version", "release", "beta"],
+                    keywords: ["update", "upgrade", "new version", "release", "beta", "nightly"],
                     run: { Updates.shared.checkNow() }))
         }
 

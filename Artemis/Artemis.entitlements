@@ -10,6 +10,9 @@
 	<true/>
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
+	<!-- Importing from Yab reads its spaces over AppleScript, after the person picks it. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 	<!-- Passkeys / WebAuthn: `com.apple.developer.web-browser.public-key-credential` belongs here
 	     only once Apple grants it and a development team signs the build; codesign rejects a
 	     restricted entitlement without one, which breaks "sign to run locally" builds. -->

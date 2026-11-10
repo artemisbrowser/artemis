@@ -59,15 +59,22 @@ enum OwnerUnlock {
             }
         }
 
-        var policy: UnlockPolicy { UserDefaults.standard.string(forKey: key).flatMap(UnlockPolicy.init) ?? standard }
+        var policy: UnlockPolicy {
+            let chosen = UserDefaults.standard.string(forKey: key).flatMap(UnlockPolicy.init) ?? standard
+            return chosen
+        }
     }
 
     /// the only way to the system sheet; the self-test swaps in its own
     static var check: (String) async -> Bool = { reason in
-        (try? await LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
+        let evaluated = LAContext()
+        guard (try? await evaluated.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) == true
+        else { return false }
+        return true
     }
     /// when the last check passed; the self-test backdates it
     static var unlockedAt: Date?
+    private static var lockTimer: Timer?
 
     /// what the system sheet asks for, as settings name it
     static var method: String {
@@ -82,10 +89,28 @@ enum OwnerUnlock {
     /// true once the owner has passed a check `kind`'s policy still accepts, asking for one when it doesn't
     static func authenticate(_ kind: Kind, _ reason: String) async -> Bool {
         _ = forgetting
-        if isUnlocked(kind) { return true }
-        guard await check(reason) else { return false }
-        unlockedAt = Date()
+        if !isUnlocked(kind) {
+            guard await check(reason) else { return false }
+            unlockedAt = Date()
+            scheduleLock()
+        }
         return true
+    }
+
+    /// the last check is forgotten once no kind's window covers it
+    private static func scheduleLock() {
+        lockTimer?.invalidate()
+        guard let longest = Kind.allCases.compactMap(\.policy.window).max(), longest.isFinite else { return }
+        lockTimer = Timer.scheduledTimer(withTimeInterval: max(longest, 1), repeats: false) { _ in
+            MainActor.assumeIsolated {
+                guard !Kind.allCases.contains(where: isUnlocked) else { return }
+                forget()
+            }
+        }
+    }
+
+    private static func forget() {
+        unlockedAt = nil
     }
 
     /// the Mac locking, sleeping, or handing the screen to another user
@@ -98,7 +123,7 @@ enum OwnerUnlock {
 
     private static let forgetting: [NSObjectProtocol] = forgetOn.map { center, name in
         center.addObserver(forName: name, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { unlockedAt = nil }
+            MainActor.assumeIsolated { forget() }
         }
     }
 }

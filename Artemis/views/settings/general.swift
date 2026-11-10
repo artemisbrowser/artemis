@@ -7,7 +7,7 @@ import WebKit
 
 /// whether Artemis is the browser macOS hands links to, and the one-click way to make it so
 @MainActor
-private enum DefaultBrowser {
+enum DefaultBrowser {
     private static var handler: URL? {
         NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!)
     }
@@ -62,26 +62,29 @@ struct GeneralSettings: View {
         Form {
             Section("Default Browser") {
                 let _ = defaultBrowserCheck
-                if DefaultBrowser.isArtemis {
-                    Label("Artemis opens links from other apps.", systemImage: "checkmark.circle")
-                        .foregroundStyle(.green)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(currentBrowserLine)
-                        Button("Make Artemis Your Default Browser") {
-                            Task {
-                                await DefaultBrowser.makeArtemis()
-                                defaultBrowserCheck += 1
+                Group {
+                    if DefaultBrowser.isArtemis {
+                        Label("Artemis opens links from other apps.", systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(currentBrowserLine)
+                            Button("Make Artemis Your Default Browser") {
+                                Task {
+                                    await DefaultBrowser.makeArtemis()
+                                    defaultBrowserCheck += 1
+                                }
                             }
                         }
                     }
                 }
+                .settingsAnchor(.defaultBrowser)
             }
 
             Section {
                 LabeledContent {
                     Button("Import…") {
-                        BrowserImportModel.open(in: tabManager)
+                        ImportModel.open(in: tabManager)
                         BrowserWindows.shared.window(of: tabManager)?.makeKeyAndOrderFront(nil)
                     }
                 } label: {
@@ -89,6 +92,16 @@ struct GeneralSettings: View {
                         "Import from another browser",
                         info: "Brings bookmarks, history, spaces and passwords into the profile you choose.")
                 }
+                .settingsAnchor(.importBrowser)
+                LabeledContent {
+                    Button("Show") {
+                        Onboarding.replay.target = tabManager
+                        BrowserWindows.shared.window(of: tabManager)?.makeKeyAndOrderFront(nil)
+                    }
+                } label: {
+                    InfoLabel("Show onboarding", info: "Plays the intro and the setup cards again.")
+                }
+                .settingsAnchor(.showOnboarding)
             }
 
             if Updates.shared.isEnabled {
@@ -99,18 +112,22 @@ struct GeneralSettings: View {
                     ).undoable("Update Channel")) {
                         Text("Release").tag("release")
                         Text("Beta").tag("beta")
+                        Text("Nightly").tag("nightly")
                     } label: {
                         InfoLabel(
                             "Channel",
-                            info: "Beta gets new features first and may have bugs. Leaving Beta takes effect at the next release.")
+                            info: "Beta gets new features first and Nightly gets every change as it lands. Both may have bugs, and leaving takes effect at the next update.")
                     }
+                    .settingsAnchor(.updateChannel)
                     Toggle("Check for updates automatically", isOn: Binding(
                         get: { Updates.shared.checksAutomatically },
                         set: { Updates.shared.checksAutomatically = $0 }
                     ).undoable("Automatic Updates"))
+                    .settingsAnchor(.autoUpdate)
                     LabeledContent("Artemis \(Self.version)") {
                         Button("Check Now") { Updates.shared.checkNow() }
                     }
+                    .settingsAnchor(.checkForUpdates)
                 }
             }
 
@@ -126,6 +143,7 @@ struct GeneralSettings: View {
                 ).undoable("Swipe Navigation")) {
                     InfoLabel("Swipe between pages", info: "Swipe left or right with two fingers to go back or forward.")
                 }
+                .settingsAnchor(.swipeNavigation)
             }
 
             Section("Downloads") {
@@ -138,9 +156,11 @@ struct GeneralSettings: View {
                 } label: {
                     InfoLabel("Save downloads to", info: "Where files you download go.")
                 }
+                .settingsAnchor(.downloadsFolder)
                 Toggle(isOn: $downloadsAsk.undoable("Download Prompt")) {
                     InfoLabel("Ask where to save each file", info: "Pick a folder and name for every download.")
                 }
+                .settingsAnchor(.downloadsAsk)
             }
 
             Section("Memory") {
@@ -153,6 +173,7 @@ struct GeneralSettings: View {
                         "Sleep background tabs after",
                         info: "A sleeping tab frees its memory and comes back as you left it. Tabs on screen or playing media never sleep.")
                 }
+                .settingsAnchor(.tabSleep)
             }
 
             Section("Picture in Picture") {
@@ -161,6 +182,7 @@ struct GeneralSettings: View {
                         "Auto-enter when another app covers the window",
                         info: "A playing video moves to a mini-player when another app hides it, and returns when you come back. ⌘⇧P toggles it any time.")
                 }
+                .settingsAnchor(.autoPictureInPicture)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -175,6 +197,7 @@ struct GeneralSettings: View {
                     Slider(value: $pipCornerRadius.undoable("Mini-Player Corners"), in: 0...28, step: 1)
                         .accessibilityLabel("Corner rounding")
                 }
+                .settingsAnchor(.miniPlayerCorners)
 
                 HStack {
                     InfoLabel("Skip buttons jump", info: "How far the skip buttons either side of play jump.")
@@ -187,6 +210,7 @@ struct GeneralSettings: View {
                     Text("seconds")
                         .foregroundStyle(.secondary)
                 }
+                .settingsAnchor(.miniPlayerSkip)
             }
 
             Section {
@@ -220,6 +244,7 @@ private struct PiPSiteButtonsList: View {
             if catalog.isEmpty {
                 Text("Nothing yet — open the mini-player on a site and its buttons will show up here.")
                     .foregroundStyle(.secondary)
+                    .settingsAnchor(.miniPlayerSiteButtons)
             } else {
                 ForEach(catalog.keys.sorted(), id: \.self) { host in
                     DisclosureGroup {
@@ -239,6 +264,7 @@ private struct PiPSiteButtonsList: View {
                                 .font(.caption)
                         }
                     }
+                    .settingsAnchor(host == catalog.keys.min() ? .miniPlayerSiteButtons : nil)
                 }
             }
         }

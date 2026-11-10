@@ -7,7 +7,7 @@ import Foundation
 /// into the same categories the macOS picker uses. generated from Unicode's
 /// emoji-test.txt — fully-qualified base glyphs only (skin-tone variants and
 /// the Component group are omitted, matching the default picker grid)
-enum Emojis {
+nonisolated enum Emojis {
     struct Entry { let glyph: String; let name: String }
     struct Category { let name: String; let emoji: [Entry] }
 

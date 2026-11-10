@@ -4,7 +4,7 @@
 import AppKit
 import SwiftUI
 
-enum SettingsPane: String, CaseIterable, Identifiable {
+nonisolated enum SettingsPane: String, CaseIterable, Identifiable {
     var id: Self { self }
     case general = "General"
     case appearance = "Appearance"
@@ -18,11 +18,14 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case intelligence = "Intelligence"
     case agents = "Agents"
 
-    fileprivate static let groups: [[SettingsPane]] = [
-        [.general, .appearance, .profiles, .privacy],
-        [.sidebar, .tabs, .links, .search],
-        [.extensions, .intelligence, .agents],
-    ]
+    fileprivate static let groups: [[SettingsPane]] = {
+        var groups: [[SettingsPane]] = [
+            [.general, .appearance, .profiles, .privacy],
+            [.sidebar, .tabs, .links, .search],
+            [.extensions, .intelligence, .agents],
+        ]
+        return groups
+    }()
 
     var symbol: String {
         switch self {
@@ -39,38 +42,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .agents: "terminal.fill"
         }
     }
-
-    /// what the sidebar search matches besides the title: the page's sections and what they hold
-    private var keywords: [String] {
-        switch self {
-        case .general:
-            ["Default Browser", "Import", "Arc", "Memory", "Sleep", "Picture in Picture", "Mini-Player"]
-                + (Updates.shared.isEnabled ? ["Updates", "Beta"] : [])
-        case .appearance: [
-            "Window", "Edge thickness", "Now Playing", "Folders", "App Icon",
-        ]
-        case .profiles: [
-            "Passwords", "Passkeys", "Logins", "Cookies", "History", "Favourites", "Clear Browsing Data", "Sign out",
-            "Search engine", "Suggestions", "Archive", "Auto-Archive", "Translation", "Translate",
-        ]
-        case .privacy: [
-            "Content Blocking", "Ads", "Trackers", "Incognito", "Touch ID", "Fingerprint", "Site Permissions",
-            "Camera", "Microphone", "Location", "Automation", "AppleScript", "Spotlight", "Reports", "Feedback",
-            "On-Device Data",
-        ]
-        case .sidebar: ["Reveal", "Hover", "Spaces", "Switching speed"]
-        case .tabs: ["Pinned Tabs", "Split View", "Panes", "Drop guides", "Linked"]
-        case .links: ["Routing", "Rules", "Links from other apps", "Peek", "Scout"]
-        case .search: ["Bangs", "Page Contents", "Index", "Full text"]
-        case .extensions: ["Installed", "Store", "Suggested", "Boosts"]
-        case .intelligence: ["Features", "On-device", "AI"]
-        case .agents: ["Setup", "Approved Agents", "Connected"]
-        }
-    }
-
-    fileprivate func matches(_ query: String) -> Bool {
-        ([rawValue] + keywords).contains { $0.localizedCaseInsensitiveContains(query) }
-    }
 }
 
 struct SettingsView: View {
@@ -82,6 +53,10 @@ struct SettingsView: View {
     @State private var stepTarget: SettingsPane?
     @State private var query = ""
     @State private var profiles = ProfilesNavigator.shared
+    @State private var spotlight = SettingsSpotlight.shared
+    @State private var hits: [SettingID] = []
+    /// the on-device model is reading the query
+    @State private var asking = false
 
     /// SwiftUI's own opener, handed over by a browser window; the legacy selector is
     /// the fallback when no window is open, and does nothing from a floating panel
@@ -100,26 +75,36 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            SettingsSidebar(selection: selectedPane, query: query, select: go, open: openProfilePage)
+            SettingsSidebar(
+                selection: selectedPane, query: query, hits: hits, asking: asking,
+                select: go, open: openProfilePage, reveal: { spotlight.reveal($0) })
                 .searchable(text: $query, placement: .sidebar, prompt: "Search settings")
+                .onSubmit(of: .search) { if let first = hits.first { spotlight.reveal(first) } }
+                .task(id: query) { await find(query) }
                 .navigationSplitViewColumnWidth(240)
         } detail: {
-            page(selectedPane)
-                .navigationTitle(subpage?.title ?? selectedPane.rawValue)
-                // a profile's page says whose it is
-                .navigationSubtitle(subpage == nil ? "" : profiles.profile.name)
-                .toolbar {
-                    ToolbarItemGroup(placement: .navigation) {
-                        Button(action: goBack) { Image(systemName: "chevron.left") }
-                            .disabled(back.isEmpty && subpage == nil)
-                            .help(subpage == nil ? "Back" : "Back to \(profiles.profile.name)")
-                            .accessibilityLabel("Back")
-                        Button(action: goForward) { Image(systemName: "chevron.right") }
-                            .disabled(forward.isEmpty)
-                            .accessibilityLabel("Forward")
+            ScrollViewReader { proxy in
+                page(selectedPane)
+                    .coordinateSpace(.named(SettingsSpotlight.space))
+                    .onChange(of: spotlight.pending, initial: true) { _, id in
+                        if let id { Task { await reveal(id, proxy) } }
                     }
+            }
+            .navigationTitle(subpage?.title ?? selectedPane.rawValue)
+            // a profile's page says whose it is
+            .navigationSubtitle(subpage == nil ? "" : profiles.profile.name)
+            .toolbar {
+                ToolbarItemGroup(placement: .navigation) {
+                    Button(action: goBack) { Image(systemName: "chevron.left") }
+                        .disabled(back.isEmpty && subpage == nil)
+                        .help(subpage == nil ? "Back" : "Back to \(profiles.profile.name)")
+                        .accessibilityLabel("Back")
+                    Button(action: goForward) { Image(systemName: "chevron.right") }
+                        .disabled(forward.isEmpty)
+                        .accessibilityLabel("Forward")
                 }
-        }
+            }
+    }
         .frame(width: 900, height: 700)
         .background(UnifiedToolbar())
         // every change of pane is history, a link inside a page or an `open` from outside included
@@ -146,6 +131,46 @@ struct SettingsView: View {
         profiles.selected = profiles.profile.id
         go(.profiles)
         withAnimation(Motion.panel) { profiles.page = page }
+    }
+
+    private func find(_ query: String) async {
+        asking = false
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            hits = []
+            return
+        }
+        let found = await SettingsSearch.shared.search(query).filter(\.isAvailable)
+        guard !Task.isCancelled else { return }
+        hits = found
+        // a question, or words nothing matched, goes to the model once typing pauses
+        let words = query.split(separator: " ").count
+        guard Intelligence.isEnabled, words >= 3 || found.isEmpty else { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard !Task.isCancelled else { return }
+        asking = true
+        let ideas = await Intelligence.shared.settingTerms(for: query)
+        guard !Task.isCancelled else { return }
+        asking = false
+        guard let ideas else { return }
+        hits = await SettingsSearch.shared.search(query, ideas: ideas).filter(\.isAvailable)
+    }
+
+    /// shows the setting's page, scrolls its row to the middle and lights it for a moment
+    private func reveal(_ id: SettingID, _ proxy: ScrollViewProxy) async {
+        spotlight.pending = nil
+        let entry = id.entry
+        if let page = entry.page {
+            openProfilePage(page)
+        } else {
+            go(entry.pane)
+            if entry.pane == .profiles { profiles.page = nil }
+        }
+        // the new page's rows exist only after its first layout
+        try? await Task.sleep(for: .milliseconds(120))
+        withAnimation(Motion.panel) { proxy.scrollTo(id, anchor: .center) }
+        spotlight.lit = id
+        try? await Task.sleep(for: .seconds(1.8))
+        if spotlight.lit == id { spotlight.lit = nil }
     }
 
     private func goBack() {
@@ -202,8 +227,11 @@ private struct UnifiedToolbar: NSViewRepresentable {
 private struct SettingsSidebar: View {
     let selection: SettingsPane
     let query: String
+    let hits: [SettingID]
+    let asking: Bool
     let select: (SettingsPane) -> Void
     let open: (ProfilesNavigator.Page) -> Void
+    let reveal: (SettingID) -> Void
     @AppStorage(AppIconChoice.storageKey) private var iconRaw = AppIconChoice.bundled.rawValue
 
     private var icon: AppIconChoice { AppIconChoice(rawValue: iconRaw) ?? .bundled }
@@ -217,14 +245,23 @@ private struct SettingsSidebar: View {
                         rows(group)
                     }
                 } else {
-                    let found = SettingsPane.allCases.filter { $0.matches(query) }
+                    let found = SettingsPane.allCases.filter { $0.rawValue.localizedCaseInsensitiveContains(query) }
                     let pages = [ProfilesNavigator.Page.passwords, .autofill, .clearData].filter {
                         $0.title.localizedCaseInsensitiveContains(query)
                     }
-                    if found.isEmpty && pages.isEmpty {
+                    if asking {
+                        ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                    } else if hits.isEmpty && found.isEmpty && pages.isEmpty {
                         Text("Nothing matches “\(query)”")
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 8)
+                    }
+                    if !hits.isEmpty {
+                        VStack(spacing: 2) {
+                            ForEach(hits, id: \.self) { id in
+                                SettingHitRow(id: id, icon: icon) { reveal(id) }
+                            }
+                        }
                     }
                     // a profile's own pages, reached in one click rather than via Profiles
                     if !pages.isEmpty {
@@ -277,6 +314,34 @@ private struct ProfilePageRow: View {
     }
 }
 
+/// a search hit that is one setting: its page's badge, its name, and where it lives
+private struct SettingHitRow: View {
+    let id: SettingID
+    let icon: AppIconChoice
+    let action: () -> Void
+
+    var body: some View {
+        let entry = id.entry
+        Button(action: action) {
+            HStack(spacing: 10) {
+                SettingsBadge(pane: entry.pane, icon: icon)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(entry.title).lineLimit(2)
+                    Text(id.place)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// the app's icon, name and version, where an account card would sit
 private struct AppCard: View {
     let icon: AppIconChoice
@@ -285,7 +350,8 @@ private struct AppCard: View {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "dev"
         let build = info?["CFBundleVersion"] as? String ?? "0"
-        return "Version \(short) (\(build))"
+        let channel = Updates.buildChannel.flatMap { $0 == "release" ? nil : " \($0.capitalized)" } ?? ""
+        return "Version \(short)\(channel) (\(build))"
     }
 
     var body: some View {

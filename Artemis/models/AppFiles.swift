@@ -84,6 +84,16 @@ nonisolated enum AppStorageLocation {
         }
     }
 
+    /// runs `work` on the durable-write queue, after every write queued before it
+    static func enqueueDurable(_ work: @escaping @Sendable () -> Void) {
+        writes.async(execute: work)
+    }
+
+    /// `enqueueDurable`, finished before it returns: for the quit and background paths
+    static func enqueueDurableNow(_ work: () -> Void) {
+        writes.sync(execute: work)
+    }
+
     private static func rotate(_ data: Data, to url: URL, keepsBackup: Bool = true) {
         let backup = url.appendingPathExtension("bak")
         if !keepsBackup {

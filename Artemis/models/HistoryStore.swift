@@ -226,9 +226,9 @@ final class HistoryStore {
     /// forget specific pages, leaving the rest of the trail alone, so a test or
     /// diagnostic run can take itself back out of the user's history
     func forget(where shouldForget: (HistoryEntry) -> Bool) {
-        let before = entries.count
+        let gone = entries.filter(shouldForget).map(\.url)
+        guard !gone.isEmpty else { return }
         entries.removeAll(where: shouldForget)
-        guard entries.count != before else { return }
         scheduleSave()
     }
 

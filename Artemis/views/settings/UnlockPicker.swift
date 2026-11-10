@@ -26,8 +26,8 @@ struct UnlockPicker: View {
     }
 
     var body: some View {
-        Picker(selection: Binding(get: { policy }, set: { choice in Task { await choose(choice) } })) {
-            ForEach(UnlockPolicy.allCases) { option in
+        Picker(selection: Binding(get: { shown }, set: { choice in Task { await choose(choice) } })) {
+            ForEach(options) { option in
                 if option == .minute || option == .untilQuit { Divider() }
                 Text(option.title).tag(option)
             }
@@ -35,6 +35,9 @@ struct UnlockPicker: View {
             InfoLabel(kind.rawValue.capitalized, info: info)
         }
     }
+
+    private var shown: UnlockPolicy { policy }
+    private var options: [UnlockPolicy] { UnlockPolicy.allCases }
 
     private func choose(_ choice: UnlockPolicy) async {
         guard choice.isLooser(than: policy) else { return policy = choice }

@@ -10,6 +10,11 @@
 	     updater never starts (Updates.swift). The key signs every update. -->
 	<key>SUFeedURL</key>
 	<string>$(ARTEMIS_FEED_URL)</string>
+	<!-- set by tools/release.sh; deploy.sh overwrites the sha after building -->
+	<key>ArtemisChannel</key>
+	<string>$(ARTEMIS_CHANNEL)</string>
+	<key>ArtemisGitSHA</key>
+	<string>$(ARTEMIS_GIT_SHA)</string>
 	<key>SUPublicEDKey</key>
 	<string>430eXxx9L+vLraR4rJdrrqDmdqRL0xclykfIqJGJHcA=</string>
 	<key>SUEnableAutomaticChecks</key>
@@ -34,6 +39,8 @@
 	<string>Artemis asks before letting a website use your microphone, and remembers your answer per site.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Artemis asks before letting a website see your location, and remembers your answer per site.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Artemis reads your spaces and tabs from Yab when you import them.</string>
 	<!-- Draws the Dock tile while Artemis is quit, so a pinned tile shows the
 	     chosen app icon instead of the Dock's cached one. -->
 	<key>NSDockTilePlugIn</key>

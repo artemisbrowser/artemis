@@ -682,28 +682,28 @@ final class BrowserTab: NSObject, Identifiable {
     /// losing back/forward history and scroll. a no-op for the same store
     func rebuildWebView(with newStore: WKWebsiteDataStore) {
         guard newStore !== dataStore else { return }
-        // the old view's unanswered question holds a handler nothing could call
-        abandonDialog()
-        BrowserCore.shared.miniPlayer.exitIfActive(for: self)
         // a jar's extensions know only its own tabs: this one leaves the old
         // profile's controller here and joins the new one's once rebuilt
         ExtensionManager.shared.tabDidClose(self)
         let wasPending = pendingURL
         let resume = url ?? lastAttemptedURL ?? pendingURL
-        replaceWebView(on: newStore)
+        replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: newStore))
+        dataStore = newStore
         ExtensionManager.shared.tabDidOpen(self)
 
         // a tab that hadn't loaded stays lazy
         if wasPending == nil, let resume { load(resume) }
     }
 
-    /// a fresh web view on `store`; until it loads it spawns no web process, and
+    /// a fresh web view; until it loads it spawns no web process, and
     /// the url and history observers have re-read it empty
-    private func replaceWebView(on store: WKWebsiteDataStore) {
+    private func replaceWebView(with configuration: WKWebViewConfiguration) {
+        // the old view's unanswered question holds a handler nothing could call
+        abandonDialog()
+        BrowserCore.shared.miniPlayer.exitIfActive(for: self)
         observations.forEach { $0.invalidate() }
         observations = []
-        webView = ArtemisWebView(frame: .zero, configuration: BrowserTab.defaultConfiguration(dataStore: store))
-        dataStore = store
+        webView = ArtemisWebView(frame: .zero, configuration: configuration)
         configureWebView()
         observeWebView()
         webViewGeneration += 1
@@ -906,7 +906,7 @@ final class BrowserTab: NSObject, Identifiable {
         savedInteractionState = webView.interactionState
         pendingURL = current
         isHibernated = true
-        replaceWebView(on: dataStore)
+        replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore))
         if title.isEmpty || title == "New Tab", let host = Self.hostTitle(of: current) { title = host }
         url = current
         addressText = current.absoluteString
@@ -919,19 +919,34 @@ final class BrowserTab: NSObject, Identifiable {
     /// of a restored pin at `pinnedURL`, with its session dropped
     func closeToPinned() {
         guard let anchor = pinnedURL ?? url ?? lastAttemptedURL ?? pendingURL else { return }
-        abandonDialog()
-        BrowserCore.shared.miniPlayer.exitIfActive(for: self)
+        park(at: anchor)
+        url = anchor
+    }
+
+    /// unloaded at `target` with its session dropped, as a restored tab is: nothing loads until it is shown
+    func park(at target: URL, title: String? = nil) {
+        // a never-loaded view is already what a fresh one would be
+        let pristine =
+            webView.url == nil && !webView.isLoading && webView.backForwardList.currentItem == nil
+            && (isHibernated || lastAttemptedURL == nil)
         WebNotifications.shared.forgetPage(in: id)
         appBadge = nil
         savedInteractionState = nil
         isHibernated = false
-        pendingURL = anchor
+        pendingURL = target
+        lastAttemptedURL = nil
+        endRequestedLoad()
         loadError = nil
-        replaceWebView(on: dataStore)
+        if pristine {
+            adoptCommittedURL()
+            stillFrame = nil
+            hasUnsavedState = true
+        } else {
+            replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore))
+        }
 
-        url = anchor
-        addressText = anchor.absoluteString
-        if let host = Self.hostTitle(of: anchor) { title = host }
+        addressText = target.absoluteString
+        if let shown = title ?? Self.hostTitle(of: target) { self.title = shown }
         canGoBack = false
         canGoForward = false
     }
@@ -1002,6 +1017,7 @@ final class BrowserTab: NSObject, Identifiable {
         loadError = nil
         lastAccessed = Date()
         addressText = url.absoluteString
+        if let configuration = extensionPageConfiguration(for: url) { replaceWebView(with: configuration) }
         // a local page reads the home folder it sits in, or else its own folder, so its
         // stylesheets, images and linked pages load. each file stays its own origin
         let home = URL.homeDirectory
@@ -1010,6 +1026,16 @@ final class BrowserTab: NSObject, Identifiable {
             ? webView.loadFileURL(
                 url, allowingReadAccessTo: url.path.hasPrefix(home.path + "/") ? home : url.deletingLastPathComponent())
             : webView.load(URLRequest(url: url))
+    }
+
+    /// an extension's page loads only in a web view built from its context's configuration
+    /// (elsewhere WebKit fails it with -1008); nil when this view can already load it
+    private func extensionPageConfiguration(for url: URL) -> WKWebViewConfiguration? {
+        guard url.scheme?.hasSuffix("-extension") == true,
+            webView.url.map({ $0.scheme == url.scheme && $0.host() == url.host() }) != true
+        else { return nil }
+        return WebExtensionRuntime.controller(for: ProfileStore.proxyProfile(of: dataStore))
+            .extensionContext(for: url)?.webViewConfiguration
     }
 
     func retry() {
@@ -1429,7 +1455,9 @@ extension BrowserTab: WKNavigationDelegate {
         // "plug-in handled load" (204): a raw media file shown in WebKit's viewer
         guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 204) else { return }
         // a link, redirect or back/forward fails without passing through `load`
-        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL { lastAttemptedURL = failing }
+        if let failing = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL, failing != lastAttemptedURL {
+            lastAttemptedURL = failing
+        }
         loadError = nsError.localizedDescription
         if !CertificateTrust.isOverridable(nsError) {
             certificateFailure = nil
@@ -1700,19 +1728,27 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
-    /// map the input's `accept` list onto `UTType`s for the picker
+    /// map the input's `accept` list onto `UTType`s for the picker; dynamic types are
+    /// dropped because no file conforms to one, which greys out the whole panel
     private static func acceptedTypes(_ parameters: WKOpenPanelParameters) -> [UTType] {
         let spi = unsafeBitCast(parameters, to: WKOpenPanelParametersSPI.self)
         var types: [UTType] = []
         if parameters.responds(to: Selector(("_acceptedMIMETypes"))) {
-            types += spi._acceptedMIMETypes.compactMap { UTType(mimeType: $0) }
+            types += spi._acceptedMIMETypes.compactMap { mime in
+                switch mime.lowercased() {
+                case "image/*": .image
+                case "video/*": .movie
+                case "audio/*": .audio
+                default: UTType(mimeType: mime)
+                }
+            }
         }
         if parameters.responds(to: Selector(("_acceptedFileExtensions"))) {
             types += spi._acceptedFileExtensions.compactMap {
                 UTType(filenameExtension: $0.hasPrefix(".") ? String($0.dropFirst()) : $0)
             }
         }
-        return types
+        return types.filter { !$0.isDynamic }
     }
 
     func webView(

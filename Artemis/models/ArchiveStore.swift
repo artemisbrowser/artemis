@@ -70,12 +70,13 @@ final class ArchiveStore {
 
     /// give each unnamed entry the name `name` finds for its url
     func nameUnnamed(_ name: (URL) -> String?) {
-        var named = false
+        var named: [String] = []
         for i in entries.indices where entries[i].name == nil {
             entries[i].name = name(entries[i].url)
-            named = named || entries[i].name != nil
+            if entries[i].name != nil { named.append(entries[i].id.uuidString) }
         }
-        if named { scheduleSave() }
+        guard !named.isEmpty else { return }
+        scheduleSave()
     }
 
     func remove(_ entry: ArchiveEntry) {
@@ -85,9 +86,9 @@ final class ArchiveStore {
 
     /// drop the entries that match
     func forget(where shouldForget: (ArchiveEntry) -> Bool) {
-        let before = entries.count
+        let gone = entries.filter(shouldForget).map(\.id.uuidString)
+        guard !gone.isEmpty else { return }
         entries.removeAll(where: shouldForget)
-        guard entries.count != before else { return }
         scheduleSave()
     }
 
@@ -119,14 +120,15 @@ final class ArchiveStore {
 
     // MARK: - Persistence
 
+    /// willWrite and the snapshot share one step after the debounce, once callers have left the sidebar
     private func scheduleSave() {
         saveTask?.cancel()
-        let snapshot = entries
-        let takenAt = AppStorageLocation.snapshotTime()
         let url = fileURL
         saveTask = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
+            let snapshot = entries
+            let takenAt = AppStorageLocation.snapshotTime()
             // thousands of entries: encode off the main actor too
             await Task.detached(priority: .utility) {
                 if let data = try? JSONEncoder().encode(snapshot) {

@@ -13,6 +13,10 @@ const MAGIC = {
   "image/jpeg": [0xff, 0xd8, 0xff],
   "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
 };
+const CHANNELS = ["release", "beta", "nightly"];
+// a beta or nightly build labels its issues with its channel
+const channel = (r) =>
+  r.app.channel && r.app.channel !== "release" ? [r.app.channel] : [];
 // The first key is required for that kind, the rest optional.
 const KINDS = {
   feedback: ["feedback", "diagnostics", "events", "attachments"],
@@ -198,9 +202,16 @@ function validate(r) {
     ...KINDS[r.kind],
   ]);
   check(typeof r.install === "string" && UUID.test(r.install), "install");
-  only(r.app, "app", ["version", "build"]);
+  only(r.app, "app", ["version", "build", "channel", "commit"]);
   text(r.app.version, "app.version", 32);
   text(r.app.build, "app.build", 32);
+  // a malformed channel or commit is dropped, never the report
+  if (!CHANNELS.includes(r.app.channel)) delete r.app.channel;
+  if (
+    !/^[0-9a-f]{7,40}$/i.test(r.app.commit) ||
+    typeof r.app.commit !== "string"
+  )
+    delete r.app.commit;
   text(r.os, "os", 128);
   text(r.model, "model", 64);
   text(r.arch, "arch", 16);
@@ -286,7 +297,7 @@ async function fileFeedback(env, r, id, from) {
             facts({ ...r, publicOnly: true }, []),
             "_Sent from Artemis with Help › Send Feedback._",
           ].join("\n\n"),
-          labels: ["from-app", f.category],
+          labels: ["from-app", f.category, ...channel(r)],
         },
         env.PUBLIC_REPO,
       )
@@ -322,7 +333,12 @@ async function fileFeedback(env, r, id, from) {
     ]
       .filter(Boolean)
       .join("\n\n"),
-    labels: ["feedback", f.category, ...(shared ? ["public"] : [])],
+    labels: [
+      "feedback",
+      f.category,
+      ...channel(r),
+      ...(shared ? ["public"] : []),
+    ],
   });
   await remember(
     env,
@@ -357,7 +373,8 @@ async function track(env, r, label, sig, items) {
       current.state === "closed" && current.state_reason !== "not_planned";
     if (reopen)
       await github(env, "PATCH", `/issues/${seen.issue}`, { state: "open" });
-    const note = `Build ${code(r.app.build)} hits this${reopen ? ", so it is open again" : ""}.`;
+    const [tag] = channel(r);
+    const note = `Build ${code(r.app.build)}${tag ? ` (${tag})` : ""} hits this${reopen ? ", so it is open again" : ""}.`;
     await github(env, "POST", `/issues/${seen.issue}/comments`, {
       body: `${note}\n\n${body}`,
     });
@@ -368,7 +385,7 @@ async function track(env, r, label, sig, items) {
     const issue = await github(env, "POST", "/issues", {
       title: title(`[${label}]`, name),
       body,
-      labels: [label],
+      labels: [label, ...channel(r)],
     });
     await remember(env, key, JSON.stringify({ issue: issue.number }));
   }
@@ -442,6 +459,8 @@ function title(tag, s) {
 function facts(r, rows) {
   const all = [
     ["App", `${r.app.version} (${r.app.build})`],
+    ...(r.app.channel ? [["Channel", r.app.channel]] : []),
+    ...(r.app.commit ? [["Commit", r.app.commit]] : []),
     ["OS", r.os],
     ...(r.publicOnly
       ? []

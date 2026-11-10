@@ -68,17 +68,37 @@ enum ScoutWindow {
         }
         window.contentView?.wantsLayer = true
         window.alphaValue = 0
-        window.makeKeyAndOrderFront(nil)
         // a page's popup never brings Artemis in front of another app
         if activates {
             NSApp.activate(ignoringOtherApps: true)
-        } else if !NSApp.isActive {
-            NSApp.requestUserAttention(.informationalRequest)
+            window.makeKeyAndOrderFront(nil)
+            if !NSApp.isActive { frontOnActivation(window) }
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
         }
         PanelMotion.appear(window)
 
         self.open.append(window)
         return window
+    }
+
+    private static var pendingFront: (any NSObjectProtocol)?
+
+    /// activation completes after `activate` returns and fronts the app's last key window,
+    /// so the Scout window is fronted again once it lands
+    private static func frontOnActivation(_ window: NSWindow) {
+        if let pendingFront { NotificationCenter.default.removeObserver(pendingFront) }
+        pendingFront = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak window] _ in
+            MainActor.assumeIsolated {
+                if let pendingFront { NotificationCenter.default.removeObserver(pendingFront) }
+                pendingFront = nil
+                guard let window, window.isVisible else { return }
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     private static let exit = Exit()

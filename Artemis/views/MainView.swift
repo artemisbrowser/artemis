@@ -189,6 +189,7 @@ struct MainView: View {
         }
         // each overlay animates only its own subtree: a root-level animation
         // would also animate whatever else changes in the same transaction
+        .overlay { OnboardingOverlay() }
         .overlay { CommandBarOverlay() }
         // ⌘L, a new blank tab, first launch
         .onChange(of: tabManager.urlFieldFocusRequest) { tabManager.editAddress() }
@@ -197,12 +198,8 @@ struct MainView: View {
                 .animation(Motion.fade, value: tabManager.isSpaceCreatorVisible)
         }
         .overlay {
-            arcImportOverlay
-                .animation(Motion.fade, value: tabManager.arcImport == nil)
-        }
-        .overlay {
-            browserImportOverlay
-                .animation(Motion.fade, value: tabManager.browserImport == nil)
+            importOverlay
+                .animation(Motion.fade, value: tabManager.importer == nil)
         }
         .overlay {
             Group {
@@ -352,33 +349,16 @@ struct MainView: View {
         }
     }
 
-    /// the move-in-from-Arc picker, modal over everything like the space
-    /// creator: the scrim's tap cancels, and nothing has moved until its button
+    /// import from another browser, modal over everything like the space creator:
+    /// the scrim's tap cancels unless an import is running
     @ViewBuilder
-    private var arcImportOverlay: some View {
-        if let model = tabManager.arcImport {
-            ZStack {
-                Color.black.opacity(0.25)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        // a running import is not interruptible
-                        if case .working = model.phase {} else { model.cancel(in: tabManager) }
-                    }
-                ArcImportSheet(model: model)
-                    .offset(y: -20)
-            }
-        }
-    }
-
-    /// import from another browser, modal like the Arc picker
-    @ViewBuilder
-    private var browserImportOverlay: some View {
-        if let model = tabManager.browserImport {
+    private var importOverlay: some View {
+        if let model = tabManager.importer {
             ZStack {
                 Color.black.opacity(0.25)
                     .contentShape(Rectangle())
                     .onTapGesture { model.cancel(in: tabManager) }
-                BrowserImportSheet(model: model)
+                ImportSheet(model: model)
                     .offset(y: -20)
             }
         }
@@ -565,7 +545,7 @@ struct MainView: View {
     /// a modal over the window takes the pointer from everything under it
     private var isModalOverlayUp: Bool {
         tabManager.peekTab != nil || tabManager.isSpaceCreatorVisible
-            || tabManager.arcImport != nil || tabManager.browserImport != nil
+            || tabManager.importer != nil
             || tabManager.gradientPreview != nil
             || tabManager.feedback != nil || tabManager.liveFolderDraft != nil
     }
@@ -962,9 +942,10 @@ private struct CardStack: View {
             } else if let tab = shown, tab.loadError != nil {
                 ErrorPage(tab: tab)
             } else if shown?.url == nil {
-                // an empty space reveals the window's backdrop
+                // an empty space reveals the window's backdrop, with the mark's glass in the backdrop's scheme
                 if isEmptySpace {
-                    Color.clear
+                    HeldMark(side: 176)
+                        .environment(\.colorScheme, tabManager.currentSpace.appearance.chromeInk == .white ? .dark : .light)
                 } else {
                     StartPage()
                 }

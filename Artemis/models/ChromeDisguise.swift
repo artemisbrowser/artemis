@@ -27,7 +27,7 @@ enum ChromeDisguise {
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         + "(KHTML, like Gecko) Chrome/\(major).0.0.0 Safari/537.36"
 
-    private static var persistedHosts: Set<String> {
+    static var persistedHosts: Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: hostsKey) ?? [])
     }
 

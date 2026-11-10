@@ -57,7 +57,9 @@ nonisolated enum Reports {
             "app": [
                 "version": info["CFBundleShortVersionString"] as? String ?? "",
                 "build": build,
-            ],
+                "channel": Updates.buildChannel,
+                "commit": Updates.buildCommit,
+            ].compactMapValues { $0 },
             "os": "macOS \(os.majorVersion).\(os.minorVersion)\(patch) (\(sysctl("kern.osversion")))",
             "model": sysctl("hw.model"),
             "arch": sysctl("hw.machine"),
@@ -99,7 +101,7 @@ nonisolated enum Reports {
         return id
     }
 
-    private static func sysctl(_ name: String) -> String {
+    static func sysctl(_ name: String) -> String {
         var size = 0
         sysctlbyname(name, nil, &size, nil, 0)
         var value = [CChar](repeating: 0, count: max(size, 1))

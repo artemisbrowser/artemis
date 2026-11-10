@@ -62,6 +62,7 @@ struct PasswordsSettings: View {
                     TextField("Search", text: $query, prompt: Text("Search websites and accounts"))
                         .textFieldStyle(.plain)
                 }
+                .settingsAnchor(.savedPasswords)
                 if sites.isEmpty {
                     Text(logins.isEmpty && passkeys.isEmpty
                         ? "No saved passwords yet. Artemis offers to save one after you sign in."
@@ -108,11 +109,13 @@ struct PasswordsSettings: View {
                 Button("Add Suggested Password…") {
                     editingRecipe = PasswordRecipe(profileID: PasswordStore.stored(profileID))
                 }
+                .settingsAnchor(.suggestedPasswords)
                 Toggle(isOn: $checksLeaks.undoable("Leak Checks")) {
                     InfoLabel(
                         "Check roots against known leaks",
                         info: "Asks Have I Been Pwned whether a root has leaked. Only the first 5 characters of its hash leave this Mac.")
                 }
+                .settingsAnchor(.leakCheck)
             } header: {
                 InfoLabel(
                     "Suggested Passwords",
@@ -125,9 +128,11 @@ struct PasswordsSettings: View {
                         "Offer to save passwords",
                         info: "Asks to save a login to your keychain after you sign in. Incognito windows never save.")
                 }
+                .settingsAnchor(.offerToSavePasswords)
                 Toggle(isOn: $fillFromSuggestions.undoable("Fill from Suggestions")) {
                     InfoLabel("Fill from suggestions", info: "Suggests saved logins when you click into a login field.")
                 }
+                .settingsAnchor(.fillPasswords)
             } header: {
                 InfoLabel("Options", info: "These apply to every profile.")
             }
@@ -135,6 +140,7 @@ struct PasswordsSettings: View {
             Section {
                 UnlockPicker(
                     .passwords, info: "Covers filling, viewing and copying passwords and codes, and signing in with passkeys.")
+                .settingsAnchor(.unlockPasswords)
             } header: {
                 UnlockHeader()
             }
@@ -147,6 +153,7 @@ struct PasswordsSettings: View {
                             Spacer()
                             Button("Remove") { store.setNeverSave(host, false) }.buttonStyle(.link)
                         }
+                        .settingsAnchor(host == store.neverSave.first ? .neverSaved : nil)
                     }
                 } header: {
                     InfoLabel("Never Saved", info: "Sites Artemis won't offer to save a password for, in any profile.")
@@ -159,6 +166,7 @@ struct PasswordsSettings: View {
                     Button("Export CSV…") { Task { await exportCSV() } }
                         .disabled(logins.isEmpty)
                 }
+                .settingsAnchor(.importExportPasswords)
                 if let status {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }

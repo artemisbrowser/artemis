@@ -25,6 +25,14 @@ final class TranslationRules {
     }
 
     var languages: [String] { saved.languages }
+    /// the chosen language's identifier; nil follows the system
+    var chosenTarget: String? {
+        get { saved.target }
+        set {
+            saved.target = newValue
+            save()
+        }
+    }
     var sites: [String] { saved.sites }
 
     /// the chosen language, else the first preferred system language

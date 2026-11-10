@@ -10,6 +10,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     case hydrogenAlpha
     case oxygenIII
     case neptune
+    case nebula
     case mars
     case betelgeuse
     case io
@@ -35,6 +36,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .hydrogenAlpha: "Hydrogen-alpha"
         case .oxygenIII: "Oxygen III"
         case .neptune: "Neptune"
+        case .nebula: "Nebula"
         case .rigel: "Rigel"
         case .mars: "Mars"
         case .betelgeuse: "Betelgeuse"
@@ -51,6 +53,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .hydrogenAlpha: (rgb(0xda8097), rgb(0xc2385a))
         case .oxygenIII: (rgb(0x40ccd8), rgb(0x1f8f99))
         case .neptune: (rgb(0x6785dc), rgb(0x2a4fb8))
+        case .nebula: (rgb(0x9b67d0), rgb(0x6b33a3))
         case .rigel: (rgb(0x9ac0e9), rgb(0x4a8fd8))
         case .mars: (rgb(0xd98b6b), rgb(0xb5562e))
         case .betelgeuse: (rgb(0xe8a77c), rgb(0xd9702a))

@@ -35,6 +35,7 @@ struct AutofillSettings: View {
                     }
                 }
                 Button("Add Address…") { editingAddress = SavedAddress(profileID: PasswordStore.stored(profileID)) }
+                    .settingsAnchor(.addresses)
             } header: {
                 InfoLabel("Addresses", info: "Only this profile's. They stay on this Mac.")
             }
@@ -57,6 +58,7 @@ struct AutofillSettings: View {
                         expiryMonth: 1, expiryYear: Calendar.current.component(.year, from: Date()), brand: .other,
                         last4: "", profileID: PasswordStore.stored(profileID))
                 }
+                .settingsAnchor(.cards)
             } header: {
                 InfoLabel("Cards", info: "Card numbers are kept in your keychain. Security codes are never saved.")
             }
@@ -65,21 +67,26 @@ struct AutofillSettings: View {
                 Toggle(isOn: $fillsAddresses.undoable("Fill Addresses")) {
                     InfoLabel("Fill addresses", info: "Suggests a saved address when you click into an address field.")
                 }
+                .settingsAnchor(.fillAddresses)
                 Toggle(isOn: $fillsCards.undoable("Fill Cards")) {
                     InfoLabel("Fill cards", info: "Suggests a saved card when you click into a card field on a secure page.")
                 }
+                .settingsAnchor(.fillCards)
                 Toggle(isOn: $offersToSave.undoable("Offer to Save")) {
                     InfoLabel(
                         "Offer to save",
                         info: "Asks to save a new address or card after you submit a form. Incognito windows never save.")
                 }
+                .settingsAnchor(.offerToSaveAutofill)
             } header: {
                 InfoLabel("Options", info: "These apply to every profile.")
             }
 
             Section {
                 UnlockPicker(.cards, info: "Covers filling cards and seeing their numbers.")
+                    .settingsAnchor(.unlockCards)
                 UnlockPicker(.addresses, info: "Covers filling and editing addresses.")
+                    .settingsAnchor(.unlockAddresses)
             } header: {
                 UnlockHeader()
             }

@@ -40,7 +40,8 @@ final class TabNameStore {
     func handOverCustomNames(to tabs: [BrowserTab], archives: [ArchiveStore]) {
         let typed = names.compactMapValues(\.custom)
         guard !typed.isEmpty else { return }
-        for tab in tabs where tab.customName == nil {
+        let unnamed = tabs.filter { $0.customName == nil }
+        for tab in unnamed {
             let keys = [tab.url ?? tab.pendingURL, tab.pinnedURL].compactMap(Self.key)
             tab.customName = keys.lazy.compactMap { typed[$0] }.first
         }

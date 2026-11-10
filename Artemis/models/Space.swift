@@ -62,6 +62,17 @@ final class Space: Identifiable {
     /// the first tab with a page to land on; nil when only dormant pins remain
     var firstOpenTab: BrowserTab? { tabs.first { !$0.isDormantPin } }
 
+    /// where the selection lands when tab `id` closes: a pane of its split that stays a split, else the
+    /// nearest open tab, the one after it first. a dormant pin is nothing to land on
+    func successor(of id: BrowserTab.ID) -> BrowserTab.ID? {
+        if let group = splitGroup(containing: id), group.leafCount > SplitGroup.minPanes {
+            return group.tabIDs.first { $0 != id }
+        }
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let open = tabs.filter { $0.id != id }.enumerated().filter { !$0.element.isDormantPin }
+        return open.min { abs($0.offset - index) < abs($1.offset - index) }?.element.id
+    }
+
     /// the split group a tab belongs to, if any
     func splitGroup(containing id: BrowserTab.ID) -> SplitGroup? {
         splitGroups.first { $0.contains(id) }

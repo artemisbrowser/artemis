@@ -466,11 +466,11 @@ final class ExtensionProxyBridge {
         let excluded = excludedDomains(fromBypassList: rules["bypassList"] as? [Any] ?? [])
         config.excludedDomains = excluded
 
-        // with no credential the network stack asks the user for a proxy password; a placeholder
-        // fails closed until the real one arrives and re-applies
+        // an empty password is never sent, so the 407 reaches a web view without our delegate and
+        // macOS prompts; a refused non-empty placeholder fails closed silently until the real one arrives
         config.applyCredential(
             username: credentials?.username ?? "artemis-pending",
-            password: credentials?.password ?? "")
+            password: credentials?.password ?? "artemis-pending")
 
         return BuiltProxy(
             kind: kind, host: host, port: port, excludedDomains: excluded,

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-"""Release notes Markdown (## and ### headings, paragraphs, **bold**, - bullets) to the small HTML page
+"""Release notes Markdown (## and ### headings, paragraphs, **bold**, [links](https://…), - bullets) to the small HTML page
 Sparkle's update window shows, styled like the system in light and dark mode.
 usage: release-notes.py NOTES.md"""
 import html, re, sys
@@ -15,7 +15,8 @@ STYLE = (
 )
 
 def inline(text):
-    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(text, quote=False))
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(text, quote=False))
+    return re.sub(r"\[([^\[\]]+)\]\((https://[^\s()\"<>]+)\)", r'<a href="\2">\1</a>', text)
 
 out = []
 for block in open(sys.argv[1]).read().strip().split("\n\n"):

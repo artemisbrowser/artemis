@@ -6,7 +6,7 @@ import Foundation
 /// a curated ~500 of the most commonly used SF Symbols, grouped into everyday
 /// categories for the space icon picker. names are validated against the
 /// on-device CoreGlyphs catalogue (aliases included — they still render)
-enum SFSymbols {
+nonisolated enum SFSymbols {
     struct Category { let name: String; let symbols: [String] }
 
     /// case-insensitive substring match on the symbol name; empty query returns

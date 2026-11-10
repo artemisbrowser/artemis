@@ -96,7 +96,7 @@ final class TabManager {
     }
 
     /// `tabs` stopped being favourites or went home: no space in any window lands on them
-    private func forgetEssentials(_ tabs: [BrowserTab]) {
+    func forgetEssentials(_ tabs: [BrowserTab]) {
         let ids = Set(tabs.map(\.id))
         for space in spaces where space.selectedEssentialID.map(ids.contains) == true {
             space.selectedEssentialID = nil
@@ -184,9 +184,8 @@ final class TabManager {
     /// a window drag is in flight: the floating sidebar must not read the window
     /// moving under a still pointer as the pointer leaving
     var isDraggingWindow = false
-    /// the Arc import sheet with its survey of what Arc has; nil when closed
-    var arcImport: ArcImportModel?
-    var browserImport: BrowserImportModel?
+    /// the import sheet; nil when closed
+    var importer: ImportModel?
     /// the Send Feedback sheet, or nil when it isn't up
     var feedback: FeedbackDraft?
     /// the New Live Folder sheet, or nil when it isn't up
@@ -840,7 +839,7 @@ final class TabManager {
     }
 
     /// an address being edited belongs to the page it was opened on
-    private func closeAddressEdit() {
+    func closeAddressEdit() {
         if commandBarEditsAddress || addressBarOrigin != nil { isCommandBarVisible = false }
     }
 
@@ -903,9 +902,7 @@ final class TabManager {
         if tab.id == selectedTab?.id { closeAddressEdit() }
         let space = self.space(of: tab) ?? currentSpace
         guard let index = space.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-        // if it's a pane, note a surviving group member to fall back onto, then
-        // detach it so closing the focused pane keeps the split on screen
-        let survivingPane = space.splitGroup(containing: tab.id)?.tabIDs.first { $0 != tab.id }
+        let successor = space.successor(of: tab.id)
         rememberClosed(tab, from: space, act: act ?? ClosedAct(name: tab.isPinned ? "Archive Pinned Tab" : "Close Tab"))
         detachFromSplit(tab)
         // ✕ on a pinned tab archives it (incognito excepted: no disk)
@@ -920,14 +917,7 @@ final class TabManager {
         SpotlightIndex.forget(.items([tab.id]))
         letGo(of: tab)
         if space.selectedTabID == tab.id {
-            // prefer a remaining pane of the same split, else the nearest open tab: a dormant pin is
-            // nothing to land on
-            if let survivingPane, space.splitGroup(containing: survivingPane) != nil {
-                space.selectedTabID = survivingPane
-            } else {
-                let open = space.tabs.enumerated().filter { !$0.element.isDormantPin }
-                space.selectedTabID = open.min { abs($0.offset - index) < abs($1.offset - index) }?.element.id
-            }
+            space.selectedTabID = successor
             if wakesSuccessor { space.selectedTab?.activateIfNeeded() }
             settleSelection()
         }
@@ -2117,11 +2107,11 @@ final class TabManager {
             // neither incognito nor a diagnostic run, whose hundreds of pages aren't the user's, leaves
             // history; a lab copy's self-test does, into data of its own
             let diagnostic = !SelfTest.isRequested && ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] != nil
+            owner.scheduleSave()
             if !diagnostic, let profile = owner.core.profile(tab.profileID) {
                 profile.history.record(url: url, title: title)
                 owner.indexPageText(tab, into: profile.pageIndex, url: url, title: title)
             }
-            owner.scheduleSave()
             if tab.id == owner.selectedTabID { owner.offerHandoff() }
         }
     }
@@ -2377,8 +2367,16 @@ final class TabManager {
         if !result.loose.isEmpty {
             landed.append(pin(result.loose, inSpaceNamed: "Imported", icon: nil, profile: profile.id))
         }
+        addFavourites(result.favourites, to: profile)
+        if let first = landed.first { selectSpace(first) }
+        scheduleSave()
+        return landed.first
+    }
+
+    /// appends the links not already favourites to the profile's grid, unloaded
+    func addFavourites(_ links: [BookmarkImport.Link], to profile: Profile) {
         var known = Self.favouriteLinks(in: profile)
-        for link in result.favourites where known.insert(link.url.absoluteString).inserted {
+        for link in links where known.insert(link.url.absoluteString).inserted {
             let tab = BrowserTab(restoring: link.url, pinned: false, dataStore: profile.dataStore)
             tab.isEssential = true
             tab.pinnedURL = link.url
@@ -2387,9 +2385,6 @@ final class TabManager {
             tab.prefetchFavicon()
             profile.essentials.append(tab)
         }
-        if let first = landed.first { selectSpace(first) }
-        scheduleSave()
-        return landed.first
     }
 
     /// the links an import counts as already a favourite: each one's home and the page it is on
@@ -2421,52 +2416,57 @@ final class TabManager {
         return space
     }
 
-    /// move in from Arc: its spaces arrive beside the ones already here with colours, folders,
-    /// splits, pinned rows and favourites intact, every tab restoring lazily as a relaunch does.
-    /// A space an earlier import brought in is left as it is. returns the spaces made and how
-    /// many archived tabs landed
+    /// Land another browser's import: its profiles, then its spaces beside the ones here with
+    /// folders, splits and pins intact, its favourites and its archive. A space an earlier
+    /// import made is left as it is. Returns the spaces made and how many favourites and archived tabs landed.
     @discardableResult
-    func importArc(_ result: ArcImport.Result) -> (spaces: [Space], archived: Int) {
+    func importBrowser(_ haul: ImportHaul) -> (spaces: [Space], favourites: Int, archived: Int) {
         undo.disableUndoRegistration()
         defer { undo.enableUndoRegistration() }
-        let fresh = result.spaces.filter { data in !spaces.contains { $0.id == data.id } }
-        let folders = Set(result.favourites.map(\.folder) + result.archived.map(\.folder))
-        let wanted = Set(fresh.compactMap(\.profileID) + folders.compactMap { result.profileIDs[$0] })
-        adoptProfiles(result.profiles.filter { wanted.contains($0.id) })
-        let made = fresh.map { Self.makeSpace(from: $0) }
+        adoptProfiles(haul.profiles)
+        let made = haul.spaces.filter { data in !spaces.contains { $0.id == data.id } }.map { data in
+            var data = data
+            // a destination profile deleted mid-import: the space lands in the default one, as its cookies do
+            if core.profile(data.profileID) == nil { data.profileID = Profile.defaultID }
+            return Self.makeSpace(from: data)
+        }
         for space in made {
             for tab in space.tabs {
                 wire(tab)
-                if let url = tab.pendingURL?.absoluteString, let title = result.titles[url] {
+                ExtensionManager.shared.tabDidOpen(tab)
+                if let url = tab.pendingURL?.absoluteString, let title = haul.titles[url] {
                     tab.adopt(restoredTitle: title)
                 }
             }
         }
         spaces.append(contentsOf: made)
 
-        func profile(for folder: String) -> Profile {
-            core.profile(result.profileIDs[folder]) ?? core.defaultProfile
+        var favourites = 0
+        for (id, links) in haul.favourites {
+            let home = core.profile(id) ?? core.defaultProfile
+            for link in links {
+                let known = Self.favouriteLinks(in: home)
+                guard let page = URL(string: link.url), let homeURL = URL(string: link.home ?? link.url),
+                    !known.contains(homeURL.absoluteString), !known.contains(page.absoluteString)
+                else { continue }
+                let tab = BrowserTab(restoring: page, pinned: false, dataStore: home.dataStore)
+                tab.isEssential = true
+                tab.pinnedURL = homeURL
+                tab.customName = link.name
+                if let title = link.title, !title.isEmpty { tab.adopt(restoredTitle: title) }
+                wire(tab)
+                ExtensionManager.shared.tabDidOpen(tab)
+                tab.prefetchFavicon()
+                home.essentials.append(tab)
+                favourites += 1
+            }
         }
-        for (folder, raw, name) in result.favourites {
-            let home = profile(for: folder)
-            guard let url = URL(string: raw),
-                !Self.favouriteLinks(in: home).contains(raw)
-            else { continue }
-            let tab = BrowserTab(restoring: url, pinned: false, dataStore: home.dataStore)
-            tab.isEssential = true
-            tab.pinnedURL = url
-            tab.customName = name
-            if let title = result.titles[raw] { tab.adopt(restoredTitle: title) }
-            wire(tab)
-            tab.prefetchFavicon()
-            home.essentials.append(tab)
-        }
-        let archived = Dictionary(grouping: result.archived, by: \.folder).reduce(0) { total, group in
-            total + profile(for: group.key).archive.merge(group.value.map(\.entry))
+        let archived = haul.archive.reduce(0) { total, group in
+            total + (core.profile(group.key) ?? core.defaultProfile).archive.merge(group.value)
         }
         if let first = made.first { selectSpace(first) }
         scheduleSave()
-        return (made, archived)
+        return (made, favourites, archived)
     }
 
     func deleteSpace(_ space: Space) {
@@ -2515,6 +2515,7 @@ final class TabManager {
         _ data: SpaceData, at index: Int, pages: [BrowserTab.ID: SavedPage], rules: [(Int, RoutingRule)],
         as name: String
     ) {
+        guard !spaces.contains(where: { $0.id == data.id }) else { return }
         var data = data
         if core.profile(data.profileID) == nil { data.profileID = Profile.defaultID }
         let space = Self.makeSpace(from: data)
@@ -2735,7 +2736,7 @@ final class TabManager {
 
     /// give the current space a valid selection and warm it. a closed Scout or
     /// incognito window falls back onto the shared spaces, which it must leave alone
-    private func prepareCurrentSpace() {
+    func prepareCurrentSpace() {
         guard kind == .main || privateSpace != nil else { return }
         let space = currentSpace
         if space.selectedTab == nil, let first = space.firstOpenTab {

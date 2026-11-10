@@ -2,59 +2,20 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
-import CryptoKit
 import Foundation
-import SQLite3
 
 /// Arc's sidebar file, spaces plus a flat pool of items linked by parent/child
-/// ids, as Artemis `SpaceData`, so an import lands through the relaunch path
+/// ids, read as one `ImportedBrowser`
 nonisolated enum ArcImport {
     static let bundleID = "company.thebrowser.Browser"
-
-    struct Result {
-        var spaces: [SpaceData] = []
-        /// Arc's top apps, which are Artemis' favourites, by Arc profile folder, with
-        /// the name you gave each in Arc
-        var favourites: [(folder: String, url: String, name: String?)] = []
-        /// archived tabs, by the Arc profile folder of the space they left
-        var archived: [(folder: String, entry: ArchiveEntry)] = []
-        /// url → the page title Arc had, shown until the tab is hydrated
-        var titles: [String: String] = [:]
-        /// Arc profile folder ("Default", "Profile 1") → the Artemis profile its
-        /// spaces, favourites, archive, cookies, history and passwords land in
-        var profileIDs: [String: UUID] = ["Default": Profile.defaultID]
-        /// Arc profile folder → the name Arc shows for it
-        var profileNames: [String: String] = [:]
-
-        var tabCount: Int { spaces.reduce(favourites.count) { $0 + $1.tabs.count } }
-        var folderCount: Int {
-            spaces.reduce(0) { $0 + folders(in: $1.pinnedEntries) + folders(in: $1.todayEntries) }
-        }
-        var isEmpty: Bool { spaces.isEmpty && favourites.isEmpty }
-
-        /// the profiles Arc's spaces and favourites browse in, other than the default one
-        var profiles: [ProfileData] {
-            profileIDs.compactMap { folder, id in
-                guard id != Profile.defaultID else { return nil }
-                return ProfileData(id: id, name: profileNames[folder] ?? folder, icon: "person.crop.circle")
-            }
-            .sorted { $0.name < $1.name }
-        }
-
-        private func folders(in entries: [EntryData]) -> Int {
-            entries.reduce(0) { count, entry in
-                count + (entry.kind == "folder" ? 1 : 0) + folders(in: entry.children ?? [])
-            }
-        }
-    }
+    static let keychain = [
+        KeychainItem(service: "Arc Safe Storage", account: "Arc"), KeychainItem(service: "Arc Safe Storage", account: nil),
+        KeychainItem(service: "Arc", account: "Arc"),
+    ]
 
     // MARK: - Finding Arc
 
     static var dataDirectory: URL { URL.homeDirectory.appending(path: "Library/Application Support/Arc") }
-
-    @MainActor static var isInstalled: Bool {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
-    }
 
     static func isReadable(_ directory: URL = dataDirectory) -> Bool {
         FileManager.default.isReadableFile(
@@ -63,78 +24,154 @@ nonisolated enum ArcImport {
 
     // MARK: - Reading
 
-    static func read(from directory: URL = dataDirectory) -> Result? {
-        guard let data = try? Data(contentsOf: directory.appending(path: "StorableSidebar.json")),
-            var parsed = parseSidebar(data)
-        else { return nil }
-        parsed.result.profileNames = profileNames(in: directory)
-        if let archive = try? Data(contentsOf: directory.appending(path: "StorableArchiveItems.json"))
-        {
-            parsed.result.archived = parse(archive: archive, spaces: parsed.spaces)
-        }
-        return parsed.result
+    static func detect(home: URL) -> [ImportedBrowser] {
+        read(root: home.appending(path: "Library/Application Support/Arc")).map { [$0] } ?? []
     }
 
-    // MARK: - Sidebar
-
-    static func parse(sidebar data: Data) -> Result? { parseSidebar(data)?.result }
-
-    /// each space's name and profile folder come back with the result: an
-    /// archived tab names the space it was archived from by id
-    private static func parseSidebar(_ data: Data)
-        -> (result: Result, spaces: [String: (name: String, folder: String)])?
-    {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let containers = (root["sidebar"] as? [String: Any])?["containers"] as? [[String: Any]],
-            let container = containers.first(where: { $0["spaces"] != nil })
+    /// Arc's folder as one browser: Default, plus each Arc profile that owns a space or top
+    /// apps. Default also takes the other profiles' passwords; their cookies and history stay, named in `leftBehind`.
+    /// Without a readable sidebar, Default still offers its history, cookies and passwords.
+    static func read(root: URL) -> ImportedBrowser? {
+        let sidebar = (try? Data(contentsOf: root.appending(path: "StorableSidebar.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let containers = (sidebar?["sidebar"] as? [String: Any])?["containers"] as? [[String: Any]]
+        let container = containers?.first(where: { $0["spaces"] != nil }) ?? [:]
+        guard !container.isEmpty || FileManager.default.fileExists(atPath: root.appending(path: "User Data/Default").path)
         else { return nil }
-
         let items = pairs(container["items"] as? [Any] ?? [])
-        var index: [String: [String: Any]] = [:]
-        for (id, item) in items { index[id] = item }
+        let pool = Dictionary(items, uniquingKeysWith: { _, last in last })
 
-        var result = Result()
-        var spaces: [String: (name: String, folder: String)] = [:]
+        var folders = ["Default"]
+        var machines: [String: String] = [:]
+        var spaces: [String: [ImportedSpace]] = [:]
+        var favourites: [String: [ImportedTab]] = [:]
+        var spaceOwners: [String: (name: String, folder: String)] = [:]
+        var order: [UUID] = []
+        func own(_ profile: [String: Any]?) -> String {
+            guard let profile, profile["default"] == nil, let custom = payload(profile, "custom"),
+                let folder = custom["directoryBasename"] as? String
+            else { return "Default" }
+            if machines[folder] == nil { machines[folder] = custom["machineID"] as? String ?? "" }
+            if !folders.contains(folder) { folders.append(folder) }
+            return folder
+        }
 
         for (arcID, space) in pairs(container["spaces"] as? [Any] ?? []) {
             let name = (space["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Space"
+            let folder = own(space["profile"] as? [String: Any])
             let sections = sectionIDs(space)
-            let builder = Builder(items: index)
-            let pinned = builder.entries(under: sections.pinned, pinned: true)
-            let today = builder.entries(under: sections.unpinned, pinned: false)
-            // spaces on the same Arc profile share one profile here
-            let owner = arcProfile(space["profile"] as? [String: Any])
-            let profileID = result.profileIDs[owner.folder] ?? owner.id
-            result.profileIDs[owner.folder] = profileID
-            spaces[arcID] = (name, owner.folder)
-            result.spaces.append(
-                SpaceData(
-                    id: stableID("arc-space/\(arcID)"), name: name, icon: icon(space),
-                    appearance: appearance(space),
-                    profileID: profileID,
-                    splitGroups: builder.splits, tabs: builder.tabs,
-                    selectedTabID: builder.tabs.first?.id,
-                    pinnedEntries: pinned, todayEntries: today))
-            result.titles.merge(builder.titles) { current, _ in current }
+            var walk = Walk(pool: pool)
+            let (colors, grain) = palette(space)
+            let id = Importers.stableID("arc-space/\(arcID)")
+            order.append(id)
+            spaces[folder, default: []].append(
+                ImportedSpace(
+                    id: id, name: name, icon: icon(space), colors: colors,
+                    grain: grain, pinned: walk.items(under: sections.pinned),
+                    today: walk.items(under: sections.unpinned)))
+            spaceOwners[arcID] = (name, folder)
         }
-
-        // each Arc profile has a top-apps container; its children are that profile's favourites
-        let favourites = Builder(items: index)
         for (id, item) in items {
             guard let type = (item["data"] as? [String: Any])?["itemContainer"] as? [String: Any],
                 let owner = (type["containerType"] as? [String: Any]).flatMap({ payload($0, "topApps") })
             else { continue }
-            let before = favourites.tabs.count
-            _ = favourites.entries(under: id, pinned: false)
-            guard favourites.tabs.count > before else { continue }
-            let profile = arcProfile(owner)
-            result.profileIDs[profile.folder] = result.profileIDs[profile.folder] ?? profile.id
-            result.favourites += favourites.tabs[before...].map { (profile.folder, $0.url, $0.name) }
+            var walk = Walk(pool: pool)
+            let tabs = Walk.tabs(in: walk.items(under: id))
+            guard !tabs.isEmpty else { continue }
+            favourites[own(owner), default: []] += tabs
         }
-        result.titles.merge(favourites.titles) { current, _ in current }
 
-        guard !result.isEmpty else { return nil }
-        return (result, spaces)
+        var archive: [String: [ImportedArchive]] = [:]
+        if let data = try? Data(contentsOf: root.appending(path: "StorableArchiveItems.json")),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            for (_, item) in pairs(json["items"] as? [Any] ?? []) {
+                guard let sidebar = item["sidebarItem"] as? [String: Any],
+                    let info = (sidebar["data"] as? [String: Any])?["tab"] as? [String: Any],
+                    let raw = info["savedURL"] as? String
+                else { continue }
+                let source = ((item["source"] as? [String: Any])?["space"] as? [String: Any])?["_0"] as? String
+                let space = source.flatMap { spaceOwners[$0] }
+                archive[space?.folder ?? "Default", default: []].append(
+                    ImportedArchive(
+                        url: raw,
+                        title: (sidebar["title"] as? String) ?? (info["savedTitle"] as? String)
+                            ?? URL(string: raw)?.host() ?? raw,
+                        archivedAt: (item["archivedAt"] as? Double).map(Date.init(timeIntervalSinceReferenceDate:)) ?? Date(),
+                        spaceName: space?.name ?? "Arc"))
+            }
+        }
+
+        let names = profileNames(in: root)
+        let data = root.appending(path: "User Data")
+        let rowless = profiles(in: root).filter { !folders.contains($0.lastPathComponent) }
+        let rows = folders.map { folder -> ImportedProfile in
+            let directory = data.appending(path: folder)
+            let history = directory.appending(path: "History")
+            let cookies = ChromiumData.cookieFile(in: directory)
+            let logins = ChromiumData.loginFiles(in: directory)
+                + (folder == "Default" ? rowless.flatMap(ChromiumData.loginFiles(in:)) : [])
+            let hasHistory = FileManager.default.fileExists(atPath: history.path)
+            return ImportedProfile(
+                id: Importers.stableID(
+                    folder == "Default" ? "arc-profile/Default" : "arc-profile/\(machines[folder] ?? "")/\(folder)"),
+                key: folder, name: names[folder] ?? folder, isDefault: folder == "Default", folder: directory,
+                spaces: spaces[folder] ?? [], favourites: favourites[folder] ?? [], bookmarks: [],
+                archive: archive[folder] ?? [], history: hasHistory ? .chromium(history) : nil,
+                cookies: cookies.map { [.chromium($0)] } ?? [], logins: logins.isEmpty ? nil : .chromium(logins),
+                historyCount: hasHistory ? ChromiumData.historyCount(history) : 0,
+                cookieCount: cookies.map(ChromiumData.cookieCount) ?? 0, loginCount: ChromiumData.loginCount(logins))
+        }
+        let leftBehind = rowless.filter {
+            ChromiumData.cookieFile(in: $0) != nil || FileManager.default.fileExists(atPath: $0.appending(path: "History").path)
+        }
+        return ImportedBrowser(
+            name: "Arc", bundleID: bundleID, family: .arc, root: root, profiles: rows, keychain: keychain,
+            spaceOrder: order, leftBehind: leftBehind.map { names[$0.lastPathComponent] ?? $0.lastPathComponent })
+    }
+
+    /// Walks Arc's item pool under one container into importer items.
+    private struct Walk {
+        let pool: [String: [String: Any]]
+        /// containers already walked: a damaged file can list a folder under itself
+        var walked: Set<String> = []
+
+        mutating func items(under id: String?) -> [ImportedItem] {
+            guard let id, walked.insert(id).inserted, let node = pool[id] else { return [] }
+            var out: [ImportedItem] = []
+            for childID in node["childrenIds"] as? [String] ?? [] {
+                guard let child = pool[childID], let data = child["data"] as? [String: Any] else { continue }
+                if data["tab"] != nil {
+                    if let tab = Self.tab(child) { out.append(.tab(tab)) }
+                } else if data["list"] != nil {
+                    guard !walked.contains(childID) else { continue }
+                    out.append(.folder(name: child["title"] as? String ?? "Folder", expanded: true, items(under: childID)))
+                } else if let info = data["splitView"] as? [String: Any] {
+                    let panes = (child["childrenIds"] as? [String] ?? []).compactMap { pool[$0].flatMap(Self.tab) }
+                    out.append(.split(panes, info["layoutOrientation"] as? String == "vertical" ? .rows : .columns))
+                }
+            }
+            return out
+        }
+
+        static func tabs(in items: [ImportedItem]) -> [ImportedTab] {
+            items.flatMap { item -> [ImportedTab] in
+                switch item {
+                case .tab(let tab): [tab]
+                case .folder(_, _, let children): tabs(in: children)
+                case .split(let panes, _): panes
+                }
+            }
+        }
+
+        private static func tab(_ item: [String: Any]) -> ImportedTab? {
+            guard let info = (item["data"] as? [String: Any])?["tab"] as? [String: Any],
+                let raw = info["savedURL"] as? String
+            else { return nil }
+            return ImportedTab(
+                url: raw, title: info["savedTitle"] as? String,
+                name: (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+        }
     }
 
     /// Arc writes its collections as flat `[id, value, id, value…]` arrays
@@ -160,24 +197,6 @@ nonisolated enum ArcImport {
         return (pinned, unpinned)
     }
 
-    /// the folder of the Arc profile a space or top-apps container belongs to,
-    /// and the profile it is here
-    private static func arcProfile(_ profile: [String: Any]?) -> (folder: String, id: UUID) {
-        guard let profile, profile["default"] == nil, let custom = payload(profile, "custom"),
-            let folder = custom["directoryBasename"] as? String
-        else { return ("Default", Profile.defaultID) }
-        return (folder, stableID("arc-profile/\(custom["machineID"] as? String ?? "")/\(folder)"))
-    }
-
-    /// the same Arc name gives the same id on every import, so a re-run finds
-    /// what the last one made: a version 8 UUID over SHA-256 of the name
-    private static func stableID(_ name: String) -> UUID {
-        var bytes = Array(SHA256.hash(data: Data(name.utf8)).prefix(16))
-        bytes[6] = bytes[6] & 0x0F | 0x80
-        bytes[8] = bytes[8] & 0x3F | 0x80
-        return bytes.withUnsafeBytes { UUID(uuid: $0.load(as: uuid_t.self)) }
-    }
-
     /// the names Arc shows for its profiles, from Chromium's `Local State`
     private static func profileNames(in directory: URL) -> [String: String] {
         guard let data = try? Data(contentsOf: directory.appending(path: "User Data/Local State")),
@@ -185,117 +204,6 @@ nonisolated enum ArcImport {
             let cache = (root["profile"] as? [String: Any])?["info_cache"] as? [String: [String: Any]]
         else { return [:] }
         return cache.compactMapValues { ($0["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
-    }
-
-    /// Walks one Arc container, collecting its tabs and splits as it flattens
-    /// the item pool into an Artemis entry tree.
-    private final class Builder {
-        let items: [String: [String: Any]]
-        var tabs: [TabRecord] = []
-        var splits: [SplitGroupData] = []
-        var titles: [String: String] = [:]
-        /// containers already walked: a damaged file can list a folder under itself
-        private var walked: Set<String> = []
-
-        init(items: [String: [String: Any]]) { self.items = items }
-
-        func entries(under id: String?, pinned: Bool, depth: Int = 0) -> [EntryData] {
-            guard let id, walked.insert(id).inserted, let node = items[id] else { return [] }
-            var out: [EntryData] = []
-            for childID in node["childrenIds"] as? [String] ?? [] {
-                guard let child = items[childID], let data = child["data"] as? [String: Any]
-                else { continue }
-                if data["tab"] != nil {
-                    if let entry = tab(child, pinned: pinned) { out.append(entry) }
-                } else if data["list"] != nil {
-                    guard !walked.contains(childID) else { continue }
-                    let children = entries(under: childID, pinned: pinned, depth: depth + 1)
-                    // deeper than Artemis nests: the tabs come up a level rather
-                    // than being dropped
-                    if depth >= Space.maxFolderDepth {
-                        out.append(contentsOf: children)
-                    } else {
-                        out.append(
-                            EntryData(
-                                kind: "folder", id: UUID(),
-                                name: child["title"] as? String ?? "Folder", expanded: true,
-                                children: children))
-                    }
-                } else if let info = data["splitView"] as? [String: Any] {
-                    out.append(contentsOf: split(child, info, pinned: pinned))
-                }
-            }
-            return out
-        }
-
-        private func tab(_ item: [String: Any], pinned: Bool) -> EntryData? {
-            guard let info = (item["data"] as? [String: Any])?["tab"] as? [String: Any],
-                let raw = info["savedURL"] as? String, let url = URL(string: raw),
-                url.scheme == "http" || url.scheme == "https"
-            else { return nil }
-            let record = TabRecord(
-                url: raw, pinnedURL: pinned ? raw : nil, isPinned: pinned,
-                lastAccessed: date(info["timeLastActiveAt"]),
-                name: (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 })
-            tabs.append(record)
-            if let title = info["savedTitle"] as? String, !title.isEmpty { titles[raw] = title }
-            return EntryData(kind: "tab", id: record.id)
-        }
-
-        private func split(_ item: [String: Any], _ info: [String: Any], pinned: Bool) -> [EntryData]
-        {
-            var panes: [EntryData] = []
-            for childID in (item["childrenIds"] as? [String] ?? []).prefix(SplitGroup.maxPanes) {
-                guard let child = items[childID], let entry = tab(child, pinned: pinned) else {
-                    continue
-                }
-                panes.append(entry)
-            }
-            guard panes.count >= SplitGroup.minPanes else { return panes }
-            splits.append(
-                SplitGroupData(
-                    id: UUID(), tree: nil, tabIDs: panes.map(\.id), tabIndices: [],
-                    orientation: info["layoutOrientation"] as? String == "vertical"
-                        ? .rows : .columns,
-                    ratios: [], linkSourceID: nil, linkTargetID: nil, linkSourceIndex: nil,
-                    linkTargetIndex: nil))
-            return panes
-        }
-
-        /// Arc stores times as seconds from the 2001 reference date
-        private func date(_ value: Any?) -> Date {
-            guard let seconds = value as? Double else { return Date() }
-            return Date(timeIntervalSinceReferenceDate: seconds)
-        }
-    }
-
-    // MARK: - Archive
-
-    private static func parse(
-        archive data: Data, spaces: [String: (name: String, folder: String)]
-    ) -> [(folder: String, entry: ArchiveEntry)] {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
-        }
-        return pairs(root["items"] as? [Any] ?? []).compactMap { _, item in
-            guard let sidebar = item["sidebarItem"] as? [String: Any],
-                let info = (sidebar["data"] as? [String: Any])?["tab"] as? [String: Any],
-                let raw = info["savedURL"] as? String, let url = URL(string: raw),
-                url.scheme == "http" || url.scheme == "https"
-            else { return nil }
-            let title = (sidebar["title"] as? String) ?? (info["savedTitle"] as? String)
-                ?? url.host() ?? raw
-            let archivedAt = (item["archivedAt"] as? Double)
-                .map(Date.init(timeIntervalSinceReferenceDate:)) ?? Date()
-            let source = ((item["source"] as? [String: Any])?["space"] as? [String: Any])?["_0"]
-                as? String
-            let space = source.flatMap { spaces[$0] }
-            return (
-                space?.folder ?? "Default",
-                ArchiveEntry(
-                    url: url, title: title, archivedAt: archivedAt, spaceName: space?.name ?? "Arc")
-            )
-        }
     }
 
     // MARK: - Appearance
@@ -312,7 +220,8 @@ nonisolated enum ArcImport {
         return first["_0"] as? [String: Any] ?? first
     }
 
-    private static func appearance(_ space: [String: Any]) -> SpaceAppearance {
+    /// a space's theme colours and grain, as Arc stored them
+    private static func palette(_ space: [String: Any]) -> (colors: [RGBA], grain: Double) {
         let theme = (space["customInfo"] as? [String: Any])?["windowTheme"] as? [String: Any]
         let background = theme?["background"] as? [String: Any]
         let single = background.flatMap { payload($0, "single") ?? onlyCase($0) }
@@ -324,21 +233,8 @@ nonisolated enum ArcImport {
         } else if let one = (style?["color"] as? [String: Any]).flatMap(rgba(from:)) {
             colors = [one]
         }
-        colors = colors.filter { $0.a > 0.01 }
-
-        var out = SpaceAppearance()
-        switch colors.count {
-        case 0: return SpacePreset.all[0].appearance
-        case 1:
-            out.fill = .solid
-            out.colors = colors
-        default:
-            out.fill = .gradient
-            out.colors = Array(colors.prefix(3))
-        }
         let modifiers = style?["modifiers"] as? [String: Any]
-        out.grain = min(max((modifiers?["noiseFactor"] as? Double) ?? 0, 0), 1)
-        return out
+        return (colors, (modifiers?["noiseFactor"] as? Double) ?? 0)
     }
 
     /// Arc's colours are extended sRGB and often outside the gamut; converting
@@ -415,170 +311,5 @@ nonisolated enum ArcImport {
                 $0.lastPathComponent == "Default" || $0.lastPathComponent.hasPrefix("Profile ")
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    }
-
-    private static func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return 0 }
-        defer { sqlite3_finalize(statement) }
-        return sqlite3_step(statement) == SQLITE_ROW ? Int(sqlite3_column_int(statement, 0)) : 0
-    }
-
-    private static func blob(_ statement: OpaquePointer?, _ column: Int32) -> Data {
-        guard let bytes = sqlite3_column_blob(statement, column) else { return Data() }
-        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
-    }
-
-    /// Chromium counts microseconds from 1601-01-01
-    private static func chromeDate(_ raw: Int64) -> Date {
-        Date(timeIntervalSince1970: Double(raw) / 1_000_000 - 11_644_473_600)
-    }
-
-    // MARK: - Survey
-
-    /// What there is to move, and how much of it. Counted without decrypting
-    /// anything, so the picker can be specific before the keychain is touched.
-    struct Survey {
-        var directory: URL
-        var sidebar: Result?
-        var history = 0
-        var cookies = 0
-        var cookieSites = 0
-        var logins = 0
-
-        var spaces: Int { sidebar?.spaces.count ?? 0 }
-        var tabs: Int { (sidebar?.tabCount ?? 0) - favourites }
-        var folders: Int { sidebar?.folderCount ?? 0 }
-        var favourites: Int { sidebar?.favourites.count ?? 0 }
-        var archived: Int { sidebar?.archived.count ?? 0 }
-        var isEmpty: Bool { sidebar == nil && history == 0 && cookies == 0 && logins == 0 }
-    }
-
-    /// copies and counts Arc's databases: disk work, so never on the main thread
-    static func survey(_ directory: URL = dataDirectory) -> Survey {
-        var out = Survey(directory: directory, sidebar: read(from: directory))
-        for profile in profiles(in: directory) {
-            out.history += BrowserImport.withDatabase(at: profile.appending(path: "History")) {
-                scalar($0, "SELECT count(*) FROM urls WHERE hidden = 0 AND last_visit_time > 0;")
-            } ?? 0
-            BrowserImport.withDatabase(at: profile.appending(path: "Cookies")) { db in
-                out.cookies += scalar(db, "SELECT count(*) FROM cookies;")
-                out.cookieSites += scalar(db, "SELECT count(DISTINCT host_key) FROM cookies;")
-            }
-            out.logins += BrowserImport.withDatabase(at: profile.appending(path: "Login Data")) {
-                scalar($0, "SELECT count(*) FROM logins WHERE blacklisted_by_user = 0;")
-            } ?? 0
-        }
-        return out
-    }
-
-    // MARK: - Cookies
-
-    /// One profile's cookies, unsealed and shaped for a `WKHTTPCookieStore`.
-    /// `key` comes from `ArcSecrets.key()`, which is where the user consents;
-    /// a cookie that won't decrypt is dropped rather than written as rubbish.
-    static func cookies(in profile: URL, key: Data, now: Date = Date()) -> CookieRead {
-        BrowserImport.withDatabase(at: profile.appending(path: "Cookies")) { db in
-            var read = CookieRead()
-            var seen: Set<String> = []
-            var statement: OpaquePointer?
-            // unpartitioned rows first, then https — a site's cookie can exist
-            // several times over, split by partition, scheme and port, and only
-            // one of them can be the cookie Artemis stores
-            let sql = """
-                SELECT host_key, name, encrypted_value, value, path, expires_utc, is_secure,
-                       is_httponly, has_expires, samesite
-                FROM cookies
-                ORDER BY (top_frame_site_key = '') DESC, source_scheme DESC;
-                """
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return read }
-            defer { sqlite3_finalize(statement) }
-
-            while sqlite3_step(statement) == SQLITE_ROW {
-                read.rows += 1
-                guard let host = BrowserImport.text(statement, 0), !host.isEmpty,
-                    let name = BrowserImport.text(statement, 1)
-                else { continue }
-                guard seen.insert("\(host)\u{1}\(name)\u{1}\(BrowserImport.text(statement, 4) ?? "")").inserted
-                else { continue }
-                let sealed = blob(statement, 2)
-                let value: String
-                if sealed.isEmpty {
-                    value = BrowserImport.text(statement, 3) ?? ""
-                } else if let unsealed = try? ArcSecrets.decrypt(sealed, key: key, host: host) {
-                    value = unsealed
-                    read.unsealed += 1
-                } else {
-                    continue
-                }
-
-                var properties: [HTTPCookiePropertyKey: Any] = [
-                    .name: name, .value: value, .domain: host,
-                    .path: BrowserImport.text(statement, 4) ?? "/",
-                ]
-                if sqlite3_column_int(statement, 6) != 0 { properties[.secure] = "TRUE" }
-                if sqlite3_column_int(statement, 7) != 0 {
-                    properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE"
-                }
-                if sqlite3_column_int(statement, 8) != 0 {
-                    let expiry = chromeDate(sqlite3_column_int64(statement, 5))
-                    guard expiry > now else { continue }
-                    properties[.expires] = expiry
-                }
-                switch sqlite3_column_int(statement, 9) {
-                case 1: properties[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteLax.rawValue
-                case 2: properties[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteStrict.rawValue
-                default: break
-                }
-                if let cookie = HTTPCookie(properties: properties) { read.cookies.append(cookie) }
-            }
-            return read
-        } ?? CookieRead()
-    }
-
-    /// what one profile's cookie table gave up: the cookies themselves, the rows
-    /// behind them, and how many needed the key. A profile with rows but nothing
-    /// unsealed means the key was wrong, which is worth saying out loud
-    struct CookieRead {
-        var cookies: [HTTPCookie] = []
-        var rows = 0
-        var unsealed = 0
-    }
-
-    // MARK: - Saved passwords
-
-    /// one saved login, decrypted, held only until it reaches the Keychain
-    struct Login {
-        var title: String
-        var url: String
-        var username: String
-        var password: String
-    }
-
-    static func logins(in profile: URL, key: Data) -> [Login] {
-        BrowserImport.withDatabase(at: profile.appending(path: "Login Data")) { db in
-            var out: [Login] = []
-            var statement: OpaquePointer?
-            let sql = """
-                SELECT origin_url, username_value, password_value, signon_realm FROM logins
-                WHERE blacklisted_by_user = 0;
-                """
-            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return out }
-            defer { sqlite3_finalize(statement) }
-
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let origin = BrowserImport.text(statement, 0) ?? ""
-                let sealed = blob(statement, 2)
-                guard !sealed.isEmpty,
-                    let password = try? ArcSecrets.decrypt(sealed, key: key), !password.isEmpty
-                else { continue }
-                let address = origin.isEmpty ? (BrowserImport.text(statement, 3) ?? "") : origin
-                out.append(
-                    Login(
-                        title: URL(string: address)?.host() ?? address, url: address,
-                        username: BrowserImport.text(statement, 1) ?? "", password: password))
-            }
-            return out
-        } ?? []
     }
 }

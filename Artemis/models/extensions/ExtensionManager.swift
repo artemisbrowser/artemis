@@ -445,7 +445,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         let home = profile.flatMap { id in
             manager.currentSpace.profileID == id ? nil : manager.spaces.first { $0.profileID == id }
         } ?? manager.currentSpace
-        let ownPage = url?.scheme == "webkit-extension"
+        let ownPage = url != nil && url?.scheme == context?.baseURL.scheme
         let configuration = ownPage ? context?.webViewConfiguration : nil
         if ownPage, configuration == nil { return nil }
         return manager.newTab(
@@ -715,7 +715,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     ) async throws -> (any WKWebExtensionTab)? {
         // an incognito window's request stays in it; an extension's own pages need a normal one
         if let window = configuration.window as? ExtensionWindow, window.isPrivate(for: context),
-            configuration.url?.scheme != "webkit-extension"
+            configuration.url?.scheme != context.baseURL.scheme
         {
             return window.tabManager?.newTab(url: configuration.url, select: configuration.shouldBeActive)
         }

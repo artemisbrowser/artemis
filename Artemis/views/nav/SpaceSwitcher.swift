@@ -351,7 +351,7 @@ struct SpaceEditor: View {
 
     private var iconSection: some View {
         section("ICON") {
-            IconRow(icon: Binding(get: { space.icon }, set: { tabManager.updateSpace(space, icon: $0) }))
+            IconRow(icon: Binding(get: { space.icon }, set: { tabManager.updateSpace(space, icon: $0) }), name: name)
         }
     }
 
@@ -487,12 +487,44 @@ private func section<Content: View>(_ title: String, @ViewBuilder content: () ->
     }
 }
 
-/// the ICON row: the glyph and its name, opening the icon browser in a second popover
+/// the ICON row: the glyph and its name, opening the icon browser in a second
+/// popover, over a strip of icons suggested by the space's name
 private struct IconRow: View {
     @Binding var icon: String
+    let name: String
     @State private var showingPicker = false
+    @State private var suggested: [String] = []
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            pickerButton
+            if !suggested.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(suggested.prefix(9), id: \.self) { glyph in
+                        SpaceGlyph(icon: glyph, size: 14)
+                            .foregroundStyle(.primary.opacity(0.8))
+                            .frame(width: 28, height: 28)
+                            .background {
+                                if glyph == icon {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.primary.opacity(0.18))
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { icon = glyph }
+                            .accessibilityElement()
+                            .accessibilityLabel(glyph.isEmojiIcon ? glyph : glyph.replacingOccurrences(of: ".", with: " "))
+                            .accessibilityAddTraits(glyph == icon ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityAction { icon = glyph }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Suggested icons")
+            }
+        }
+        .task(id: name) { await suggestIcons(for: name) { suggested = $0 } }
+    }
+
+    private var pickerButton: some View {
         Button {
             showingPicker.toggle()
         } label: {
@@ -517,9 +549,21 @@ private struct IconRow: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showingPicker, arrowEdge: .trailing) {
-            IconPicker(icon: $icon)
+            IconPicker(icon: $icon, name: name)
         }
     }
+}
+
+/// icons for `name` from its words at once, then again with the model's ideas
+/// when Intelligence is on. debounced for typing
+private func suggestIcons(for name: String, _ deliver: ([String]) -> Void) async {
+    try? await Task.sleep(for: .milliseconds(250))
+    guard !Task.isCancelled else { return }
+    deliver(await IconSearch.shared.suggestions(for: name))
+    guard Intelligence.isEnabled, let ideas = await Intelligence.shared.iconIdeas(for: name),
+        !Task.isCancelled
+    else { return }
+    deliver(await IconSearch.shared.suggestions(for: name, ideas: ideas))
 }
 
 /// text-field chrome matching a sidebar row: 10pt continuous corners over the
@@ -610,33 +654,35 @@ private struct GlassIconButton: View {
 /// scrollable grid; cells use the same selected/idle ink fills as a sidebar tab row
 struct IconPicker: View {
     @Binding var icon: String
+    /// what the icon is for (a space's or profile's name), for the Suggested section
+    var name = ""
 
     private enum Kind: String, CaseIterable { case icons = "Icons", emoji = "Emoji" }
     @State private var kind: Kind
     @State private var query = ""
+    @State private var results: [String] = []
+    @State private var suggested: [String] = []
+    @State private var askingModel = false
 
-    init(icon: Binding<String>) {
+    init(icon: Binding<String>, name: String = "") {
         _icon = icon
+        self.name = name
         // open on whichever kind the current icon already is
         _kind = State(initialValue: icon.wrappedValue.isEmojiIcon ? .emoji : .icons)
-    }
-
-    /// each symbol once: the generated catalogue files a few under two categories
-    private var results: [String] {
-        guard kind == .icons else { return Emojis.search(query) }
-        var seen = Set<String>()
-        return SFSymbols.search(query).filter { seen.insert($0).inserted }
     }
 
     /// both tabs browse as macOS-style categories; a search collapses to a flat
     /// result grid
     private var showsCategories: Bool { query.isEmpty }
 
-    /// the category sections for the current tab, normalised to (title, glyphs)
+    /// the category sections for the current tab, normalised to (title, glyphs),
+    /// under the name's suggestions
     private var sections: [(String, [String])] {
-        kind == .emoji
-            ? Emojis.categories.map { ($0.name, $0.emoji.map(\.glyph)) }
-            : SFSymbols.categories.map { ($0.name, $0.symbols) }
+        let mine = suggested.filter { $0.isEmojiIcon == (kind == .emoji) }
+        return (mine.isEmpty ? [] : [("Suggested", mine)])
+            + (kind == .emoji
+                ? Emojis.categories.map { ($0.name, $0.emoji.map(\.glyph)) }
+                : SFSymbols.categories.map { ($0.name, $0.symbols) })
     }
 
     // emoji read larger so they get roomier cells; symbols pack denser
@@ -650,10 +696,15 @@ struct IconPicker: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .onChange(of: kind) { query = "" }
 
-            TextField("Search", text: $query)
+            TextField("Search, or describe it", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .modifier(EditorField())
+                .overlay(alignment: .trailing) {
+                    if askingModel {
+                        ProgressView().controlSize(.mini).padding(.trailing, 10)
+                    }
+                }
 
             ScrollView {
                 // one lazy grid whose Section headers span all columns; the
@@ -681,6 +732,22 @@ struct IconPicker: View {
         }
         .padding(14)
         .frame(width: 320)
+        .task(id: name) { await suggestIcons(for: name) { suggested = $0 } }
+        .task(id: "\(kind.rawValue)\n\(query)") { await search(query, emoji: kind == .emoji) }
+    }
+
+    /// matches by meaning at once; a phrase, or a word that found little, then asks
+    /// the model what it brings to mind
+    private func search(_ query: String, emoji: Bool) async {
+        guard !query.isEmpty else { return }
+        results = await IconSearch.shared.search(query, emoji: emoji)
+        guard Intelligence.isEnabled, query.contains(" ") || results.count < 8 else { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard !Task.isCancelled else { return }
+        askingModel = true
+        defer { askingModel = false }
+        guard let ideas = await Intelligence.shared.iconIdeas(for: query), !Task.isCancelled else { return }
+        results = await IconSearch.shared.search(query, emoji: emoji, ideas: ideas)
     }
 
     private static let emojiFont = Font.system(size: 22)
@@ -937,7 +1004,7 @@ struct SpaceCreator: View {
                 .focused($nameFocused)
                 .onSubmit { if canCreate { create() } }
 
-            section("ICON") { IconRow(icon: $icon) }
+            section("ICON") { IconRow(icon: $icon, name: name) }
             section("PALETTE") { presetRow }
             // one profile is no choice at all, so the row waits for a second
             if tabManager.profiles.count > 1 {

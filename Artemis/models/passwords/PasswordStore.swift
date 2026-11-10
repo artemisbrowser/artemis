@@ -81,13 +81,16 @@ nonisolated enum Keychain {
     /// prompt on the user's screen; it gets an empty keychain
     private static let isFenced = AppStorageLocation.isExtensionLab
 
+    /// added to every item `put` writes; an app sets them once at launch
+    nonisolated(unsafe) static var itemAttributes: [String: Any] = [:]
+
     @discardableResult
     static func put(_ service: String, _ account: String, _ data: Data) -> OSStatus {
         guard !isFenced else { return errSecNotAvailable }
         SecItemDelete(query(service, account) as CFDictionary)
         let item = query(service, account).merging([
             kSecValueData as String: data, kSecAttrLabel as String: service,
-        ]) { $1 }
+        ]) { $1 }.merging(itemAttributes) { $1 }
         return SecItemAdd(item as CFDictionary, nil)
     }
 
@@ -230,6 +233,7 @@ final class PasswordStore {
             Keychain.delete(service, Keychain.nextIndex)
             for account in gone { Keychain.delete(service, account) }
         }
+        // after the write is queued, so the export's reads wait for it
     }
 
     /// returns once every queued Keychain write has landed, for `applicationWillTerminate`

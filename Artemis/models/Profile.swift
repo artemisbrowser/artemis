@@ -31,6 +31,17 @@ final class Profile: Identifiable {
     var archiveAfterHours: Double {
         didSet { mirror(archiveAfterHours, TabManager.autoArchiveHoursKey) }
     }
+    static let archiveChoices: [Double] = [0, 6, 12, 24, 48, 168]
+
+    static func archiveLabel(_ hours: Double) -> String {
+        switch hours {
+        case 0: "Never"
+        case ..<24: "\(Int(hours)) hours"
+        case 24: "1 day"
+        case 168: "1 week"
+        default: "\(Int(hours / 24)) days"
+        }
+    }
 
     @ObservationIgnored private var openedHistory: HistoryStore?
     @ObservationIgnored private var openedArchive: ArchiveStore?

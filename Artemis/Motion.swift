@@ -53,6 +53,9 @@ enum Motion {
     static var pipSpring: Spring { movingSpring(0.42, 0.18) }
     static var carousel: Animation { .spring(carouselSpring) }
 
+    /// the intro's full-screen sky settling into the browser window
+    static var landing: Animation { moving(0.9, 0.1) }
+
     /// the backdrop colour settling after a swipe release. no bounce: an
     /// overshoot would blend in a third space's colour
     static var spaceColorSettle: Animation { .easeOut(duration: reduceMotion ? 0.2 : 0.42) }

@@ -15,6 +15,8 @@ final class SpaceLock {
     static let incognitoRequiresUnlockKey = "incognitoRequiresUnlock"
 
     private var unlocked: Set<UUID> = []
+    /// spaces another device stopped locking: the lock comes off here at the next unlock
+    var lockOffElsewhere: Set<UUID> = []
     /// the system prompt deactivates the app; that must not relock what it is unlocking
     @ObservationIgnored private var isAuthenticating = false
     @ObservationIgnored private var observer: NSObjectProtocol?
@@ -85,6 +87,10 @@ final class SpaceLock {
         let reason = reason ?? (isIncognito ? "open your incognito window" : "open the \u{201C}\(space.name)\u{201D} space")
         guard await OwnerUnlock.check(reason) else { return false }
         unlocked.insert(space.id)
+        if lockOffElsewhere.remove(space.id) != nil {
+            space.requiresUnlock = false
+            BrowserWindows.shared.mainManagers.first?.scheduleSave()
+        }
         BrowserWindows.shared.current?.offerHandoff()
         LiveRefresh.shared.reschedule()
         return true
@@ -102,16 +108,22 @@ struct LockedSpaceView: View {
     let space: Space
 
     var body: some View {
-        Button { Task { await SpaceLock.shared.unlock(space) } } label: {
-            Image(systemName: LockedSpaceView.glyph)
-                .font(.system(size: 48, weight: .light))
-                .foregroundStyle(ink.opacity(0.85))
-                .frame(width: 96, height: 96)
-                .contentShape(Circle())
+        VStack(spacing: 12) {
+            Button { Task { await SpaceLock.shared.unlock(space) } } label: {
+                Image(systemName: LockedSpaceView.glyph)
+                    .font(.system(size: 48, weight: .light))
+                    .frame(width: 96, height: 96)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .tooltip("Unlock \(space.name)")
+            .accessibilityLabel("Unlock \(space.name)")
+            if SpaceLock.shared.lockOffElsewhere.contains(space.id) {
+                Text("Lock turned off on another device.")
+                    .font(.system(size: 13))
+            }
         }
-        .buttonStyle(.plain)
-        .tooltip("Unlock \(space.name)")
-        .accessibilityLabel("Unlock \(space.name)")
+        .foregroundStyle(ink.opacity(0.85))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // arriving on the space in the key window asks at once; a cancel waits for a click.
         // a self-test locks spaces in place under a check that always passes

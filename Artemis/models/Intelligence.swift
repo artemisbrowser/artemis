@@ -498,6 +498,71 @@ actor Intelligence {
         return reply?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - Icon ideas
+
+    @Generable
+    fileprivate struct IconIdeas {
+        @Guide(description: "Up to six single emoji that capture it", .maximumCount(6))
+        var emoji: [String]
+        @Guide(description: "Six one- or two-word names of objects or symbols that would make a good small icon for it", .maximumCount(6))
+        var things: [String]
+    }
+
+    private static let iconInstructions = """
+        Suggest icons for a short text: the name of a browser space (a group of \
+        tabs), or what someone typed while looking for an icon. Go by what it \
+        means and brings to mind, not only its literal words.
+        """
+
+    private var iconIdeaCache: [String: [String]] = [:]
+
+    /// emoji and object names for `text`, for `IconSearch` to rank; remembered per text
+    func iconIdeas(for text: String) async -> [String]? {
+        let key = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        if let cached = iconIdeaCache[key] { return cached }
+        lastInteractive = Date()
+        let reply = await run("icon-ideas", instructions: Self.iconInstructions) { session in
+            try await session.respond(
+                to: "Text: \(text)", generating: IconIdeas.self,
+                options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 120))
+        }
+        guard let ideas = reply.map({ $0.content.emoji + $0.content.things }) else { return nil }
+        iconIdeaCache[key] = ideas
+        return ideas
+    }
+
+    // MARK: - Settings search
+
+    @Generable
+    fileprivate struct SettingTerms {
+        @Guide(description: "Up to four short names a browser's settings would use for what they want, such as Content Blocking or Clear History", .maximumCount(4))
+        var terms: [String]
+    }
+
+    private static let settingsInstructions = """
+        Someone typed into a web browser's Settings search. Say which settings \
+        they are looking for, in the words a settings page would use.
+        """
+
+    private var settingTermCache: [String: [String]] = [:]
+
+    /// setting names for `question`, for `SettingsSearch` to rank; remembered per question
+    func settingTerms(for question: String) async -> [String]? {
+        let key = question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+        if let cached = settingTermCache[key] { return cached }
+        lastInteractive = Date()
+        let reply = await run("setting-terms", instructions: Self.settingsInstructions) { session in
+            try await session.respond(
+                to: "Typed: \(question)", generating: SettingTerms.self,
+                options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 60))
+        }
+        guard let terms = reply?.content.terms else { return nil }
+        settingTermCache[key] = terms
+        return terms
+    }
+
     // MARK: - General knowledge
 
     enum Recall: Equatable {

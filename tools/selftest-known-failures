@@ -1,0 +1,12 @@
+# Self-test records that fail on every Debug lab build: the Keychain fences lab bundles out, and Debug misses the perf budget.
+# One exact record title a line. tools/nightly.sh's gate lets these fail, and names any that passed.
+passwords: the Keychain keeps a login and its password
+passwords: saving the same account replaces its password
+passwords: Keychain attributes name no site or user, and an index lists every login
+passwords: a Bitwarden export imports by header names
+codes: kept beside the password, survive an edit, offered across the site's subdomains
+codes: an Apple Passwords export brings its verification codes
+passkeys: a new credential for the same account replaces the old once it is kept
+passwords: each profile keeps its own logins and passkeys
+passwords: a key opens the suggestion list, and a pick fills its form
+perf: history search under 8ms

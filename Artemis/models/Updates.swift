@@ -10,8 +10,17 @@ import SwiftUI
 @Observable
 final class Updates: NSObject {
     static let shared = Updates()
-    /// "beta" adds the beta channel; anything else is release only
+    /// "beta" adds the beta channel, "nightly" adds beta and nightly; anything else is release only
     static let channelKey = "updateChannel"
+    /// the channel tools/release.sh built this for; nil for a local build
+    static let buildChannel = (Bundle.main.object(forInfoDictionaryKey: "ArtemisChannel") as? String)
+        .flatMap { ["release", "beta", "nightly"].contains($0) ? $0 : nil }
+    /// the commit this was built from, without deploy.sh's "-dirty"
+    static let buildCommit: String? = {
+        let hex = (Bundle.main.object(forInfoDictionaryKey: "ArtemisGitSHA") as? String ?? "")
+            .prefix { "0123456789abcdef".contains($0) }
+        return hex.count >= 7 ? String(hex) : nil
+    }()
 
     /// the version waiting to install, once Sparkle has it downloaded
     private(set) var readyVersion: String?
@@ -53,7 +62,11 @@ final class Updates: NSObject {
 
 extension Updates: @preconcurrency SPUUpdaterDelegate {
     func allowedChannels(for updater: SPUUpdater) -> Set<String> {
-        UserDefaults.standard.string(forKey: Self.channelKey) == "beta" ? ["beta"] : []
+        switch UserDefaults.standard.string(forKey: Self.channelKey) {
+        case "nightly": ["beta", "nightly"]
+        case "beta": ["beta"]
+        default: []
+        }
     }
 
     func updater(

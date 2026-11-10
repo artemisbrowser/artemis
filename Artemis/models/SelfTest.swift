@@ -3,6 +3,7 @@
 
 import AppIntents
 import AppKit
+import AVFoundation
 import CommonCrypto
 import Compression
 import CoreLocation
@@ -1094,6 +1095,8 @@ enum SelfTest {
         let plumbing: [(String, () async -> Void)] = [
             ("durablestorage", { await testDurableStorage() }),
             ("diagnostics", { testDiagnostics() }),
+            ("iconsearch", { await testIconSearch() }),
+            ("settingssearch", { await testSettingsSearch() }),
             ("reports", { await testReports() }),
             ("feedback", { testFeedback(manager: manager) }),
             ("session", { await testSession(manager: manager) }),
@@ -1120,6 +1123,7 @@ enum SelfTest {
             ("certificatetrust", { await testCertificateTrust() }),
             ("bookmarkimport", { await testBookmarkImport(manager: manager) }),
             ("arcimport", { await testArcImport(manager: manager) }),
+            ("onboarding", { await testOnboarding(manager: manager) }),
             ("browserimport", { await testBrowserImport(manager: manager) }),
             ("arcsecrets", { testArcSecrets(manager: manager) }),
             ("continuityandtranslation", { await testContinuityAndTranslation(manager: manager) }),
@@ -1199,12 +1203,14 @@ enum SelfTest {
         // traffic-light tests
         let withExtensions: [(String, () async -> Void)] = [
             ("extensionruntimeprobe", { await testExtensionRuntimeProbe() }),
+            ("extensionpage", { await testExtensionPageInTab() }),
             ("extensionmv2probe", { await testExtensionMV2Probe() }),
             ("extensionescalation", { await testExtensionEscalation() }),
             ("extensionapibridgeprobe", { await testExtensionAPIBridgeProbe() }),
             ("incognitoextensions", { await testIncognitoExtensions(manager: manager) }),
         ]
-        for (name, test) in plumbing where wants(name) { await test() }
+        let run = plumbing
+        for (name, test) in run where wants(name) { await test() }
         if withExtensions.contains(where: { wants($0.0) }) {
             ExtensionManager.shared.isMasterEnabled = true
             try? await Task.sleep(for: .milliseconds(500))
@@ -1441,6 +1447,79 @@ enum SelfTest {
 
     /// the error log's promises, checked on values of its own: nothing here is
     /// recorded into the real log
+    private static func testIconSearch() async {
+        let search = IconSearch.shared
+        let home = await search.search("home", emoji: false), homeEmoji = await search.search("home", emoji: true)
+        record("icon search: home finds the house first", home.first == "house.fill" && homeEmoji.prefix(3).contains("🏠"),
+               "\(home.prefix(3)) \(homeEmoji.prefix(3))")
+        let work = await search.search("work", emoji: false)
+        record("icon search: work means a briefcase", work.first == "briefcase.fill", "\(work.prefix(3))")
+        let typing = await search.search("hou", emoji: false)
+        record("icon search: an unfinished word matches as a prefix", typing.first == "house.fill", "\(typing.prefix(3))")
+        let cooking = await search.search("cooking", emoji: true)
+        record("icon search: flags match only literally", !cooking.contains("🇨🇰"), "\(cooking.prefix(8))")
+        let uni = await search.suggestions(for: "Uni")
+        record("icon search: a space called Uni suggests the graduation cap", uni.first == "graduationcap.fill", "\(uni.prefix(4))")
+        guard Intelligence.isReady else { return note("icon ideas skipped: the on-device model isn't ready") }
+        let phrase = "I'm running late for work"
+        let ideas = await Intelligence.shared.iconIdeas(for: phrase) ?? []
+        let late = await search.search(phrase, emoji: true, ideas: ideas)
+        record("icon search: the model reads a phrase for its meaning", !ideas.isEmpty && late.prefix(12).contains { "🏃⏰⏱️🕐💼".contains($0) },
+               "\(ideas) → \(late.prefix(12).joined())")
+    }
+
+    /// the Settings index ranks by meaning, and every entry it can show lands on a
+    /// real row: revealing it scrolls that row into the page and lights it
+    private static func testSettingsSearch() async {
+        let search = SettingsSearch.shared
+        let adblock = await search.search("adblock")
+        record("settings search: adblock finds content blocking", adblock.first == .blockAds, "\(adblock.prefix(3))")
+        let tracked = await search.search("how do I stop sites tracking me")
+        record("settings search: a question finds its setting by meaning",
+               tracked.prefix(3).contains { [.blockAds, .fingerprintDefence].contains($0) }, "\(tracked.prefix(3))")
+        let ram = await search.search("tabs eating my ram")
+        record("settings search: a phrase finds tab sleep", ram.first == .tabSleep, "\(ram.prefix(3))")
+        let typing = await search.search("passw")
+        record("settings search: an unfinished word matches by its letters",
+               typing.first.map { $0.entry.page == .passwords || $0.entry.title.contains("Password") } == true, "\(typing.prefix(3))")
+        let places = SettingID.allCases.map { $0.entry.title + " in " + $0.place }
+        record("settings search: no two entries name the same row", Set(places).count == places.count,
+               "\(Dictionary(grouping: places, by: { $0 }).filter { $1.count > 1 }.keys.sorted())")
+
+        let spotlight = SettingsSpotlight.shared
+        let paneBefore = UserDefaults.standard.string(forKey: SettingsView.paneKey)
+        let shown = SettingID.allCases.filter(\.isAvailable)
+        var missed: [String] = []
+        for id in shown {
+            spotlight.lit = nil
+            spotlight.litFrame = nil
+            spotlight.reveal(id)
+            var landed = false
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(50))
+                let height = NSApp.windows.first { $0.identifier?.rawValue.contains("Settings") == true }?
+                    .contentLayoutRect.height ?? 700
+                if spotlight.lit == id, let frame = spotlight.litFrame, frame.height > 0, (0...height).contains(frame.midY) {
+                    landed = true
+                    break
+                }
+            }
+            if !landed { missed.append("\(id.rawValue) \(spotlight.litFrame.map { "\(Int($0.midY))" } ?? "unseen")") }
+        }
+        record("settings search: all \(shown.count) shown entries scroll to a lit row", missed.isEmpty, missed.joined(separator: ", "))
+        note("settings search: \(SettingID.allCases.count - shown.count) entries hidden by their feature being off")
+        spotlight.lit = nil
+        NSApp.windows.first { $0.identifier?.rawValue.contains("Settings") == true }?.close()
+        UserDefaults.standard.set(paneBefore, forKey: SettingsView.paneKey)
+
+        guard Intelligence.isReady else { return note("setting ideas skipped: the on-device model isn't ready") }
+        let question = "websites keep showing me annoying adverts"
+        let ideas = await Intelligence.shared.settingTerms(for: question) ?? []
+        let answered = await search.search(question, ideas: ideas)
+        record("settings search: the model reads a question for the setting it means",
+               answered.prefix(3).contains(.blockAds), "\(ideas) → \(answered.prefix(3))")
+    }
+
     private static func testDiagnostics() {
         let raw = "load of https://example.com/a?q=1 failed for someone@example.org at \(NSHomeDirectory())/x"
         let clean = Diagnostics.redact(raw)
@@ -2041,7 +2120,8 @@ enum SelfTest {
         await settle { favourite.url == tileHome && !favourite.isLoading }
         manager.toggleEssential(favourite)
         let metrics = SidebarMetrics.standard
-        let size = CGSize(width: 80, height: metrics.essentialTileHeight)
+        // narrow enough (tiles start at 70pt) that the badge reaches left of the seam
+        let size = CGSize(width: 72, height: metrics.essentialTileHeight)
         let seam = size.width / 2 + metrics.essentialFaviconSize / 2 + 8 + 2
         let host = NSHostingView(
             rootView: EssentialTile(tab: favourite)
@@ -2091,16 +2171,18 @@ enum SelfTest {
         record(
             "favourites: at its home, a click anywhere on its tile only selects it",
             atHome.held && favourite.url == tileHome, atHome.detail)
-        // a "99+" badge sits 4pt in from the top right, reaching left of the seam
+        // the 16pt badge sits 4pt in from the top right; this point is on it and left of the seam
+        let onBadge = NSPoint(x: size.width - 4 - 16 + 2, y: size.height - 12)
         favourite.webView.loadHTMLString("<html><title>(120) Away</title><body>a</body></html>", baseURL: tileAway)
         await settle { favourite.url == tileAway && !favourite.isLoading && favourite.unread != nil }
         let pastSeam = await selectsOnly(at: [
             NSPoint(x: seam + 1.5, y: middle), NSPoint(x: size.width - 4, y: middle),
-            NSPoint(x: seam - 3, y: size.height - 11.5),
+            onBadge,
         ])
         record(
             "favourites: off its home, a click past the seam or on its badge only selects it",
-            favourite.isOffPinnedURL && favourite.unread != nil && pastSeam.held && favourite.url == tileAway,
+            onBadge.x < seam && favourite.isOffPinnedURL && favourite.unread != nil && pastSeam.held
+                && favourite.url == tileAway,
             pastSeam.detail)
 
         manager.selectedTabID = other.id
@@ -2714,12 +2796,35 @@ enum SelfTest {
                 "X1", {"id": "X1", "childrenIds": [], "data": {"tab": {"savedURL": "javascript:alert(1)"}}}
               ]}]}}
             """
-        guard let parsed = ArcImport.parse(sidebar: Data(json.utf8)),
-            let space = parsed.spaces.first
-        else {
-            record("arc: a sidebar file parses", false, "parser returned nothing")
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appending(path: "arcimport-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        /// a folder holding this sidebar, read the way the import sheet reads Arc's own
+        func arc(_ sidebar: String, archive: String? = nil) -> ImportedBrowser? {
+            let folder = root.appending(path: UUID().uuidString)
+            try? files.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? Data(sidebar.utf8).write(to: folder.appending(path: "StorableSidebar.json"))
+            if let archive { try? Data(archive.utf8).write(to: folder.appending(path: "StorableArchiveItems.json")) }
+            return ArcImport.read(root: folder)
+        }
+        /// everything, with Arc's default profile into this one and the rest into their own
+        func haul(_ browser: ImportedBrowser) -> ImportHaul {
+            ImportBuilder.haul(
+                browser,
+                into: Dictionary(
+                    uniqueKeysWithValues: browser.profiles.map { ($0.id, $0.isDefault ? Profile.defaultID : $0.id) }),
+                taking: Set(ImportCategory.allCases), names: Set(manager.profiles.map(\.name)))
+        }
+        // an archived tab names its space by Arc id, and goes to that space's profile
+        let archive = """
+            {"items": ["A1", {"sidebarItem": {"title": "Old", "data": {"tab": {"savedURL": "https://archived.example/"}}},
+                              "archivedAt": 700000000, "source": {"space": {"_0": "S2"}}}]}
+            """
+        guard let parsed = arc(json, archive: archive), let space = haul(parsed).spaces.first else {
+            record("arc: a sidebar file parses", false, "reader returned nothing")
             return
         }
+        let built = haul(parsed)
         record("arc: a sidebar file parses", true)
         record(
             "arc: a space keeps its name and icon",
@@ -2745,7 +2850,7 @@ enum SelfTest {
             space.splitGroups.count == 1 && space.splitGroups.first?.tabIDs.count == 2
                 && space.splitGroups.first?.orientation == .rows,
             "\(space.splitGroups.count) groups")
-        let favourites = parsed.favourites.map { "\($0.folder) \($0.url)" }
+        let favourites = parsed.profiles.flatMap { profile in profile.favourites.map { "\(profile.key) \($0.url)" } }
         record(
             "arc: each Arc profile's top apps become that profile's favourites, in order",
             favourites == ["Default https://six.example/", "Profile 1 https://eight.example/"],
@@ -2755,46 +2860,45 @@ enum SelfTest {
         record(
             "arc: a renamed tab keeps its name on its record, a plain one keeps its title",
             renamedRecord?.name == "Renamed" && plainRecord != nil && plainRecord?.name == nil
-                && parsed.titles["https://two.example/"] == "Two"
-                && parsed.favourites.first?.name == "Six Named",
-            "\(renamedRecord?.name ?? "nil") / \(plainRecord?.name ?? "nil"), \(parsed.titles.count) titles")
+                && built.titles["https://two.example/"] == "Two"
+                && parsed.profiles.first?.favourites.first?.name == "Six Named",
+            "\(renamedRecord?.name ?? "nil") / \(plainRecord?.name ?? "nil"), \(built.titles.count) titles")
         record(
             "arc: non-page urls are left behind",
-            !space.tabs.contains { $0.url.hasPrefix("javascript:") })
+            !built.spaces.contains { $0.tabs.contains { $0.url.hasPrefix("javascript:") } })
         // a damaged file: a folder listed under itself and its parent, an emoji code no scalar has
-        let looped = ArcImport.parse(
-            sidebar: Data(
-                """
-                {"sidebar": {"containers": [{
-                  "spaces": ["S1", {"title": "Loop", "customInfo": {"iconType": {"emoji": -1}},
-                                    "newContainerIDs": [{"pinned": {}}, "P1"]}],
-                  "items": [
-                    "P1", {"id": "P1", "childrenIds": ["F1"], "data": {"itemContainer": {}}},
-                    "F1", {"id": "F1", "childrenIds": ["T1", "F1", "P1"], "data": {"list": {}}},
-                    "T1", {"id": "T1", "childrenIds": [], "data": {"tab": {"savedURL": "https://one.example/"}}}
-                  ]}]}}
-                """.utf8))
-        let loopedRows = looped?.spaces.first?.pinnedEntries ?? []
+        let looped = arc(
+            """
+            {"sidebar": {"containers": [{
+              "spaces": ["S1", {"title": "Loop", "customInfo": {"iconType": {"emoji": -1}},
+                                "newContainerIDs": [{"pinned": {}}, "P1"]}],
+              "items": [
+                "P1", {"id": "P1", "childrenIds": ["F1"], "data": {"itemContainer": {}}},
+                "F1", {"id": "F1", "childrenIds": ["T1", "F1", "P1"], "data": {"list": {}}},
+                "T1", {"id": "T1", "childrenIds": [], "data": {"tab": {"savedURL": "https://one.example/"}}}
+              ]}]}}
+            """).map(haul)?.spaces.first
+        let loopedRows = looped?.pinnedEntries ?? []
         record(
             "arc: a sidebar that loops back on itself still parses, each tab and folder once",
-            looped?.spaces.first?.tabs.count == 1 && looped?.spaces.first?.icon == "square.stack"
+            looped?.tabs.count == 1 && looped?.icon == "square.stack"
                 && loopedRows.count == 1 && loopedRows.first?.kind == "folder"
                 && loopedRows.first?.children?.count == 1,
-            "\(looped?.spaces.first?.tabs.count ?? -1) tabs, "
-                + "\(loopedRows.first?.children?.count ?? -1) rows in the folder")
-        let again = ArcImport.parse(sidebar: Data(json.utf8))
+            "\(looped?.tabs.count ?? -1) tabs, \(loopedRows.first?.children?.count ?? -1) rows in the folder")
+        let again = arc(json).map(haul)
         record(
             "arc: reading the same sidebar again names the same spaces and profiles",
-            parsed.profiles.count == 1 && again?.spaces.map(\.id) == parsed.spaces.map(\.id)
-                && again?.profiles.map(\.id) == parsed.profiles.map(\.id),
-            "\(parsed.profiles.count) profiles")
+            built.profiles.count == 1 && again?.spaces.map(\.id) == built.spaces.map(\.id)
+                && again?.profiles.map(\.id) == built.profiles.map(\.id),
+            "\(built.profiles.count) profiles")
 
         // and the move itself: spaces in, nothing loaded
         let spacesBefore = manager.spaces.count
-        let landed = manager.importArc(parsed).spaces.first
-        let side = parsed.profiles.first.flatMap { manager.core.profile($0.id) }
+        let moved = manager.importBrowser(built)
+        let landed = moved.spaces.first
+        let side = built.profiles.first.flatMap { manager.core.profile($0.id) }
         defer {
-            for space in manager.spaces where parsed.spaces.contains(where: { $0.id == space.id }) {
+            for space in manager.spaces where built.spaces.contains(where: { $0.id == space.id }) {
                 manager.deleteSpace(space)
             }
             if let side { manager.deleteProfile(side) }
@@ -2811,7 +2915,7 @@ enum SelfTest {
             "\(manager.spaces.count) vs \(spacesBefore + 2)")
         record(
             "arc: a space on another Arc profile lands in that profile",
-            side != nil && manager.spaces.first { $0.id == parsed.spaces.last?.id }?.profileID == side?.id)
+            side != nil && manager.spaces.first { $0.id == built.spaces.last?.id }?.profileID == side?.id)
         func hosts(_ profile: Profile?) -> [String?] {
             profile?.essentials.map { ($0.url ?? $0.pendingURL)?.host() } ?? []
         }
@@ -2819,36 +2923,21 @@ enum SelfTest {
             "arc: a favourite lands in its own profile",
             hosts(side) == ["eight.example"] && !hosts(manager.core.defaultProfile).contains("eight.example"),
             hosts(side).map { $0 ?? "nil" }.joined(separator: ","))
+        record(
+            "arc: an archived tab goes to the profile of the space it left",
+            side?.archive.entries.contains { $0.url.host() == "archived.example" && $0.spaceName == "Side" } == true
+                && !manager.core.defaultProfile.archive.entries.contains { $0.url.host() == "archived.example" })
         let profilesBefore = manager.profiles.count
-        let remade = manager.importArc(parsed)
+        let remade = manager.importBrowser(built)
         record(
             "arc: importing again adds no space, profile or favourite",
             remade.spaces.isEmpty && manager.spaces.count == spacesBefore + 2 && manager.profiles.count == profilesBefore
                 && hosts(side).count == 1
                 && hosts(manager.core.defaultProfile).filter { $0 == "six.example" }.count == 1,
             "\(manager.spaces.count - spacesBefore) spaces, \(manager.profiles.count - profilesBefore) profiles")
-
-        // an archived tab names its space by Arc id, and goes to that space's profile
-        let folder = FileManager.default.temporaryDirectory.appending(path: "arcimport-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: folder) }
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try? Data(json.utf8).write(to: folder.appending(path: "StorableSidebar.json"))
-        try? Data(
-            """
-            {"items": ["A1", {"sidebarItem": {"title": "Old", "data": {"tab": {"savedURL": "https://archived.example/"}}},
-                              "archivedAt": 700000000, "source": {"space": {"_0": "S2"}}}]}
-            """.utf8
-        ).write(to: folder.appending(path: "StorableArchiveItems.json"))
-        let read = ArcImport.read(from: folder)
-        let archived = read.map { manager.importArc($0).archived }
-        record(
-            "arc: an archived tab goes to the profile of the space it left",
-            side?.archive.entries.contains { $0.url.host() == "archived.example" && $0.spaceName == "Side" } == true
-                && !manager.core.defaultProfile.archive.entries.contains { $0.url.host() == "archived.example" })
-        let rearchived = read.map { manager.importArc($0).archived }
         record(
             "arc: the summary counts the archived tabs that landed, none on a re-run",
-            archived == 1 && rearchived == 0, "\(archived ?? -1), then \(rearchived ?? -1)")
+            moved.archived == 1 && remade.archived == 0, "\(moved.archived), then \(remade.archived)")
         record(
             "arc: the folder survives the move",
             landed?.folders.first?.name == "Reading" && landed?.folders.first?.children.count == 1,
@@ -2879,7 +2968,7 @@ enum SelfTest {
             titled?.title ?? "nothing")
         // last: the page you land on starts loading while this waits
         if let favourite { await navigate(favourite, to: URL(string: "https://six.example/thread")!) }
-        _ = manager.importArc(parsed)
+        _ = manager.importBrowser(built)
         let sixes = manager.core.defaultProfile.essentials.filter { $0.pinnedURL?.host() == "six.example" }
         record(
             "arc: importing again while a favourite is off its home adds no second copy",
@@ -2887,7 +2976,7 @@ enum SelfTest {
             "\(sixes.count) copies, at \(favourite?.url?.absoluteString ?? "nil")")
         favourite?.pinnedURL = URL(string: "https://six.example/thread")
         if let favourite { await navigate(favourite, to: URL(string: "https://six.example/")!) }
-        _ = manager.importArc(parsed)
+        _ = manager.importBrowser(built)
         let homedElsewhere = manager.core.defaultProfile.essentials.filter { $0.pinnedURL?.host() == "six.example" }
         record(
             "arc: importing again while a favourite sits on Arc's page, its home elsewhere, adds no second copy",
@@ -2895,16 +2984,16 @@ enum SelfTest {
             "\(homedElsewhere.count) copies, home \(favourite?.pinnedURL?.absoluteString ?? "nil")")
 
         // the real thing, when this Mac has it
-        guard ArcImport.isInstalled, ArcImport.isReadable() else { return }
-        guard let real = ArcImport.read() else {
+        guard ArcImport.isReadable() else { return }
+        guard let real = ArcImport.read(root: ArcImport.dataDirectory) else {
             record("arc: this Mac's own Arc data reads", false, "nothing came back")
             return
         }
+        let spaces = real.profiles.flatMap(\.spaces)
         record(
-            "arc: this Mac's own Arc data reads", !real.spaces.isEmpty,
-            "\(real.spaces.count) spaces, \(real.tabCount) tabs, \(real.folderCount) folders, "
-                + "\(real.archived.count) archived — "
-                + real.spaces.map { "\($0.name) \($0.icon)" }.joined(separator: ", "))
+            "arc: this Mac's own Arc data reads", !spaces.isEmpty,
+            "\(real.profiles.count) profiles, \(spaces.count) spaces, "
+                + "\(real.profiles.reduce(0) { $0 + $1.archive.count }) archived")
     }
 
     /// importing from Chromium, Firefox, Zen and Safari profiles this test writes itself,
@@ -2986,12 +3075,14 @@ enum SelfTest {
             """
             CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER,
               last_visit_date INTEGER, hidden INTEGER, typed INTEGER);
+            CREATE TABLE moz_historyvisits(id INTEGER PRIMARY KEY, place_id INTEGER, visit_date INTEGER, visit_type INTEGER);
             CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY, type INTEGER, fk INTEGER, parent INTEGER,
               position INTEGER, title TEXT, guid TEXT);
             INSERT INTO moz_places VALUES (1, 'https://fox.example/', 'Fox', 7, \(foxTime), 0, 1),
               (2, 'https://den.example/', 'Den', 0, 0, 0, 0),
               (3, 'https://fox-menu.example/', 'Menu link', 3, \(foxTime - 60_000_000), 0, 0),
               (4, 'place:sort=8', 'Recent', 0, 0, 0, 0);
+            INSERT INTO moz_historyvisits VALUES (1, 1, \(foxTime), 2), (2, 1, \(foxTime - 1), 1);
             INSERT INTO moz_bookmarks VALUES (1, 2, NULL, 0, 0, '', 'root________'),
               (2, 2, NULL, 1, 0, 'menu', 'menu________'), (3, 2, NULL, 1, 1, 'toolbar', 'toolbar_____'),
               (4, 2, NULL, 1, 2, 'tags', 'tags________'), (5, 2, NULL, 3, 0, 'Foxes', 'folder000001'),
@@ -3002,13 +3093,14 @@ enum SelfTest {
         let session = """
             {"spaces":[{"uuid":"{w1}","name":"Work","icon":"💼"},
                        {"uuid":"{w2}","name":"Play","icon":"chrome://browser/skin/zen-icons/selectable/star.svg"}],
-             "windows":[{"tabs":[
-               {"pinned":true,"zenWorkspace":"{w1}","index":2,"entries":[
+             "tabs":[
+               {"pinned":true,"zenWorkspace":"{w1}","zenSyncId":"t1","index":2,"entries":[
                  {"url":"https://docs.example/","title":"Docs"},{"url":"https://docs.example/page","title":"Docs page"}]},
-               {"pinned":true,"zenEssential":true,"index":1,"entries":[{"url":"https://mail.example/","title":"Mail"}]},
-               {"pinned":false,"zenWorkspace":"{w1}","index":1,"entries":[{"url":"https://today.example/","title":"Today"}]},
-               {"pinned":true,"zenWorkspace":"{w2}","index":1,"entries":[{"url":"javascript:void(0)","title":"Bad"}]},
-               {"pinned":true,"zenWorkspace":"{w2}","index":1,"entries":[{"url":"https://game.example/","title":"Game"}]}]}]}
+               {"pinned":true,"zenEssential":true,"zenSyncId":"e1","index":1,"entries":[{"url":"https://mail.example/","title":"Mail"}]},
+               {"pinned":false,"zenWorkspace":"{w1}","zenSyncId":"u1","index":1,"lastAccessed":1000,"entries":[{"url":"https://today.example/","title":"Today"}]},
+               {"pinned":true,"zenWorkspace":"{w2}","zenSyncId":"t2","index":1,"entries":[{"url":"javascript:void(0)","title":"Bad"}]},
+               {"pinned":true,"zenWorkspace":"{w2}","zenSyncId":"t3","index":1,"entries":[{"url":"https://game.example/","title":"Game"}]}],
+             "folders":[],"splitViewData":[],"groups":[]}
             """
         put(mozLz4(session), "\(zen)/Profiles/main/zen-sessions.jsonlz4")
         _ = database(
@@ -3019,7 +3111,21 @@ enum SelfTest {
             CREATE TABLE zen_pins(id INTEGER PRIMARY KEY, uuid TEXT, title TEXT, url TEXT, workspace_uuid TEXT,
               position INTEGER, is_essential INTEGER, is_group INTEGER);
             INSERT INTO zen_pins VALUES (1, 'p1', 'Canvas', 'https://canvas.example/', '{o1}', 0, 0, 0),
-              (2, 'p2', 'Folder', NULL, '{o1}', 1, 0, 1), (3, 'p3', 'Chat', 'https://chat.example/', NULL, 2, 1, 0);
+              (2, 'p3', 'Chat', 'https://chat.example/?room=a|b', NULL, 2, 1, 0);
+            CREATE TABLE moz_places(id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER,
+              last_visit_date INTEGER, hidden INTEGER, typed INTEGER);
+            CREATE TABLE moz_historyvisits(id INTEGER PRIMARY KEY, place_id INTEGER, visit_date INTEGER, visit_type INTEGER);
+            INSERT INTO moz_places VALUES (1, 'https://old.example/', 'Old', 3, \(foxTime), 0, 0);
+            """)
+        _ = database(
+            "\(zen)/Profiles/old/cookies.sqlite",
+            """
+            CREATE TABLE moz_cookies(id INTEGER PRIMARY KEY, originAttributes TEXT NOT NULL DEFAULT '', name TEXT,
+              value TEXT, host TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER);
+            INSERT INTO moz_cookies (originAttributes, name, value, host, path, expiry, isSecure, isHttpOnly)
+              VALUES ('^firstPartyDomain=news.example', 'sid', 'embedded', '.old.example', '/', \(Int(t0) + 86_400 * 3650), 1, 0),
+                ('^firstPartyDomain=old.example', 'sid', 'old-zen', '.old.example', '/', \(Int(t0) + 86_400 * 3650), 1, 0),
+                ('^firstPartyDomain=%28https%2Cwww.old.example%29', 'site', 'use-site', '.old.example', '/', \(Int(t0) + 86_400 * 3650), 1, 0);
             """)
 
         // Safari
@@ -3078,46 +3184,175 @@ enum SelfTest {
         let packed = mozLz4(repeated)
         record(
             "browser import: mozLz4 decodes a block with back-references",
-            BrowserImport.mozLz4(packed) == Data(repeated.utf8) && packed.count < repeated.utf8.count / 4,
+            SQLiteCopy.mozLz4(packed) == Data(repeated.utf8) && packed.count < repeated.utf8.count / 4,
             "\(packed.count) of \(repeated.utf8.count) bytes")
         var oversized = packed
         oversized[11] = 0x7F
         record(
             "browser import: mozLz4 refuses a wrong magic, a truncated block and a lying size",
-            BrowserImport.mozLz4(Data("mozLz41\0".utf8) + packed.dropFirst(8)) == nil
-                && BrowserImport.mozLz4(packed.dropLast(6)) == nil && BrowserImport.mozLz4(oversized) == nil
-                && BrowserImport.mozLz4(Data("mozLz40\0".utf8)) == nil)
+            SQLiteCopy.mozLz4(Data("mozLz41\0".utf8) + packed.dropFirst(8)) == nil
+                && SQLiteCopy.mozLz4(packed.dropLast(6)) == nil && SQLiteCopy.mozLz4(oversized) == nil
+                && SQLiteCopy.mozLz4(Data("mozLz40\0".utf8)) == nil)
 
-        let sources = BrowserImport.detect(home: root)
-        let expected = [
-            "Chrome · Work", "Chrome · Home", "Brave", "Firefox", "Zen · Old", "Zen · Default (release)", "Safari",
-        ]
+        // Yab's Chromium engine is a user-data dir that belongs to Yab, not the Chromium scan
+        let yabEngine = "Library/Application Support/Yab/Chromium"
+        put("{}", "\(yabEngine)/Local State")
+        put("{}", "\(yabEngine)/Default/Preferences")
+        put(
+            #"[{"url": "https://yab.example/", "title": "Yab", "last": 800000000, "count": 3, "key": "yab.example"}]"#,
+            "Library/Application Support/Yab/history.json")
+
+        // closed cleanly, a write-ahead database has no -wal or -shm beside it
+        sqlite3_close(database("wal/History", "CREATE TABLE t(x); INSERT INTO t VALUES (1);", wal: true))
+        for side in ["-wal", "-shm"] { try? files.removeItem(at: root.appending(path: "wal/History\(side)")) }
+        try? files.createSymbolicLink(atPath: root.appending(path: "wal/Link").path, withDestinationPath: "History")
+        let walRows = ["History", "Link"].map { name in
+            SQLiteCopy.withDatabase(at: root.appending(path: "wal/\(name)")) { SQLiteCopy.scalar($0, "SELECT count(*) FROM t;") } ?? -1
+        }
+        record("browser import: a write-ahead database with no -shm reads, through a symlink too", walRows == [1, 1], "\(walRows)")
+
+        let browsers = Importers.detect(home: root)
+        func browser(_ name: String) -> ImportedBrowser? { browsers.first { $0.name == name } }
+        let yab = browser("Yab")?.profiles.first
+        let yabVisits = yab?.history.map(Importers.history) ?? []
         record(
-            "browser import: finds profiles by Local State and profiles.ini names, in a fixture home",
-            sources.map(\.title) == expected, sources.map(\.title).joined(separator: ", "))
-        func source(_ title: String) -> BrowserImport.Source? { sources.first { $0.title == title } }
-        guard let work = source("Chrome · Work"), let zenMain = source("Zen · Default (release)"),
-            let safari = source("Safari")
+            "browser import: Yab's history comes from its history.json, with no key",
+            yab?.historyCount == 1 && yabVisits.first?.visitCount == 3 && browser("Yab")?.keychain.isEmpty == true,
+            "\(yabVisits.count) pages")
+        record(
+            "browser import: finds each browser, and its profiles by Local State and profiles.ini names",
+            browsers.map(\.name) == ["Chrome", "Brave", "Firefox", "Zen", "Safari", "Yab"]
+                && browser("Chrome")?.profiles.map(\.name) == ["Work", "Home"]
+                && browser("Zen")?.profiles.map(\.name) == ["Old", "Default (release)"],
+            browsers.map { "\($0.name) \($0.profiles.map(\.name))" }.joined(separator: "; "))
+        guard let chrome = browser("Chrome"), let zen = browser("Zen"), let safari = browser("Safari"),
+            let zenOld = zen.profiles.first, let zenMain = zen.profiles.last, zen.profiles.count == 2
         else {
             sqlite3_close(chromeHistory)
             return
         }
-
+        func links(_ items: [ImportedItem]) -> Int {
+            items.reduce(0) { total, item in
+                switch item {
+                case .tab: total + 1
+                case .folder(_, _, let inner): total + links(inner)
+                case .split(let panes, _): total + panes.count
+                }
+            }
+        }
+        func offers(_ profile: ImportedProfile?) -> [ImportCategory] {
+            guard let profile else { return [] }
+            return ImportCategory.allCases.filter { ImportModel.has(profile, $0) }
+        }
+        let firefox = browser("Firefox")?.profiles.first
         record(
             "browser import: malformed files are refused cleanly",
-            source("Chrome · Home").map(BrowserImport.survey).map { $0.bookmarks == nil && $0.history.isEmpty } == true
-                && source("Firefox").map(BrowserImport.survey).map { $0.bookmarks == nil && $0.history.isEmpty } == true
-                && source("Brave").map(BrowserImport.survey)?.bookmarks?.linkCount == 4)
-        let old = source("Zen · Old").map(BrowserImport.survey)?.workspaces
+            offers(chrome.profiles.last).isEmpty && offers(firefox) == [.passwords]
+                && links(browser("Brave")?.profiles.first?.bookmarks ?? []) == 4,
+            "Home \(offers(chrome.profiles.last)), Firefox \(offers(firefox))")
+        record(
+            "browser import: history still only in a write-ahead log is offered",
+            offers(chrome.profiles.first) == [.bookmarks, .history],
+            "\(offers(chrome.profiles.first)), \(chrome.profiles.first?.historyCount ?? -1) pages")
         record(
             "browser import: older Zen's workspaces and pins come from places.sqlite",
-            old?.folders == [BookmarkImport.Folder(
-                name: "Studio", links: [BookmarkImport.Link(title: "Canvas", url: URL(string: "https://canvas.example/")!)],
-                icon: "🎨")]
-                && old?.favourites.map(\.url.host) == ["chat.example"],
-            String(describing: old))
+            zenOld.spaces.map(\.name) == ["Studio"] && zenOld.spaces.first?.icon == "🎨"
+                && links(zenOld.spaces.first?.pinned ?? []) == 1
+                && zenOld.favourites.map(\.url) == ["https://chat.example/?room=a|b"],
+            zenOld.spaces.map { "\($0.name) \(links($0.pinned))" }.joined(separator: ", "))
 
         let previous = manager.currentSpace.id
+        let csv = root.appending(path: "Passwords.csv")
+        try? Data(
+            "name,url,username,password,note\nA,https://a.example/login,ann,pw1,\nB,https://b.example/,bob,pw2,\n".utf8
+        ).write(to: csv)
+        // a lab copy fences the keychain, so there only the CSV's recognition can be checked
+        let keychain = !AppStorageLocation.isExtensionLab
+        if !keychain { note("the keychain is fenced in this build: passwords are checked by header only") }
+        func land(
+            _ pick: ImportedBrowser, into target: UUID? = nil, _ setup: (ImportModel) -> Void = { _ in }
+        ) async -> ImportModel {
+            let model = ImportModel(browsers: browsers)
+            model.choose(pick)
+            if let target { for source in pick.profiles { model.destinations[source.id] = target } }
+            setup(model)
+            model.run(into: manager)
+            await settle(.seconds(10)) {
+                if case .working = model.phase { return false }
+                return true
+            }
+            return model
+        }
+
+        // Zen's default profile into Artemis' default, its other one into a new profile. Nothing that
+        // would outlive the test lands in the default profile: no favourites, history or passwords.
+        let home = manager.core.defaultProfile
+        let (homeName, homeIcon) = (home.name, home.icon)
+        let profilesBefore = manager.profiles.count
+        let spacesBefore = Set(manager.spaces.map(\.id))
+        func made() -> [Space] { manager.spaces.filter { !spacesBefore.contains($0.id) } }
+        let marksOnly = await land(zen) { $0.selection = [.bookmarks] }
+        record(
+            "browser import: a source profile with nothing ticked to bring makes no new profile",
+            manager.profiles.count == profilesBefore && made().map(\.name) == ["Zen Bookmarks"],
+            "\(manager.profiles.count - profilesBefore) new profiles, \(made().map(\.name)), \(marksOnly.phase)")
+        for space in made() { manager.deleteSpace(space) }
+        let routed = await land(zen) { $0.selection = [.spaces, .cookies] }
+        let old = manager.profiles.first { $0.id == zenOld.id }
+        let owners = Dictionary(made().map { ($0.name, $0.profileID) }, uniquingKeysWith: { first, _ in first })
+        record(
+            "browser import: the default source profile lands in the default profile, the other in a new one",
+            routed.destinations[zenMain.id] == Profile.defaultID && routed.destinations[zenOld.id] == zenOld.id
+                && owners == ["Work": Profile.defaultID, "Play": Profile.defaultID, "Studio": zenOld.id]
+                && old?.name == "Old" && manager.profiles.count == profilesBefore + 1
+                && home.name == homeName && home.icon == homeIcon,
+            "\(owners), \(manager.profiles.count - profilesBefore) new profiles, \(routed.phase)")
+        let clocks = made().flatMap(\.tabs).map(\.lastAccessed)
+        record(
+            "browser import: an imported tab's archive clock starts at import",
+            !clocks.isEmpty && clocks.allSatisfy { $0.timeIntervalSinceNow > -600 },
+            "oldest \(String(describing: clocks.min()))")
+        let oldCookies = await old?.dataStore.httpCookieStore.allCookies() ?? []
+        let homeCookies = await home.dataStore.httpCookieStore.allCookies()
+        record(
+            "browser import: a profile's cookies land in its own profile's jar",
+            oldCookies.contains { $0.name == "sid" && $0.value == "old-zen" }
+                && !homeCookies.contains { $0.name == "sid" && $0.domain.hasSuffix("old.example") },
+            "\(oldCookies.count) in Old")
+        record(
+            "browser import: under first-party isolation a cookie's copy from its own site wins",
+            oldCookies.filter { $0.name == "sid" }.map(\.value) == ["old-zen"]
+                && oldCookies.contains { $0.name == "site" },
+            "\(oldCookies.map(\.value))")
+        let rerouted = await land(zen) { $0.selection = [.spaces, .cookies] }
+        record(
+            "browser import: importing again adds no space and no profile",
+            made().count == 3 && manager.profiles.count == profilesBefore + 1
+                && "\(rerouted.phase)".contains("already here"),
+            "\(made().count) spaces, \(rerouted.phase)")
+        let homeLogins = PasswordStore.shared.logins(in: Profile.defaultID).count
+        let oldOnly = await land(zen) { model in
+            model.included = [zenOld.id]
+            model.selection = [.history, .passwords]
+            model.passwordFile = csv
+        }
+        record(
+            "browser import: a profile's history and its browser's password CSV land in its own profile",
+            old?.history.entries.contains { $0.url.host() == "old.example" && $0.visitCount == 3 } == true
+                && (keychain
+                    ? PasswordStore.shared.logins(in: zenOld.id).count == 2
+                        && PasswordStore.shared.logins(in: Profile.defaultID).count == homeLogins
+                    : "\(oldOnly.phase)".contains("into Artemis Passwords")),
+            "\(oldOnly.phase)")
+        for space in made() { manager.deleteSpace(space) }
+        if let old { manager.deleteProfile(old) }
+        let ghost = ImportBuilder.haul(zen, into: [zenOld.id: UUID()], taking: [.spaces], names: [])
+        let orphans = manager.importBrowser(ghost).spaces
+        record(
+            "browser import: a space bound for a profile deleted mid-import lands in the default profile",
+            !orphans.isEmpty && orphans.allSatisfy { $0.profileID == Profile.defaultID }, "\(orphans.map(\.profileID))")
+        for space in orphans { manager.deleteSpace(space) }
+
         let profile = manager.createProfile(name: "Import Self-Test", icon: "person")
         defer {
             for space in manager.spaces where space.profileID == profile.id {
@@ -3130,105 +3365,103 @@ enum SelfTest {
         func pins(_ name: String) -> [String] {
             mine().first { $0.name == name }?.pinnedTabs.compactMap { $0.pinnedURL?.host() } ?? []
         }
-        func visits(_ url: String) -> HistoryEntry? { profile.history.entries.first { $0.url.absoluteString == url } }
-        func importing(_ source: BrowserImport.Source, passwords: URL? = nil) async -> BrowserImportModel {
-            let model = BrowserImportModel(sources: sources, offersArc: false, profileID: profile.id)
-            model.choose(source)
-            await settle(.seconds(5)) { model.survey != nil }
-            model.passwordFile = passwords
-            await model.perform(into: manager)
-            return model
+        func folders(_ name: String) -> [TabFolder] {
+            guard let space = mine().first(where: { $0.name == name }) else { return [] }
+            return space.pinnedEntries.compactMap { entry in
+                guard case .folder(let id) = entry else { return nil }
+                return space.folder(id)
+            }
         }
+        func visits(_ url: String) -> HistoryEntry? { profile.history.entries.first { $0.url.absoluteString == url } }
 
-        let csv = root.appending(path: "Chrome Passwords.csv")
-        try? Data(
-            "name,url,username,password,note\nA,https://a.example/login,ann,pw1,\nB,https://b.example/,bob,pw2,\n".utf8
-        ).write(to: csv)
-        let chromeRun = await importing(work, passwords: csv)
+        let chromeRun = await land(chrome, into: profile.id)
         record(
-            "browser import: Chrome's history includes rows still in its write-ahead log",
-            chromeRun.survey?.history.count == 2, "\(chromeRun.survey?.history.count ?? -1) pages")
-        record(
-            "browser import: Chrome folders become spaces, nesting flattens, loose links share one",
-            Set(mine().map(\.name)) == ["Reading", "Imported"]
-                && pins("Reading") == ["essay.example", "paper.example"]
-                && pins("Imported") == ["chrome-bar.example", "chrome-other.example"],
-            mine().map { "\($0.name): \(pins($0.name))" }.joined(separator: "; "))
+            "browser import: Chrome's bookmarks become one space of collapsed root folders, nesting kept",
+            mine().map(\.name) == ["Chrome Bookmarks"] && mine().first?.icon == "bookmark"
+                && folders("Chrome Bookmarks").map(\.name) == ["Bookmarks Bar", "Other Bookmarks"]
+                && folders("Chrome Bookmarks").allSatisfy { !$0.isExpanded }
+                && pins("Chrome Bookmarks")
+                    == ["essay.example", "paper.example", "chrome-bar.example", "chrome-other.example"],
+            mine().map { "\($0.name): \(pins($0.name))" }.joined(separator: "; ") + ", \(chromeRun.phase)")
         let often = visits("https://often.example/")
         record(
-            "browser import: history keeps visit and typed counts and the real visit time",
+            "browser import: history keeps visit and typed counts and the real visit time, web pages only",
             often?.visitCount == 42 && often?.typedCount == 5
                 && abs((often?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1
-                && visits("https://hidden.example/") == nil,
+                && visits("https://once.example/") != nil && visits("https://hidden.example/") == nil
+                && visits("chrome://settings/") == nil,
             "\(often?.visitCount ?? -1) visits, \(often?.typedCount ?? -1) typed")
-        // a lab copy fences the keychain, so there only the CSV's recognition can be checked
-        let keychain = !AppStorageLocation.isExtensionLab
-        if !keychain { note("the keychain is fenced in this build: passwords are checked by header only") }
-        let logins = PasswordStore.shared.logins(in: profile.id).count
-        record(
-            "browser import: a password CSV lands in the chosen profile",
-            keychain ? logins == 2 : "\(chromeRun.phase)".contains("No new passwords"),
-            "\(logins) logins, \(chromeRun.phase)")
 
         let pinsBefore = mine().reduce(0) { $0 + $1.pinnedTabs.count }
         let historyBefore = profile.history.entries.count
-        let again = await importing(work, passwords: csv)
+        let again = await land(chrome, into: profile.id)
         record(
-            "browser import: importing again adds no space, pin, history row or password",
-            mine().count == 2 && mine().reduce(0) { $0 + $1.pinnedTabs.count } == pinsBefore
+            "browser import: importing again adds no space, pin or history row",
+            mine().count == 1 && mine().reduce(0) { $0 + $1.pinnedTabs.count } == pinsBefore
                 && profile.history.entries.count == historyBefore && visits("https://often.example/")?.visitCount == 42
-                && (!keychain || PasswordStore.shared.logins(in: profile.id).count == 2),
+                && "\(again.phase)".contains("already here"),
             "\(again.phase)")
 
-        _ = await importing(zenMain)
+        let zenRun = await land(zen, into: profile.id) { model in
+            model.passwordFile = csv
+            model.selection.insert(.passwords)
+        }
         let workSpace = mine().first { $0.name == "Work" }
         record(
-            "browser import: Zen workspaces become spaces with their emoji and current pinned page",
+            "browser import: Zen workspaces become spaces with their icons, pins and today tabs",
             workSpace?.icon == "💼" && pins("Work") == ["docs.example"]
                 && workSpace?.pinnedTabs.first?.pinnedURL?.path() == "/page"
-                && mine().first { $0.name == "Play" }?.icon == "square.stack" && pins("Play") == ["game.example"],
-            mine().map { "\($0.name) \($0.icon): \(pins($0.name))" }.joined(separator: "; "))
+                && workSpace?.tabs.contains { !$0.isPinned && ($0.url ?? $0.pendingURL)?.host() == "today.example" } == true
+                && mine().first { $0.name == "Play" }?.icon == "star.fill" && pins("Play") == ["game.example"],
+            mine().map { "\($0.name) \($0.icon): \(pins($0.name))" }.joined(separator: "; ") + ", \(zenRun.phase)")
         record(
-            "browser import: Zen essentials become favourites, and unpinned tabs stay behind",
-            profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.host() } == ["mail.example"]
-                && !mine().contains { $0.tabs.contains { $0.pinnedURL?.host() == "today.example" } })
+            "browser import: Zen essentials become favourites",
+            Set(profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.host() }) == ["mail.example", "chat.example"])
         record(
             "browser import: Firefox bookmarks skip tags and place: queries",
-            pins("Foxes") == ["fox.example", "den.example"] && pins("Imported").contains("fox-menu.example")
-                && !mine().contains { $0.name == "tags" })
+            pins("Zen Bookmarks") == ["fox.example", "den.example", "fox-menu.example"]
+                && folders("Zen Bookmarks").map(\.name) == ["Bookmarks Toolbar", "Bookmarks Menu"],
+            "\(pins("Zen Bookmarks"))")
         let fox = visits("https://fox.example/")
         record(
             "browser import: Firefox history keeps its counts and times",
             fox?.visitCount == 7 && fox?.typedCount == 1 && abs((fox?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1
                 && visits("https://den.example/") == nil)
+        let logins = PasswordStore.shared.logins(in: profile.id).count
+        record(
+            "browser import: a password CSV lands in the chosen profile",
+            keychain ? logins == 2 : "\(zenRun.phase)".contains("into Artemis Passwords"), "\(logins) logins, \(zenRun.phase)")
         let mail = profile.essentials.first { $0.pinnedURL?.host() == "mail.example" }
         if let mail { await navigate(mail, to: URL(string: "https://mail.example/thread")!) }
-        _ = await importing(zenMain)
+        let zenAgain = await land(zen, into: profile.id)
         record(
             "browser import: importing Zen again while a favourite is off its home adds no second copy",
-            mail?.isOffPinnedURL == true && profile.essentials.count == 1,
-            "\(profile.essentials.count) favourites, at \(mail?.url?.absoluteString ?? "nil")")
+            mail?.isOffPinnedURL == true && profile.essentials.count == 2 && "\(zenAgain.phase)".contains("already here"),
+            "\(profile.essentials.count) favourites, at \(mail?.url?.absoluteString ?? "nil"), \(zenAgain.phase)")
 
-        let safariRun = await importing(safari)
+        let safariRun = await land(safari, into: profile.id)
         record(
-            "browser import: Safari's bar and menu rise to the top, the Reading List is a space",
-            pins("Recipes") == ["soup.example", "cake.example"] && pins("Reading List") == ["later.example"]
-                && pins("Travel") == ["trip.example"]
-                && pins("Imported").contains("safari-bar.example") && pins("Imported").contains("safari-menu.example"),
-            "\(safariRun.phase)")
+            "browser import: Safari's favourites bar becomes favourites, its roots and Reading List folders",
+            profile.essentials.contains { $0.pinnedURL?.host() == "safari-bar.example" }
+                && folders("Safari Bookmarks").map(\.name) == ["Favourites", "Bookmarks Menu", "Reading List", "Travel"]
+                && Set(pins("Safari Bookmarks")) == [
+                    "soup.example", "cake.example", "safari-bar.example", "safari-menu.example", "later.example",
+                    "trip.example",
+                ],
+            "\(folders("Safari Bookmarks").map(\.name)), \(safariRun.phase)")
         let apple = visits("https://apple.example/")
         record(
             "browser import: Safari history takes the newest visit's title and time",
             apple?.visitCount == 12 && apple?.title == "Apple"
                 && abs((apple?.lastVisited.timeIntervalSince1970 ?? 0) - t0) < 1)
 
-        let plistPath = safari.directory.appending(path: "Bookmarks.plist").path
+        let plistPath = root.appending(path: "Library/Safari/Bookmarks.plist").path
         try? files.setAttributes([.posixPermissions: 0], ofItemAtPath: plistPath)
-        let blocked = BrowserImport.survey(safari)
+        let blocked = SafariImport.detect(home: root).first
         try? files.setAttributes([.posixPermissions: 0o644], ofItemAtPath: plistPath)
         record(
-            "browser import: an unreadable Safari is reported as needing access",
-            blocked.blocked && blocked.bookmarks == nil && blocked.history.isEmpty)
+            "browser import: an unreadable Safari asks for Full Disk Access",
+            blocked?.wall == .fullDiskAccess, "\(String(describing: blocked?.wall))")
 
         // the other exports people bring, each by its own header
         let store = PasswordStore.shared
@@ -3259,6 +3492,40 @@ enum SelfTest {
         sqlite3_close(chromeHistory)
     }
 
+    /// the intro stays off the suite's windows, its swoosh draws the icon's comet, and its score swells and ends
+    private static func testOnboarding(manager: TabManager) async {
+        record("onboarding: never due under the self-test", !Onboarding.isDue && !Onboarding.claims(manager))
+        record(
+            "onboarding: due only on a fresh Mac or after a quit part-way, never once finished",
+            Onboarding.due(done: nil, hasSession: false) && !Onboarding.due(done: nil, hasSession: true)
+                && Onboarding.due(done: false, hasSession: true) && !Onboarding.due(done: true, hasSession: false))
+
+        let square = CGRect(x: 0, y: 0, width: 1024, height: 1024)
+        func comet(_ sweep: Double) -> CGRect { MarkPart(isComet: true, sweep: sweep).path(in: square).boundingRect }
+        let whole = comet(1), nearly = comet(0.999)
+        record(
+            "onboarding: the swoosh starts bare and ends on the icon's whole comet",
+            comet(0).isEmpty
+                && abs(nearly.minX - whole.minX) + abs(nearly.maxX - whole.maxX) + abs(nearly.minY - whole.minY) + abs(nearly.maxY - whole.maxY) < 1,
+            "\(nearly) of \(whole)")
+
+        guard let url = IntroSound.url, let file = try? AVAudioFile(forReading: url),
+            let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+            (try? file.read(into: buffer)) != nil, let samples = buffer.floatChannelData?[0]
+        else { return record("onboarding: the score is bundled", false) }
+        let rate = file.processingFormat.sampleRate, count = Int(buffer.frameLength)
+        func rms(_ from: Double, _ to: Double) -> Double {
+            let end = min(count, Int(to * rate)), span = min(end, Int(from * rate))..<end
+            return (span.reduce(0) { $0 + Double(samples[$1] * samples[$1]) } / Double(max(1, span.count))).squareRoot()
+        }
+        let opening = rms(0.5, 1.5), climax = rms(IntroBeat.reveal, IntroBeat.reveal + 0.6)
+        let close = rms(Double(count) / rate - 0.3, Double(count) / rate)
+        record(
+            "onboarding: the score outlasts the shrink, peaks on the swoosh and ends silent",
+            Double(count) / rate > IntroBeat.shrink + 3 && climax > 4 * opening && close < 0.002,
+            String(format: "%.1f s, rms opening %.4f climax %.4f close %.5f", Double(count) / rate, opening, climax, close))
+    }
+
     /// what Arc sealed, and the picker that decides how much of it moves. the key is
     /// supplied, so the unsealing is tested without touching the keychain
     private static func testArcSecrets(manager: TabManager) {
@@ -3281,31 +3548,31 @@ enum SelfTest {
         }
 
         let secret = "session=abc123; ünicode ✓"
-        let unsealed = try? ArcSecrets.decrypt(seal(Data(secret.utf8)), key: key)
+        let unsealed = try? BrowserKeychain.decrypt(seal(Data(secret.utf8)), key: key)
         record("arc: a sealed value comes back", unsealed == secret, unsealed ?? "nothing")
 
         // current Chromium puts a SHA-256 of the cookie's domain in front of the
         // value; it is not part of the value
         let host = "www.example.com"
         let prefixed = Data(SHA256.hash(data: Data(host.utf8))) + Data(secret.utf8)
-        let stripped = try? ArcSecrets.decrypt(seal(prefixed), key: key, host: host)
+        let stripped = try? BrowserKeychain.decrypt(seal(prefixed), key: key, host: host)
         record("arc: the domain hash in front of a cookie is dropped", stripped == secret,
             stripped ?? "nothing")
-        let keptForLogins = try? ArcSecrets.decrypt(seal(Data(secret.utf8)), key: key, host: host)
+        let keptForLogins = try? BrowserKeychain.decrypt(seal(Data(secret.utf8)), key: key, host: host)
         record("arc: a value with no hash in front survives whole", keptForLogins == secret)
 
         // a cookie stored as `name=` decrypts to the host hash and nothing else
-        let empty = try? ArcSecrets.decrypt(
+        let empty = try? BrowserKeychain.decrypt(
             seal(Data(SHA256.hash(data: Data(host.utf8)))), key: key, host: host)
         record("arc: a cookie with an empty value still comes across", empty == "", empty ?? "nil")
 
         record(
             "arc: the wrong key unseals nothing",
-            (try? ArcSecrets.decrypt(seal(Data(secret.utf8)), key: Data(repeating: 9, count: 16)))
+            (try? BrowserKeychain.decrypt(seal(Data(secret.utf8)), key: Data(repeating: 9, count: 16)))
                 == nil)
         record(
             "arc: an unsealed value is taken as it is",
-            (try? ArcSecrets.decrypt(Data("plain".utf8), key: key)) == "plain")
+            (try? BrowserKeychain.decrypt(Data("plain".utf8), key: key)) == "plain")
 
         // the password file: Chrome's export shape, which every manager reads
         let csv = PasswordStore.csv([
@@ -3318,32 +3585,41 @@ enum SelfTest {
             csv.split(separator: "\n").last.map(String.init) ?? "")
 
         // the picker itself: what it offers, and that it takes nothing on its own
-        let survey = ArcImport.Survey(
-            directory: URL(fileURLWithPath: "/tmp"), sidebar: nil, history: 10, cookies: 20,
-            cookieSites: 5, logins: 3)
-        let model = ArcImportModel(survey: survey)
-        record("arc: passwords are never taken unasked", !model.selection.logins)
+        func arc(history: Int, cookies: Int, logins: Int, locked: Set<Locked> = []) -> ImportModel {
+            let folder = URL(fileURLWithPath: "/tmp")
+            let browser = ImportedBrowser(
+                name: "Arc", bundleID: ArcImport.bundleID, family: .arc, root: folder,
+                profiles: [
+                    ImportedProfile(
+                        id: UUID(), key: "Default", name: "Default", isDefault: true, folder: folder,
+                        history: .chromium(folder), cookies: [.chromium(folder)], logins: .chromium([folder]),
+                        historyCount: history, cookieCount: cookies, loginCount: logins, locked: locked)
+                ], keychain: ArcImport.keychain)
+            let model = ImportModel(browsers: [browser])
+            model.choose(browser)
+            return model
+        }
+        let model = arc(history: 10, cookies: 20, logins: 3)
+        record("arc: passwords are never taken unasked", !model.selection.contains(.passwords))
         // a row the sheet hides must not stay ticked underneath it
-        let nothing = ArcImportModel(
-            survey: ArcImport.Survey(
-                directory: URL(fileURLWithPath: "/tmp"), sidebar: nil, history: 0, cookies: 0,
-                cookieSites: 0, logins: 2))
+        let nothing = arc(history: 0, cookies: 0, logins: 2)
         record(
             "arc: an empty category is never silently selected",
-            !nothing.selection.cookies && !nothing.selection.history && !nothing.needsKey)
-        record("arc: cookies and history are offered by default",
-            model.selection.cookies && model.selection.history)
+            nothing.taking.isDisjoint(with: [.cookies, .history]) && !nothing.needsKey)
+        record("arc: cookies and history are offered by default", model.taking.isSuperset(of: [.cookies, .history]))
         record("arc: the keychain is only needed for what it protects", model.needsKey)
-        model.selection = ArcImportModel.Selection(
-            spaces: false, favourites: false, archive: false, history: false, cookies: false,
-            logins: false)
+        let sealed = arc(history: 0, cookies: 0, logins: 0, locked: [.spaces])
+        record(
+            "arc: a part sealed with the key is offered, and asks for the key",
+            sealed.taking == [.spaces] && sealed.needsKey, "\(sealed.taking)")
+        model.selection = []
         record("arc: nothing selected, nothing to do", !model.canImport && !model.needsKey)
 
         let hosting = NSHostingView(
-            rootView: ArcImportSheet(model: ArcImportModel(survey: survey))
+            rootView: ImportSheet(model: arc(history: 10, cookies: 20, logins: 3))
                 .environment(manager)
                 .environment(TooltipState()))
-        hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
+        hosting.frame = NSRect(x: 0, y: 0, width: 420, height: 620)
         hosting.layoutSubtreeIfNeeded()
         record(
             "arc: the picker builds and lays out",
@@ -8685,7 +8961,8 @@ enum SelfTest {
             AutofillStore.countryCode("de") == "DE" && AutofillStore.countryCode("Germany") == "DE"
                 && AutofillStore.countryCode("United Kingdom") == "GB" && AutofillStore.countryCode("Nowhere") == nil)
 
-        let elsewhere = UUID()
+        let other = manager.createProfile(name: "SelfTest Autofill", icon: "star")
+        let elsewhere = other.id
         let address = SavedAddress(givenName: "Ada", street: "12 Byron Road", city: "London", postalCode: "N1 1AA", country: "GB")
         store.save(address)
         let card = SavedCard(holder: "Ada", expiryMonth: 4, expiryYear: 2029, brand: .other, last4: "", profileID: elsewhere)
@@ -8730,6 +9007,7 @@ enum SelfTest {
         record(
             "autofill: deleting a profile deletes its addresses, cards and card numbers",
             store.cards(in: elsewhere).isEmpty && store.addresses(in: elsewhere).isEmpty && store.number(for: card) == nil)
+        manager.deleteProfile(other)
 
         let body: [String: Any] = [
             "type": "submit",
@@ -13478,6 +13756,75 @@ enum SelfTest {
                 id: "selftest-refuses-incognito", source: .disk, webExtension: refused, profiles: [], isPinned: false)
             extensions.setAllowsIncognito(probe, true)
             record("incognito extensions: \"not_allowed\" can't be overridden", !probe.allowsIncognito)
+        }
+    }
+
+    /// uBlock's "page blocked" screen: `tabs.update` sends a tab showing a site to the
+    /// extension's own page, under each origin an install can give it
+    private static func testExtensionPageInTab() async {
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("extension page: a browser window", false) }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-page-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("ext", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // uBlock's manifest: the blocked page is not among its web-accessible resources
+        try? #"""
+        {"manifest_version": 2, "name": "Artemis Page Probe", "version": "1.0",
+         "background": {"scripts": ["bg.js"]}, "permissions": ["tabs", "https://example.com/*"],
+         "web_accessible_resources": ["/web_accessible_resources/*"]}
+        """#.write(
+            to: folder.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        try? #"""
+        const api = globalThis.browser ?? globalThis.chrome;
+        api.tabs.onUpdated.addListener((id, change, tab) => {
+          if (!(tab.url || "").startsWith("https://example.com/")) return;
+          const details = encodeURIComponent(JSON.stringify({ url: tab.url, to: "" }));
+          api.tabs.update(id, { url: api.runtime.getURL("page.html?details=" + details) });
+        });
+        """#.write(to: folder.appendingPathComponent("bg.js"), atomically: true, encoding: .utf8)
+        try? "<html><body>blocked</body></html>".write(
+            to: folder.appendingPathComponent("page.html"), atomically: true, encoding: .utf8)
+        let xpi = root.appendingPathComponent("probe.xpi")
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = folder
+        zip.arguments = ["-q", xpi.path, "manifest.json", "bg.js", "page.html"]
+        try? zip.run()
+        zip.waitUntilExit()
+
+        for (kind, source) in [("folder", folder), ("xpi", xpi)] {
+            let name = "extension page: tabs.update takes a tab showing a site to the page of an extension from a \(kind)"
+            guard let ext = try? await manager.installFromDisk(source) else {
+                record(name, false, "install failed")
+                continue
+            }
+            manager.setEnabled(ext, true, in: Profile.defaultID)
+            for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard let context = ext.contexts[Profile.defaultID] else {
+                record(name, false, "no context")
+                manager.remove(ext)
+                continue
+            }
+            let tab = tabs.newTab(url: URL(string: "https://example.com/"), select: true)
+            tab.load(URL(string: "https://example.com/")!)
+            let onPage = {
+                tab.webView.url?.scheme == context.baseURL.scheme && tab.webView.url?.path() == "/page.html"
+                    && !tab.webView.isLoading
+            }
+            for _ in 0..<80 where !onPage() && tab.loadError == nil {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            record(
+                name, onPage() && tab.loadError == nil,
+                "url \(tab.webView.url?.absoluteString ?? "nil"), error \(tab.loadError ?? "nil")")
+            tabs.close(tab)
+            manager.remove(ext)
         }
     }
 

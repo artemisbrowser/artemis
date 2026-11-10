@@ -21,6 +21,7 @@ struct PrivacySettings: View {
         Form {
             Section {
                 Toggle("Block ads and trackers", isOn: blockingBinding.undoable("Content Blocking"))
+                    .settingsAnchor(.blockAds)
                 Text(blocker.statusLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -35,6 +36,7 @@ struct PrivacySettings: View {
                         InfoLabel(list.name, info: list.detail)
                     }
                     .disabled(!blocker.isEnabled || blocker.isUpdating)
+                    .settingsAnchor(list.id == ContentBlocker.catalog.first?.id ? .filterLists : nil)
                 }
 
                 HStack {
@@ -49,6 +51,7 @@ struct PrivacySettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .settingsAnchor(.updateBlocklists)
             } header: {
                 InfoLabel(
                     "Content Blocking",
@@ -65,6 +68,7 @@ struct PrivacySettings: View {
                         "Always require Touch ID for incognito windows",
                         info: "Incognito windows lock whenever Artemis isn't the active app. Your password works too.")
                 }
+                .settingsAnchor(.incognitoTouchID)
                 Button("Clear Browsing Data…") {
                     ProfilesNavigator.show(.clearData, for: tabManager.currentProfile.id)
                 }
@@ -80,6 +84,7 @@ struct PrivacySettings: View {
                         "Randomise fingerprintable readings",
                         info: "Gives each site slightly different hardware readings, so trackers can't build a stable fingerprint. Takes effect on the next launch.")
                 }
+                .settingsAnchor(.fingerprintDefence)
             }
 
             Section {
@@ -89,6 +94,7 @@ struct PrivacySettings: View {
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .settingsAnchor(.sitePermissions)
                 } else {
                     ForEach(permissions.sorted) { record in
                         HStack(alignment: .firstTextBaseline) {
@@ -113,11 +119,13 @@ struct PrivacySettings: View {
                             Button("Forget") { permissions.forget(record.origin) }
                                 .buttonStyle(.link)
                         }
+                        .settingsAnchor(record.id == permissions.sorted.first?.id ? .sitePermissions : nil)
                     }
                     Button("Forget All Sites", role: .destructive) {
                         permissions.forgetAll()
                         ExternalSchemes.forgetAll()
                     }
+                    .settingsAnchor(.forgetAllSites)
                 }
             } header: {
                 InfoLabel(
@@ -131,11 +139,13 @@ struct PrivacySettings: View {
                         "Allow JavaScript from Apple Events",
                         info: "Lets AppleScript and Shortcuts run code inside your pages. Only turn this on for scripts you trust.")
                 }
+                .settingsAnchor(.appleEventsJavaScript)
                 Toggle(isOn: $showsIncognitoToScripts.undoable("Incognito in AppleScript")) {
                     InfoLabel(
                         "Incognito tabs visible in AppleScript",
                         info: "When off, scripts can't see or change incognito windows' tabs.")
                 }
+                .settingsAnchor(.incognitoAppleScript)
                 Toggle(isOn: Binding(
                     get: { showsInSpotlight },
                     set: { showsInSpotlight = $0; SpotlightIndex.enabledDidChange() }
@@ -144,19 +154,23 @@ struct PrivacySettings: View {
                         "Show spaces and tabs in Spotlight",
                         info: "Spotlight can find your spaces and open tabs, and Siri can go to a space by name. Incognito and locked spaces never appear.")
                 }
+                .settingsAnchor(.spotlight)
             }
 
             Section("Reports") {
                 Toggle(isOn: $sendsErrorReports.undoable("Error Reports")) {
                     InfoLabel("Send error reports", info: Reports.disclosure)
                 }
+                .settingsAnchor(.errorReports)
                 Button("Send Feedback…") { FeedbackDraft.open(in: tabManager) }
+                    .settingsAnchor(.sendFeedback)
             }
 
             Section {
                 Button("Show Data Folder in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([AppStorageLocation.directory])
                 }
+                .settingsAnchor(.dataFolder)
             } header: {
                 InfoLabel(
                     "On-Device Data",
