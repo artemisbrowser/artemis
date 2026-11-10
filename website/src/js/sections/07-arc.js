@@ -54,8 +54,9 @@ function press(el) {
   el.animate([{}, { scale: 0.96, filter: "brightness(1.3)" }, {}], 160);
   ptr.animate([{}, { scale: 0.86 }, {}], 160);
 }
-// [ms to wait, then step], in the app's own order: the key, cookies, then spaces and favourites land in the
-// sidebar, then history. After Done the pointer rests and Arc's spaces show in turn. Time passes only in view.
+// [ms to wait, then step], in the app's own order: the key, cookies, then spaces and favourites land and Arc's
+// first space is selected behind the sheet, then history. Done only shuts the sheet, then the pointer rests and
+// Arc's other spaces show in turn. Time passes only in view.
 const STEPS = [
   [
     0,
@@ -87,15 +88,15 @@ const STEPS = [
   [160, () => (isl.dataset.ask = "")],
   ...Array.from({ length: 13 }, (_, i) => [
     i ? 90 : 300,
-    () => tell(i ? `Cookies… ${i * 100} of 1,240` : "Cookies…"),
+    () => tell(i ? `Cookies… ${i * 100} of 1240` : "Cookies…"),
   ]),
   [300, () => (tell("Spaces and tabs…"), set("landed", 1))],
-  [1400, () => tell("History…")],
+  [800, () => (space(1, 420), set("fill", 1))],
+  [600, () => tell("History…")],
   [900, () => phase("sum")],
   [1800, () => aim(done, 0.5, 0.55)],
   [600, () => press(done)],
   [160, () => set("shut", 1)],
-  [250, () => (space(1, 420), set("fill", 1))],
   [2000, () => space(2, 420)],
   [2000, () => space(3, 420)],
 ];
