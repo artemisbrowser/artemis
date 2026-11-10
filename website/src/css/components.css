@@ -1403,7 +1403,7 @@ button.ctl:active {
 .steps li {
   counter-increment: step;
 }
-.steps img {
+.steps video {
   display: block;
   width: 100%;
   height: auto;
@@ -1433,10 +1433,15 @@ button.ctl:active {
   margin-top: 40px;
 }
 .peek-content .steps {
+  display: grid;
   margin-top: 16px;
 }
+/* stacked rather than removed, so each step keeps its counter and the box keeps its height */
+.peek-content .steps li {
+  grid-area: 1 / 1;
+}
 .peek-content .steps li:not(.on) {
-  display: none;
+  visibility: hidden;
 }
 .step-tabs,
 .sh-tabs {

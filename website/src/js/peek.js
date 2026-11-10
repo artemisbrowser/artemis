@@ -63,7 +63,10 @@ export function closePeek() {
   root.classList.remove("peek-open");
   for (const el of behind()) el.inert = false;
   opener?.focus({ preventScroll: true });
-  hideTimer = setTimeout(() => (peek.hidden = true), 150);
+  hideTimer = setTimeout(() => {
+    peek.hidden = true;
+    content.replaceChildren();
+  }, 150);
 }
 
 peek.addEventListener("click", (e) => {
@@ -74,14 +77,24 @@ peek.addEventListener("click", (e) => {
     go(id);
   } else if (act === "close" || e.target.matches(".peek-scrim")) closePeek();
 });
-// the install steps one at a time, picked from a row of tabs under them
+// The install steps one at a time under a row of tabs. Each clip plays once and hands on to the next
+// until a tab is picked, which then loops.
 function stepper(steps) {
   const items = [...steps.children];
+  const clips = items.map((li) => li.querySelector("video"));
+  let auto = !mq.reduce.matches;
   const tabs = document.createElement("div");
   tabs.className = "step-tabs";
   tabs.setAttribute("role", "tablist");
   const show = (n, focus) => {
     items.forEach((li, i) => li.classList.toggle("on", i === n));
+    clips.forEach((v, i) => {
+      v.muted = true;
+      v.loop = !auto;
+      if (i !== n || mq.reduce.matches) return v.pause();
+      v.currentTime = 0;
+      v.play().catch(() => {});
+    });
     [...tabs.children].forEach((b, i) => {
       b.setAttribute("aria-selected", i === n);
       b.tabIndex = i === n ? 0 : -1;
@@ -94,13 +107,23 @@ function stepper(steps) {
     b.setAttribute("role", "tab");
     b.append(document.createElement("b"), " " + li.dataset.tab);
     b.firstChild.textContent = i + 1;
-    b.onclick = () => show(i);
+    b.onclick = () => {
+      auto = false;
+      show(i);
+    };
     tabs.append(b);
+    clips[i].onended = () =>
+      setTimeout(
+        () => auto && steps.isConnected && show((i + 1) % items.length),
+        1000,
+      );
   });
   tabs.onkeydown = (e) => {
     const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
     const i = items.findIndex((li) => li.classList.contains("on"));
-    if (d && items[i + d]) show(i + d, true);
+    if (!d || !items[i + d]) return;
+    auto = false;
+    show(i + d, true);
   };
   steps.before(tabs);
   show(0);
@@ -208,7 +231,7 @@ document.addEventListener("click", (e) => {
     e.preventDefault();
     openPeek("get", from);
     download(content.querySelector("[data-dmg]").href, [
-      ...content.querySelectorAll(".steps img"),
+      ...content.querySelectorAll(".steps video"),
     ]);
   } else if (href.startsWith("#") && href.length > 1) {
     const sec = document.getElementById(href.slice(1));

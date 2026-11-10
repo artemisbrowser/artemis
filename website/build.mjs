@@ -747,6 +747,7 @@ const CONTENT_TYPES = {
   ".png": "image/png",
   ".webp": "image/webp",
   ".avif": "image/avif",
+  ".mp4": "video/mp4",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".json": "application/json",
@@ -772,21 +773,27 @@ function serve(out, port) {
         f = path.join(f, "index.html");
       const found = fs.existsSync(f);
       if (!found) f = path.join(out, "404.html");
-      res.writeHead(found ? 200 : 404, {
+      const body = fs.existsSync(f) ? fs.readFileSync(f) : Buffer.alloc(0);
+      // WebKit plays video only from a server that answers byte ranges
+      const r = found && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+      const end = body.length - 1;
+      const [a, z] = !r
+        ? [0, end]
+        : r[1]
+          ? [+r[1], r[2] ? Math.min(+r[2], end) : end]
+          : [body.length - r[2], end];
+      res.writeHead(r ? 206 : found ? 200 : 404, {
         "Content-Type":
           CONTENT_TYPES[path.extname(f)] ?? "application/octet-stream",
+        "Content-Length": z - a + 1,
+        "Accept-Ranges": "bytes",
+        ...(r && { "Content-Range": `bytes ${a}-${z}/${body.length}` }),
         // as in _headers, the favicon is exempt so its embedded <style> applies
         ...(rel !== "/icon.svg" && { "Content-Security-Policy": csp }),
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "no-store",
       });
-      res.end(
-        req.method === "HEAD"
-          ? undefined
-          : fs.existsSync(f)
-            ? fs.readFileSync(f)
-            : "",
-      );
+      res.end(req.method === "HEAD" ? undefined : body.subarray(a, z + 1));
     })
     .listen(port, () =>
       console.log(`serving ${out} at http://127.0.0.1:${port}/`),
