@@ -96,6 +96,11 @@
 .sh:has(#sh-looks:checked) .sh-lk:nth-child(2) {
   opacity: 1;
 }
+/* the glass takes each look's accent with it, from tokens.css */
+.sh:has(#sh-looks:checked) .win {
+  --accent: #eb793b;
+  --card-base: #380f12;
+}
 
 /* App icon: the Settings grid, its ring stepping through the choices */
 .sh-icons {
@@ -264,6 +269,9 @@
   .sh:has(#sh-looks:checked) .sh-lk {
     animation: sh-look 10s 2.5s infinite backwards;
   }
+  .sh:has(#sh-looks:checked) .win {
+    animation: sh-accent 10s 2.5s infinite backwards;
+  }
   .sh:has(#sh-looks:checked) .sh-lk:nth-child(3) {
     animation-delay: 5s;
   }
@@ -321,6 +329,29 @@
   33%,
   100% {
     opacity: 0;
+  }
+}
+@keyframes sh-accent {
+  0%,
+  83%,
+  100% {
+    --accent: #3b73eb;
+    --card-base: #0d214c;
+  }
+  4%,
+  25% {
+    --accent: #eb793b;
+    --card-base: #380f12;
+  }
+  29%,
+  50% {
+    --accent: #3bebbf;
+    --card-base: #0d2e24;
+  }
+  54%,
+  79% {
+    --accent: #eb793b;
+    --card-base: #2e1f66;
   }
 }
 @keyframes sh-pick {
