@@ -84,21 +84,15 @@ html:not(.js) .arc-replay {
   color: var(--ink-2);
 }
 
-/* the island: one window, always dark, at 1 px per point until it is under 600 pt wide, and at least 430 pt tall,
-   which keeps the sheet below the toolbar. --u is declared on the rig so its 100cqw is the island's width whether
-   or not --u is a registered property. */
+/* the island: one window, always dark, 760 × 580 pt at up to 1 px per point. --u is declared on the rig so
+   its 100cqw is the island's width whether or not --u is a registered property. */
 .arc-island {
-  --surface-1: #1f1f1f;
-  --hl-top: inset 0 1px 0 rgb(255 255 255 / 0.1);
   width: 100%;
   container-type: inline-size;
 }
 .arc-island .rig {
-  --u: min(1px, 100cqw / 600);
-  height: max(64cqw, calc(430 * var(--u)));
-}
-.arc-island .pager {
-  top: calc(98 * var(--u));
+  --u: min(1px, 100cqw / 760);
+  height: calc(580 * var(--u));
 }
 /* The markup is the finished frame. 07-arc.js rewinds it and plays it forward; every rewind is instant.
    Spaces: 0 Personal (the reader's), then Arc's Skye, Work and Kitchen. Tide and Ember are never neighbours:
@@ -119,13 +113,14 @@ html:not(.js) .arc-replay {
 .arc-island .pg {
   display: none;
 }
-.arc-island [data-space="0"] .dom > :nth-child(1),
-.arc-island [data-space="1"] :is(.dom > :nth-child(2), .pg:nth-child(1)),
-.arc-island [data-space="2"] :is(.dom > :nth-child(3), .pg:nth-child(2)),
-.arc-island [data-space="3"] :is(.dom > :nth-child(4), .pg:nth-child(3)) {
+.arc-island [data-space="0"] :is(.dom > :nth-child(1), .pg:nth-child(1)),
+.arc-island [data-space="1"] :is(.dom > :nth-child(2), .pg:nth-child(2)),
+.arc-island [data-space="2"] :is(.dom > :nth-child(3), .pg:nth-child(3)),
+.arc-island [data-space="3"] :is(.dom > :nth-child(4), .pg:nth-child(4)) {
   display: block;
 }
 .arc-island .pg {
+  background-position: 0 0;
   animation: arc-in var(--dur-fade) var(--ease-in-out);
 }
 @keyframes arc-in {
@@ -133,59 +128,58 @@ html:not(.js) .arc-replay {
     opacity: 0;
   }
 }
-.arc-island [data-space="0"] .dom {
-  color: rgb(255 255 255 / 0.45);
-}
-.arc-island [data-space="0"] .reload .gl {
-  color: rgb(255 255 255 / 0.3);
-}
-.arc-scrim {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  background: rgb(0 0 0 / 0.25);
-}
-@media (min-width: 735px) {
-  .arc-island[data-shut] :is(.arc-scrim, .arc-sheet) {
-    visibility: hidden;
-    opacity: 0;
-    transition:
-      opacity 200ms var(--ease-in-out),
-      visibility 0s 200ms;
-  }
-}
 
-/* Arc's spaces land beside the reader's own, and fill once the sheet closes */
+/* What lands while the sheet works: favourites above the spaces, Arc's spaces as dots beside Personal.
+   Their tabs fill once the sheet closes. */
+.arc-island .pager {
+  transition: top var(--dur-pop) var(--spring-pop);
+}
+.arc-island:not([data-landed]) .pager {
+  top: calc(98 * var(--u));
+  transition: none;
+}
+.arc-island .favs .fav.half {
+  transition:
+    opacity 200ms var(--ease-in-out) calc(var(--n, 0) * 90ms + 150ms),
+    scale var(--dur-pop) var(--spring-pop) calc(var(--n, 0) * 90ms + 150ms);
+}
+.arc-island:not([data-landed]) .favs .fav.half {
+  opacity: 0;
+  transition: none;
+}
 .arc-island .dot {
   transition:
-    opacity 200ms var(--ease-in-out) calc(var(--i, 0) * 120ms),
-    scale var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms),
-    width var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms);
+    opacity 200ms var(--ease-in-out) calc(var(--i, 0) * 120ms + 600ms),
+    scale var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms + 600ms),
+    width var(--dur-pop) var(--spring-pop) calc(var(--i, 0) * 120ms + 600ms);
 }
-.arc-island:not([data-done]) .dot + .dot {
+.arc-island:not([data-landed]) .dot + .dot {
   width: 0;
   opacity: 0;
   transition: none;
 }
 .arc-island .panel > * {
   transition:
-    opacity 240ms var(--ease-in-out) calc(var(--n, 0) * 70ms + 200ms),
-    translate var(--dur-pop) var(--spring-pop) calc(var(--n, 0) * 70ms + 200ms);
+    opacity 240ms var(--ease-in-out) calc(var(--n, 0) * 70ms + 130ms),
+    translate var(--dur-pop) var(--spring-pop) calc(var(--n, 0) * 70ms + 130ms);
 }
-.arc-island .panel > :nth-child(3) {
+.arc-island :is(.panel, .favs, .arc-sum ul) > :nth-child(2) {
   --n: 1;
 }
-.arc-island .panel > :nth-child(4) {
+.arc-island :is(.panel, .favs, .arc-sum ul) > :nth-child(3) {
   --n: 2;
 }
-.arc-island .panel > :nth-child(5) {
+.arc-island :is(.panel, .favs, .arc-sum ul) > :nth-child(4) {
   --n: 3;
 }
-.arc-island .panel > :nth-child(6) {
+.arc-island :is(.panel, .favs, .arc-sum ul) > :nth-child(5) {
   --n: 4;
 }
-.arc-island .panel > :nth-child(7) {
+.arc-island .panel > :nth-child(6) {
   --n: 5;
+}
+.arc-island .panel > :nth-child(7) {
+  --n: 6;
 }
 .arc-island:not([data-fill]) .panel + .panel > :not(.shead) {
   opacity: 0;
@@ -218,57 +212,176 @@ html:not(.js) .arc-replay {
     opacity 200ms var(--ease-in-out);
 }
 
+/* The app's import sheet, point for point, centred on the page. One of its three panes shows at a time:
+   pick, work or sum. Accent is the macOS default blue. */
+.arc-island .win {
+  --mid: calc(
+    (250 + var(--grip)) * var(--u) +
+      (100% - (250 + var(--grip) + var(--edge)) * var(--u)) / 2
+  );
+}
 .arc-sheet {
   position: absolute;
   top: 50%;
-  left: 50%;
+  left: var(--mid);
   z-index: 6;
-  width: calc(380 * var(--u));
+  width: calc(420 * var(--u));
+  overflow: clip;
   padding: calc(18 * var(--u));
   border-radius: calc(14 * var(--u));
-  translate: -50% calc(-50% - 20 * var(--u));
+  translate: -50% -50%;
+  background: rgb(40 40 42 / 0.86);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
   box-shadow:
-    var(--hl-top),
-    0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.1),
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.12),
     0 calc(8 * var(--u)) calc(24 * var(--u)) rgb(0 0 0 / 0.35);
   font-size: calc(13 * var(--u));
+  line-height: 1.2;
+  color: rgb(255 255 255 / 0.92);
 }
-.arc-title {
-  margin-bottom: calc(10 * var(--u));
-  font-size: calc(15 * var(--u));
-  font-weight: 600;
+@media (min-width: 735px) {
+  .arc-island[data-shut] .arc-sheet {
+    visibility: hidden;
+    opacity: 0;
+    scale: 0.97;
+    transition:
+      opacity 200ms var(--ease-in-out),
+      scale 200ms var(--ease-in-out),
+      visibility 0s 200ms;
+  }
 }
-.arc-rows {
+.arc-sheet > * {
+  display: none;
+  gap: calc(14 * var(--u));
+  visibility: hidden;
+}
+.arc-island[data-phase="pick"] .arc-pick,
+.arc-island[data-phase="work"] .arc-work,
+.arc-island[data-phase="sum"] .arc-sum {
   display: grid;
-  gap: calc(2 * var(--u));
-  margin: 0;
+  visibility: visible;
+  animation: arc-in 200ms var(--ease-in-out);
+}
+.arc-sheet ul {
+  display: grid;
   padding: 0;
   list-style: none;
 }
-.arc-rows li {
+.arc-sheet b {
+  font-weight: 500;
+}
+.arc-sheet small,
+.arc-note {
+  font-size: calc(11 * var(--u));
+  color: rgb(255 255 255 / 0.5);
+}
+.arc-sheet small {
+  display: block;
+  margin-top: calc(1 * var(--u));
+}
+.arc-sheet .gl {
+  width: calc(14 * var(--u));
+  height: calc(14 * var(--u));
+}
+.arc-h {
+  font-size: calc(15 * var(--u));
+  font-weight: 600;
+}
+.arc-note {
+  padding: 0 calc(8 * var(--u));
+}
+.arc-sheet hr {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid rgb(255 255 255 / 0.1);
+}
+.arc-br,
+.arc-prof,
+.arc-rows li,
+.arc-rows b,
+.arc-into,
+.arc-sum li,
+.arc-step {
   display: flex;
   align-items: center;
+}
+.arc-br {
   gap: calc(10 * var(--u));
-  height: calc(30 * var(--u));
-  padding: 0 calc(8 * var(--u));
+  padding: calc(5 * var(--u)) calc(8 * var(--u));
   border-radius: calc(8 * var(--u));
-  background: rgb(255 255 255 / 0.06);
-  color: rgb(255 255 255 / 0.92);
+  background: rgb(255 255 255 / 0.08);
   font-weight: 500;
-  white-space: nowrap;
-  transition:
-    color 200ms var(--ease-in-out),
-    background-color 200ms var(--ease-in-out);
+}
+.arc-br .gl {
+  margin-left: auto;
+  width: calc(13 * var(--u));
+  height: calc(13 * var(--u));
+}
+.arc-br .gl,
+.arc-sum .gl {
+  color: #0a84ff;
+}
+/* the plain app icon the app shows for a browser it can't draw */
+.arc-app {
+  width: calc(20 * var(--u));
+  height: calc(20 * var(--u));
+  border-radius: calc(4.5 * var(--u));
+  background: linear-gradient(#dcdce1, #a4a4ad);
+  box-shadow: inset 0 0 0 calc(0.5 * var(--u)) rgb(0 0 0 / 0.25);
+}
+.arc-chosen {
+  display: grid;
+  gap: calc(10 * var(--u));
+}
+.arc-prof {
+  justify-content: space-between;
+  padding: calc(5 * var(--u)) calc(8 * var(--u));
+}
+.arc-into {
+  gap: calc(3 * var(--u));
+  height: calc(20 * var(--u));
+  padding: 0 calc(3 * var(--u)) 0 calc(8 * var(--u));
+  border-radius: calc(5 * var(--u));
+  background: rgb(255 255 255 / 0.14);
+  font-size: calc(11 * var(--u));
+}
+.arc-into .gl {
+  width: calc(11 * var(--u));
+  height: calc(11 * var(--u));
+}
+.arc-rows {
+  gap: calc(2 * var(--u));
+}
+.arc-rows li {
+  align-items: flex-start;
+  gap: calc(10 * var(--u));
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  border-radius: calc(8 * var(--u));
+}
+.arc-rows .on {
+  background: rgb(255 255 255 / 0.06);
+}
+.arc-rows b {
+  gap: calc(6 * var(--u));
+}
+.arc-rows b .gl {
+  width: calc(14 * var(--u));
+  height: calc(13 * var(--u));
+  color: rgb(255 255 255 / 0.5);
+}
+.arc-rows small {
+  padding-left: calc(20 * var(--u));
 }
 .arc-tk {
   display: grid;
   flex: none;
-  width: calc(16 * var(--u));
-  height: calc(16 * var(--u));
+  width: calc(15 * var(--u));
+  height: calc(15 * var(--u));
   border-radius: 50%;
-  box-shadow: inset 0 0 0 calc(1.5 * var(--u)) rgb(255 255 255 / 0.28);
+  box-shadow: inset 0 0 0 calc(1.3 * var(--u)) rgb(255 255 255 / 0.3);
 }
-/* the real sheet uses Color.accentColor: the macOS system accent, default blue */
 .arc-tk .gl {
   width: 100%;
   height: 100%;
@@ -276,96 +389,110 @@ html:not(.js) .arc-replay {
   border-radius: 50%;
   background: #0a84ff;
   color: #fff;
-  transition:
-    opacity 200ms var(--ease-in-out),
-    scale var(--dur-pop) var(--spring-pop);
 }
-.arc-rows li:not(.on) {
-  background-color: transparent;
-  color: rgb(255 255 255 / 0.55);
-  transition: none;
-}
-.arc-rows li:not(.on) .gl {
+.arc-rows li:not(.on) .arc-tk .gl {
   opacity: 0;
-  transition: none;
 }
-
 .arc-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: calc(14 * var(--u));
+  padding-top: calc(2 * var(--u));
   color: rgb(255 255 255 / 0.6);
 }
 .arc-go {
-  align-items: center;
-  height: calc(28 * var(--u));
-  padding: 0 calc(16 * var(--u));
-  border-radius: calc(14 * var(--u));
-  background: #0a84ff;
+  margin-left: auto;
+  padding: calc(7 * var(--u)) calc(14 * var(--u));
+  border-radius: 99px;
+  background: rgb(10 132 255 / 0.9);
   font-weight: 600;
   color: #fff;
 }
-.arc-go,
-.arc-title {
-  display: grid;
+.arc-step {
+  gap: calc(8 * var(--u));
+  padding: calc(6 * var(--u)) 0;
+  font-size: calc(12 * var(--u));
+  font-variant-numeric: tabular-nums;
+  color: rgb(255 255 255 / 0.6);
 }
-:is(.arc-foot, .arc-title) span {
-  transition: opacity 200ms var(--ease-in-out) 280ms;
+/* the small spinner: eight spokes, brightest leading */
+.arc-spin {
+  flex: none;
+  width: calc(16 * var(--u));
+  height: calc(16 * var(--u));
+  background: conic-gradient(rgb(255 255 255 / 0.12), #fff);
+  -webkit-mask:
+    repeating-conic-gradient(from -9deg, #000 0 18deg, transparent 0 45deg),
+    radial-gradient(closest-side, transparent 42%, #000 46% 96%, transparent);
+  -webkit-mask-composite: source-in;
+  mask:
+    repeating-conic-gradient(from -9deg, #000 0 18deg, transparent 0 45deg),
+    radial-gradient(closest-side, transparent 42%, #000 46% 96%, transparent);
+  mask-composite: intersect;
 }
-:is(.arc-go, .arc-title) span {
-  grid-area: 1 / 1;
+.arc-sum ul {
+  gap: calc(4 * var(--u));
+  font-size: calc(12 * var(--u));
 }
-.arc-go span {
-  text-align: center;
+.arc-sum li {
+  align-items: flex-start;
+  gap: calc(8 * var(--u));
+  animation: arc-in 260ms var(--ease-in-out) backwards;
+  animation-delay: calc(var(--n, 0) * 90ms + 120ms);
 }
-/* the title, Not Now and Move Over give way to Moved in and Done; the old labels are gone before the new arrive */
-.arc-island[data-done]
-  :is(.arc-foot > :first-child, .arc-go :first-child, .arc-title :first-child) {
-  opacity: 0;
-  transition-duration: 120ms;
-  transition-delay: 160ms;
-}
-.arc-island:not([data-done]) :is(.arc-go, .arc-title) :last-child {
-  opacity: 0;
-}
-.arc-island:not([data-done]) :is(.arc-foot, .arc-title) span {
-  transition: none;
+.arc-sum li .gl {
+  width: calc(11 * var(--u));
+  height: calc(11 * var(--u));
+  margin-top: calc(2.5 * var(--u));
 }
 
-/* the keychain prompt is a window of its own, overhanging the sheet it holds up */
+/* the keychain prompt is a window of its own, over the sheet it holds up */
 .arc-ask {
   position: absolute;
-  top: calc(172 * var(--u));
-  left: calc(200 * var(--u));
+  top: 50%;
+  left: var(--mid);
+  z-index: 7;
   display: grid;
   justify-items: center;
-  gap: calc(10 * var(--u));
-  width: calc(260 * var(--u));
-  padding: calc(16 * var(--u)) calc(14 * var(--u)) calc(14 * var(--u));
-  border-radius: calc(12 * var(--u));
-  background: #2b2b2b;
+  gap: calc(12 * var(--u));
+  width: calc(270 * var(--u));
+  padding: calc(18 * var(--u)) calc(16 * var(--u)) calc(16 * var(--u));
+  border-radius: calc(16 * var(--u));
+  translate: -50% -50%;
+  background: #2c2c2e;
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.12),
     0 0 0 calc(0.5 * var(--u)) rgb(0 0 0 / 0.6),
     0 calc(10 * var(--u)) calc(30 * var(--u)) rgb(0 0 0 / 0.45);
+  font-size: calc(11 * var(--u));
   line-height: 1.3;
   text-align: center;
   text-wrap: balance;
-  color: rgb(255 255 255 / 0.9);
+  color: rgb(255 255 255 / 0.75);
   opacity: 0;
-  transition: opacity 150ms var(--ease-in-flat);
+  visibility: hidden;
+  transition:
+    opacity 150ms var(--ease-in-flat),
+    visibility 0s 150ms;
+}
+.arc-ask b {
+  display: block;
+  margin-bottom: calc(6 * var(--u));
+  font-size: calc(13 * var(--u));
+  font-weight: 600;
+  color: #fff;
 }
 .arc-island[data-ask="on"] .arc-ask {
   opacity: 1;
   scale: 1;
+  visibility: visible;
   transition:
     opacity 200ms var(--ease-in-out) var(--dur-press),
     scale var(--dur-pop) var(--spring-pop) var(--dur-press);
 }
 .arc-lock {
-  width: calc(26 * var(--u));
-  height: calc(26 * var(--u));
+  width: calc(28 * var(--u));
+  height: calc(28 * var(--u));
   /* opaque ink under group opacity: the filled, stroked body and the shackle composite once */
   color: #fff;
   opacity: 0.9;
@@ -376,12 +503,34 @@ html:not(.js) .arc-replay {
 .arc-lock rect {
   fill: currentColor;
 }
+/* the password field, focused, its dots typed in by --k */
+.arc-pw {
+  justify-self: stretch;
+  height: calc(22 * var(--u));
+  padding: 0 calc(8 * var(--u));
+  border-radius: calc(6 * var(--u));
+  background: rgb(255 255 255 / 0.08);
+  box-shadow:
+    inset 0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.15),
+    0 0 0 calc(3 * var(--u)) rgb(10 132 255 / 0.5);
+}
+.arc-pw::before {
+  content: "";
+  display: block;
+  width: calc(var(--k, 10) * 9 * var(--u));
+  height: 100%;
+  background: radial-gradient(
+      circle,
+      rgb(255 255 255 / 0.9) calc(2.6 * var(--u)),
+      transparent calc(3 * var(--u))
+    )
+    0 50% / calc(9 * var(--u)) 100% repeat-x;
+}
 .arc-btns {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: calc(8 * var(--u));
   width: 100%;
-  margin-top: calc(2 * var(--u));
 }
 .arc-btns span {
   display: grid;
@@ -389,25 +538,34 @@ html:not(.js) .arc-replay {
   height: calc(24 * var(--u));
   border-radius: calc(12 * var(--u));
   background: rgb(255 255 255 / 0.14);
+  font-size: calc(13 * var(--u));
   font-weight: 500;
+  color: #fff;
 }
 .arc-btns span:last-child {
   background: #0a84ff;
-  color: #fff;
 }
-/* springs scale and rows drop in only with motion allowed; reduced motion keeps the fades and has no pointer */
+/* springs scale and things drop in only with motion allowed; reduced motion keeps the fades and has no pointer */
 @media (prefers-reduced-motion: no-preference) {
-  .arc-island:not([data-done]) .dot + .dot {
+  .arc-island:not([data-landed]) .dot + .dot {
     scale: 0.4;
   }
-  .arc-rows li:not(.on) .gl {
-    scale: 0.6;
+  .arc-island:not([data-landed]) .favs .fav.half {
+    scale: 0.5;
   }
   .arc-ask {
     scale: 0.97;
   }
   .arc-island:not([data-fill]) .panel + .panel > :not(.shead) {
     translate: 0 calc(-6 * var(--u));
+  }
+  .arc-spin {
+    animation: arc-spin 0.8s steps(8) infinite;
+  }
+  @keyframes arc-spin {
+    to {
+      rotate: 1turn;
+    }
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -425,13 +583,14 @@ html:not(.js) .arc-replay {
   }
 }
 
-/* phones: only the sheet and the switcher, on the window's own colours */
+/* Phones: only the sheet and the switcher, on the window's own colours. The panes stack in one cell,
+   so the sheet keeps its tallest height and the page below never moves. */
 @media (max-width: 734px) {
   .arc-stage {
     margin-top: 40px;
   }
   .arc-island .rig {
-    --u: min(1px, (100cqw - 24px) / 290);
+    --u: min(1px, (100cqw - 24px) / 340);
     height: auto;
   }
   .arc-island :is(.win, .win-shadow) {
@@ -449,14 +608,35 @@ html:not(.js) .arc-replay {
   .arc-island :is(.sb, .sb-pin) {
     display: contents;
   }
-  .arc-island :is(.toprow, .url, .pager, .lib, .prof, .card-e, .arc-ptr) {
+  .arc-island :is(.toprow, .url, .favs, .pager, .lib, .prof, .card-e, .arc-ptr) {
     display: none;
+  }
+  .arc-island .win {
+    --mid: 50%;
   }
   .arc-sheet {
     position: relative;
     inset: auto;
-    width: min(calc(380 * var(--u)), 100%);
+    display: grid;
+    width: 100%;
+    overflow: visible;
+    padding: 0;
     translate: 0 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .arc-sheet > * {
+    display: grid;
+    grid-area: 1 / 1;
+    align-self: center;
+    padding: calc(18 * var(--u));
+    border-radius: calc(14 * var(--u));
+    background: #2c2c2e;
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.1),
+      0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / 0.12);
   }
   .arc-island .bottombar {
     position: relative;
@@ -465,23 +645,19 @@ html:not(.js) .arc-replay {
     order: 1;
     width: calc(148 * var(--u));
   }
-  .arc-ask {
-    left: auto;
-    right: calc(12 * var(--u));
-  }
 }
 
 /* content height (padding excluded) at 1440, 834 and 390 wide, so a jump lands right before the section renders */
 .arc.cv {
-  contain-intrinsic-size: auto 587px;
+  contain-intrinsic-size: auto 697px;
 }
 @media (max-width: 1023px) {
   .arc.cv {
-    contain-intrinsic-size: auto 1140px;
+    contain-intrinsic-size: auto 1300px;
   }
 }
 @media (max-width: 734px) {
   .arc.cv {
-    contain-intrinsic-size: auto 1149px;
+    contain-intrinsic-size: auto 1469px;
   }
 }

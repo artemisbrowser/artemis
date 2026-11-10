@@ -9,12 +9,18 @@ const isl = document.querySelector(".arc-island");
 const $ = (s) => isl.querySelector(s);
 const win = $(".win");
 const ptr = $(".arc-ptr");
-const rows = [...isl.querySelectorAll(".arc-rows li")];
-const [move, allow, pager] = [".arc-go", ".arc-btns :last-child", ".pager"].map(
-  $,
-);
+const sheet = $(".arc-sheet");
+const [imp, allow, done, pager, line, pw] = [
+  ".arc-pick .arc-go",
+  ".arc-btns :last-child",
+  ".arc-sum .arc-go",
+  ".pager",
+  ".arc-step span",
+  ".arc-pw",
+].map($);
 const LOOKS = ["tide", "tide", "charcoal", "ember"];
 const set = (k, on) => isl.toggleAttribute("data-" + k, !!on);
+const tell = (t) => (line.textContent = t);
 let run = 0;
 let shown = false;
 let resume = null;
@@ -25,6 +31,16 @@ function space(i, ms) {
   win.dataset.space = i;
   win.dataset.accent = LOOKS[i];
   paint($(".win-bd"), LOOKS[i], { ms, ease: "cubic-bezier(0,0,.58,1)" });
+}
+// the sheet swaps what it shows and springs to the new height, as the app's sheet does
+function phase(p) {
+  const h = sheet.offsetHeight;
+  isl.dataset.phase = p;
+  if (shown && !mq.reduce.matches)
+    sheet.animate(
+      { height: [h + "px", sheet.offsetHeight + "px"] },
+      { duration: 450, easing: "cubic-bezier(.3,1.2,.4,1)" },
+    );
 }
 // the pointer's tip to a point of el given as fractions of its box; longer trips take longer
 function aim(el, x, y) {
@@ -45,16 +61,18 @@ const swipe = (i, x) => (
   space(i, 420)
 );
 
-// [ms to wait, then step]. The reader ticks all but passwords, the keychain asks for Arc's key, Arc's spaces
-// land beside Personal, the app opens the first, and a swipe walks the rest. Time passes only while in view.
+// [ms to wait, then step], in the app's own order: the key, cookies, then spaces and favourites land in the
+// sidebar, then history. Done opens Arc's first space and a swipe walks the rest. Time passes only in view.
 const STEPS = [
   [
     0,
     () => {
       win.dataset.instant = "";
-      for (const r of rows) r.classList.remove("on");
       isl.dataset.ask = "";
-      for (const k of ["done", "shut", "fill", "ptr"]) set(k);
+      for (const k of ["landed", "shut", "fill", "ptr"]) set(k);
+      phase("pick");
+      tell("Reading Arc…");
+      pw.style.setProperty("--k", 0);
       ptr.style.cssText = "";
       at = [];
       space(0);
@@ -63,18 +81,26 @@ const STEPS = [
       );
     },
   ],
-  ...rows.slice(0, 5).flatMap((r, i) => [
-    [i ? 220 : 450, () => (set("ptr", 1), aim(r, 0.085, 0.45))],
-    [i ? 380 : 750, () => (press(r), r.classList.add("on"))],
+  [900, () => (set("ptr", 1), aim($(".arc-rows"), 0.6, 0.3))],
+  [1500, () => aim(imp, 0.5, 0.55)],
+  [700, () => (press(imp), phase("work"))],
+  [900, () => (tell("Waiting for the keychain…"), (isl.dataset.ask = "on"))],
+  ...Array.from({ length: 10 }, (_, i) => [
+    i ? 70 : 800,
+    () => pw.style.setProperty("--k", i + 1),
   ]),
-  [350, () => aim(move, 0.45, 0.55)],
-  [650, () => (press(move), (isl.dataset.ask = "on"))],
-  [300, () => aim(allow, 0.5, 1.9)],
-  [1000, () => aim(allow, 0.45, 0.6)],
-  [550, () => press(allow)],
-  [160, () => ((isl.dataset.ask = ""), set("done", 1))],
-  [800, () => aim(move, 0.45, 0.55)],
-  [500, () => press(move)],
+  [300, () => aim(allow, 0.5, 0.55)],
+  [600, () => press(allow)],
+  [160, () => (isl.dataset.ask = "")],
+  ...Array.from({ length: 13 }, (_, i) => [
+    i ? 90 : 300,
+    () => tell(i ? `Cookies… ${i * 100} of 1,240` : "Cookies…"),
+  ]),
+  [300, () => (tell("Spaces and tabs…"), set("landed", 1))],
+  [1400, () => tell("History…")],
+  [900, () => phase("sum")],
+  [1800, () => aim(done, 0.5, 0.55)],
+  [600, () => press(done)],
   [160, () => set("shut", 1)],
   [250, () => (space(1, 420), set("fill", 1))],
   [900, () => aim(pager, 0.8, 0.42)],
@@ -99,7 +125,7 @@ async function play() {
 const p = params.get("arc");
 if (p || mq.reduce.matches || params.has("nosettle")) {
   run = 1;
-  for (const [, step] of STEPS.slice(0, p === "keychain" ? 14 : +p)) step();
+  for (const [, step] of STEPS.slice(0, p === "keychain" ? 15 : +p)) step();
 } else STEPS[0][1]();
 
 new IntersectionObserver(
@@ -116,7 +142,7 @@ new IntersectionObserver(
 isl.nextElementSibling.onclick = () => {
   play();
   say(
-    "Replaying. All but passwords are ticked, then Arc’s three spaces arrive with their tabs.",
+    "Replaying. Arc’s spaces, favourites, archive, history and cookies come across, then its spaces open.",
   );
 };
 

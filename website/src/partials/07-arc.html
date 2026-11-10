@@ -46,7 +46,8 @@
     <div class="arc-stage">
       <div
         class="arc-island"
-        data-done
+        data-phase="sum"
+        data-landed
         data-shut
         data-fill
         aria-hidden="true"
@@ -82,23 +83,14 @@
                 </div>
                 <div class="g url">
                   <span class="dom"
-                    ><span>Search or enter URL</span><span>www.openstreetmap.org</span
-                    ><span>github.com</span
-                    ><span>en.wikipedia.org</span></span
+                    ><span>en.wikipedia.org</span><span>www.openstreetmap.org</span
+                    ><span>github.com</span><span>en.wikipedia.org</span></span
                   >
                 </div>
+                <!-- @include _win/favs -->
                 <div class="pager">
                   <div class="strip">
-                    <div class="panel" data-accent="tide">
-                      <div class="shead">
-                        <svg class="sicon"><use href="#i-moon" /></svg
-                        ><span>Personal</span>
-                      </div>
-                      <div class="row new">
-                        <svg class="gl b"><use href="#i-plus" /></svg
-                        ><span class="t">New Tab</span>
-                      </div>
-                    </div>
+                    <!-- @include _win/panel-personal -->
                     <div class="panel" data-accent="tide">
                       <div class="shead">
                         <svg class="sicon"><use href="#i-leaf" /></svg><span>Skye</span>
@@ -175,68 +167,110 @@
             <div class="card-e">
               <div class="card">
                 <div class="page">
+                  <article class="pg shot" data-page="wp-orion"></article>
                   <article class="pg shot" data-page="osm-skye"></article>
                   <article class="pg shot" data-page="gh-artemis"></article>
                   <article class="pg shot" data-page="wp-sourdough"></article>
                 </div>
               </div>
             </div>
-            <i class="arc-scrim"></i>
-            <div class="arc-sheet surface">
-              <p class="arc-title">
-                <span>Move in from Arc</span><span>Moved in</span>
-              </p>
-              <ul class="arc-rows">
-                <li class="on">
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >Spaces &amp; tabs
-                </li>
-                <li class="on">
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >Favourites
-                </li>
-                <li class="on">
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >Archive
-                </li>
-                <li class="on">
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >History, newest 4,000
-                </li>
-                <li class="on">
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >Cookies
-                </li>
-                <li>
-                  <span class="arc-tk"
-                    ><svg class="gl b"><use href="#i-check" /></svg></span
-                  >Saved passwords
-                </li>
-              </ul>
-              <div class="arc-foot">
-                <span>Not Now</span
-                ><span class="arc-go"
-                  ><span>Move Over</span><span>Done</span></span
-                >
-              </div>
-              <div class="arc-ask">
-                <svg class="arc-lock" viewBox="0 0 24 24">
-                  <rect x="4.5" y="10.5" width="15" height="10.5" rx="2.6" />
-                  <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
-                </svg>
-                <p>
-                  Artemis wants to use your confidential information stored in
-                  “Arc&nbsp;Safe&nbsp;Storage” in your keychain.
+            <div class="arc-sheet">
+              <div class="arc-pick">
+                <p class="arc-h">Import from Another Browser</p>
+                <p class="arc-br">
+                  <i class="arc-app"></i>Arc<svg class="gl b"><use href="#i-check" /></svg>
                 </p>
-                <span class="arc-btns"
-                  ><span>Deny</span><span>Allow</span></span
-                >
+                <hr />
+                <div class="arc-chosen">
+                  <p class="arc-note">Nothing in Arc changes.</p>
+                  <p class="arc-prof">
+                    <span><b>Personal</b><small>3 spaces · 41 tabs · 6 folders</small></span
+                    ><span class="arc-into"
+                      >Personal<svg class="gl b"><use href="#i-updown" /></svg
+                    ></span>
+                  </p>
+                  <ul class="arc-rows">
+                    <li class="on">
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-stack" /></svg>Spaces &amp; tabs</b
+                        ><small>3 spaces · 41 tabs · 6 folders</small></span
+                      >
+                    </li>
+                    <li class="on">
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-star" /></svg>Favourites</b
+                        ><small>5 tabs pinned to the top</small></span
+                      >
+                    </li>
+                    <li class="on">
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-archive" /></svg>Archive</b
+                        ><small>212 tabs Arc archived</small></span
+                      >
+                    </li>
+                    <li class="on">
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-clock" /></svg>History</b
+                        ><small>18,406 pages. The newest 4,000 per profile come across.</small></span
+                      >
+                    </li>
+                    <li class="on">
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-person" /></svg>Cookies</b
+                        ><small>1,240 cookies, so you stay signed in</small></span
+                      >
+                    </li>
+                    <li>
+                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
+                      ><span
+                        ><b><svg class="gl"><use href="#i-key" /></svg>Passwords</b
+                        ><small>86 logins, into Artemis Passwords</small></span
+                      >
+                    </li>
+                  </ul>
+                  <p class="arc-note">
+                    macOS will ask for Arc’s key to read what it keeps sealed.
+                  </p>
+                </div>
+                <div class="arc-foot">
+                  <span>Not Now</span><span class="arc-go">Import</span>
+                </div>
               </div>
+              <div class="arc-work">
+                <p class="arc-h">Importing from Arc</p>
+                <p class="arc-step"><i class="arc-spin"></i><span>History…</span></p>
+              </div>
+              <div class="arc-sum">
+                <p class="arc-h">Imported</p>
+                <ul>
+                  <li><svg class="gl b"><use href="#i-check" /></svg>1,240 cookies, so you stay signed in</li>
+                  <li><svg class="gl b"><use href="#i-check" /></svg>3 spaces, 41 tabs</li>
+                  <li><svg class="gl b"><use href="#i-check" /></svg>5 favourites</li>
+                  <li><svg class="gl b"><use href="#i-check" /></svg>212 archived tabs</li>
+                  <li><svg class="gl b"><use href="#i-check" /></svg>4,000 pages of history</li>
+                </ul>
+                <div class="arc-foot"><span class="arc-go">Done</span></div>
+              </div>
+            </div>
+            <div class="arc-ask">
+              <svg class="arc-lock" viewBox="0 0 24 24">
+                <rect x="4.5" y="10.5" width="15" height="10.5" rx="2.6" />
+                <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
+              </svg>
+              <p>
+                <b
+                  >Artemis wants to use your confidential information stored in
+                  “Arc&nbsp;Safe&nbsp;Storage” in your keychain.</b
+                >
+                To allow this, enter the “login” keychain password.
+              </p>
+              <span class="arc-pw"></span>
+              <span class="arc-btns"><span>Deny</span><span>Allow</span></span>
             </div>
             <svg class="arc-ptr" viewBox="0 0 15 22">
               <path d="M1.5 1.5V18l3.8-3.6 2.6 6 2.5-1.1-2.5-5.9h5.2Z" />

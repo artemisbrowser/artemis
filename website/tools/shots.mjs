@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 // node tools/shots.mjs [--only name,…] [--fav]   captures the real pages and favicons the replica shows into src/img.
-// Needs Playwright (see tools/review.mjs) and cwebp. Outputs are committed. Credits are in 09-footer and THIRD-PARTY-NOTICES.md.
+// Needs Playwright (see tools/review.mjs) and cwebp. Outputs are committed. Credits are in the Credits peek (10-templates) and THIRD-PARTY-NOTICES.md.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
