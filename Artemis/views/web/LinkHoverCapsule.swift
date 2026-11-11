@@ -11,18 +11,31 @@ struct LinkHoverCapsule: View {
     @Environment(TabManager.self) private var tabManager
     @State private var click: LinkClick?
     @State private var flagsMonitor: Any?
+    @State private var card: CGRect = .zero
+    @State private var size: CGSize = .zero
 
     var body: some View {
         Group {
             if let url = tabManager.hoveredLinkURL {
                 capsule(for: url)
+                    .onGeometryChange(for: CGSize.self, of: { $0.size }) { size = $0 }
+                    .id(isRight)
                     .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.12), value: tabManager.hoveredLinkURL)
         .animation(.easeOut(duration: 0.12), value: click)
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isRight ? .bottomTrailing : .bottomLeading)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { card = $0 }
         .onAppear { startFlagsMonitor() }
         .onDisappear { stopFlagsMonitor() }
+    }
+
+    /// bottom-right while the hovered link sits under the bottom-left corner's capsule, with a 24pt margin
+    private var isRight: Bool {
+        guard let pointer = tabManager.hoveredLinkPointer else { return false }
+        return pointer.x < card.minX + size.width + 36 && pointer.y > card.maxY - size.height - 36
     }
 
     private func capsule(for url: URL) -> some View {

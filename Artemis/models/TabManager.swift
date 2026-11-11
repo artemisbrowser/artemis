@@ -194,6 +194,8 @@ final class TabManager {
     var peekTab: BrowserTab?
     /// the link under the pointer, for the status capsule
     var hoveredLinkURL: URL?
+    /// where the pointer hovered that link, in the window's top-left coordinates (SwiftUI's .global)
+    var hoveredLinkPointer: CGPoint?
     /// the Library panel is open in place of the sidebar's tab list; the window
     /// layout widens the sidebar by its rail meanwhile
     var isLibraryOpen = false
@@ -356,7 +358,7 @@ final class TabManager {
             tab.prefetchFavicon()  // show the real icon before it's ever selected
         }
         // rule lists only reach navigations started after they are installed, so
-        // the restored tab waits on the already-compiled chunks (~2ms warm; a
+        // the restored tab waits on the already-compiled list (~2ms warm; a
         // cache miss returns at once and the rebuild reloads what is open)
         Task { @MainActor in
             await ContentBlocker.shared.installPreviouslyCompiled()
@@ -396,7 +398,12 @@ final class TabManager {
         // status-capsule link hover, reported from every tab via the shared UCC to
         // the window holding the page
         let reporter = LinkHoverReporter { webView, url in
-            BrowserWindows.shared.manager(for: webView?.window)?.setHoveredLink(url)
+            let window = webView?.window
+            let pointer = window.map { window in
+                let point = window.mouseLocationOutsideOfEventStream
+                return CGPoint(x: point.x, y: (window.contentView?.bounds.height ?? 0) - point.y)
+            }
+            BrowserWindows.shared.manager(for: window)?.setHoveredLink(url, at: pointer)
         }
         SharedWebContent.everywhere { LinkHoverReporter.install(into: $0, handler: reporter) }
         linkHoverReporter = reporter
@@ -505,10 +512,11 @@ final class TabManager {
 
     /// update the hovered-link capsule; a clear is deferred a beat so moving
     /// straight from one link to another doesn't flash the capsule away
-    private func setHoveredLink(_ url: URL?) {
+    private func setHoveredLink(_ url: URL?, at pointer: CGPoint?) {
         clearHoverTask?.cancel()
         if let url {
             hoveredLinkURL = url
+            hoveredLinkPointer = pointer
         } else {
             clearHoverTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(40))
@@ -884,12 +892,13 @@ final class TabManager {
         return tab
     }
 
-    private func insert(_ tab: BrowserTab, into space: Space, select: Bool) {
+    /// `announce` is false for a page extensions already know, a promoted Peek
+    private func insert(_ tab: BrowserTab, into space: Space, select: Bool, announce: Bool = true) {
         space.tabs.append(tab)
         // a window's own pages are reached through the weak registry, as Scout's are
         if space.id == privateSpace?.id { core.windowLocal.add(tab) }
         space.normalizeTree()
-        ExtensionManager.shared.tabDidOpen(tab)
+        if announce { ExtensionManager.shared.tabDidOpen(tab) }
         if select { selectedTabID = tab.id }
         scheduleSave()
     }
@@ -1551,6 +1560,8 @@ final class TabManager {
         let tab = BrowserTab(configuration: config)
         wire(tab)
         core.windowLocal.add(tab)
+        // before the load: an extension can't answer a content script whose tab it was never told of
+        ExtensionManager.shared.tabDidOpen(tab)
         tab.load(url)
         peekTab = tab
     }
@@ -1560,6 +1571,7 @@ final class TabManager {
         guard let peek = peekTab else { return }
         abandonQuestions(of: peek)
         peek.stopLoading()
+        ExtensionManager.shared.tabDidClose(peek)
         core.windowLocal.remove(peek)
         peekTab = nil
     }
@@ -1578,7 +1590,7 @@ final class TabManager {
         }
         peekTab = nil
         core.windowLocal.remove(peek)
-        insert(peek, into: currentSpace, select: select)
+        insert(peek, into: currentSpace, select: select, announce: false)
         return peek
     }
 
@@ -2007,18 +2019,17 @@ final class TabManager {
         isCommandBarVisible = false
     }
 
-    /// ⌃⇥: the `offset`th most recently used other tab, by `lastAccessed`
-    func selectRecentTab(offset: Int) {
+    /// ⌃⇥'s order: every other tab this window reaches, in any space or profile, most recently used first
+    var recentTabs: [BrowserTab] {
         let reachable = core.allEssentials.filter { tab in spaces.contains { $0.profileID == tab.profileID } }
         let pool = kind == .main ? reachable + spaces.flatMap(\.tabs) : currentSpace.tabs
-        let recent = pool
+        return pool
             .filter { $0.id != selectedTabID }
             .sorted { $0.lastAccessed > $1.lastAccessed }
-        guard !recent.isEmpty else { return }
-        let index = min(max(offset - 1, 0), recent.count - 1)
-        // a recent tab can live in another space or profile — focus goes there first
-        focus(recent[index])
     }
+
+    /// ⌃⇥ held: the recent tabs as cards
+    @ObservationIgnored lazy var tabSwitcher = TabSwitcher(manager: self)
 
     /// ⌘⇧K: archive the space's Today tabs, keeping whatever any window or the
     /// mini-player shows and tabs in a split or a folder

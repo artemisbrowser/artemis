@@ -14,9 +14,21 @@ enum IncognitoWindow {
     /// whose history the next window reads for suggestions
     fileprivate static var pendingParent: Profile.ID?
 
-    static func open() {
+    /// `opener` is the menu's own, which works before any browser window has appeared
+    static func open(_ opener: OpenWindowAction? = nil) {
+        guard let opener = opener ?? openWindow else { return chooseNewWindowItem([.command, .shift]) }
         pendingParent = BrowserWindows.shared.browserScope?.currentProfile.id
-        openWindow?(id: id)
+        opener(id: id)
+    }
+
+    /// the File menu's ⌘N or ⇧⌘N item, found by its shortcut since its title is localised
+    static func chooseNewWindowItem(_ modifiers: NSEvent.ModifierFlags) {
+        let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
+        guard
+            let item = items.first(where: { $0.keyEquivalent == "n" && $0.keyEquivalentModifierMask == modifiers }),
+            let action = item.action
+        else { return }
+        NSApp.sendAction(action, to: item.target, from: item)
     }
 }
 

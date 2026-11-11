@@ -9,6 +9,7 @@ import Compression
 import CoreLocation
 import CryptoKit
 import JavaScriptCore
+import os
 import SQLite3
 import SwiftUI
 import Translation
@@ -1198,6 +1199,8 @@ enum SelfTest {
             ("sidebarscroll", { await testSidebarScroll() }),
             ("sidebarresizehandle", { await testSidebarResizeHandle() }),
             ("performancebudgets", { await testPerformanceBudgets(manager: manager) }),
+            ("tabswitcher", { await testTabSwitcher(manager: manager) }),
+            ("chromedisguiseheaders", { await testChromeDisguiseHeaders(manager: manager) }),
         ]
         // last: its background web view is briefly another window, which confuses the
         // traffic-light tests
@@ -5077,6 +5080,57 @@ enum SelfTest {
         }
         manager.currentSpace.selectedTabID = selected
 
+        let matchStyle = item("Paste and Match Style")
+        record(
+            "menus: ⇧⌘V is Paste and Match Style",
+            matchStyle?.keyEquivalent == "v" && matchStyle?.keyEquivalentModifierMask == [.command, .shift],
+            "\(seen("Paste and Match Style")) key \(matchStyle?.keyEquivalent ?? "-") mask \(matchStyle?.keyEquivalentModifierMask.rawValue ?? 0)")
+        let editor = manager.newTab(url: nil)
+        await load(
+            editor,
+            html: """
+                <div id=e contenteditable></div><script>
+                window.__keys = ""; window.__types = "none";
+                e.addEventListener("keydown", (k) => { if (k.key.toLowerCase() === "v") __keys += k.shiftKey ? "⇧V" : "V"; });
+                e.addEventListener("paste", (p) => { __types = [...p.clipboardData.types].join(","); });
+                e.focus();
+                </script>
+                """)
+        becomeKey(main)
+        await settle { editor.webView.window === main }
+        if main.isKeyWindow, editor.webView.window === main {
+            main.makeFirstResponder(editor.webView)
+            let pasteboard = NSPasteboard.general
+            let saved = (pasteboard.pasteboardItems ?? []).map { item in
+                let copy = NSPasteboardItem()
+                for type in item.types { item.data(forType: type).map { copy.setData($0, forType: type) } }
+                return copy
+            }
+            pasteboard.clearContents()
+            pasteboard.setString("<b>styled</b>", forType: .html)
+            pasteboard.setString("styled", forType: .string)
+            // through the web view, as a person's keys go: the page first, the menu after
+            if let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: main.windowNumber, context: nil,
+                characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9)
+            {
+                _ = editor.webView.performKeyEquivalent(with: event)
+            }
+            var result = ""
+            await Self.settle {
+                result = (try? await editor.webView.evaluateJavaScript(
+                    "[__keys, __types, e.innerHTML].join('|')")) as? String ?? ""
+                return result.hasSuffix("|styled")
+            }
+            pasteboard.clearContents()
+            pasteboard.writeObjects(saved)
+            record("menus: ⇧⌘V reaches the page, then pastes plain text", result == "⇧V|text/plain|styled", result)
+        } else {
+            note("menus: ⇧⌘V in a page skipped (the window isn't key)")
+        }
+        manager.close(editor)
+
         let scout = ScoutWindow.open(URL(string: "https://example.com")!)
         try? await Task.sleep(for: .milliseconds(800))
         becomeKey(scout)
@@ -5139,6 +5193,23 @@ enum SelfTest {
             note("menus: ⌘W in an incognito window skipped (the window isn't key: \(focus))")
         }
         window.close()
+
+        // a link launch that shows only Scout leaves no browser window to lend its opener
+        let lent = IncognitoWindow.openWindow
+        IncognitoWindow.openWindow = nil
+        IncognitoWindow.open()
+        var unlent: NSWindow?
+        await settle {
+            unlent = NSApp.windows.first { $0.isVisible && BrowserWindows.shared.manager(for: $0)?.kind == .incognito }
+            return unlent != nil
+        }
+        let browser = await Scripting.openWindow(incognito: false)
+        IncognitoWindow.openWindow = lent
+        record(
+            "menus: with no browser window's opener, incognito and new windows still open",
+            unlent != nil && browser != nil, "incognito=\(unlent != nil) browser=\(browser != nil)")
+        unlent?.close()
+        if let browser { BrowserWindows.shared.window(of: browser)?.close() }
         becomeKey(main)
     }
 
@@ -5277,6 +5348,55 @@ enum SelfTest {
         DownloadManager.shared.remove(item)
         for path in [file?.path, file.map { $0.path + ".download" }] {
             if let path { try? FileManager.default.removeItem(atPath: path) }
+        }
+
+        // a click that opens the file in a new tab is the user's, so nothing is asked; on a site
+        // set to Block, a clicked file shows as blocked on the shelf
+        if let server = LiveLoopback(reply: { path, _ in
+            let file = path == "/file"
+            let head = file
+                ? "Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"\(name)\""
+                : "Content-Type: text/html"
+            let body = Data((file ? "hello" : "<a id=new target=_blank href=/file>new</a><a id=dl download href=/file>dl</a>").utf8)
+            return Data("HTTP/1.1 200 OK\r\n\(head)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
+        }) {
+            defer { server.close() }
+            let site = "http://127.0.0.1:\(server.port)"
+            let store = SitePermissionStore.shared
+            store.forget(site)
+            defer { store.forget(site) }
+            let tabs = Set(manager.currentSpace.tabs.map(\.id))
+            func click(_ id: String) async -> DownloadItem? {
+                tab.load(URL(string: site + "/")!)
+                await settle(.seconds(6)) { tab.webView.url?.port == Int(server.port) && !tab.webView.isLoading }
+                manager.selectedTabID = tab.id
+                let before = Set(DownloadManager.shared.items.map(\.id))
+                await pressNatively(on: tab.webView)
+                _ = try? await tab.webView.evaluateJavaScript("document.getElementById('\(id)').click()")
+                await settle(.seconds(6)) { DownloadManager.shared.items.contains { !before.contains($0.id) } }
+                let item = DownloadManager.shared.items.first { !before.contains($0.id) }
+                if let item {
+                    await settle(.seconds(10)) { item.state != .downloading }
+                    DownloadManager.shared.remove(item)
+                    if let file = item.destination { try? FileManager.default.removeItem(at: file) }
+                }
+                return item
+            }
+            let opened = await click("new")
+            record(
+                "downloads: a link to a file in a new tab saves it unasked",
+                opened?.state == .finished && manager.permissionQueue.isEmpty,
+                "\(opened.map { "\($0.state)" } ?? "nothing") asked=\(manager.permissionQueue.count)")
+            for extra in manager.currentSpace.tabs where !tabs.contains(extra.id) { manager.close(extra) }
+            store.set(.deny, for: site, .downloads, ephemeral: false)
+            let refused = await click("dl")
+            record(
+                "downloads: a clicked file on a site set to Block shows as blocked",
+                refused?.isBlocked == true && manager.permissionQueue.isEmpty,
+                refused.map { "\($0.state)" } ?? "nothing")
+            while !manager.permissionQueue.isEmpty { manager.answerPermission(.deny, remember: false) }
+        } else {
+            record("downloads: a local server for the click checks", false)
         }
 
         let defaults = UserDefaults.standard
@@ -10329,7 +10449,7 @@ enum SelfTest {
         // ⌃⇥: back to the tab you were on before this one
         manager.selectedTabID = first.id
         manager.selectedTabID = second.id
-        manager.selectRecentTab(offset: 1)
+        manager.tabSwitcher.begin()
         record("shortcuts: ⌃⇥ goes back to the previous tab",
             manager.selectedTabID == first.id,
             manager.selectedTab?.displayTitle ?? "nil")
@@ -10445,65 +10565,65 @@ enum SelfTest {
             selftest.example##.ad-banner
             @@||allowed.selftest.example^
             ||broken.example^$csp=script-src none
-            /regex-literal-should-drop/
             selftest.example##div:has-text(nope)
             ||cancelled.selftest.example^
             ||cancelled.selftest.example^$badfilter
-            !#if env_firefox
-            ||firefox-only.selftest.example^
-            !#endif
             ##.adsbox
             bait.selftest.example#@#.adsbox
             @@||nohide.selftest.example^$generichide
             selftest.example,~sub.selftest.example##.both
             """
-        let result = AdblockConverter.convert([fixture])
-        record("converter: produced rules", result.ruleCount == 5, "\(result.ruleCount) rules")
-        record("converter: dropped the unconvertible five", result.droppedCount == 5, "\(result.droppedCount) dropped")
-        let chunks = result.chunks.compactMap {
-            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[String: Any]]
+        let result = FilterConverter.convert([fixture], extraExceptions: ContentBlocker.siteFixes)
+        record("converter: dropped the csp and :has-text filters", result.droppedCount == 2, "\(result.droppedCount) dropped")
+        guard let rules = try? JSONSerialization.jsonObject(with: Data(result.json.utf8)) as? [[String: Any]] else {
+            return record("converter: emits valid JSON", false, String(result.json.prefix(200)))
         }
-        guard !chunks.isEmpty, chunks.count == result.chunks.count else {
-            record("converter: emits valid JSON", false)
-            return
-        }
-        record("converter: emits valid JSON", true)
+        record("converter: counts what it emits", rules.count == result.ruleCount, "\(rules.count) vs \(result.ruleCount)")
         func action(_ rule: [String: Any]) -> [String: Any] { rule["action"] as? [String: Any] ?? [:] }
         func trigger(_ rule: [String: Any]) -> [String: Any] { rule["trigger"] as? [String: Any] ?? [:] }
         record(
-            "converter: every chunk ends in its exceptions",
-            chunks.allSatisfy { $0.last.map { action($0)["type"] as? String } == "ignore-previous-rules" })
-        let rules = chunks.flatMap { $0 }
-        record("converter: hide rule present", rules.contains { action($0)["type"] as? String == "css-display-none" })
-        let adsbox = rules.first { action($0)["selector"] as? String == ".adsbox" }
+            "converter: the site fixes come last",
+            rules.suffix(ContentBlocker.siteFixes.count).allSatisfy { action($0)["type"] as? String == "ignore-previous-rules" }
+                && (trigger(rules.last ?? [:])["url-filter"] as? String)?.contains("qoe") == true)
+        record("converter: hide rule present", rules.contains { action($0)["selector"] as? String == ".ad-banner" })
+        let adsbox = rules.firstIndex { action($0)["selector"] as? String == ".adsbox" }
         record(
             "converter: #@# un-hides the generic rule on that site",
-            adsbox.map { trigger($0)["unless-domain"] as? [String] == ["*bait.selftest.example"] } == true)
+            adsbox.map { trigger(rules[$0])["unless-domain"] as? [String] == ["*bait.selftest.example"] } == true)
+        let generichide = rules.firstIndex {
+            action($0)["type"] as? String == "ignore-previous-rules"
+                && trigger($0)["if-domain"] as? [String] == ["*nohide.selftest.example"]
+        }
         record(
             "converter: $generichide cancels generic hiding there",
-            chunks.contains { chunk in
-                chunk.contains { action($0)["selector"] as? String == ".adsbox" }
-                    && trigger(chunk.last ?? [:])["if-domain"] as? [String] == ["*nohide.selftest.example"]
-            })
+            adsbox != nil && generichide != nil && adsbox! < generichide!)
         let filters = rules.compactMap { trigger($0)["url-filter"] as? String }
-        record(
-            "converter: no option text leaked into a pattern",
-            !filters.contains { $0.contains("csp") })
-        record(
-            "converter: $badfilter and !#if remove their filters",
-            !filters.contains { $0.contains("cancelled") || $0.contains("firefox") })
+        record("converter: no option text leaked into a pattern", !filters.contains { $0.contains("csp") })
+        record("converter: $badfilter removes its filter", !filters.contains { $0.contains("cancelled") })
+        let capped = FilterConverter.convert([fixture], extraExceptions: ContentBlocker.siteFixes, ceiling: 5)
+        let cappedRules = (try? JSONSerialization.jsonObject(with: Data(capped.json.utf8)) as? [[String: Any]]) ?? []
+        record("converter: at the ceiling the site fixes still fit and still come last",
+            cappedRules.count == 5 && capped.ruleCount == 5
+                && (trigger(cappedRules.last ?? [:])["url-filter"] as? String)?.contains("qoe") == true,
+            "\(cappedRules.count) rules")
+        let trimmed = FilterConverter.convert(
+            ["||a.example^\n||b.example^\n||c.example^\n@@||a.example^$domain=friend.example"], ceiling: 3)
+        let trimmedRules = (try? JSONSerialization.jsonObject(with: Data(trimmed.json.utf8)) as? [[String: Any]]) ?? []
+        let types = trimmedRules.compactMap { ($0["action"] as? [String: Any])?["type"] as? String }
+        record("converter: at the ceiling a block goes, never a list's own exception",
+            types == ["block", "block", "ignore-previous-rules"] && trimmed.overCeilingCount == 1
+                && trimmed.droppedCount == 0,
+            "\(types), \(trimmed.overCeilingCount) over")
 
         // the real proof: WebKit itself must accept them
-        for (index, json) in result.chunks.enumerated() {
-            let identifier = "artemis-selftest-fixture-\(index)"
-            do {
-                let list = try await WKContentRuleListStore.default()?.compileContentRuleList(
-                    forIdentifier: identifier, encodedContentRuleList: json)
-                record("converter: WebKit compiles chunk \(index)", list != nil)
-                try? await WKContentRuleListStore.default()?.removeContentRuleList(forIdentifier: identifier)
-            } catch {
-                record("converter: WebKit compiles chunk \(index)", false, error.localizedDescription)
-            }
+        let identifier = "artemis-selftest-fixture"
+        do {
+            let list = try await WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: identifier, encodedContentRuleList: result.json)
+            record("converter: WebKit compiles the list", list != nil)
+            try? await WKContentRuleListStore.default()?.removeContentRuleList(forIdentifier: identifier)
+        } catch {
+            record("converter: WebKit compiles the list", false, error.localizedDescription)
         }
     }
 
@@ -13823,6 +13943,32 @@ enum SelfTest {
             record(
                 name, onPage() && tab.loadError == nil,
                 "url \(tab.webView.url?.absoluteString ?? "nil"), error \(tab.loadError ?? "nil")")
+
+            manager.setEnabled(ext, false, in: Profile.defaultID)
+            let fresh = tabs.newTab(url: URL(string: "https://example.com/"), select: true)
+            fresh.load(URL(string: "https://example.com/")!)
+            for _ in 0..<20 { try? await Task.sleep(for: .milliseconds(100)) }
+            for _ in 0..<60 where fresh.webView.isLoading { try? await Task.sleep(for: .milliseconds(100)) }
+            record(
+                "extension page: a \(kind) extension turned off sends no tab to its page",
+                fresh.webView.url?.host() == "example.com" && fresh.loadError == nil,
+                "url \(fresh.webView.url?.absoluteString ?? "nil"), error \(fresh.loadError ?? "nil")")
+            tabs.close(fresh)
+            tabs.focus(tab)
+            tab.reload()
+            let onSite = { tab.webView.url?.host() == "example.com" && !tab.webView.isLoading }
+            for _ in 0..<80 where !onSite() && tab.loadError == nil {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            // long enough for a still-running background page to send the tab back
+            try? await Task.sleep(for: .seconds(1))
+            let browserView =
+                tab.webView.configuration.userContentController
+                === SharedWebContent.userContentController(for: Profile.defaultID)
+            record(
+                "extension page: with the \(kind) extension off, reloading its page returns the tab to the site",
+                onSite() && tab.loadError == nil && browserView,
+                "url \(tab.webView.url?.absoluteString ?? "nil"), error \(tab.loadError ?? "nil"), browser view \(browserView)")
             tabs.close(tab)
             manager.remove(ext)
         }
@@ -16095,14 +16241,10 @@ enum SelfTest {
             "perf: the model's readiness is a cheap read",
             readyTime < 0.00002, "\(ms(readyTime)) per read")
 
-        // the blocklist converter, on a realistic chunk of filter text
+        // the blocklist converter, on a realistic chunk of filter text; it runs off the main actor
         let filters = (0..<5000).map { "||ads\($0).example.com^$third-party" }.joined(separator: "\n")
-        let convertTime = measure(iterations: 1) { _ = AdblockConverter.convert([filters]) }
-        // budget is for this unoptimised debug build; release runs several times
-        // faster, and conversion happens off the main actor either way
-        record(
-            "perf: converts 5k filters under 1s (debug)",
-            convertTime < 1.0, ms(convertTime))
+        let convertTime = measure(iterations: 1) { _ = FilterConverter.convert([filters]) }
+        record("perf: converts 5k filters under 1s", convertTime < 1.0, ms(convertTime))
     }
 
     /// average seconds per iteration, best of three passes: the budgets assert what the
@@ -18665,4 +18807,385 @@ private nonisolated final class LiveLoopback: @unchecked Sendable {
     }
 
     func close() { Darwin.close(socket) }
+}
+
+extension SelfTest {
+    /// ⌃⇥ through the window's real event path: the tap flip, the held cards' order, stepping and
+    /// wrap, letting go, Esc, a click and the window losing focus
+    static func testTabSwitcher(manager: TabManager) async {
+        guard let window = BrowserWindows.shared.window(of: manager) else {
+            return record("switcher: the browser window is up", false)
+        }
+        becomeKey(window)
+        let switcher = manager.tabSwitcher
+        let previous = manager.selectedTabID
+        var tabs: [BrowserTab] = []
+        defer {
+            switcher.cancel()
+            switcher.controlOverride = nil
+            for tab in tabs { manager.close(tab) }
+            manager.selectedTabID = previous
+        }
+        let colours = ["#e8553d", "#3d8be8", "#3dbf6e", "#e8b83d"]
+        for (index, colour) in colours.enumerated() {
+            let tab = manager.newTab(select: false)
+            tabs.append(tab)
+            await load(tab, html: "<title>Switch \(index)</title><body style='background:\(colour)'><h1>\(index)</h1></body>")
+        }
+        // visited in order, so the most recent first is 3, 2, 1, 0
+        for tab in tabs {
+            manager.selectedTabID = tab.id
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        func key(_ code: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags) {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: code)
+            else { return }
+            NSApp.sendEvent(event)
+        }
+        func letGo() {
+            guard let event = NSEvent.keyEvent(
+                with: .flagsChanged, location: .zero, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 59)
+            else { return }
+            NSApp.sendEvent(event)
+        }
+        func tabKey() { key(48, "\t", .control) }
+        func backKey() { key(48, "\t", [.control, .shift]) }
+        func reset() async {
+            manager.selectedTabID = tabs[3].id
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        press("\t", .control)
+        record(
+            "switcher: the menu's ⌃⇥ with ⌃ already up flips to the last tab",
+            manager.selectedTabID == tabs[2].id && !switcher.isActive && !switcher.isShown,
+            manager.selectedTab?.displayTitle ?? "nil")
+        await reset()
+
+        switcher.controlOverride = true
+        switcher.begin()
+        let wasActive = switcher.isActive
+        letGo()
+        try? await Task.sleep(for: TabSwitcher.reveal * 2)
+        record(
+            "switcher: a held ⌃⇥ let go before the cards show flips with no panel",
+            wasActive && manager.selectedTabID == tabs[2].id && !switcher.isShown && !switcher.isActive,
+            manager.selectedTab?.displayTitle ?? "nil")
+        await reset()
+
+        switcher.begin()
+        switcher.controlOverride = false
+        try? await Task.sleep(for: TabSwitcher.reveal * 2)
+        record(
+            "switcher: ⌃ let go where the monitor never saw it flips with no panel",
+            manager.selectedTabID == tabs[2].id && !switcher.isShown && !switcher.isActive,
+            manager.selectedTab?.displayTitle ?? "nil")
+        switcher.controlOverride = true
+        await reset()
+
+        switcher.begin()
+        await settle(.seconds(1)) { switcher.isShown }
+        let order = switcher.cards.prefix(4).map(\.id)
+        record(
+            "switcher: held, the cards show most recent first with the last tab selected",
+            switcher.isShown && order == tabs.reversed().map(\.id) && switcher.selection == 1,
+            "\(switcher.cards.prefix(4).map(\.displayTitle)) at \(switcher.selection)")
+        await settle { switcher.frames[tabs[3].id] != nil }
+        record("switcher: the page on screen gets a snapshot", switcher.frames[tabs[3].id] != nil)
+        await settle(.seconds(1)) { switcher.frames[tabs[0].id] != nil }
+        record("switcher: a loaded page off screen gets one too", switcher.frames[tabs[0].id] != nil)
+        tabKey()
+        let afterOne = switcher.selection
+        tabKey()
+        record("switcher: ⇥ steps forward", afterOne == 2 && switcher.selection == 3, "\(afterOne), \(switcher.selection)")
+        backKey()
+        record("switcher: ⇧⇥ steps back", switcher.selection == 2, "\(switcher.selection)")
+        backKey()
+        backKey()
+        backKey()
+        record(
+            "switcher: back past the first card wraps to the last",
+            switcher.selection == switcher.cards.count - 1, "\(switcher.selection) of \(switcher.cards.count)")
+        tabKey()
+        record("switcher: and forward past the last wraps to the first", switcher.selection == 0)
+        tabKey()
+        tabKey()
+        let chosen = switcher.cards[switcher.selection].id
+        record("switcher: stepping leaves the window on its tab", manager.selectedTabID == tabs[3].id)
+        letGo()
+        record(
+            "switcher: letting go of ⌃ switches to the selected card",
+            chosen == tabs[1].id && manager.selectedTabID == tabs[1].id && !switcher.isActive && !switcher.isShown,
+            manager.selectedTab?.displayTitle ?? "nil")
+        record("switcher: the snapshots go with the cards", switcher.frames.isEmpty, "\(switcher.frames.count) left")
+        await reset()
+
+        switcher.begin()
+        await settle(.seconds(1)) { switcher.isShown }
+        tabKey()
+        key(53, "\u{1b}", .control)
+        record(
+            "switcher: Esc puts the cards away and stays on the tab",
+            manager.selectedTabID == tabs[3].id && !switcher.isActive && !switcher.isShown)
+        letGo()
+        record("switcher: and letting go of ⌃ after it does nothing", manager.selectedTabID == tabs[3].id)
+
+        switcher.begin()
+        await settle(.seconds(1)) { switcher.isShown }
+        switcher.pick(3)
+        record("switcher: a clicked card is switched to", manager.selectedTabID == tabs[0].id && !switcher.isActive)
+        await reset()
+
+        switcher.begin()
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        letGo()
+        record(
+            "switcher: the window losing focus puts it away",
+            !switcher.isActive && manager.selectedTabID == tabs[3].id)
+
+        switcher.begin()
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        record(
+            "switcher: the app going to the background puts it away",
+            !switcher.isActive && manager.selectedTabID == tabs[3].id)
+
+        var last = manager.recentTabs.first?.id
+        switcher.begin()
+        await settle(.seconds(1)) { switcher.isShown }
+        switcher.controlOverride = false
+        try? await Task.sleep(for: TabSwitcher.poll * 3)
+        record(
+            "switcher: ⌃ let go inside another tracking loop still switches",
+            manager.selectedTabID == last && !switcher.isShown && !switcher.isActive,
+            manager.selectedTab?.displayTitle ?? "nil")
+        switcher.controlOverride = true
+        await reset()
+
+        // dismissed in the same turn the snapshots are asked for, so every one lands late
+        withObservationTracking { _ = switcher.isShown } onChange: {
+            Task { @MainActor in switcher.cancel() }
+        }
+        switcher.begin()
+        try? await Task.sleep(for: .seconds(1))
+        record(
+            "switcher: a snapshot landing after the cards go is dropped",
+            !switcher.isShown && switcher.frames.isEmpty, "\(switcher.frames.count) stored")
+
+        final class KeyStandIn: NSWindow {
+            override var isKeyWindow: Bool { true }
+        }
+        let other = KeyStandIn(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        other.isReleasedWhenClosed = false
+        last = manager.recentTabs.first?.id
+        switcher.begin()
+        record(
+            "switcher: with another window key it flips with no cards",
+            NSApp.windows.contains(other) && !switcher.isActive && manager.selectedTabID == last,
+            manager.selectedTab?.displayTitle ?? "nil")
+        other.close()
+        note("untested: a real pointer click on a card, which needs the panel under a held ⌃")
+    }
+
+    /// a disguised page's own requests carry Chrome's headers, and its scripts see Chrome's surfaces
+    fileprivate static func testChromeDisguiseHeaders(manager: TabManager) async {
+        guard let open = LiveLoopback(reply: { _, _ in
+                Data("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".utf8)
+            })
+        else { return record("chrome disguise headers: a loopback server starts", false) }
+        let page = Data((#"<html><body><img src="/pixel.png"><script>fetch("/fetched");"#
+            + "window.cors = fetch('http://127.0.0.1:\(open.port)/cors').then((r) => r.text(), (e) => String(e));"
+            + "</script></body></html>").utf8)
+        let closedPort: UInt16 = {
+            let closed = LiveLoopback(reply: { _, _ in Data() })
+            defer { closed?.close() }
+            return closed?.port ?? 9
+        }()
+        guard
+            let server = LiveLoopback(reply: { path, _ in
+                if path == "/hop" {
+                    return Data("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:\(closedPort)/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                }
+                if path == "/nocontent" { return Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8) }
+                let body = path.hasPrefix("/?") || path == "/" ? page : Data()
+                let type = body.isEmpty ? "text/plain" : "text/html"
+                return Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+                    + body
+            })
+        else { return record("chrome disguise headers: a loopback server starts", false) }
+        guard let slow = LiveLoopback(reply: { _, _ in
+                Thread.sleep(forTimeInterval: 3)
+                return Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+            })
+        else { return record("chrome disguise headers: a loopback server starts", false) }
+        // incognito opt-ins never reach disk or sync
+        let incognito = makeIncognito(from: manager)
+        defer {
+            ChromeDisguise.forgetEphemeral()
+            for tab in incognito.currentSpace.tabs { incognito.close(tab) }
+            server.close()
+            open.close()
+            slow.close()
+        }
+        guard let tab = incognito.currentSpace.tabs.first
+        else { return record("chrome disguise headers: an incognito tab opens", false) }
+        func head(_ path: String, in server: LiveLoopback) -> String {
+            server.heads.last { $0.hasPrefix("GET \(path) ") }?.lowercased() ?? ""
+        }
+        func header(_ head: String, _ name: String) -> String? {
+            head.split(separator: "\r\n").first { $0.hasPrefix(name.lowercased() + ":") }
+                .map { $0.dropFirst(name.count + 1).trimmingCharacters(in: .whitespaces) }
+        }
+        let base = "http://127.0.0.1:\(server.port)"
+        let hints = ChromeDisguise.clientHintBrands.lowercased()
+
+        // the first disguised load in a new window must not race the rules joining its controller
+        ChromeDisguise.set(true, for: "127.0.0.1", ephemeral: true)
+        await loadRemote(tab, base + "/")
+        record("chrome disguise headers: the header rules compile", await ChromeDisguise.headerRules.value != nil)
+        await settle(.seconds(5)) {
+            !head("/fetched", in: server).isEmpty && !head("/pixel.png", in: server).isEmpty && !head("/cors", in: open).isEmpty
+        }
+        let document = head("/", in: server), fetched = head("/fetched", in: server), image = head("/pixel.png", in: server)
+        record("chrome disguise headers: the page, its fetch and its image send Chrome's Sec-CH-UA",
+            [document, fetched, image].allSatisfy { header($0, "sec-ch-ua") == hints }
+                && header(document, "sec-ch-ua-platform") == "\"macos\"" && header(document, "sec-ch-ua-mobile") == "?0",
+            document)
+        record("chrome disguise headers: navigation and image Accept are Chrome's",
+            header(document, "accept")?.hasPrefix("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif") == true
+                && header(image, "accept") == "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            (header(document, "accept") ?? "none") + " | " + (header(image, "accept") ?? "none"))
+        let cors = (try? await tab.webView.callAsyncJavaScript("return await window.cors", contentWorld: .page)) as? String
+        record("chrome disguise headers: a cross-origin fetch needs no preflight",
+            cors == "ok" && !open.heads.contains { $0.hasPrefix("OPTIONS ") }
+                && header(head("/cors", in: open), "sec-ch-ua") == hints,
+            "\(cors ?? "nil") | " + (open.heads.first?.split(separator: "\r\n").first.map(String.init) ?? "no request"))
+        let surfaces = (try? await tab.webView.callAsyncJavaScript("""
+            const gl = document.createElement("canvas").getContext("webgl");
+            const vendor = Object.getOwnPropertyDescriptor(Navigator.prototype, "vendor").get;
+            const fake = window.chrome.app.getIsInstalled;
+            const constructs = [fake, navigator.userAgentData.constructor]
+              .some((f) => { try { new f(); return true; } catch { return false; } });
+            const data = navigator.userAgentData;
+            return [data.brands.map((b) => `"${b.brand}";v="${b.version}"`).join(", "),
+              typeof fake, navigator.deviceMemory,
+              Function.prototype.toString.call(vendor), gl ? gl.getParameter(37446) : "no webgl",
+              String("prototype" in fake || constructs),
+              String(data.getHighEntropyValues).includes("[native code]") && String(data.constructor).includes("[native code]"),
+              Object.prototype.toString.call(data)].join("|");
+            """, contentWorld: .page)) as? String ?? ""
+        let parts = surfaces.split(separator: "|").map(String.init)
+        #if arch(arm64)
+            let gpu = "ANGLE (Apple, ANGLE Metal Renderer: Apple"
+        #else
+            let gpu = "ANGLE (Intel, ANGLE Metal Renderer: Intel"
+        #endif
+        record("chrome disguise headers: userAgentData brands match the Sec-CH-UA header",
+            parts.first?.lowercased() == hints, surfaces)
+        record("chrome disguise headers: window.chrome, deviceMemory, native-looking getters and ANGLE WebGL",
+            parts.count == 8 && parts[1] == "function" && parts[2] == "8"
+                && parts[3] == "function get vendor() {\n    [native code]\n}"
+                && (parts[4].hasPrefix(gpu) || parts[4] == "no webgl")
+                && parts[5] == "false" && parts[6] == "true" && parts[7] == "[object NavigatorUAData]",
+            surfaces)
+
+        ChromeDisguise.forgetEphemeral()
+        tab.load(URL(string: base + "/?plain")!)
+        await settle(.seconds(5)) { tab.webView.url?.query() == "plain" && !tab.webView.isLoading }
+        let plain = head("/?plain", in: server)
+        let bare = (try? await tab.webView.callAsyncJavaScript(
+            "return [typeof window.chrome, String(navigator.deviceMemory)].join('|')", contentWorld: .page)) as? String ?? ""
+        record("chrome disguise headers: turned off, no client hints and no window.chrome",
+            !plain.isEmpty && header(plain, "sec-ch-ua") == nil && bare == "undefined|undefined", plain + bare)
+        // a disguised load that never commits leaves the plain page's UA alone
+        ChromeDisguise.set(true, for: "localhost", ephemeral: true)
+        tab.load(URL(string: "http://localhost:\(server.port)/nocontent")!)
+        await settle(.seconds(5)) { !head("/nocontent", in: server).isEmpty && !tab.webView.isLoading }
+        await settle(.milliseconds(500)) { (tab.webView.customUserAgent ?? "").isEmpty }
+        record("chrome disguise headers: a disguised load that never commits puts the UA back",
+            !head("/nocontent", in: server).isEmpty && (tab.webView.customUserAgent ?? "").isEmpty,
+            tab.webView.customUserAgent ?? "nil")
+
+        // a slow load replaced before it commits: its cancel lands after the next decide
+        func supersede(_ pending: String, with next: String) async -> String {
+            tab.load(URL(string: pending)!)
+            try? await Task.sleep(for: .milliseconds(500))
+            await loadRemote(tab, next)
+            try? await Task.sleep(for: .milliseconds(300))
+            return (try? await tab.webView.callAsyncJavaScript(
+                "return [typeof window.chrome, navigator.userAgent.includes('Chrome/')].join('|')",
+                contentWorld: .page)) as? String ?? ""
+        }
+        ChromeDisguise.forgetEphemeral()
+        ChromeDisguise.set(true, for: "127.0.0.1", ephemeral: true)
+        await loadRemote(tab, base + "/?opted")
+        let toPlain = await supersede("http://127.0.0.1:\(slow.port)/", with: "http://localhost:\(server.port)/?after")
+        record("chrome disguise headers: an opted load replaced by a plain one leaves Safari's UA",
+            toPlain == "undefined|false" && (tab.webView.customUserAgent ?? "").isEmpty, toPlain)
+        let toOpted = await supersede("http://localhost:\(slow.port)/", with: base + "/?later")
+        record("chrome disguise headers: a plain load replaced by an opted one keeps Chrome's UA",
+            toOpted == "object|true" && header(head("/?later", in: server), "sec-ch-ua") == hints, toOpted)
+
+        // an opted decide still waiting on its rules when a plain load replaces it
+        var entered = 0
+        var exited = false
+        var release: CheckedContinuation<Void, Never>?
+        ChromeDisguise.attachHold = {
+            entered += 1
+            await withCheckedContinuation { release = $0 }
+            exited = true
+        }
+        tab.load(URL(string: base + "/?held")!)
+        await settle { release != nil }
+        await loadRemote(tab, "http://localhost:\(server.port)/?overtook")
+        ChromeDisguise.attachHold = nil
+        release?.resume()
+        await settle { exited }
+        // a stale write would land within a few main-actor hops; none should
+        await settle(.milliseconds(400)) { !(tab.webView.customUserAgent ?? "").isEmpty }
+        record("chrome disguise headers: a decide that waited never overwrites a newer one's UA",
+            entered == 1 && tab.webView.url?.query() == "overtook" && head("/?held", in: server).isEmpty
+                && (tab.webView.customUserAgent ?? "").isEmpty,
+            "\(entered) \(tab.webView.url?.absoluteString ?? "nil") \(tab.webView.customUserAgent ?? "nil")")
+
+        // a page that isn't http(s), reached from a disguised one
+        await loadRemote(tab, base + "/?beforeblob")
+        _ = try? await tab.webView.callAsyncJavaScript(
+            "location.href = URL.createObjectURL(new Blob(['<p>blob</p>'], { type: 'text/html' }))", contentWorld: .page)
+        var blob = ""
+        await settle {
+            blob = (try? await tab.webView.callAsyncJavaScript(
+                "return location.protocol + '|' + navigator.userAgent.includes('Chrome/')", contentWorld: .page)) as? String ?? ""
+            return blob.hasPrefix("blob:")
+        }
+        record("chrome disguise headers: a blob: page after a disguised one has Safari's UA",
+            blob == "blob:|false" && (tab.webView.customUserAgent ?? "").isEmpty, blob)
+
+        // a disguised load WebKit stops with no newer navigation
+        await loadRemote(tab, "http://localhost:\(server.port)/?stopper")
+        let asked = slow.heads.count
+        tab.load(URL(string: "http://127.0.0.1:\(slow.port)/")!)
+        await settle { slow.heads.count > asked }
+        let started = tab.webView.customUserAgent ?? "nil"
+        tab.webView.stopLoading()
+        await settle { (tab.webView.customUserAgent ?? "").isEmpty }
+        record("chrome disguise headers: a disguised load stopped in WebKit with no newer one puts the UA back",
+            started == ChromeDisguise.userAgent && tab.webView.url?.query() == "stopper"
+                && (tab.webView.customUserAgent ?? "").isEmpty,
+            "\(tab.webView.url?.absoluteString ?? "nil") \(tab.webView.customUserAgent ?? "nil")")
+
+        // a disguised load that redirects, then fails: the redirect's own decide must not strand the UA
+        await loadRemote(tab, "http://localhost:\(server.port)/?beforehop")
+        await loadRemote(tab, base + "/hop")
+        await settle { (tab.webView.customUserAgent ?? "").isEmpty }
+        record("chrome disguise headers: a disguised load that redirects and then fails puts the UA back",
+            !head("/hop", in: server).isEmpty && tab.webView.url?.query() == "beforehop"
+                && (tab.webView.customUserAgent ?? "").isEmpty,
+            "\(tab.webView.url?.absoluteString ?? "nil") \(tab.webView.customUserAgent ?? "nil")")
+    }
 }

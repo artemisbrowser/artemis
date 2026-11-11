@@ -83,16 +83,3 @@ Suites that drive the real thing rather than a model in isolation:
 ## Build configuration
 
 Build Debug while iterating (⌘R in Xcode, or the `xcodebuild` line above): Debug compiles incrementally and in parallel. Release is what ships, and what the perf budgets other than the converter's assume; its build time is whole-module optimisation, not slow type-checking.
-
-## The converter harness
-
-`AdblockConverter` has no app dependencies, so it can also be exercised standalone against real filter lists — useful when changing the conversion rules:
-
-```sh
-mkdir -p /tmp/conv
-cp Artemis/models/extensions/AdblockConverter.swift /tmp/conv/   # from the repo root
-cd /tmp/conv
-# write a main.swift that downloads EasyList, calls AdblockConverter.convert,
-# and compiles each chunk through WKContentRuleListStore
-xcrun swiftc -O AdblockConverter.swift main.swift -o conv && ./conv
-```

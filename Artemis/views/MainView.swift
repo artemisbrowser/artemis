@@ -229,6 +229,7 @@ struct MainView: View {
             }
             .animation(Motion.fade, value: tabManager.gradientPreview != nil)
         }
+        .overlay { TabSwitcherOverlay() }
         .overlay {
             feedbackOverlay
                 .animation(Motion.fade, value: tabManager.feedback == nil)
@@ -577,12 +578,7 @@ struct MainView: View {
                     .padding(.trailing, toolbarGap)
             }
             webCard
-                // status capsule for the hovered link, bottom-left of the content
-                .overlay(alignment: .bottomLeading) {
-                    LinkHoverCapsule()
-                        .padding(12)
-                        .allowsHitTesting(false)
-                }
+                .overlay { LinkHoverCapsule().allowsHitTesting(false) }
                 .padding(.top, showsToolbar ? toolbarGap : rim)
                 .padding([.trailing, .bottom], rim)
                 // the visible card frame, for drag-to-split

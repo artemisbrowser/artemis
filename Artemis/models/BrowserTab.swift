@@ -84,6 +84,8 @@ final class BrowserTab: NSObject, Identifiable {
     private(set) var lastAttemptedURL: URL?
     /// the url `load` asked for, until that navigation commits or otherwise ends
     private(set) var requestedURL: URL?
+    /// the page `load` left for an extension's page, while this web view is that extension's
+    @ObservationIgnored private var pageUnderExtension: URL?
     /// never asked to load anything
     var isBlank: Bool { url == nil && pendingURL == nil && lastAttemptedURL == nil }
     @ObservationIgnored private var requestedNavigation: WKNavigation?
@@ -92,6 +94,8 @@ final class BrowserTab: NSObject, Identifiable {
     /// the origin of the frame that opened this page with `window.open` or a link to a new window,
     /// until the page commits another site
     @ObservationIgnored private var openerOrigin: String?
+    /// the press in the opener's page that opened this one, good for this page's first download
+    @ObservationIgnored private var openerPress: Date?
     /// the press that last let a download through; each press lets through one
     @ObservationIgnored private var spentDownloadGesture = Date.distantPast
     /// frames (`_WKFrameHandle`) whose latest navigation WebKit counts as the user's
@@ -234,6 +238,11 @@ final class BrowserTab: NSObject, Identifiable {
     private var suppressesDialogs = false
     /// dialogs since the last commit — the second one earns a suppression offer
     private var dialogsThisPage = 0
+    /// bumped by each main-frame decide but a redirect's, and by each stop; a UA write that saw an
+    /// older count is stale
+    @ObservationIgnored private var userAgentDecisions = 0
+    /// each main-frame navigation's count from its decide
+    @ObservationIgnored private let navigationDecisions = NSMapTable<WKNavigation, NSNumber>.weakToStrongObjects()
 
     enum CertificateFailure {
         case overridable
@@ -701,6 +710,7 @@ final class BrowserTab: NSObject, Identifiable {
         // the old view's unanswered question holds a handler nothing could call
         abandonDialog()
         BrowserCore.shared.miniPlayer.exitIfActive(for: self)
+        pageUnderExtension = nil
         observations.forEach { $0.invalidate() }
         observations = []
         webView = ArtemisWebView(frame: .zero, configuration: configuration)
@@ -1017,7 +1027,13 @@ final class BrowserTab: NSObject, Identifiable {
         loadError = nil
         lastAccessed = Date()
         addressText = url.absoluteString
-        if let configuration = extensionPageConfiguration(for: url) { replaceWebView(with: configuration) }
+        let underneath = pageUnderExtension ?? webView.url
+        if let configuration = extensionPageConfiguration(for: url) {
+            replaceWebView(with: configuration)
+            pageUnderExtension = underneath
+        } else if pageUnderExtension != nil, url.scheme?.hasSuffix("-extension") != true {
+            replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore))
+        }
         // a local page reads the home folder it sits in, or else its own folder, so its
         // stylesheets, images and linked pages load. each file stays its own origin
         let home = URL.homeDirectory
@@ -1040,8 +1056,16 @@ final class BrowserTab: NSObject, Identifiable {
 
     func retry() {
         if let lastAttemptedURL {
-            load(lastAttemptedURL)
+            load(reloadable(lastAttemptedURL))
         }
+    }
+
+    /// an extension's page can't load once its extension is off; the page it covered stands in
+    private func reloadable(_ page: URL) -> URL {
+        guard let pageUnderExtension, page.scheme?.hasSuffix("-extension") == true,
+            WebExtensionRuntime.controllers[ProfileStore.proxyProfile(of: dataStore)]?.extensionContext(for: page) == nil
+        else { return page }
+        return pageUnderExtension
     }
 
     /// resolve url-field input (url or search query) and load it
@@ -1135,7 +1159,9 @@ final class BrowserTab: NSObject, Identifiable {
 
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
-    func reload() { webView.reload() }
+    func reload() {
+        if let url, reloadable(url) != url { load(reloadable(url)) } else { webView.reload() }
+    }
 
     /// asks the page's `beforeunload` first. true: nothing to ask, close now.
     /// false: WebKit shows the leave prompt and calls `webViewDidClose` if confirmed
@@ -1152,6 +1178,8 @@ final class BrowserTab: NSObject, Identifiable {
         stopRequested = true
         endRequestedLoad()
         webView.stopLoading()
+        userAgentDecisions += 1
+        matchUserAgent()
     }
 
     // MARK: - Web Inspector
@@ -1412,6 +1440,9 @@ extension BrowserTab: WKNavigationDelegate {
         withError error: Error
     ) {
         if navigation === requestedNavigation { endRequestedLoad() }
+        if let navigation, navigationDecisions.object(forKey: navigation)?.intValue == userAgentDecisions {
+            matchUserAgent()
+        }
         handleLoadError(error)
     }
 
@@ -1499,9 +1530,15 @@ extension BrowserTab: WKNavigationDelegate {
         if let frame = Self.handle(of: navigationAction.targetFrame) {
             if userInitiated { userInitiatedFrames.insert(frame) } else { userInitiatedFrames.remove(frame) }
         }
+        let mainFrame = navigationAction.targetFrame?.isMainFrame == true
+        let redirect = navigationAction.responds(to: Selector(("_isRedirect")))
+            && navigationAction.value(forKey: "_isRedirect") as? Bool == true
+        if mainFrame, !redirect { userAgentDecisions += 1 }
+        let decision = userAgentDecisions
         // a link that asks to be downloaded is, whatever is held
         if navigationAction.shouldPerformDownload {
             let allowed = await mayDownload(
+                navigationAction.request.url.flatMap { $0.scheme?.hasPrefix("http") == true ? $0.lastPathComponent : nil } ?? "",
                 from: source.map { SitePermissionStore.originString($0.securityOrigin) }, userInitiated: userInitiated)
             return (allowed ? .download : .cancel, preferences)
         }
@@ -1535,14 +1572,28 @@ extension BrowserTab: WKNavigationDelegate {
             return (.cancel, preferences)
         }
         // set here, the UA already reaches this navigation's own request
-        if navigationAction.targetFrame?.isMainFrame == true, let url = navigationAction.request.url,
-            url.scheme == "https" || url.scheme == "http"
-        {
-            let wanted =
-                ChromeDisguise.isOn(for: url.host(), ephemeral: isPrivate) ? ChromeDisguise.userAgent : ""
-            if (webView.customUserAgent ?? "") != wanted { webView.customUserAgent = wanted }
+        if mainFrame {
+            let url = navigationAction.request.url
+            let on = (url?.scheme == "https" || url?.scheme == "http")
+                && ChromeDisguise.isOn(for: url?.host(), ephemeral: isPrivate)
+            if on { await ChromeDisguise.attach(to: webView.configuration.userContentController) }
+            guard decision == userAgentDecisions else { return (.cancel, preferences) }
+            matchUserAgent(on)
+            if navigationAction.responds(to: Selector(("_mainFrameNavigation"))),
+                let navigation = navigationAction.value(forKey: "_mainFrameNavigation") as? WKNavigation
+            {
+                navigationDecisions.setObject(decision as NSNumber, forKey: navigation)
+            }
+            ChromeDisguise.gate(preferences, on: on)
         }
         return (.allow, preferences)
+    }
+
+    /// sets the UA for `disguised`, or else for the committed page
+    private func matchUserAgent(_ disguised: Bool? = nil) {
+        let on = disguised ?? ChromeDisguise.isOn(for: committedURL?.host(), ephemeral: isPrivate)
+        let wanted = on ? ChromeDisguise.userAgent : ""
+        if (webView.customUserAgent ?? "") != wanted { webView.customUserAgent = wanted }
     }
 
     /// anything the engine can't render inline becomes a download
@@ -1587,23 +1638,32 @@ extension BrowserTab: WKNavigationDelegate {
             ? Self.handle(of: navigationResponse.value(forKey: "_frame") as? WKFrameInfo) : nil
         let userInitiated = frame.flatMap { userInitiatedFrames.remove($0) } != nil
         let started = navigationResponse.isForMainFrame && requestedURL != nil
-        return await mayDownload(from: initiator, userInitiated: userInitiated, appStarted: started)
+        let file = response.suggestedFilename ?? response.url?.lastPathComponent ?? ""
+        return await mayDownload(file, from: initiator, userInitiated: userInitiated, appStarted: started)
             ? .download : .cancel
     }
 
     /// a download goes ahead for a load the app started, on the site's allow, or on a press in this
-    /// tab's page that no other download spent. a frame from another origin is never asked about, and
-    /// its press counts only on a navigation WebKit also saw the user start
-    private func mayDownload(from initiator: String?, userInitiated: Bool, appStarted: Bool = false) async -> Bool {
+    /// tab's page, or the opener's press that opened it, that no other download spent. a frame from another
+    /// origin is never asked about, and its press counts only on a navigation WebKit saw the user start
+    private func mayDownload(
+        _ file: String, from initiator: String?, userInitiated: Bool, appStarted: Bool = false
+    ) async -> Bool {
         let site = SitePermissionStore.originString(committedURL) ?? openerOrigin
         let decision = site.flatMap { SitePermissionStore.shared.decision(for: $0, .downloads, ephemeral: isPrivate) }
-        guard decision != .deny else { return false }
+        let press = (UserGesture.recent(in: webView, within: Self.downloadGestureWindow) ?? openerPress).flatMap {
+            $0 > spentDownloadGesture && Date().timeIntervalSince($0) < Self.downloadGestureWindow ? $0 : nil
+        }
+        guard decision != .deny else {
+            // a file the person asked for shows as blocked; a page's own attempts stay silent
+            if let press { spentDownloadGesture = press }
+            if press != nil || appStarted { DownloadManager.shared.refuse(file, isPrivate: isPrivate) }
+            return false
+        }
         if appStarted { return true }
         let crossOrigin = initiator.map { $0 != site && $0 != openerOrigin } ?? false
-        if let pressed = UserGesture.recent(in: webView, within: Self.downloadGestureWindow),
-            pressed > spentDownloadGesture, userInitiated || !crossOrigin
-        {
-            spentDownloadGesture = pressed
+        if let press, userInitiated || !crossOrigin {
+            spentDownloadGesture = press
             return true
         }
         guard !crossOrigin else { return false }
@@ -1676,8 +1736,16 @@ extension BrowserTab: WKUIDelegate {
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         let opened = onRequestNewTab?(configuration, windowFeatures)
-        let opener = Self.sourceFrame(of: navigationAction).map { SitePermissionStore.originString($0.securityOrigin) }
-        (opened?.navigationDelegate as? BrowserTab)?.openerOrigin = opener
+        if let tab = opened?.navigationDelegate as? BrowserTab {
+            tab.openerOrigin = Self.sourceFrame(of: navigationAction).map { SitePermissionStore.originString($0.securityOrigin) }
+            // a link's press moves to the page it opens and still lets through one file; a script's stays here
+            if navigationAction.navigationType == .linkActivated,
+                let press = UserGesture.recent(in: webView, within: Self.downloadGestureWindow), press > spentDownloadGesture
+            {
+                tab.openerPress = press
+                spentDownloadGesture = press
+            }
+        }
         return opened
     }
 
@@ -1783,7 +1851,10 @@ extension BrowserTab: WKUIDelegate {
     ) {
         if onConfirmedClose != nil { manager?.focus(self) }
         askPage(.leaveConfirm, message: message, frame: frame) { [weak self] answer in
-            if !answer.confirmed { self?.onConfirmedClose = nil }
+            if !answer.confirmed {
+                self?.onConfirmedClose = nil
+                self?.matchUserAgent()
+            }
             completionHandler(answer.confirmed)
         }
     }

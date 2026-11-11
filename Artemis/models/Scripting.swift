@@ -55,6 +55,8 @@ enum Scripting {
         if incognito {
             IncognitoWindow.open()
         } else {
+            if IncognitoWindow.openWindow == nil { IncognitoWindow.chooseNewWindowItem(.command) }
+            // set after the menu item, which sets its own; the window reads it on its first body
             windows.pendingSpaceID = space ?? windows.browserScope?.selectedSpaceID
             IncognitoWindow.openWindow?(id: ArtemisApp.browserWindowID)
         }

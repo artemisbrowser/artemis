@@ -96,6 +96,7 @@ struct DownloadPill: View {
 
     private func label(for item: DownloadItem) -> String {
         let name = item.isPrivate ? "Private download" : item.filename
+        if item.isBlocked { return "Blocked by site · \(name)" }
         return item.state == .failed ? "Failed · \(name)" : name
     }
 

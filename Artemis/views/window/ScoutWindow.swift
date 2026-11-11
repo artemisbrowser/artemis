@@ -13,6 +13,8 @@ enum ScoutWindow {
     /// released out from under its content
     private static var open: [NSWindow] = []
 
+    static var isShowing: Bool { !open.isEmpty }
+
     /// a link, opened for a look; from a page, in its `opener` space's profile
     @discardableResult
     static func open(_ url: URL, like opener: Space? = nil) -> NSWindow {

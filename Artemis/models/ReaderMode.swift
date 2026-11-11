@@ -128,8 +128,8 @@ nonisolated enum ReaderMode {
 
     // MARK: - Rendering
 
-    /// a self-contained document, styled inline for light and dark
-    static func page(for article: Article) -> String {
+    /// a self-contained document, styled inline for light and dark; `style` lands last, in #reader-style
+    static func page(for article: Article, style: String = "") -> String {
         """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -158,7 +158,7 @@ nonisolated enum ReaderMode {
           pre { overflow-x: auto; padding: 1em; background: rgba(127,127,127,0.12); border-radius: 8px; }
           h2, h3, h4 { line-height: 1.3; margin: 1.8em 0 0.5em; letter-spacing: -0.01em; }
           a { color: #0b62d0; text-decoration-thickness: 1px; text-underline-offset: 2px; }
-        </style></head>
+        </style>\(style.isEmpty ? "" : "<style id=\"reader-style\">\(style)</style>")</head>
         <body>
         <h1>\(escape(article.title))</h1>
         <div class="meta">\(escape(article.url.host() ?? "")) · \(article.readingMinutes) min read</div>

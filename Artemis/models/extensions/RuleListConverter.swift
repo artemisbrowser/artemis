@@ -3,6 +3,8 @@
 
 import Foundation
 
+// not in the Mac target, which converts with `FilterConverter`
+
 /// one WebKit content-blocking rule, in the JSON shape `WKContentRuleListStore` compiles
 nonisolated struct ContentRule: Encodable {
     struct Trigger: Encodable {

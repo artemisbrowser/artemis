@@ -21,6 +21,8 @@ final class DownloadItem: NSObject, Identifiable {
 
     /// from an incognito window: shown as "Private download", never by name
     let isPrivate: Bool
+    /// never started: the site's Downloads setting is Block
+    let isBlocked: Bool
 
     @ObservationIgnored private var download: WKDownload?
     @ObservationIgnored private var progressObservation: NSKeyValueObservation?
@@ -36,6 +38,7 @@ final class DownloadItem: NSObject, Identifiable {
         self.download = download
         preferredFilename = filename
         isPrivate = download.webView.map { !$0.configuration.websiteDataStore.isPersistent } ?? false
+        isBlocked = false
         super.init()
         download.delegate = self
         // whole percents only: every view showing progress redraws per update
@@ -50,6 +53,15 @@ final class DownloadItem: NSObject, Identifiable {
                 self?.fractionCompleted = fraction
             }
         }
+    }
+
+    init(blocked filename: String, isPrivate: Bool) {
+        if !filename.isEmpty { self.filename = filename }
+        preferredFilename = nil
+        self.isPrivate = isPrivate
+        isBlocked = true
+        state = .failed
+        super.init()
     }
 
     func cancel() {
@@ -137,10 +149,16 @@ extension DownloadItem: WKDownloadDelegate {
         let panel = NSSavePanel()
         panel.directoryURL = folder
         panel.nameFieldStringValue = name
-        panel.begin { [weak self] answer in
+        let answered: (NSApplication.ModalResponse) -> Void = { [weak self] answer in
             guard let self, answer == .OK, let url = panel.url else { return completionHandler(nil) }
             replacesDestination = true
             start(at: url, download, completionHandler)
+        }
+        // a sheet on the page's window can't open behind it or on another Space
+        if let window = download.webView?.window, window.attachedSheet == nil {
+            panel.beginSheetModal(for: window, completionHandler: answered)
+        } else {
+            panel.begin(completionHandler: answered)
         }
     }
 
@@ -238,6 +256,13 @@ final class DownloadManager {
         items.insert(item, at: 0)
         shelf.insert(item, at: 0)
         updateDock()
+    }
+
+    /// a download the site's Block setting stopped, shown on the shelf as blocked
+    func refuse(_ filename: String, isPrivate: Bool) {
+        let item = DownloadItem(blocked: filename, isPrivate: isPrivate)
+        items.insert(item, at: 0)
+        shelf.insert(item, at: 0)
     }
 
     /// everything but what's still running, from the Library and the sidebar's shelf

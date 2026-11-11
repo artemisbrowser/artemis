@@ -241,6 +241,14 @@ struct ArtemisApp: App {
                     .disabled(!undoRoute.canRedo)
             }
 
+            // Chrome's key; a page sees the keydown first and keeps it if it prevents it
+            CommandGroup(after: .pasteboard) {
+                Button("Paste and Match Style") {
+                    NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
+
             CommandGroup(replacing: .sidebar) {}
             CommandGroup(replacing: .help) {
                 Button("Send Feedback…") { FeedbackDraft.open(in: strip ?? browser) }
@@ -464,13 +472,13 @@ struct ArtemisApp: App {
                 .disabled(strip == nil)
 
                 Button("Recent Tab") {
-                    strip?.selectRecentTab(offset: 1)
+                    strip?.tabSwitcher.begin()
                 }
                 .keyboardShortcut(.tab, modifiers: .control)
                 .disabled(strip == nil)
 
                 Button("Tab Before Last") {
-                    strip?.selectRecentTab(offset: 2)
+                    strip?.tabSwitcher.begin(offset: 2)
                 }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
                 .disabled(strip == nil)
@@ -528,7 +536,7 @@ struct ArtemisApp: App {
                 .disabled(tabManager.kind != .main)
 
                 Button("New Incognito Window") {
-                    IncognitoWindow.open()
+                    IncognitoWindow.open(openWindow)
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
 
@@ -742,8 +750,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
 
-    /// opens a window if none exists well after a restore would have landed:
-    /// restoration keys off the scene's view type, which a new build can change
+    /// opens a window if neither a browser nor a Scout window was made well after a restore
+    /// would have landed: restoration keys off the scene's view type, which a new build can change
     func applicationDidFinishLaunching(_ notification: Notification) {
         // ⌘⌥N from any app
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
@@ -759,26 +767,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in AppIconChoice.apply() }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            if BrowserWindows.shared.mainManagers.isEmpty { self.openBrowserWindow() }
+            if !BrowserWindows.shared.hasMainWindow, !ScoutWindow.isShowing { self.openBrowserWindow() }
         }
     }
 
-    /// clicking the Dock icon with every window closed brings one back
+    /// clicking the Dock icon with no browser window open brings one back. Returning
+    /// true with nothing visible makes SwiftUI open a second one of its own
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if BrowserWindows.shared.mainManagers.isEmpty { openBrowserWindow() }
-        return true
+        if BrowserWindows.shared.hasMainWindow { return true }
+        openBrowserWindow()
+        return false
     }
 
-    /// New Window, found by its shortcut since its title is localised
-    private func openBrowserWindow() {
-        let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
-        guard
-            let item = items.first(where: {
-                $0.keyEquivalent == "n" && $0.keyEquivalentModifierMask == .command
-            }), let action = item.action
-        else { return }
-        NSApp.sendAction(action, to: item.target, from: item)
-    }
+    private func openBrowserWindow() { IncognitoWindow.chooseNewWindowItem(.command) }
 
     /// a page handed off from another device opens in a tab, not a Scout window
     func application(
@@ -800,11 +801,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// a tab per url in the front browser window, else in one opened for them, else in
-    /// the manager the next window takes. before the first window registers,
-    /// `Scripting.openWindow` waits for it
+    /// the manager the next window takes
     private func openInBrowser(_ urls: [URL]) async {
         let windows = BrowserWindows.shared
-        var manager = windows.browserScope
+        var manager = await windows.registeredBrowser()
         if manager == nil { manager = await Scripting.openWindow(incognito: false) ?? windows.seed }
         guard let manager else { return }
         for url in urls { manager.revealTab(manager.newTab(url: url, select: true)) }

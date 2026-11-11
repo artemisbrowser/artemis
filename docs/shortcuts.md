@@ -58,7 +58,7 @@ The menu bar's shortcuts, menu by menu, as `Artemis/ArtemisApp.swift` binds them
 | ⌘] or ⌘→   | Forward                                                                                              |
 | ⌘⇧] or ⌥⌘↓ | Next Tab                                                                                             |
 | ⌘⇧[ or ⌥⌘↑ | Previous Tab                                                                                         |
-| ⌃⇥         | Recent Tab                                                                                           |
+| ⌃⇥         | Recent Tab. Hold ⌃ to see recent tabs: ⇥ and ⇧⇥ step, letting go switches, Esc cancels               |
 | ⌃⇧⇥        | Tab Before Last                                                                                      |
 | ⌘Y         | History                                                                                              |
 | ⌘⇧Y        | Archive                                                                                              |

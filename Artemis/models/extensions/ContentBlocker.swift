@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
+import ContentBlockerConverter
 import CryptoKit
 import WebKit
 
@@ -22,7 +23,7 @@ struct Blocklist: Identifiable, Hashable {
 }
 
 /// native content blocking via `WKContentRuleListStore`, from EasyList-format lists converted by
-/// `AdblockConverter`. a chunk's identifier embeds a hash of its JSON, so an unchanged chunk is
+/// `FilterConverter`. the list's identifier embeds a hash of its JSON, so an unchanged list is
 /// looked up in WebKit's on-disk store instead of compiled again
 @Observable
 @MainActor
@@ -54,17 +55,23 @@ final class ContentBlocker {
 
     static let enabledKey = "contentBlockingEnabledV1"
     private static let lastUpdateKey = "contentBlockingLastUpdate"
-    /// identifiers of the compiled chunks in WebKit's store, and their rule counts, which launch
+    /// identifiers of the compiled lists in WebKit's store, and their rule counts, which launch
     /// installs without converting the lists again
     private static let compiledIdentifiersKey = "contentBlockingCompiledIDs"
     private static let compiledStatsKey = "contentBlockingCompiledStats"
-    /// fingerprint of the `siteFixes` the compiled chunks were built with; a mismatch forces a rebuild
+    /// fingerprint of the converter and `siteFixes` the compiled list was built with; a mismatch
+    /// forces a rebuild
     private static let compiledFixesKey = "contentBlockingCompiledFixes"
     private static let fixesFingerprint: String = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        return digest(String(data: (try? encoder.encode(siteFixes)) ?? Data(), encoding: .utf8) ?? "")
+        return digest(
+            "\(ContentBlockerConverterVersion.library)+\(converterRevision)"
+                + (String(data: (try? encoder.encode(siteFixes)) ?? Data(), encoding: .utf8) ?? ""))
     }()
+    /// bump when the output changes without a converter version: a vendored patch, a dependency
+    /// pin or `FilterConverter` itself
+    private static let converterRevision = 2
     /// how often a running app looks for lists past their `maxAge`
     private static let refreshCheck: Duration = .seconds(3600)
 
@@ -77,16 +84,17 @@ final class ContentBlocker {
     }
 
     /// live status for Settings: rule count, when the lists were fetched, and
-    /// how many filters the converter couldn't express
+    /// how many filters the converter couldn't express or left out at WebKit's ceiling
     private(set) var ruleCount = 0
     private(set) var droppedCount = 0
+    private(set) var overCeilingCount = 0
     private(set) var lastUpdated: Date?
     private(set) var isUpdating = false
     private(set) var lastError: String?
 
     @ObservationIgnored private var installed: [WKContentRuleList] = []
     /// serializes every install: an overlapping `apply()` and `updateLists` could each prune
-    /// the chunks the other recorded as compiled
+    /// the lists the other recorded as compiled
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var refresher: Task<Void, Never>?
     @ObservationIgnored private let cacheDirectory = AppStorageLocation.directory
@@ -114,7 +122,8 @@ final class ContentBlocker {
             $0.formatted(date: .abbreviated, time: .omitted)
         } ?? "never"
         let dropped = droppedCount > 0 ? ", \(droppedCount.formatted()) unsupported filters skipped" : ""
-        return "\(ruleCount.formatted()) rules active — updated \(updated)\(dropped)."
+        let over = overCeilingCount > 0 ? ", \(overCeilingCount.formatted()) rules over WebKit's limit left out" : ""
+        return "\(ruleCount.formatted()) rules active — updated \(updated)\(dropped)\(over)."
     }
 
     private var enabledLists: [Blocklist] { Self.catalog.filter(\.isEnabled) }
@@ -171,7 +180,7 @@ final class ContentBlocker {
     @concurrent nonisolated private static func parseTrackerHosts(
         _ source: String, savingTo file: URL
     ) async -> Set<String> {
-        let hosts = AdblockConverter.blockedHosts(in: source)
+        let hosts = FilterConverter.blockedHosts(in: source)
         try? FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? hosts.joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
@@ -304,52 +313,55 @@ final class ContentBlocker {
     private func install(sources: [String], stamp: Bool, reloadTabs: Bool) async {
         let fixes = Self.siteFixes
         let converted = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
-            AdblockConverter.convert(sources, extraExceptions: fixes)
+            FilterConverter.convert(sources, extraExceptions: fixes)
         }.value
 
         var compiled: [WKContentRuleList] = []
         let store = WKContentRuleListStore.default()
-        for (index, json) in converted.chunks.enumerated() {
-            let identifier = "artemis-block-\(Self.digest(json))-\(index)"
-            if let existing = try? await store?.contentRuleList(forIdentifier: identifier) {
-                compiled.append(existing)
-                continue
-            }
+        let identifier = "artemis-block-\(Self.digest(converted.json))"
+        if let existing = try? await store?.contentRuleList(forIdentifier: identifier) {
+            compiled.append(existing)
+        } else {
             do {
                 if let list = try await store?.compileContentRuleList(
-                    forIdentifier: identifier, encodedContentRuleList: json) {
+                    forIdentifier: identifier, encodedContentRuleList: converted.json) {
                     compiled.append(list)
                 }
             } catch {
-                debugLog("blocklist chunk \(index) failed to compile: \(error.localizedDescription)")
                 // WebKit puts the parser's own message in the help anchor; the
                 // localized description is only "compile failed"
                 let detail = (error as NSError).userInfo[NSHelpAnchorErrorKey] as? String
-                let failure = "rule chunk \(index + 1) of \(converted.chunks.count) "
-                    + "failed to compile: \(detail ?? error.localizedDescription)"
+                let failure = "rules failed to compile: \(detail ?? error.localizedDescription)"
+                debugLog("blocklist \(failure)")
                 lastError = failure
                 Diagnostics.record(area: "blocker", message: failure)
             }
         }
-        guard !compiled.isEmpty else { return }
+        guard !compiled.isEmpty else {
+            if installed.isEmpty, sources != [Self.starterList] {
+                await install(sources: [Self.starterList], stamp: false, reloadTabs: reloadTabs)
+            }
+            return
+        }
 
-        // the same chunks already in: nothing to swap, and no open page has to run again
+        // the same list already in: nothing to swap, and no open page has to run again
         if compiled.map(\.identifier) != installed.map(\.identifier) {
             replaceInstalled(with: compiled)
             if reloadTabs, isEnabled { Self.reloadLoadedTabs() }
         }
         ruleCount = converted.ruleCount
         droppedCount = converted.droppedCount
+        overCeilingCount = converted.overCeilingCount
         UserDefaults.standard.set(compiled.map(\.identifier), forKey: Self.compiledIdentifiersKey)
         UserDefaults.standard.set(Self.fixesFingerprint, forKey: Self.compiledFixesKey)
         UserDefaults.standard.set(
-            [converted.ruleCount, converted.droppedCount], forKey: Self.compiledStatsKey)
+            [converted.ruleCount, converted.droppedCount, converted.overCeilingCount], forKey: Self.compiledStatsKey)
         if stamp, lastError == nil {
             lastUpdated = Date()
             UserDefaults.standard.set(lastUpdated, forKey: Self.lastUpdateKey)
         }
         await pruneStaleCompiledLists(keeping: Set(compiled.map(\.identifier)))
-        debugLog("blocklists installed: \(compiled.count) chunks, \(converted.ruleCount) rules")
+        debugLog("blocklists installed: \(converted.ruleCount) rules")
     }
 
     /// build from the cached lists without the network, reusing the last build's bytecode
@@ -369,7 +381,7 @@ final class ContentBlocker {
             sources: sources.isEmpty ? [Self.starterList] : sources, stamp: false, reloadTabs: true)
     }
 
-    /// look the last build's chunks up by identifier and install them as-is.
+    /// look the last build's lists up by identifier and install them as-is.
     /// false if any is missing, in which case the caller rebuilds from source
     @discardableResult
     func installPreviouslyCompiled() async -> Bool {
@@ -387,12 +399,13 @@ final class ContentBlocker {
         }
 
         replaceInstalled(with: lists)
-        if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 2 {
+        if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 3 {
             ruleCount = stats[0]
             droppedCount = stats[1]
+            overCeilingCount = stats[2]
         }
         if trackerHosts.isEmpty { trackerHosts = await Self.readTrackerHosts(trackerHostsCache) }
-        debugLog("blocklists: reused \(lists.count) already-compiled chunks")
+        debugLog("blocklists: reused \(lists.count) already-compiled lists")
         return true
     }
 
@@ -403,6 +416,7 @@ final class ContentBlocker {
         if hadLists, reloadTabs, isEnabled { Self.reloadLoadedTabs() }
         ruleCount = 0
         droppedCount = 0
+        overCeilingCount = 0
         UserDefaults.standard.removeObject(forKey: Self.compiledIdentifiersKey)
         UserDefaults.standard.removeObject(forKey: Self.compiledStatsKey)
         await pruneStaleCompiledLists(keeping: [])

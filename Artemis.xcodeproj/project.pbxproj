@@ -10,6 +10,7 @@
 		D0C700010000000000000001 /* ArtemisDockTile.docktileplugin in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B401BDA32FA8B84B00429B08 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B401BDA22FA8B84B00429B08 /* AppIcon.icon */; };
 		D0C700210000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700220000000000000001 /* Sparkle */; };
+		D0C700240000000000000001 /* ContentBlockerConverter in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700250000000000000001 /* ContentBlockerConverter */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,9 +43,22 @@
 		D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ArtemisDockTile.docktileplugin; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D0C700270000000000000001 /* Exceptions for "Artemis" folder in "Artemis" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				models/extensions/RuleListConverter.swift,
+			);
+			target = B4EF41E32FA66F50000526C4 /* Artemis */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B4EF41E62FA66F50000526C4 /* Artemis */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D0C700270000000000000001 /* Exceptions for "Artemis" folder in "Artemis" target */,
+			);
 			path = Artemis;
 			sourceTree = "<group>";
 		};
@@ -61,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D0C700210000000000000001 /* Sparkle in Frameworks */,
+				D0C700240000000000000001 /* ContentBlockerConverter in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -109,6 +124,7 @@
 			name = Artemis;
 			packageProductDependencies = (
 				D0C700220000000000000001 /* Sparkle */,
+				D0C700250000000000000001 /* ContentBlockerConverter */,
 			);
 			productName = Artemis;
 			productReference = B4EF41E42FA66F50000526C4 /* Artemis.app */;
@@ -161,6 +177,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				D0C700260000000000000001 /* XCLocalSwiftPackageReference "Vendor/ContentBlockerConverter" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B4EF41E52FA66F50000526C4 /* Products */;
@@ -474,6 +491,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		D0C700260000000000000001 /* XCLocalSwiftPackageReference "Vendor/ContentBlockerConverter" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/ContentBlockerConverter;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -490,6 +514,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D0C700230000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		D0C700250000000000000001 /* ContentBlockerConverter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D0C700260000000000000001 /* XCLocalSwiftPackageReference "Vendor/ContentBlockerConverter" */;
+			productName = ContentBlockerConverter;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

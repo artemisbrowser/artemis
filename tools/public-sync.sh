@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 (($# == 2)) || { sed -n 2,4p "$0"; exit 2; }
 CLONE=$1 MSG=$2
 R=${ARTEMIS_RELEASE_DIR:-"$HOME/Library/Application Support/ArtemisRelease"}
-PATHS=(Artemis Artemis.xcodeproj ArtemisDockTile AppIcon.icon docs tools feedback deploy.sh xcede.yml .prettierignore CLA.md LICENSE)
+PATHS=(Artemis Artemis.xcodeproj ArtemisDockTile AppIcon.icon Vendor docs tools feedback deploy.sh xcede.yml .prettierignore CLA.md LICENSE THIRD-PARTY-NOTICES.md)
 fail() { echo "public-sync: $*" >&2; exit 1; }
 # 0 when the search finds something and 1 when it finds nothing; anything else stops the sync
 found() { local rc=0; "$@" >&2 || rc=$?; ((rc <= 1)) || fail "$1 failed ($rc)"; return $rc; }
@@ -30,7 +30,7 @@ TREE=$(mktemp -d)
 trap 'rm -rf "$TREE"' EXIT
 git archive HEAD -- "${PATHS[@]}" | tar -x -C "$TREE"
 "$R/private-gate" strip "$TREE" || fail "$R/private-gate strip failed"
-while IFS= read -r -d '' file; do python3 -I "$R/strip_ios.py" "$file"; done < <(grep -rlE --null \
+while IFS= read -r -d '' file; do python3 -I "$R/strip_ios.py" "$file"; done < <(grep -rlE --null --exclude-dir=Vendor \
   --include='*.swift' --include='*.h' --include='*.m' '^[[:space:]]*#(if|elseif).*(os\(|canImport\((AppKit|UIKit)\))' "$TREE" || true)
 
 for p in "${PATHS[@]}"; do
@@ -45,7 +45,7 @@ git -C "$CLONE" diff --cached --quiet && exit 0
 
 # renames, binaries and empty files add no lines, so the changed paths are searched as well
 added=$(git -C "$CLONE" -c core.quotepath=off diff --cached --name-only --no-renames --diff-filter=d
-  git -C "$CLONE" diff --cached -U0 --no-renames -- . ':(exclude)Artemis/models/IconKeywords.swift' | grep '^+' || true)
+  git -C "$CLONE" diff --cached -U0 --no-renames -- . ':(exclude)Artemis/models/IconKeywords.swift' ':(exclude)Vendor' | grep '^+' || true)
 found grep -inE "$names" <<<"$added" && fail "a private name would go public"
 found grep -inFf "$R/leak-words" <<<"$added" && fail "a word from leak-words would go public"
 found grep -qi -- "$surname" <<<"$(git -C "$CLONE" -c core.quotepath=off ls-files)" && fail "the legal name is in a public path"

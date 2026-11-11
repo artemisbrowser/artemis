@@ -90,6 +90,18 @@ final class BrowserWindows {
         registry.values.map(\.manager).filter { $0.kind == .main }
     }
 
+    /// a browser window is open, or one has taken the seed and not yet registered
+    var hasMainWindow: Bool { seed == nil || !mainManagers.isEmpty }
+
+    /// `browserScope`, after waiting up to 5 s for a browser window that has taken the seed to register
+    func registeredBrowser() async -> TabManager? {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while browserScope == nil, hasMainWindow, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return browserScope
+    }
+
     /// every open window's manager, Scout windows included
     var allManagers: [TabManager] { registry.values.map(\.manager) }
 
