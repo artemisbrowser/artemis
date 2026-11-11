@@ -42,9 +42,7 @@ struct TrafficLightMount: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.attach(nsView as? MountView)
-    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 
     /// the buttons' home: transparent to clicks outside them, and it answers
     /// AppKit's private group-hover question so the glyphs show on hover, as
@@ -57,10 +55,12 @@ struct TrafficLightMount: NSViewRepresentable {
         /// its window exists, and a second window's is built while the first is
         /// key, so adoption is re-checked rather than awaited
         var recheckAdoption: (() -> Void)?
+        /// the only place a new window is taken: an update can run inside a window's dealloc
+        var enteredWindow: (() -> Void)?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            recheckAdoption?()
+            enteredWindow?()
         }
 
         deinit {
@@ -94,7 +94,8 @@ struct TrafficLightMount: NSViewRepresentable {
             subviews.compactMap { $0 as? NSButton }.sorted { $0.tag < $1.tag }
         }
 
-        /// watch the adopted buttons so a system re-assert is corrected
+        /// watch the adopted buttons so a system re-assert is corrected; one AppKit
+        /// moved back to its titlebar gets a stock frame there, and returns here
         fileprivate func watchButtonFrames() {
             frameObservers.forEach(NotificationCenter.default.removeObserver)
             frameObservers = subviews.compactMap { view in
@@ -102,8 +103,15 @@ struct TrafficLightMount: NSViewRepresentable {
                 view.postsFrameChangedNotifications = true
                 return NotificationCenter.default.addObserver(
                     forName: NSView.frameDidChangeNotification, object: view, queue: .main
-                ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.correctIfNeeded() }
+                ) { [weak self] note in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if (note.object as? NSView)?.superview === self {
+                            self.correctIfNeeded()
+                        } else {
+                            DispatchQueue.main.async { self.recheckAdoption?() }
+                        }
+                    }
                 }
             }
         }
@@ -165,6 +173,8 @@ struct TrafficLightMount: NSViewRepresentable {
         private weak var originalSuperview: NSView?
         private var originalFrames: [NSWindow.ButtonType: NSRect] = [:]
         private var observers: [NSObjectProtocol] = []
+        /// fullscreen holds the buttons until it exits
+        private var handedBack = false
 
         private static let buttonTypes: [NSWindow.ButtonType] = [
             .closeButton, .miniaturizeButton, .zoomButton,
@@ -178,6 +188,7 @@ struct TrafficLightMount: NSViewRepresentable {
             if let view, view !== mount {
                 mount = view
                 view.recheckAdoption = { [weak self] in self?.adoptIfNeeded() }
+                view.enteredWindow = { [weak self] in self?.attach(nil) }
             }
             guard let mount, let window = mount.window else { return }
             if window !== self.window {
@@ -198,11 +209,25 @@ struct TrafficLightMount: NSViewRepresentable {
                 ) { [weak self] _ in
                     MainActor.assumeIsolated { self?.returnButtonsToSystem() }
                 },
+                // AppKit keeps the real set in its titlebar through the exit: hidden there, the
+                // copies stand in until it ends
+                center.addObserver(
+                    forName: NSWindow.willExitFullScreenNotification,
+                    object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.setRealButtonsAlpha(0) }
+                },
                 center.addObserver(
                     forName: NSWindow.didExitFullScreenNotification,
                     object: window, queue: .main
                 ) { [weak self] _ in
-                    DispatchQueue.main.async { self?.adoptIfNeeded() }
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.handedBack = false
+                        self.mount?.subviews.filter { $0 is NSButton }.forEach { $0.removeFromSuperview() }
+                        self.adoptIfNeeded()
+                        self.setRealButtonsAlpha(1)
+                    }
                 },
                 // the reliable "window is fully set up" beat for first adoption
                 center.addObserver(
@@ -214,8 +239,12 @@ struct TrafficLightMount: NSViewRepresentable {
             ]
         }
 
+        private func setRealButtonsAlpha(_ alpha: CGFloat) {
+            for type in Self.buttonTypes { window?.standardWindowButton(type)?.alphaValue = alpha }
+        }
+
         private func adoptIfNeeded() {
-            guard let mount, let window = mount.window,
+            guard !handedBack, let mount, let window = mount.window,
                 !window.styleMask.contains(.fullScreen)
             else { return }
 
@@ -244,11 +273,34 @@ struct TrafficLightMount: NSViewRepresentable {
 
         private func returnButtonsToSystem() {
             guard let originalSuperview else { return }
+            handedBack = true
+            setRealButtonsAlpha(1)
             for type in Self.buttonTypes {
                 guard let button = window?.standardWindowButton(type) else { continue }
                 originalSuperview.addSubview(button)
                 if let frame = originalFrames[type] { button.frame = frame }
             }
+            mountStandIns()
+        }
+
+        /// fullscreen's titlebar holds the real buttons, so the sidebar gets working copies
+        private func mountStandIns() {
+            guard let mount, let window else { return }
+            let actions = [
+                #selector(NSWindow.performClose(_:)), #selector(NSWindow.performMiniaturize(_:)),
+                #selector(NSWindow.toggleFullScreen(_:)),
+            ]
+            for (index, (type, action)) in zip(Self.buttonTypes, actions).enumerated() {
+                guard let button = NSWindow.standardWindowButton(type, for: window.styleMask) else { continue }
+                button.tag = index
+                button.target = window
+                button.action = action
+                // fullscreen can't minimise
+                button.isEnabled = type != .miniaturizeButton
+                mount.addSubview(button)
+            }
+            mount.applyButtonFrames()
+            mount.watchButtonFrames()
         }
     }
 }

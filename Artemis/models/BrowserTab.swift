@@ -241,6 +241,11 @@ final class BrowserTab: NSObject, Identifiable {
     /// bumped by each main-frame decide but a redirect's, and by each stop; a UA write that saw an
     /// older count is stale
     @ObservationIgnored private var userAgentDecisions = 0
+    /// the count of the last decide that let its navigation through, and whether it went disguised
+    @ObservationIgnored private var userAgentAllowed = 0
+    @ObservationIgnored private var allowedDisguised = false
+    /// whether the committed page went out disguised; a restore puts this back
+    @ObservationIgnored private var committedDisguised = false
     /// each main-frame navigation's count from its decide
     @ObservationIgnored private let navigationDecisions = NSMapTable<WKNavigation, NSNumber>.weakToStrongObjects()
 
@@ -481,6 +486,9 @@ final class BrowserTab: NSObject, Identifiable {
             in: mediaFrame, in: .page)
     }
 
+    // the main frame's scroll offset, pushed by ScrollReporter only while something has armed it
+    var pageScrollY: Double = 0
+
     /// documents whose focused element takes typing, by the token each one draws for itself;
     /// fed by `EditingFocusReporter`
     @ObservationIgnored private var editingFrames: Set<String> = []
@@ -618,9 +626,7 @@ final class BrowserTab: NSObject, Identifiable {
             return
         }
         guard let current = url else { return }
-        let html = (try? await webView.evaluateJavaScript("document.documentElement.outerHTML"))
-            as? String
-        let article = await ReaderMode.extract(html: html ?? "", url: current)
+        let article = await ReaderMode.extract(from: webView, url: current)
         // the page may have moved on, or a second toggle got there first
         guard url == current, !isReaderMode else { return }
         guard let article else {
@@ -1391,6 +1397,7 @@ extension BrowserTab: WKNavigationDelegate {
     /// adopt the new site's zoom here, before the page paints
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         committedAt = Date()
+        committedDisguised = !(webView.customUserAgent ?? "").isEmpty
         endRequestedLoad()
         adoptCommittedURL()
         // every response before this commit has been decided
@@ -1440,7 +1447,7 @@ extension BrowserTab: WKNavigationDelegate {
         withError error: Error
     ) {
         if navigation === requestedNavigation { endRequestedLoad() }
-        if let navigation, navigationDecisions.object(forKey: navigation)?.intValue == userAgentDecisions {
+        if let navigation, navigationDecisions.object(forKey: navigation)?.intValue == userAgentAllowed {
             matchUserAgent()
         }
         handleLoadError(error)
@@ -1571,13 +1578,24 @@ extension BrowserTab: WKNavigationDelegate {
             if fromMainFrame, ExternalSchemes.canOffer(url) { offerExternal(url, site: site) }
             return (.cancel, preferences)
         }
+        // a site an extension's page goes to loads in a browser web view, not the extension's
+        if mainFrame, pageUnderExtension != nil, let url = navigationAction.request.url,
+            url.scheme == "https" || url.scheme == "http"
+        {
+            DispatchQueue.main.async { [weak self] in self?.load(url) }
+            return (.cancel, preferences)
+        }
         // set here, the UA already reaches this navigation's own request
         if mainFrame {
             let url = navigationAction.request.url
+            // a redirect out of a disguised load stays disguised
             let on = (url?.scheme == "https" || url?.scheme == "http")
-                && ChromeDisguise.isOn(for: url?.host(), ephemeral: isPrivate)
+                && (ChromeDisguise.isOn(for: url?.host(), ephemeral: isPrivate)
+                    || redirect && decision == userAgentAllowed && allowedDisguised)
             if on { await ChromeDisguise.attach(to: webView.configuration.userContentController) }
             guard decision == userAgentDecisions else { return (.cancel, preferences) }
+            userAgentAllowed = decision
+            allowedDisguised = on
             matchUserAgent(on)
             if navigationAction.responds(to: Selector(("_mainFrameNavigation"))),
                 let navigation = navigationAction.value(forKey: "_mainFrameNavigation") as? WKNavigation
@@ -1591,7 +1609,7 @@ extension BrowserTab: WKNavigationDelegate {
 
     /// sets the UA for `disguised`, or else for the committed page
     private func matchUserAgent(_ disguised: Bool? = nil) {
-        let on = disguised ?? ChromeDisguise.isOn(for: committedURL?.host(), ephemeral: isPrivate)
+        let on = disguised ?? committedDisguised
         let wanted = on ? ChromeDisguise.userAgent : ""
         if (webView.customUserAgent ?? "") != wanted { webView.customUserAgent = wanted }
     }

@@ -73,24 +73,37 @@ nonisolated enum Keychain {
             kSecAttrService as String: service,
         ]
         if let account { q[kSecAttrAccount as String] = account }
+        if let labKeychain { q[kSecMatchSearchList as String] = [labKeychain] }
         return q
     }
 
-    /// delete then add, so the item carries Artemis' own access list whatever was there before
-    /// the extension lab signs differently, so every login-keychain item would raise a password
-    /// prompt on the user's screen; it gets an empty keychain
-    private static let isFenced = AppStorageLocation.isExtensionLab
+    /// a lab copy signs differently, so a login-keychain item would prompt on the user's screen:
+    /// its items live in a keychain file of its own, which no search reaches but its own
+    nonisolated(unsafe) private static let labKeychain: SecKeychain? = {
+        guard AppStorageLocation.isExtensionLab else { return nil }
+        let path = AppStorageLocation.file("lab.keychain-db").path
+        var keychain: SecKeychain?
+        var status: SecKeychainStatus = 0
+        if SecKeychainOpen(path, &keychain) != errSecSuccess || SecKeychainGetStatus(keychain, &status) != errSecSuccess {
+            guard SecKeychainCreate(path, 3, "lab", false, nil, &keychain) == errSecSuccess else { return nil }
+        }
+        return SecKeychainUnlock(keychain, 3, "lab", true) == errSecSuccess ? keychain : nil
+    }()
+    /// a lab copy without its own keychain file gets none
+    static let isFenced = AppStorageLocation.isExtensionLab && labKeychain == nil
 
     /// added to every item `put` writes; an app sets them once at launch
     nonisolated(unsafe) static var itemAttributes: [String: Any] = [:]
 
+    /// delete then add, so the item carries Artemis' own access list whatever was there before
     @discardableResult
     static func put(_ service: String, _ account: String, _ data: Data) -> OSStatus {
         guard !isFenced else { return errSecNotAvailable }
         SecItemDelete(query(service, account) as CFDictionary)
-        let item = query(service, account).merging([
+        var item = query(service, account).merging([
             kSecValueData as String: data, kSecAttrLabel as String: service,
         ]) { $1 }.merging(itemAttributes) { $1 }
+        if let labKeychain { item[kSecUseKeychain as String] = labKeychain }
         return SecItemAdd(item as CFDictionary, nil)
     }
 

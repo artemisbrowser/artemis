@@ -66,8 +66,14 @@ struct UrlField: View {
             }
         }
         .animation(Motion.address, value: Self.displayText(for: tab, full: inToolbar && showsFullURL))
-        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
-            tabManager.urlPillFrame = $0
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
+            tabManager.urlPillFrame = frame
+            // the address bar grown from this pill follows it, as when the sidebar pins
+            if tabManager.isCommandBarVisible, let origin = tabManager.addressBarOrigin, !origin.isEmpty,
+                frame.maxX > 0, frame != origin
+            {
+                withAnimation(Motion.address) { tabManager.addressBarOrigin = frame }
+            }
         }
         // moving between sidebar and toolbar, the outgoing pill may leave after the new one lands
         .onDisappear { if inToolbar == showsToolbar { tabManager.urlPillFrame = nil } }

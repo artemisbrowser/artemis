@@ -278,7 +278,8 @@ struct WindowTransparency: NSViewRepresentable {
         CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
     }
 
-    /// handed the window on entering it and on every update after, so it must be idempotent
+    /// handed the window only on entering it: an update can run inside the window's
+    /// dealloc, where taking a weak reference to it aborts
     var onWindow: ((NSWindow) -> Void)? = nil
 
     func makeNSView(context: Context) -> Host {
@@ -289,8 +290,6 @@ struct WindowTransparency: NSViewRepresentable {
 
     func updateNSView(_ nsView: Host, context: Context) {
         nsView.onWindow = onWindow
-        guard let window = nsView.window else { return }
-        onWindow?(window)
     }
 
     final class Host: NSView {

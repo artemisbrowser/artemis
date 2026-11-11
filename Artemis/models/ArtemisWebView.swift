@@ -123,6 +123,17 @@ final class ArtemisWebView: WKWebView {
         super.smartMagnify(with: event)
     }
 
+    /// ⇧⌘V the page let through pastes plain here: AppKit gives it to ⌘V's Paste
+    /// whenever SwiftUI is mid-rebuild of the Edit menu
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if super.performKeyEquivalent(with: event) { return true }
+        guard window?.firstResponder === self,
+            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+            event.charactersIgnoringModifiers?.lowercased() == "v"
+        else { return false }
+        return NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: self, from: nil)
+    }
+
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
         guard let tab = owningTab else { return }

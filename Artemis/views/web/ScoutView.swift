@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
-import Combine
 import SwiftUI
 import WebKit
 
@@ -79,11 +78,8 @@ struct ScoutView: View {
     @State private var isPromoting = false
     /// colours sampled left→right across the live page's top edge
     @State private var sampledStops: [Color]?
-    @State private var lastScrollY: Double = -1
     @State private var isSampling = false
     private static let stopCount = 12
-
-    private let ticker = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
 
     /// the browser window a promoted page lands in
     private var browser: TabManager? { BrowserWindows.shared.browserScope }
@@ -157,6 +153,7 @@ struct ScoutView: View {
                 .accessibilityHidden(true)
         )
         .onAppear {
+            watchScroll()
             if targetSpace == nil, let url = tab?.url ?? tab?.lastAttemptedURL {
                 targetSpace = (browser ?? BrowserWindows.shared.seed)?.preferredSpace(for: url, in: tabManager.currentSpace.profileID)
             }
@@ -169,10 +166,18 @@ struct ScoutView: View {
             scheduleSample()
         }
         .onChange(of: tab?.isLoading) { _, loading in
-            if loading == false { scheduleSample() }
+            // the finished load is a fresh document, which starts quiet
+            if loading == false {
+                watchScroll()
+                scheduleSample()
+            }
         }
-        .onChange(of: barStyleRaw) { scheduleSample() }
-        .onReceive(ticker) { _ in pollScroll() }
+        .onChange(of: barStyleRaw) {
+            watchScroll()
+            scheduleSample()
+        }
+        .onChange(of: tab?.pageScrollY) { sampleTopColor() }
+        .onDisappear { watchScroll(false) }
         .onChange(of: target.appearance.accent, initial: true) { _, accent in
             tabManager.tooltipState.accent = accent
         }
@@ -213,19 +218,10 @@ struct ScoutView: View {
         .shadow(color: .black.opacity(rim > 0 ? 0.3 : 0), radius: 12, y: 3)
     }
 
-    /// snapshots only when the scroll offset moved since the last tick
-    private func pollScroll() {
-        guard barStyle == .dynamic, let webView = tab?.webView, webView.window != nil
-        else { return }
-        webView.evaluateJavaScript(
-            "(window.scrollY || document.documentElement.scrollTop || 0)"
-        ) { result, _ in
-            let y = (result as? Double) ?? (result as? Int).map(Double.init) ?? 0
-            if abs(y - lastScrollY) > 0.5 {
-                lastScrollY = y
-                sampleTopColor()
-            }
-        }
+    // arms the page's scroll reports while the bar is dynamic; false quiets them
+    private func watchScroll(_ on: Bool = true) {
+        guard let webView = tab?.webView else { return }
+        ScrollReporter.watch(on && barStyle == .dynamic, in: webView)
     }
 
     private func scheduleSample() {

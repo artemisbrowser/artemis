@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import Foundation
+import WebKit
 
-/// Readability-style article extraction over a page's serialized HTML: the block
-/// with the most prose per unit of markup, rebuilt from meaningful tags only.
-/// approximate by design; regex-based, never a DOM parse
+/// articles found by Mozilla's Readability (Readability.js, 0.6.0) in a copy of the page's DOM,
+/// rebuilt from meaningful tags only
 nonisolated enum ReaderMode {
     struct Article {
         var title: String
@@ -13,16 +13,12 @@ nonisolated enum ReaderMode {
         var html: String
         var url: URL
         var wordCount: Int
+        var byline: String? = nil
+        var siteName: String? = nil
 
         /// at 220 words a minute, never under 1
         var readingMinutes: Int { max(1, Int((Double(wordCount) / 220).rounded())) }
     }
-
-    /// tags whose content is never part of an article
-    private static let junkTags = [
-        "script", "style", "noscript", "nav", "header", "footer", "aside", "form",
-        "iframe", "svg", "button", "select", "textarea", "template",
-    ]
 
     /// tags kept in the cleaned output; everything else is unwrapped to its text
     private static let keptTags: Set<String> = [
@@ -30,63 +26,37 @@ nonisolated enum ReaderMode {
         "pre", "code", "em", "strong", "b", "i", "a", "img", "figure", "figcaption", "br", "hr",
     ]
 
-    /// nil below 120 words, which is a landing page or app shell, not an article
-    @concurrent static func extract(html: String, url: URL) async -> Article? {
-        let title = firstMatch(in: html, pattern: "<title[^>]*>(.*?)</title>")
-            .map(decodeEntities)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Readability's source, then a parse of a clone so the page itself is never touched;
+    /// `hidden="until-found"` is folded content (mobile Wikipedia's sections), which Readability would drop as hidden
+    private static let parse = Bundle.main.url(forResource: "Readability", withExtension: "js")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        .map {
+            $0 + """
 
-        var body = html
-        for tag in junkTags {
-            body = remove(tag: tag, from: body)
+                const page = document.cloneNode(true);
+                page.querySelectorAll('[hidden="until-found"]').forEach(node => node.removeAttribute('hidden'));
+                const found = new Readability(page).parse();
+                return found && { title: found.title ?? "", byline: found.byline ?? "", site: found.siteName ?? "", content: found.content ?? "" };
+                """
         }
-        // comment blocks can hide markup that confuses the scoring
-        body = replace("<!--.*?-->", in: body, with: "")
 
-        let candidate = bestCandidate(in: body) ?? body
-        let cleaned = sanitize(candidate)
-        let text = stripTags(cleaned)
-        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+    /// run in a world the page can't reach; nil below 120 words, which is a landing page or app shell, not an article
+    @MainActor static func extract(from webView: WKWebView, url: URL) async -> Article? {
+        guard let parse, let found = try? await webView.callAsyncJavaScript(parse, contentWorld: .defaultClient) as? [String: String]
+        else { return nil }
+        return await article(found, url: url)
+    }
+
+    @concurrent private static func article(_ found: [String: String], url: URL) async -> Article? {
+        let cleaned = sanitize(found["content"] ?? "")
+        let words = stripTags(cleaned).split(whereSeparator: \.isWhitespace).count
         guard words >= 120 else { return nil }
-
-        let heading = firstMatch(in: candidate, pattern: "<h1[^>]*>(.*?)</h1>")
-            .map(stripTags)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalTitle = [heading, title].compactMap { $0 }.first { !$0.isEmpty } ?? url.host() ?? "Reader"
-
-        return Article(title: finalTitle, html: cleaned, url: url, wordCount: words)
-    }
-
-    // MARK: - Candidate scoring
-
-    /// score every `<article>`/`<main>`/`<div>`/`<section>` block and take the one
-    /// with the most prose per unit of markup
-    private static func bestCandidate(in html: String) -> String? {
-        var best: (score: Double, html: String)?
-        for tag in ["article", "main", "section", "div"] {
-            for block in blocks(of: tag, in: html) {
-                let score = self.score(block)
-                if score > (best?.score ?? 0) {
-                    best = (score, block)
-                }
-            }
-            // an <article> that scores at all wins outright
-            if tag == "article", let best, best.score > 0 { return best.html }
+        func text(_ key: String) -> String? {
+            found[key].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
         }
-        return best?.html
-    }
-
-    /// prose density: real sentence-y text, penalised by link text (nav lists and
-    /// "related stories" rails are mostly links) and by markup weight
-    private static func score(_ block: String) -> Double {
-        let text = stripTags(block).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count > 200 else { return 0 }
-        let linkText = blocks(of: "a", in: block).map(stripTags).joined()
-        let linkDensity = Double(linkText.count) / Double(max(text.count, 1))
-        guard linkDensity < 0.5 else { return 0 }
-
-        let paragraphs = Double(occurrences(of: "<p", in: block))
-        let commas = Double(text.filter { $0 == "," }.count)
-        let markupRatio = Double(text.count) / Double(max(block.count, 1))
-        return (Double(text.count) + commas * 20 + paragraphs * 60) * markupRatio * (1 - linkDensity)
+        return Article(
+            title: text("title") ?? url.host() ?? "Reader", html: cleaned, url: url, wordCount: words,
+            byline: text("byline"), siteName: text("site"))
     }
 
     // MARK: - Cleaning
@@ -161,7 +131,7 @@ nonisolated enum ReaderMode {
         </style>\(style.isEmpty ? "" : "<style id=\"reader-style\">\(style)</style>")</head>
         <body>
         <h1>\(escape(article.title))</h1>
-        <div class="meta">\(escape(article.url.host() ?? "")) · \(article.readingMinutes) min read</div>
+        <div class="meta">\(escape([article.byline, article.siteName ?? article.url.host()].compactMap { $0 }.joined(separator: " · "))) · \(article.readingMinutes) min read</div>
         \(article.html)
         </body></html>
         """
@@ -269,24 +239,6 @@ nonisolated enum ReaderMode {
 
     // MARK: - Small string helpers
 
-    private static func blocks(of tag: String, in html: String) -> [String] {
-        var out: [String] = []
-        var searchStart = html.startIndex
-        while let open = html.range(of: "<\(tag)", options: .caseInsensitive, range: searchStart..<html.endIndex) {
-            guard let close = html.range(
-                of: "</\(tag)>", options: .caseInsensitive, range: open.upperBound..<html.endIndex)
-            else { break }
-            out.append(String(html[open.lowerBound..<close.upperBound]))
-            searchStart = open.upperBound
-            if out.count > 400 { break }
-        }
-        return out
-    }
-
-    private static func remove(tag: String, from html: String) -> String {
-        replace("<\(tag)\\b[^>]*>.*?</\(tag)>", in: html, with: "")
-    }
-
     private static func stripTags(_ html: String) -> String {
         decodeEntities(replace("<[^>]+>", in: html, with: " "))
     }
@@ -307,10 +259,6 @@ nonisolated enum ReaderMode {
             let range = Range(match.range(at: 1), in: text)
         else { return nil }
         return String(text[range])
-    }
-
-    private static func occurrences(of needle: String, in text: String) -> Int {
-        text.components(separatedBy: needle).count - 1
     }
 
     private static func decodeEntities(_ text: String) -> String {

@@ -152,9 +152,8 @@ struct PageEntity: TransientAppEntity, Transferable {
     @MainActor init(_ tab: BrowserTab) async {
         title = tab.displayTitle
         url = tab.url
-        let html = (try? await tab.webView.evaluateJavaScript("document.documentElement.outerHTML")) as? String
         let body =
-            if let url, let html, let article = await ReaderMode.extract(html: html, url: url) {
+            if let url, let article = await ReaderMode.extract(from: tab.webView, url: url) {
                 await ReaderMode.markdown(for: article)
             } else {
                 await PageText.extract(from: tab.webView, minimum: 0) ?? ""

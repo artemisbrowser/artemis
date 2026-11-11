@@ -232,6 +232,8 @@ final class TabManager {
     /// bumped to ask the top space header to open its editor (so the bottom
     /// icons' "Edit Space…" reuses the one editor anchored at the top)
     var editSpaceRequest = 0
+    /// bumped to peek a collapsed sidebar, as a dwell on the window edge does
+    var sidebarPeekRequest = 0
     /// true while a sidebar-spawned popover (e.g. the space editor) is open,
     /// so the floating overlay sidebar won't dismiss out from under it
     var isSidebarPopoverOpen = false
@@ -421,6 +423,7 @@ final class TabManager {
             Autofill.install(into: ucc)
             PasskeyBridge.install(into: ucc)
             EditingFocusReporter.install(into: ucc)
+            ScrollReporter.install(into: ucc)
         }
         mediaStateReporter = media
 

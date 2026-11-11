@@ -127,18 +127,24 @@ struct MainView: View {
             }
         }
         .onChange(of: isSidebarCollapsed) { _, collapsed in
-            // the address bar grown from the sidebar's pill would keep a spot that has moved
-            if let origin = tabManager.addressBarOrigin, !origin.isEmpty {
-                withAnimation(Motion.address) { tabManager.addressBarOrigin = .zero }
+            // collapsing under the pointer hands over to the overlay in place until the mouse leaves;
+            // from the keyboard or a menu, with the pointer elsewhere, it slides away now
+            let handOver = collapsed && (isOverlayHovered || pointerInsideRig)
+            // an address grown from the sidebar's pill closes into it as the sidebar goes;
+            // handed over to the overlay, it stays open on the pill
+            if collapsed, !handOver, let origin = tabManager.addressBarOrigin, !origin.isEmpty {
+                withAnimation(Motion.address) {
+                    tabManager.addressBarOrigin = origin.offsetBy(dx: -rigContentWidth, dy: 0)
+                    tabManager.isCommandBarVisible = false
+                }
             }
-            // collapsing hands over to the overlay in place until the mouse leaves; pinning dismisses it
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                isSidebarOverlayVisible = collapsed
+                isSidebarOverlayVisible = handOver
             }
             collapseDismissTask?.cancel()
-            if collapsed {
+            if handOver {
                 collapseDismissTask = Task {
                     try? await Task.sleep(for: .seconds(2))
                     if !Task.isCancelled, !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen {
@@ -165,6 +171,9 @@ struct MainView: View {
             } else {
                 overlayEntering = false
             }
+        }
+        .onChange(of: tabManager.sidebarPeekRequest) {
+            if isSidebarCollapsed { isSidebarOverlayVisible = true }
         }
         .onChange(of: tabManager.isSidebarPopoverOpen) { _, open in
             if !open { releaseOverlayHold() }

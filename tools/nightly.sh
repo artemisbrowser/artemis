@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-# Run every five minutes by tools/app.artemisbrowser.nightly.plist from $R/nightly/tree. Once a day from 03:00, the first
-# time the Mac sits unlocked and lit with nobody touching it for 15 minutes, it self-tests stable when the app changed,
+# Run every five minutes by tools/app.artemisbrowser.nightly.plist from $R/nightly/tree. Once a day from 03:00, when the
+# Mac is unlocked and lit and Fin says yes on screen, it self-tests stable when the app changed,
 # publishes it as a nightly if the test passes and puts its card on #staff, whose Pull takes it back off the appcast.
 #   tools/nightly.sh [--dry-run]   passes --dry-run on, talks only to a Worker on 127.0.0.1 and never sounds ping-fin
 main() {
@@ -21,7 +21,7 @@ main() {
   exec >>"$NIGHTLY/log" 2>&1
   trap '(($? == 0)) || alarm "The nightly failed: see $NIGHTLY/log"' EXIT
   # ahead of the config, so a broken setup still reaches Fin
-  if [[ -s $NIGHTLY/notice ]] && (($(hour) >= 9 && $(hour) < 23 && $(idle) < 300)); then
+  if [[ -s $NIGHTLY/notice ]] && (($(hour) >= 9 && $(hour) < 23)); then
     local text
     text=$(awk 'NR > 1 {printf "; "} {printf "%s", $0}' "$NIGHTLY/notice")
     if [[ -n $DRY ]]; then echo "would ping Fin: $text"; else ping-fin "$text"; fi
@@ -53,7 +53,6 @@ api() {
 }
 answer() { cat "$NIGHTLY/answer" 2>/dev/null || true; }
 hour() { echo $((10#$(date +%H))); }
-idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF / 1e9); exit}'; }
 # "LOCKED ASLEEP SINCE": the screen lock and display sleep as 1 or 0, then the seconds since a click (types 1, 3, 25),
 # key (10) or scroll (22) reached the HID system; "1 1 0" when it can't tell
 console() {
@@ -65,7 +64,7 @@ var since = function (type) { return Math.floor($.CGEventSourceSecondsSinceLastE
 }
 awake() { [[ $(console) == "0 0 "* ]]; }
 log() { echo "$(date '+%F %T') $1"; }
-# queued one a line for ping-fin, which sounds them once Fin is at the Mac in the daytime
+# queued one a line for ping-fin, which sounds them in the daytime
 notice() { grep -qxF -- "$1" "$NIGHTLY/notice" 2>/dev/null || echo "$1" >>"$NIGHTLY/notice"; }
 # a notice that sounds at most once a day
 alarm() {
@@ -80,13 +79,20 @@ prepare() {
   today=$(date +%F)
   (($(hour) >= 3)) && [[ $(cat "$NIGHTLY/tried" 2>/dev/null) != "$today" ]] || return 0
   # the lab needs the screen unlocked and lit with its windows in front, and a stuck publish or pull finishes first
-  (($(idle) >= 900)) && [[ ! -f $NIGHTLY/publishing && -z $unsettled ]] && awake || return 0
+  [[ ! -f $NIGHTLY/publishing && -z $unsettled ]] && awake || return 0
   # each step queues for a heavy slot; none starts while other jobs hold both
   [[ $(heavy-job --status) == *": free"* ]] || return 0
   git -C "$TREE" checkout -q --detach stable
   app=$(git -C "$TREE" log -1 --format=%h -- Artemis ArtemisDockTile AppIcon.icon)
   [[ $app != "$(cat "$NIGHTLY/last" 2>/dev/null)" ]] || return 0
   fresh || return 0
+  # "Wait and tell me" closes the day; Fin runs it by hand
+  if [[ -z $DRY ]]; then
+    fin-ask "Self-test stable $app for tonight's nightly? Its windows take the screen while it runs." "Run it" || {
+      (($? == 3)) && echo "$today" >"$NIGHTLY/tried"
+      return 0
+    }
+  fi
   log "self-testing $(git -C "$TREE" rev-parse --short HEAD)"
   selftest || rc=$?
   if ((rc == 1)); then
@@ -317,7 +323,7 @@ deliver() {
 
 # New, Refined and Fixed from the app's feat, perf and fix commits, minus what tools/public-sync.sh refuses
 # and what a later commit in the range reverts. Each "Fixes-post: <link>" line in a commit's message links
-# its bullet to that #feedback post, as the bare thread link post.mjs reads; the filters judge subjects only.
+# its bullet to that #feedback post, "Refixes-post:" to one an earlier update marked Fixed too soon.
 notes_since() {
   local names surname
   names=$(cd "$TREE" && "$R/private-gate" notes)
@@ -330,7 +336,7 @@ notes_since() {
 import re, sys
 kinds, groups = {"feat": "New", "perf": "Refined", "fix": "Fixed"}, {"New": [], "Refined": [], "Fixed": []}
 kept, undone = set(sys.stdin.read().split("\n")), set()
-post = r"(?im)^fixes-post:\s*https://(?:ptb\.|canary\.)?discord(?:app)?\.com/channels/(\d{17,20})/(\d{17,20})(?!\d)"
+post = r"(?im)^(re)?fixes-post:\s*https://(?:ptb\.|canary\.)?discord(?:app)?\.com/channels/(\d{17,20})/(\d{17,20})(?!\d)"
 for record in open(sys.argv[1], encoding="utf-8").read().split("\0"):
     sha, subject, body = (record.split("\x1f") + ["", ""])[:3]
     if sha in undone:
@@ -338,7 +344,7 @@ for record in open(sys.argv[1], encoding="utf-8").read().split("\0"):
     undone.update(re.findall(r"This reverts commit ([0-9a-f]{40})", body))
     m = re.match(r"(\w+)(\([^)]*\))?!?: (.+)", subject)
     if subject in kept and m and m[1] in kinds:
-        links = ["[report](https://discord.com/channels/%s/%s)" % link for link in re.findall(post, body)]
+        links = ["[%s](https://discord.com/channels/%s/%s)" % ("again" if re_ else "report", g, t) for re_, g, t in re.findall(post, body)]
         groups[kinds[m[1]]].append("- " + m[3][0].upper() + m[3][1:] + (" (" + ", ".join(links) + ")" if links else ""))
 print("\n\n".join(f"## {name}\n\n" + "\n".join(lines) for name, lines in groups.items() if lines))' \
       <(git -C "$TREE" log --no-merges -z --format=%H%x1f%s%x1f%b "$1..HEAD" -- Artemis ArtemisDockTile AppIcon.icon)

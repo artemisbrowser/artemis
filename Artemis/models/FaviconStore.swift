@@ -7,26 +7,55 @@ import Observation
 import SwiftUI
 
 /// persistent favicon cache keyed by host, shared by every tab. a view that
-/// reads `icon(for:)` or `accent(for:)` repaints when a fetch lands
-@Observable
+// reads icon(for:) or accent(for:) repaints when that host's fetch lands,
+// and no other host's
 final class FaviconStore {
     static let shared = FaviconStore()
 
-    /// host → icon
-    @ObservationIgnored private var cache: [String: NSImage] = [:]
-    /// host → vivid colour sampled from its icon, computed lazily on first ask
-    @ObservationIgnored private var accentCache: [String: Color] = [:]
-    /// host → whether its icon is light throughout, computed lazily on first ask
-    @ObservationIgnored private var lightCache: [String: Bool] = [:]
+    // one host's icon and what's sampled from it, so they're evicted together
+    private final class Entry {
+        let image: NSImage
+        // vivid colour sampled from the icon, computed lazily on first ask
+        var accent: Color?
+        // whether the icon is light throughout, computed lazily on first ask
+        var light: Bool?
+        init(image: NSImage) { self.image = image }
+    }
+
+    // bumped when its host's icon lands; the observed stand-in for that host's entry
+    @Observable
+    fileprivate final class Version {
+        var value = 0
+    }
+
+    // how many hosts' icons stay in memory; an evicted one reloads from disk
+    private static let memoryLimit = 300
+
+    // host → icon; bounded, and emptied by the system under memory pressure
+    private let cache: NSCache<NSString, Entry> = {
+        let cache = NSCache<NSString, Entry>()
+        cache.countLimit = memoryLimit
+        return cache
+    }()
     /// hosts with a fetch in flight
-    @ObservationIgnored private var inFlight: Set<String> = []
+    private var inFlight: Set<String> = []
     /// hosts already missed on disk, so a render never repeats a failing
     /// synchronous file read; cleared when the host's icon lands
-    @ObservationIgnored private var knownMissing: Set<String> = []
-    /// bumped on every stored icon; the observed stand-in for the caches
-    private var generation = 0
+    private var knownMissing: Set<String> = []
+    // host → its observed version. never evicted: a row may still be watching it
+    private var versions: [String: Version] = [:]
 
-    @ObservationIgnored private let dir: URL
+    // ties the caller into observation of one host only
+    private func observe(_ key: String) {
+        let version = versions[key] ?? {
+            let made = Version()
+            versions[key] = made
+            return made
+        }()
+        _ = version.value
+    }
+
+    private let dir: URL
 
     private init() {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -58,43 +87,49 @@ final class FaviconStore {
         }
     }
 
-    /// the icon for a host, or nil. reading `generation` here ties every caller
-    /// into observation so a later fetch repaints them; a disk hit warms memory.
-    func icon(for host: String?) -> NSImage? {
-        _ = generation
-        guard let host, !host.isEmpty else { return nil }
-        let key = Self.key(for: host)
-        if let image = cache[key] { return image }
+    // the cached entry for a key, warming memory from disk; nil when there's no icon
+    private func entry(for key: String) -> Entry? {
+        if let entry = cache.object(forKey: key as NSString) { return entry }
         if knownMissing.contains(key) { return nil }
         if let image = NSImage(contentsOf: fileURL(for: key)) {
-            cache[key] = image
-            return image
+            let entry = Entry(image: image)
+            cache.setObject(entry, forKey: key as NSString)
+            return entry
         }
         knownMissing.insert(key)
         return nil
     }
 
-    /// a vivid colour sampled from the host's favicon — for tinting a selection
-    /// ring to match the icon rather than the space. nil until the icon resolves.
-    /// reads `generation` so a later fetch repaints + recolours callers.
-    func accent(for host: String?) -> Color? {
-        _ = generation
+    // the icon for a host, or nil; the caller observes this host alone
+    func icon(for host: String?) -> NSImage? {
         guard let host, !host.isEmpty else { return nil }
         let key = Self.key(for: host)
-        if let cached = accentCache[key] { return cached }
-        guard let image = icon(for: host) else { return nil }
-        let color = Self.dominantColor(of: image)
-        accentCache[key] = color
+        observe(key)
+        return entry(for: key)?.image
+    }
+
+    // a vivid colour from the host's favicon, for tinting a selection ring to match
+    // the icon rather than the space; nil until the icon resolves
+    func accent(for host: String?) -> Color? {
+        guard let host, !host.isEmpty else { return nil }
+        let key = Self.key(for: host)
+        observe(key)
+        guard let entry = entry(for: key) else { return nil }
+        if let cached = entry.accent { return cached }
+        let color = Self.dominantColor(of: entry.image)
+        entry.accent = color
         return color
     }
 
     /// whether the host's icon reads as light (see `isLight`); false until the icon resolves
     func isLightIcon(for host: String?) -> Bool {
-        guard let host, !host.isEmpty, let image = icon(for: host) else { return false }
+        guard let host, !host.isEmpty else { return false }
         let key = Self.key(for: host)
-        if let cached = lightCache[key] { return cached }
-        let light = Self.isLight(image)
-        lightCache[key] = light
+        observe(key)
+        guard let entry = entry(for: key) else { return false }
+        if let cached = entry.light { return cached }
+        let light = Self.isLight(entry.image)
+        entry.light = light
         return light
     }
 
@@ -114,7 +149,7 @@ final class FaviconStore {
         let key = Self.key(for: host)
         if inFlight.contains(key) { return }
         // a declared icon always refetches; a guessed one stands once cached
-        if declaredIconURL == nil, cache[key] != nil { return }
+        if declaredIconURL == nil, cache.object(forKey: key as NSString) != nil { return }
         fetch(key: key, declared: declaredIconURL, profile: profile, isPrivate: isPrivate)
     }
 
@@ -164,12 +199,10 @@ final class FaviconStore {
             for url in urls {
                 guard let png = await Self.download(url, via: session), let image = NSImage(data: png)
                 else { continue }
-                cache[key] = image
+                // a fresh entry resamples the ring colour and tone from the new icon
+                cache.setObject(Entry(image: image), forKey: key as NSString)
                 knownMissing.remove(key)
-                // resample the ring colour and tone from the new icon
-                accentCache[key] = nil
-                lightCache[key] = nil
-                generation &+= 1
+                versions[key]?.value &+= 1
                 if !isPrivate { try? png.write(to: fileURL(for: key)) }
                 return
             }

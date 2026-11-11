@@ -52,6 +52,10 @@ authorization of the copyright holder.
 
 `password-rules.json` comes from [apple/password-manager-resources](https://github.com/apple/password-manager-resources) under the MIT licence. The licence ships next to it as `password-rules-LICENSE.txt`.
 
+## Mozilla Readability
+
+Reader mode finds a page's article with `Readability.js` from [Mozilla Readability](https://github.com/mozilla/readability) 0.6.0, Copyright (c) 2010 Arc90 Inc, maintained by Mozilla, under the Apache License 2.0. The licence ships next to it as `Readability-LICENSE.txt`.
+
 ## Chrome extension API types
 
 `compat-gaps.json` is generated from [@types/chrome](https://www.npmjs.com/package/@types/chrome) 0.1.24, part of DefinitelyTyped.
