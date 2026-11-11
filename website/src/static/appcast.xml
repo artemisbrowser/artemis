@@ -5,16 +5,6 @@
     <!-- items -->
     <item>
       <title>Artemis 1.1.0</title>
-      <pubDate>Wed, 11 Nov 2026 21:42:54 +0000</pubDate>
-      <sparkle:version>1010001.26111120</sparkle:version>
-      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}h2{font-size:15px;margin:14px 0 6px}h3{font-size:13px;margin:10px 0 4px}</style><p>New since <a href="https://github.com/artemisbrowser/artemis/releases/tag/v1.1.0-nightly.26111117">Artemis 1.1.0-nightly.26111117</a>.</p><h2>New</h2><ul><li>Put the sidebar on the right, in Settings › Appearance › Sidebar</li><li>A brightness slider for glass spaces (<a href="https://discord.com/channels/1567657796055470090/1568986942341910748">report</a>)</li><li>Drag downloaded files out, and open the list faster (<a href="https://discord.com/channels/1567657796055470090/1569269373326065814">report</a>)</li><li>Fling the mini-player off a screen edge to tuck it away (<a href="https://discord.com/channels/1567657796055470090/1568997258505097278">report</a>)</li><li>Overshooting the window's edge still reveals the hidden sidebar (<a href="https://discord.com/channels/1567657796055470090/1569539659204395028">report</a>)</li></ul><h2>Fixed</h2><ul><li>The PDF viewer's download button saves the file (<a href="https://discord.com/channels/1567657796055470090/1569712151818670190">again</a>)</li><li>Check for Updates offers an update that's already waiting (<a href="https://discord.com/channels/1567657796055470090/1569795887834599435">report</a>)</li><li>A picked icon stays in the Dock after quitting (<a href="https://discord.com/channels/1567657796055470090/1569811495020404757">report</a>)</li></ul>]]></description>
-      <sparkle:channel>nightly</sparkle:channel>
-      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-nightly.26111120/Artemis-1.1.0-nightly.26111120.dmg" type="application/octet-stream" sparkle:edSignature="XGx84f6bRczkx2Q6ivv7mX5c9dPSv5eJco9YYTbINNx/pOHiYrShxcloFYLxWBAEjIQEjiEKsYjyvVM68WqBAg==" length="27832326" />
-    </item>
-    <item>
-      <title>Artemis 1.1.0</title>
       <pubDate>Wed, 11 Nov 2026 17:55:03 +0000</pubDate>
       <sparkle:version>1010001.26111117</sparkle:version>
       <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
