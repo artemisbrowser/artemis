@@ -131,14 +131,16 @@ struct MainView: View {
             if let origin = tabManager.addressBarOrigin, !origin.isEmpty {
                 withAnimation(Motion.address) { tabManager.addressBarOrigin = .zero }
             }
-            // collapsing hands over to the overlay in place until the mouse leaves; pinning dismisses it
+            // collapsing under the pointer hands over to the overlay in place until the mouse leaves;
+            // from the keyboard or a menu, with the pointer elsewhere, it slides away now
+            let handOver = collapsed && overlayHeld
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                isSidebarOverlayVisible = collapsed
+                isSidebarOverlayVisible = handOver
             }
             collapseDismissTask?.cancel()
-            if collapsed {
+            if handOver {
                 collapseDismissTask = Task {
                     try? await Task.sleep(for: .seconds(2))
                     if !Task.isCancelled, !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen {
