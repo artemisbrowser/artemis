@@ -472,6 +472,9 @@ final class BrowserTab: NSObject, Identifiable {
             in: mediaFrame, in: .page)
     }
 
+    // the main frame's scroll offset, pushed by ScrollReporter only while something has armed it
+    var pageScrollY: Double = 0
+
     /// documents whose focused element takes typing, by the token each one draws for itself;
     /// fed by `EditingFocusReporter`
     @ObservationIgnored private var editingFrames: Set<String> = []

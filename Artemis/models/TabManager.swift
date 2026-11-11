@@ -414,6 +414,7 @@ final class TabManager {
             Autofill.install(into: ucc)
             PasskeyBridge.install(into: ucc)
             EditingFocusReporter.install(into: ucc)
+            ScrollReporter.install(into: ucc)
         }
         mediaStateReporter = media
 
