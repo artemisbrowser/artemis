@@ -64,6 +64,19 @@ final class DownloadItem: NSObject, Identifiable {
         super.init()
     }
 
+    /// a file the app wrote itself, such as the PDF viewer's save, or failed to write with `error`
+    init(saved file: URL, isPrivate: Bool, error: Error? = nil) {
+        filename = file.lastPathComponent
+        destination = error == nil ? file : nil
+        state = error == nil ? .finished : .failed
+        fractionCompleted = error == nil ? 1 : 0
+        errorText = error?.localizedDescription
+        preferredFilename = nil
+        self.isPrivate = isPrivate
+        isBlocked = false
+        super.init()
+    }
+
     func cancel() {
         download?.cancel()
         state = .cancelled
@@ -79,7 +92,7 @@ final class DownloadItem: NSObject, Identifiable {
     /// marks a finished download as a web download, as Safari does, so Gatekeeper
     /// checks an app inside it before it first runs. LaunchServices logs `source`
     /// in a database that outlives the file, so a private download passes none
-    static func quarantine(_ file: URL, from source: URL?) {
+    nonisolated static func quarantine(_ file: URL, from source: URL?) {
         var properties: [String: Any] = [
             kLSQuarantineAgentNameKey as String: "Artemis",
             kLSQuarantineTypeKey as String: kLSQuarantineTypeWebDownload as String,
@@ -130,32 +143,39 @@ final class DownloadItem: NSObject, Identifiable {
 // MARK: - WKDownloadDelegate
 
 extension DownloadItem: WKDownloadDelegate {
-    /// picks a non-clashing destination in the chosen folder, or where a save panel says when
-    /// asking each time; a cancelled panel cancels the download. must stay the completion-handler
-    /// form: WebKit never calls the async one
+    /// a cancelled save panel cancels the download. must stay the completion-handler form: WebKit
+    /// never calls the async one
     func download(
         _ download: WKDownload,
         decideDestinationUsing response: URLResponse,
         suggestedFilename: String,
         completionHandler: @escaping (URL?) -> Void
     ) {
+        Self.chooseDestination(for: preferredFilename ?? suggestedFilename, in: download.webView?.window) {
+            [weak self] url, picked in
+            guard let self, let url else { return completionHandler(nil) }
+            replacesDestination = picked
+            start(at: url, download, completionHandler)
+        }
+    }
+
+    /// a non-clashing name in the chosen folder, or where a save panel says when asking each time,
+    /// `picked` then meaning the panel already confirmed replacing; nil when the panel is cancelled
+    static func chooseDestination(
+        for name: String, in window: NSWindow?, _ chosen: @escaping (URL?, _ picked: Bool) -> Void
+    ) {
         // WebKit writing to ~/Downloads raises a Downloads folder prompt for a lab copy,
         // and the download waits on its answer
         let folder = SelfTest.isRequested ? FileManager.default.temporaryDirectory : DownloadManager.folder
-        let name = preferredFilename ?? suggestedFilename
         guard DownloadManager.asksEachTime, !SelfTest.isRequested else {
-            return start(at: Self.uniqueURL(for: folder.appendingPathComponent(name)), download, completionHandler)
+            return chosen(uniqueURL(for: folder.appendingPathComponent(name)), false)
         }
         let panel = NSSavePanel()
         panel.directoryURL = folder
         panel.nameFieldStringValue = name
-        let answered: (NSApplication.ModalResponse) -> Void = { [weak self] answer in
-            guard let self, answer == .OK, let url = panel.url else { return completionHandler(nil) }
-            replacesDestination = true
-            start(at: url, download, completionHandler)
-        }
+        let answered: (NSApplication.ModalResponse) -> Void = { chosen($0 == .OK ? panel.url : nil, true) }
         // a sheet on the page's window can't open behind it or on another Space
-        if let window = download.webView?.window, window.attachedSheet == nil {
+        if let window, window.attachedSheet == nil {
             panel.beginSheetModal(for: window, completionHandler: answered)
         } else {
             panel.begin(completionHandler: answered)
@@ -256,6 +276,30 @@ final class DownloadManager {
         items.insert(item, at: 0)
         shelf.insert(item, at: 0)
         updateDock()
+    }
+
+    /// the PDF viewer's save: a file the page already holds, written where a download would go
+    func save(_ data: Data, as name: String, from source: URL?, in webView: WKWebView) {
+        let isPrivate = !webView.configuration.websiteDataStore.isPersistent
+        DownloadItem.chooseDestination(for: name.isEmpty ? "Download" : name, in: webView.window) { [weak self] url, _ in
+            guard let self, let url else { return }
+            let source = isPrivate ? nil : source
+            Task {
+                // off main: a network or iCloud volume can take seconds
+                let error = await Task.detached { () -> Error? in
+                    do {
+                        try data.write(to: url, options: .atomic)
+                        DownloadItem.quarantine(url, from: source)
+                        return nil
+                    } catch { return error }
+                }.value
+                if error == nil { DownloadFlight.launch(filename: url.lastPathComponent, from: webView) }
+                let item = DownloadItem(saved: url, isPrivate: isPrivate, error: error)
+                self.items.insert(item, at: 0)
+                self.shelf.insert(item, at: 0)
+                self.changed(item)
+            }
+        }
     }
 
     /// a download the site's Block setting stopped, shown on the shelf as blocked

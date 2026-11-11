@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 /// the sidebar footer's view of downloads under way: the newest one, or a count,
 /// with its progress along the bottom. Finished, a click opens the file (⌘-click
-/// shows it in Finder); before that it opens Library › Downloads.
+/// shows it in Finder) and a drag carries it out; before that it opens Library › Downloads.
 struct DownloadPill: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
@@ -62,6 +62,7 @@ struct DownloadPill: View {
                 }
             }
             .background(isLanding || tabManager.kind == .incognito ? DownloadLanding() : nil)
+            .dragging(many || item.state != .finished ? nil : item.destination)
             .onHover { isHovering = $0 }
             .transition(Motion.grow(from: 0.95))
         }
@@ -141,5 +142,12 @@ struct DownloadRing: View {
             .animation(Motion.fade, value: downloads.fraction)
             .animation(Motion.fade, value: running)
             .allowsHitTesting(false)
+    }
+}
+
+private extension View {
+    /// a drag carrying `file` out; without one no drag starts at all
+    @ViewBuilder func dragging(_ file: URL?) -> some View {
+        if let file { onDrag { NSItemProvider(contentsOf: file) ?? NSItemProvider() } } else { self }
     }
 }

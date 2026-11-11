@@ -88,6 +88,7 @@ struct SpaceBackdrop: View, Animatable {
             GlassSubstrate(
                 background: frost(\.backgroundFrost, floorSpace, nextSpace, frac),
                 sidebar: frost(\.sidebarFrost, floorSpace, nextSpace, frac),
+                brightness: frost(\.glassBrightness, floorSpace, nextSpace, frac),
                 sidebarWidth: sidebarWidth, overPage: overPage, edge: glassInvolved)
                 .opacity(glassInvolved ? 1 : 0)
 
@@ -103,8 +104,8 @@ struct SpaceBackdrop: View, Animatable {
         .ignoresSafeArea()
     }
 
-    /// the frost the shared substrate shows. both ends glass → crossfade frost to
-    /// frost as the carousel slides; otherwise hold the single glass space's frost
+    /// a glass setting the shared substrate shows. both ends glass → crossfade value to
+    /// value as the carousel slides; otherwise hold the single glass space's value
     /// while the colour layer fades over it
     private func frost(
         _ key: KeyPath<SpaceAppearance, Double>, _ floorSpace: Space?, _ nextSpace: Space?, _ frac: Double
@@ -134,8 +135,10 @@ struct SpaceBackdrop: View, Animatable {
 /// stack two frosts. as the window backdrop it frosts the desktop behind the window, the
 /// pinned sidebar's strip at its own level; over the page it frosts the page beneath
 private struct GlassSubstrate: View {
+    static let fullDim = 0.4
     var background: Double
     var sidebar: Double
+    var brightness: Double
     var sidebarWidth: CGFloat
     var overPage: Bool
     var edge: Bool
@@ -154,6 +157,7 @@ private struct GlassSubstrate: View {
                 Color.black.opacity(0.3)
             } else if overPage {
                 Frost(amount: sidebar, blending: .withinWindow)
+                dim
             } else {
                 // the pinned sidebar is glass on glass: its frost and rim stack on the background's,
                 // running a corner's width under the card so its rounded sidebar side shows no seam
@@ -162,6 +166,7 @@ private struct GlassSubstrate: View {
                     Frost(amount: background, blending: .behindWindow)
                     Frost(amount: sidebar, blending: .behindWindow)
                         .frame(width: tucked)
+                    dim
                     if edge && sidebarWidth > 0 {
                         GlassLens(identifier: GlassLens.sidebar)
                             .frame(width: tucked)
@@ -174,6 +179,9 @@ private struct GlassSubstrate: View {
         }
         .ignoresSafeArea()
     }
+
+    /// one layer over both regions, so the pinned sidebar's stacked frosts dim once
+    private var dim: some View { Color.black.opacity(Self.fullDim * (1 - brightness)) }
 }
 
 /// one frosted region over what lies behind it, the same curve for the sidebar and the

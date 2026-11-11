@@ -5,7 +5,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// a file in ~/Downloads, as shown in the library
+/// a file in the downloads folder, as shown in the library
 nonisolated struct DownloadFile: Identifiable {
     let url: URL
     let name: String
@@ -15,17 +15,22 @@ nonisolated struct DownloadFile: Identifiable {
 
     var id: URL { url }
 
-    var icon: NSImage {
-        NSWorkspace.shared.icon(forFile: url.path)
+    /// the type's icon, which macOS caches; only apps and untyped files are read one by one
+    @MainActor var icon: NSImage {
+        guard let contentType, !contentType.conforms(to: .application) else {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSWorkspace.shared.icon(for: contentType)
     }
 
-    /// everything in ~/Downloads, newest first, scanned off the main thread
-    @concurrent static func loadAllOffMain() async -> [DownloadFile] {
-        // ~/Downloads may be a symlink, which contentsOfDirectory won't enumerate
+    /// drags the file itself, so it can be dropped into Finder or another app
+    var dragItem: NSItemProvider { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
+
+    /// everything in `folder`, newest first, scanned off the main thread
+    @concurrent static func loadAllOffMain(in folder: URL) async -> [DownloadFile] {
+        // the folder may be a symlink, which contentsOfDirectory won't enumerate
         // through (ENOTDIR): resolve it first
-        let downloads = FileManager.default
-            .urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            .resolvingSymlinksInPath()
+        let downloads = folder.resolvingSymlinksInPath()
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey, .isHiddenKey, .contentTypeKey,
             .addedToDirectoryDateKey, .creationDateKey, .contentModificationDateKey,
@@ -109,6 +114,7 @@ struct LibrarySidebar: View {
     @Environment(\.chromeInk) private var ink
     private let metrics = SidebarMetrics.standard
     @AppStorage(LibraryMode.storageKey) private var mode: LibraryMode = .archive
+    @AppStorage(DownloadManager.folderKey) private var downloadsFolder = ""
     @State private var query = ""
     @State private var filter: DownloadFilter = .all
     /// nil until ~/Downloads has been read
@@ -137,7 +143,7 @@ struct LibrarySidebar: View {
                 }
             }
         }
-        .task(id: finishedDownloads) { files = await DownloadFile.loadAllOffMain() }
+        .task(id: [downloadsFolder] + finishedDownloads.map(\.path)) { files = await DownloadFile.loadAllOffMain(in: DownloadManager.folder) }
     }
 
     // MARK: - Rail (arc-style left icon column)
@@ -491,19 +497,15 @@ private struct HistoryRow: View {
     }
 }
 
-/// a file in Downloads: opens on click
+/// a downloaded file: opens on click, drags out as the file
 private struct DownloadFileRow: View {
     let file: DownloadFile
-    /// NSWorkspace's icon is a synchronous fetch, so it is read once per row
-    @State private var icon: NSImage?
 
     var body: some View {
         LibraryRow(title: file.name, detail: file.kind, open: { NSWorkspace.shared.open(file.url) }) {
-            Group {
-                if let icon { Image(nsImage: icon).resizable().scaledToFit() } else { Color.clear }
-            }
-            .onAppear { if icon == nil { icon = file.icon } }
+            Image(nsImage: file.icon).resizable().scaledToFit()
         }
+        .onDrag { file.dragItem }
         .contextMenu {
             Button("Show in Finder", systemImage: "folder") {
                 NSWorkspace.shared.activateFileViewerSelecting([file.url])

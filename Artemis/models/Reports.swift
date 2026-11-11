@@ -129,6 +129,7 @@ nonisolated enum Reports {
             "spaceFill": appearance?.fill.rawValue ?? "",
             "backgroundFrost": appearance?.backgroundFrost ?? 0,
             "sidebarFrost": appearance?.sidebarFrost ?? 0,
+            "glassBrightness": appearance?.glassBrightness ?? 1,
             "reduceTransparency": workspace.accessibilityDisplayShouldReduceTransparency,
             "reduceMotion": workspace.accessibilityDisplayShouldReduceMotion,
             "dark": NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,

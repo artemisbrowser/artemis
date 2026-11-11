@@ -70,7 +70,7 @@ struct UrlField: View {
             tabManager.urlPillFrame = frame
             // the address bar grown from this pill follows it, as when the sidebar pins
             if tabManager.isCommandBarVisible, let origin = tabManager.addressBarOrigin, !origin.isEmpty,
-                frame.maxX > 0, frame != origin
+                tabManager.isInWindow(frame), frame != origin
             {
                 withAnimation(Motion.address) { tabManager.addressBarOrigin = frame }
             }

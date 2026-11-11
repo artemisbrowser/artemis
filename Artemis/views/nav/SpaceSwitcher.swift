@@ -384,6 +384,16 @@ struct SpaceEditor: View {
             case .glass:
                 frostSlider("Sidebar", $appearance.sidebarFrost)
                 frostSlider("Background", $appearance.backgroundFrost)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Brightness").font(.system(size: 12)).foregroundStyle(.primary.opacity(0.7))
+                    HStack(spacing: 10) {
+                        Image(systemName: "sun.min").frame(width: 17)
+                        Slider(value: $appearance.glassBrightness, in: 0...1)
+                        Image(systemName: "sun.max").frame(width: 17)
+                    }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary.opacity(0.7))
+                }
             }
         }
     }

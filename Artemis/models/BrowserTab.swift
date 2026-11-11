@@ -1747,6 +1747,15 @@ extension BrowserTab: WKUIDelegate {
         DownloadManager.shared.register(download)
     }
 
+    /// the PDF viewer's own download button hands over the document it already holds
+    @objc(_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:)
+    func webView(
+        _ webView: WKWebView, saveDataToFile data: Data, suggestedFilename: String, mimeType: String,
+        originatingURL: URL?
+    ) {
+        DownloadManager.shared.save(data, as: suggestedFilename, from: originatingURL, in: webView)
+    }
+
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,

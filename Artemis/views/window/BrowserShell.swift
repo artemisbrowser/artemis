@@ -23,6 +23,8 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
         var sidebarPassTrailing: CGFloat
         /// where the card's host starts; it runs to the window's trailing edge
         var contentX: CGFloat
+        /// the sidebar sits on the right: every x above is measured from the window's right edge
+        var mirrored = false
     }
 
     /// the state whose changes pick the motion: pinning, peeking, and the Library's rail
@@ -74,6 +76,7 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
     let sidebarHost: PassthroughHostingView<Sidebar>
     let contentHost: NSHostingView<Content>
 
+    private var mirrored = false
     private var sidebarX = Glide()
     private var sidebarWidth = Glide()
     private var contentX = Glide()
@@ -115,8 +118,9 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
         // its width would re-lay out the whole sidebar every frame
         sidebarWidth.set(placement.sidebarWidth, spring: nil, at: now)
         contentX.set(placement.contentX, spring: spring, at: now)
-        sidebarHost.passLeading = placement.sidebarPassLeading
-        sidebarHost.passTrailing = placement.sidebarPassTrailing
+        mirrored = placement.mirrored
+        sidebarHost.passLeading = mirrored ? placement.sidebarPassTrailing : placement.sidebarPassLeading
+        sidebarHost.passTrailing = mirrored ? placement.sidebarPassLeading : placement.sidebarPassTrailing
         place(at: now)
         if !isSettled(at: now), link == nil {
             let link = displayLink(target: self, selector: #selector(step))
@@ -155,13 +159,14 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
     /// frames land on the pixel grid: an off-grid host renders the page soft
     private func place(at now: CFTimeInterval) {
         let height = bounds.height
-        let sidebar = backingAlignedRect(
-            CGRect(x: sidebarX.value(at: now), y: 0, width: sidebarWidth.value(at: now), height: height),
-            options: .alignAllEdgesNearest)
+        func rect(x: CGFloat, width: CGFloat) -> CGRect {
+            backingAlignedRect(
+                CGRect(x: mirrored ? bounds.width - x - width : x, y: 0, width: width, height: height),
+                options: .alignAllEdgesNearest)
+        }
+        let sidebar = rect(x: sidebarX.value(at: now), width: sidebarWidth.value(at: now))
         let x = contentX.value(at: now)
-        let content = backingAlignedRect(
-            CGRect(x: x, y: 0, width: max(bounds.width - x, 0), height: height),
-            options: .alignAllEdgesNearest)
+        let content = rect(x: x, width: max(bounds.width - x, 0))
         if sidebarHost.frame != sidebar { sidebarHost.frame = sidebar }
         if contentHost.frame != content { contentHost.frame = content }
     }

@@ -67,6 +67,7 @@ struct Sidebar: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     /// the url pill and navigation live in the toolbar instead
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
+    @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
 
     private let metrics = SidebarMetrics.standard
     /// the settled space's ink, not the blended one: the tab lists slide away with
@@ -74,6 +75,7 @@ struct Sidebar: View {
     /// chrome over the backdrop takes `BlendedInk` instead
     private var ink: Color { tabManager.currentSpace.appearance.chromeInk }
     @State private var isPeekVisible = false
+    @State private var peekFiles: [DownloadFile] = []
     @State private var isPeekHovered = false
     @State private var peekTask: Task<Void, Never>?
     /// the folded folder whose contents hang beside the list, if any
@@ -358,7 +360,7 @@ struct Sidebar: View {
         .overlay(alignment: .bottom) {
             // recent downloads peek while hovering the inbox
             if isPeekVisible, !tabManager.isLibraryOpen {
-                RecentDownloadsPeek()
+                RecentDownloadsPeek(files: peekFiles)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 44)  // sits just above the bottom bar
                     .transition(Motion.slide(.bottom))
@@ -413,7 +415,7 @@ struct Sidebar: View {
         return folder
     }
 
-    /// the hovered folder's contents, hanging off the row's trailing edge. it
+    /// the hovered folder's contents, hanging off the row's page-side edge. it
     /// lives above the list's clip, so it can reach past the sidebar
     @ViewBuilder private var folderPeekOverlay: some View {
         GeometryReader { proxy in
@@ -430,7 +432,9 @@ struct Sidebar: View {
                         if !hovering { setFolderPeek(nil, visible: false) }
                     }
                     .position(
-                        x: row.rect.maxX - origin.x + 10 + FolderPeek.width / 2,
+                        x: sidebarOnRight
+                            ? row.rect.minX - origin.x - 10 - FolderPeek.width / 2
+                            : row.rect.maxX - origin.x + 10 + FolderPeek.width / 2,
                         y: min(max(row.rect.midY - origin.y, height / 2), proxy.size.height - height / 2))
                     .transition(.opacity)
             }
@@ -480,9 +484,9 @@ struct Sidebar: View {
             try? await Task.sleep(for: .milliseconds(visible ? 150 : 200))
             guard !Task.isCancelled else { return }
             if visible {
-                // nothing to peek at → don't show anything
-                guard await !DownloadFile.loadAllOffMain().isEmpty else { return }
-                guard !Task.isCancelled else { return }
+                let files = await DownloadFile.loadAllOffMain(in: DownloadManager.folder)
+                guard !files.isEmpty, !Task.isCancelled else { return }
+                peekFiles = Array(files.prefix(4))
                 isPeekVisible = true
             } else if !isPeekHovered {
                 isPeekVisible = false

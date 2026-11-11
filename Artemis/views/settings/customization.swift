@@ -8,6 +8,7 @@ struct AppearanceSettings: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     @AppStorage(AppIconChoice.storageKey) private var appIconRaw = AppIconChoice.bundled.rawValue
     @AppStorage(NowPlayingCard.enabledKey) private var showsNowPlaying = true
+    @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
     @AppStorage(FolderPeekDetail.storageKey) private var folderPeekDetailRaw = FolderPeekDetail.none.rawValue
     @AppStorage(FolderTabCount.storageKey) private var folderTabCountRaw = FolderTabCount.count.rawValue
 
@@ -34,6 +35,14 @@ struct AppearanceSettings: View {
             }
 
             Section("Sidebar") {
+                Picker(selection: $sidebarOnRight.undoable("Sidebar Position")) {
+                    Text("Left").tag(false)
+                    Text("Right").tag(true)
+                } label: {
+                    InfoLabel("Position", info: "Which side of the window the sidebar sits on.")
+                }
+                .settingsAnchor(.sidebarPosition)
+
                 Toggle(isOn: $showsNowPlaying.undoable("Now Playing")) {
                     InfoLabel(
                         "Show Now Playing",

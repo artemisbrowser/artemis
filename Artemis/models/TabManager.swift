@@ -866,9 +866,14 @@ final class TabManager {
         if BrowserToolbar.isShown {
             commandBarEditsAddress = true
         } else {
-            addressBarOrigin = urlPillFrame.flatMap { $0.maxX > 0 ? $0 : nil } ?? .zero
+            addressBarOrigin = urlPillFrame.flatMap { isInWindow($0) ? $0 : nil } ?? .zero
         }
         isCommandBarVisible = true
+    }
+
+    /// `frame`, in window points, is inside the window rather than hidden past either edge with the sidebar
+    func isInWindow(_ frame: CGRect) -> Bool {
+        frame.maxX > 0 && frame.minX < (BrowserWindows.shared.window(of: self)?.frame.width ?? .infinity)
     }
 
     @discardableResult

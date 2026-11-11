@@ -46,7 +46,16 @@ final class Updates: NSObject {
             startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
     }
 
-    func checkNow() { controller?.checkForUpdates(nil) }
+    /// Sparkle ignores a check for as long as a downloaded update waits, so that one is offered instead
+    func checkNow() {
+        guard let install, let readyVersion else { return controller?.checkForUpdates(nil) ?? () }
+        let alert = NSAlert()
+        alert.messageText = "Artemis \(readyVersion) is ready to install"
+        alert.informativeText = "Relaunch to finish updating."
+        alert.addButton(withTitle: "Relaunch")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn { install() }
+    }
 
     /// installs the downloaded version and relaunches into it; otherwise asks Sparkle to show what's on offer
     func act() {
@@ -78,6 +87,12 @@ extension Updates: @preconcurrency SPUUpdaterDelegate {
         debugLog("update ready: \(item.displayVersionString) (\(item.versionString))")
         availableVersion = nil
         return true
+    }
+
+    /// the install block holds its driver weakly: once the session ends it does nothing
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        install = nil
+        readyVersion = nil
     }
 }
 

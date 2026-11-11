@@ -581,11 +581,13 @@ nonisolated struct SpaceAppearance: Codable, Equatable {
     // glass frost, 0 = clear (the desktop shows through) … 1 = heavy frost
     var backgroundFrost: Double = 0.6
     var sidebarFrost: Double = 0.6
+    // glass brightness, 0 = dimmed like an inactive window … 1 = full
+    var glassBrightness: Double = 1
     var meshPoints: [MeshPoint] = []  // gradient fill paints these as a mesh
     var meshSharpness: Double = 4  // mesh blend tightness (2 soft … 10 distinct)
 
     enum CodingKeys: String, CodingKey {
-        case fill, colors, angle, grain, meshPoints, meshSharpness, sidebarFrost
+        case fill, colors, angle, grain, meshPoints, meshSharpness, sidebarFrost, glassBrightness
         case backgroundFrost = "glassBlur"
     }
 }
@@ -600,6 +602,7 @@ nonisolated extension SpaceAppearance {
         grain = try c.decodeIfPresent(Double.self, forKey: .grain) ?? 0
         backgroundFrost = try c.decodeIfPresent(Double.self, forKey: .backgroundFrost) ?? 0.6
         sidebarFrost = try c.decodeIfPresent(Double.self, forKey: .sidebarFrost) ?? backgroundFrost
+        glassBrightness = try c.decodeIfPresent(Double.self, forKey: .glassBrightness) ?? 1
         meshPoints = try c.decodeIfPresent([MeshPoint].self, forKey: .meshPoints) ?? []
         meshSharpness = try c.decodeIfPresent(Double.self, forKey: .meshSharpness) ?? 4
     }

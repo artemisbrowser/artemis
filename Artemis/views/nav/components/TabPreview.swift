@@ -21,7 +21,7 @@ final class TabPreviews {
     /// screen points, y up
     struct Place {
         var row: CGRect
-        /// the sidebar's trailing edge, which the card hangs off
+        /// the sidebar's page-side edge, which the card hangs off
         var edge: CGFloat
     }
 
@@ -135,8 +135,10 @@ final class TabPreviews {
         let size = host.fittingSize
         let middle = CGPoint(x: place.row.midX, y: place.row.midY)
         let screen = (NSScreen.screens.first { $0.frame.contains(middle) } ?? window.screen)?.visibleFrame
+        let onRight = WindowChrome.isSidebarOnRight
         var frame = CGRect(
-            x: place.edge + Self.gap, y: place.row.midY - size.height / 2, width: size.width, height: size.height)
+            x: onRight ? place.edge - Self.gap - size.width : place.edge + Self.gap,
+            y: place.row.midY - size.height / 2, width: size.width, height: size.height)
         // centred on the row like a folder's peek, kept inside the window, then on screen
         for bounds in [window.frame, screen].compactMap(\.self) {
             frame.origin.y = max(bounds.minY, min(frame.minY, bounds.maxY - size.height))
@@ -160,7 +162,9 @@ final class TabPreviews {
         }
         zone = [
             place.row, frame,
-            CGRect(x: place.row.maxX, y: frame.minY, width: max(0, frame.minX - place.row.maxX), height: frame.height),
+            onRight
+                ? CGRect(x: frame.maxX, y: frame.minY, width: max(0, place.row.minX - frame.maxX), height: frame.height)
+                : CGRect(x: place.row.maxX, y: frame.minY, width: max(0, frame.minX - place.row.maxX), height: frame.height),
         ]
         if quietTooltips !== manager.tooltipState {
             quietTooltips?.isSuppressed = false
@@ -287,7 +291,8 @@ struct TabPreviewHover: ViewModifier {
         func place(sidebar: CGRect?) -> TabPreviews.Place {
             TabPreviews.Place(
                 row: CGRect(x: frame.minX + origin.x, y: origin.y - frame.maxY, width: frame.width, height: frame.height),
-                edge: max(frame.maxX, sidebar?.maxX ?? 0) + origin.x)
+                edge: (WindowChrome.isSidebarOnRight
+                    ? min(frame.minX, sidebar?.minX ?? frame.minX) : max(frame.maxX, sidebar?.maxX ?? 0)) + origin.x)
         }
     }
 }

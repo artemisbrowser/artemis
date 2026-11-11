@@ -28,14 +28,29 @@ final class ArtemisDockTilePlugIn: NSObject, NSDockTilePlugIn {
 
     private func redraw() {
         guard let tile else { return }
-        if FileManager.default.fileExists(atPath: appPath + "/Icon\r") {
+        if let icon = customIcon() {
             let view = NSImageView(frame: NSRect(origin: .zero, size: tile.size))
-            view.image = NSWorkspace.shared.icon(forFile: appPath)
+            view.image = icon
             view.imageScaling = .scaleProportionallyUpOrDown
             tile.contentView = view
         } else {
             tile.contentView = nil
         }
         tile.display()
+    }
+
+    /// the icns `NSWorkspace.setIcon` wrote into the bundle's `Icon\r` resource fork. read directly:
+    /// in the Dock, IconServices hands back its blank placeholder and never redraws the tile
+    private func customIcon() -> NSImage? {
+        let file = appPath + "/Icon\r"
+        let size = getxattr(file, XATTR_RESOURCEFORK_NAME, nil, 0, 0, 0)
+        guard size > 8 else { return nil }
+        var fork = [UInt8](repeating: 0, count: size)
+        guard getxattr(file, XATTR_RESOURCEFORK_NAME, &fork, size, 0, 0) == size else { return nil }
+        // big-endian: the fork's data starts at word 0, and its one resource is a length then the icns
+        func word(_ at: Int) -> Int { fork[at..<at + 4].reduce(0) { $0 << 8 | Int($1) } }
+        let start = word(0) + 4
+        guard start <= size, start + word(start - 4) <= size else { return nil }
+        return NSImage(data: Data(fork[start..<start + word(start - 4)]))
     }
 }

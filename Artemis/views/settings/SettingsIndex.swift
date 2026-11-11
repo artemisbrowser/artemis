@@ -20,6 +20,7 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case miniPlayerSkip
     case miniPlayerSiteButtons
     case edgeThickness
+    case sidebarPosition
     case nowPlaying
     case folderSecondLine
     case folderTabCount
@@ -181,6 +182,10 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .appearance, title: "Edge thickness", section: "Window",
                 keywords: ["border", "padding", "inset", "frame", "margin"])
+        case .sidebarPosition:
+            SettingsEntry(
+                pane: .appearance, title: "Position", section: "Sidebar",
+                keywords: ["sidebar on the right", "right side", "left side", "flip", "swap"])
         case .nowPlaying:
             SettingsEntry(
                 pane: .appearance, title: "Show Now Playing", section: "Sidebar",

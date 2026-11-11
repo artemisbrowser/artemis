@@ -12,6 +12,7 @@ import JavaScriptCore
 import SQLite3
 import SwiftUI
 import Translation
+import UniformTypeIdentifiers
 import UserNotifications
 import WebKit
 
@@ -1184,6 +1185,7 @@ enum SelfTest {
             ("toolbaraddress", { await testToolbarAddress(manager: manager) }),
             ("windowdrag", { await testWindowDrag(manager: manager) }),
             ("commandbarthroughsidebar", { await testCommandBarThroughSidebar(manager: manager) }),
+            ("sidebarright", { await testSidebarOnRight(manager: manager) }),
             ("overlayclicks", { await testOverlaySidebarClicks(manager: manager) }),
             ("downloadshelf", { await testDownloadShelf(manager: manager) }),
             ("settingspanesrender", { testSettingsPanesRender(manager: manager) }),
@@ -5399,6 +5401,15 @@ enum SelfTest {
             if let path { try? FileManager.default.removeItem(atPath: path) }
         }
 
+        // a save that can't write still lands on the shelf, as failed
+        let unwritable = Set(DownloadManager.shared.items.map(\.id))
+        DownloadManager.shared.save(Data("hello".utf8), as: "missing-\(UUID().uuidString.prefix(8))/\(name)", from: nil, in: tab.webView)
+        await settle { DownloadManager.shared.items.contains { !unwritable.contains($0.id) } }
+        let failed = DownloadManager.shared.items.first { !unwritable.contains($0.id) }
+        record("downloads: a save that can't write shows as failed", failed?.state == .failed && failed?.errorText != nil,
+            failed.map { "\($0.state)" } ?? "nothing")
+        if let failed { DownloadManager.shared.remove(failed) }
+
         // a click that opens the file in a new tab is the user's, so nothing is asked; on a site
         // set to Block, a clicked file shows as blocked on the shelf
         if let server = LiveLoopback(reply: { path, _ in
@@ -5448,6 +5459,24 @@ enum SelfTest {
             record("downloads: a local server for the click checks", false)
         }
 
+        // the PDF viewer's download button reaches WebKit's save SPI, not a WKDownload
+        let pdfName = "artemis-selftest-\(UUID().uuidString.prefix(8)).pdf"
+        let spi = NSSelectorFromString("_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:")
+        tab.webView(
+            tab.webView, saveDataToFile: Data("%PDF-1.4".utf8), suggestedFilename: pdfName, mimeType: "application/pdf",
+            originatingURL: URL(string: "https://downloads.selftest.example/doc.pdf"))
+        await settle { DownloadManager.shared.shelf.contains { $0.filename == pdfName } }
+        let saved = DownloadManager.shared.shelf.first { $0.filename == pdfName }
+        record(
+            "downloads: the PDF viewer's download button saves the file to the shelf",
+            tab.responds(to: spi) && saved?.state == .finished
+                && saved?.destination.map { FileManager.default.fileExists(atPath: $0.path) } == true,
+            "spi=\(tab.responds(to: spi)) \(saved.map { "\($0.state)" } ?? "nothing")")
+        if let saved {
+            DownloadManager.shared.remove(saved)
+            if let file = saved.destination { try? FileManager.default.removeItem(at: file) }
+        }
+
         let defaults = UserDefaults.standard
         let picked = defaults.string(forKey: DownloadManager.folderKey)
         defaults.set(FileManager.default.temporaryDirectory.appendingPathComponent("gone-\(UUID().uuidString)").path, forKey: DownloadManager.folderKey)
@@ -5456,6 +5485,19 @@ enum SelfTest {
         record(
             "downloads: a picked folder that's gone saves to Downloads instead",
             fallback == FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0], fallback.path)
+
+        let listed = FileManager.default.temporaryDirectory.appendingPathComponent("artemis-listed-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: listed, withIntermediateDirectories: true)
+        try? Data("x".utf8).write(to: listed.appendingPathComponent("listed.pdf"))
+        defaults.set(listed.path, forKey: DownloadManager.folderKey)
+        let files = await DownloadFile.loadAllOffMain(in: DownloadManager.folder)
+        defaults.set(picked, forKey: DownloadManager.folderKey)
+        try? FileManager.default.removeItem(at: listed)
+        record(
+            "downloads: the Library lists the picked folder, each file draggable with its type's icon",
+            files.map(\.name) == ["listed.pdf"] && files[0].contentType == .pdf
+                && files[0].dragItem.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
+            files.map { "\($0.name) \($0.contentType?.identifier ?? "nil") \($0.dragItem.registeredTypeIdentifiers)" }.joined(separator: ", "))
 
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("artemis-selftest-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -5549,6 +5591,55 @@ enum SelfTest {
                     through.isEmpty, "\(pressed) pressed, through at \(through)")
             }
         }
+    }
+
+    /// the sidebar on the right: its host, the traffic lights inside it and the card all mirror,
+    /// and hiding it slides it off the right edge
+    private static func testSidebarOnRight(manager: TabManager) async {
+        func sidebarHost(in view: NSView) -> NSView? {
+            view is PassthroughHostingView<AnyView>
+                ? view : view.subviews.lazy.compactMap { sidebarHost(in: $0) }.first
+        }
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView,
+            let close = window.standardWindowButton(.closeButton),
+            let host = sidebarHost(in: content), let card = host.superview?.subviews.first(where: { $0 !== host })
+        else { return record("sidebar on right: the window and its sidebar are up", false) }
+        let wasCollapsed = manager.isSidebarCollapsed
+        let saved = UserDefaults.standard.object(forKey: WindowChrome.sidebarOnRightKey)
+        let width = content.bounds.width
+        func lights() -> CGRect { close.convert(close.bounds, to: nil) }
+        func layout() -> String { "sidebar \(host.frame) card \(card.frame) close \(lights()) in \(width)" }
+        // over the page, clear of the right edge's reveal band
+        if let primary = NSScreen.screens.first {
+            CGWarpMouseCursorPosition(CGPoint(x: window.frame.midX, y: primary.frame.maxY - window.frame.midY))
+        }
+
+        manager.isSidebarCollapsed = false
+        UserDefaults.standard.set(true, forKey: WindowChrome.sidebarOnRightKey)
+        await settle(.seconds(3)) { host.frame.maxX >= width && card.frame.minX == 0 }
+        try? await Task.sleep(for: .milliseconds(400))
+        record(
+            "sidebar on right: pinned, the sidebar and its traffic lights sit at the right, the card fills the left",
+            host.frame.maxX >= width && card.frame.minX == 0 && card.frame.maxX < lights().minX
+                && lights().minX > width / 2 && lights().maxX < width,
+            layout())
+
+        manager.isSidebarCollapsed = true
+        await settle(.seconds(3)) { host.frame.minX >= width }
+        try? await Task.sleep(for: .milliseconds(300))
+        record(
+            "sidebar on right: hidden, the sidebar leaves past the right edge and the card spans the window",
+            host.frame.minX >= width && card.frame.minX == 0 && card.frame.maxX >= width - WindowChrome.range.upperBound,
+            layout())
+
+        UserDefaults.standard.set(saved, forKey: WindowChrome.sidebarOnRightKey)
+        manager.isSidebarCollapsed = false
+        await settle(.seconds(3)) { host.frame.minX <= 0 }
+        try? await Task.sleep(for: .milliseconds(300))
+        record(
+            "sidebar on right: back on the left, the traffic lights return to the window's left",
+            host.frame.minX <= 0 && lights().minX < width / 2 && card.frame.minX > 0, layout())
+        manager.isSidebarCollapsed = wasCollapsed
     }
 
     /// the ⌘T and ⌘L bars keep the keyboard, text and caret through the sidebar
@@ -6105,6 +6196,20 @@ enum SelfTest {
     /// a video out of whatever its page wraps it in
     private static func testMiniPlayer(manager: TabManager) async {
         testMiniPlayerGestures()
+        if let visible = NSScreen.main?.visibleFrame {
+            let panel = NSPanel(
+                contentRect: NSRect(x: visible.midX, y: visible.midY, width: 240, height: 135),
+                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.alphaValue = 0.01
+            panel.orderFrontRegardless()
+            let motion = PanelMotion()
+            let tuck = NSRect(x: visible.maxX - PiPGesture.stashPeek, y: visible.midY.rounded(), width: 240, height: 135)
+            motion.animate(panel, to: tuck, velocity: 2)
+            await settle(.seconds(3)) { !motion.isRunning }
+            record("mini-player: a tucked panel settles where it was thrown, not back on screen",
+                abs(panel.frame.minX - tuck.minX) < 1 && abs(panel.frame.minY - tuck.minY) < 1, "\(panel.frame) vs \(tuck)")
+            panel.close()
+        }
         let player = manager.miniPlayer
         let host = "selftest.example"
         let page = "<html><body><video></video><button>Skip Recap</button><button>Selftest Only</button></body></html>"
@@ -6294,6 +6399,11 @@ enum SelfTest {
             "mini-player: closing it gives the media document its own styles and controls back",
             await holds(media, ownStyles))
         manager.close(media)
+        // the first list install reloads open tabs, which swaps a fixture for the live site
+        await ContentBlocker.shared.waitForIdle()
+        for _ in 0..<40 where ContentBlocker.shared.isUpdating {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
         await testMiniPlayerWideLayout(manager: manager)
         await testMiniPlayerShorts(manager: manager)
     }
@@ -6326,6 +6436,8 @@ enum SelfTest {
         let tab = manager.newTab(url: nil, select: true)
         defer { manager.close(tab); manager.selectedTabID = previous }
         tab.webView.loadHTMLString(wideLayoutFixture, baseURL: URL(string: "https://www.youtube.com/watch?v=fixture"))
+        // Low Power Mode refuses autoplay without a user gesture, which app-run script carries
+        await settle { (try? await tab.webView.evaluateJavaScript("v.play(), true")) as? Bool == true }
         await settle(.seconds(5)) {
             (try? await tab.webView.evaluateJavaScript("document.querySelector('video').currentTime > 0.3")) as? Bool == true
         }
@@ -6359,7 +6471,7 @@ enum SelfTest {
 
     /// a page shaped like YouTube's Shorts: one reel renderer moved between snap slots, its player's
     /// wrapper left 0px high with the video sized in px on resize alone, and the watch page's
-    /// hidden player ahead of it. each reel plays a 9:16 canvas stream
+    /// hidden player ahead of it. each reel plays a 9:16 canvas stream, painted every animation frame
     private static let shortsFixture = """
         <html><head><style>
         html, body { margin: 0; height: 100%; overflow: hidden; }
@@ -6393,8 +6505,8 @@ enum SelfTest {
           at = n; document.getElementById(String(n)).appendChild(reel); feed.scrollTop = reel.parentElement.offsetTop;
           var c = document.createElement('canvas'); c.width = 360; c.height = 640;
           var g = c.getContext('2d'), f = 0;
-          clearInterval(window.__draw);
-          window.__draw = setInterval(function () { g.fillStyle = 'hsl(' + (n * 60 + f++ % 60) + ',80%,50%)'; g.fillRect(0, 0, 360, 640); }, 33);
+          var token = window.__draw = {};
+          (function paint() { if (window.__draw !== token) return; g.fillStyle = 'hsl(' + (n * 60 + f++ % 60) + ',80%,50%)'; g.fillRect(0, 0, 360, 640); requestAnimationFrame(paint); })();
           video.srcObject = c.captureStream(30); video.play();
         }
         document.querySelector('#navigation-button-down button').onclick = function () { show(at + 1); };
@@ -6436,6 +6548,8 @@ enum SelfTest {
         func js(_ s: String) async -> Any? { try? await tab.webView.evaluateJavaScript(s) }
         func fills() async -> Bool { await js(videoFillsJS) as? Bool == true }
         tab.webView.loadHTMLString(shortsFixture, baseURL: URL(string: "https://www.youtube.com/shorts/fixture"))
+        // Low Power Mode refuses autoplay without a user gesture, which app-run script carries
+        await settle { await js("video.play(), true") as? Bool == true }
         await settle(.seconds(5)) { await js("!document.querySelector('#shorts-player video').paused") as? Bool == true }
 
         let windows = Set(NSApp.windows.map(ObjectIdentifier.init))
@@ -6638,6 +6752,22 @@ enum SelfTest {
         }
         record("mini-player gestures: a flick glides into the screen corner it was thrown toward", corner,
             "\(String(describing: flick))")
+
+        // a sideways throw off a side no screen continues tucks the panel there; with a screen beyond, it corners
+        func throwSideways(_ screens: [PiPGesture.Screen]) -> PiPGesture.Move? {
+            g = PiPGesture(); frame = NSRect(x: area.maxX - 480, y: 300, width: 480, height: 270)
+            let throwRight = (0..<6).map { scroll($0 == 0 ? 1 : 2, dx: -20, at: 8.2 + Double($0) * 0.01) }
+            return run(&g, &frame, throwRight + [scroll(4, at: 8.255)], screens).last
+        }
+        let tucked = throwSideways(one), cornered = throwSideways(two), beside = throwSideways([laptop, PiPGesture.Screen(
+            frame: external.frame.offsetBy(dx: 0, dy: 500), visible: external.visible.offsetBy(dx: 0, dy: 500))])
+        var stashed = false, notStashed = false
+        if case .glide(let r, _)? = tucked { stashed = r.minX == area.maxX - PiPGesture.stashPeek && r.minY == 300 }
+        if case .glide(let r, _)? = cornered, case .glide(let b, _)? = beside { notStashed = r.maxX == area.maxX && b.maxX == area.maxX }
+        record("mini-player gestures: a sideways throw off the screen's last side tucks it away, a strip showing",
+            stashed, "\(String(describing: tucked))")
+        record("mini-player gestures: a sideways throw toward a neighbouring screen corners instead of tucking",
+            notStashed, "\(String(describing: cornered)) \(String(describing: beside))")
 
         g = PiPGesture(); frame = start
         _ = run(&g, &frame, [scroll(1, dx: -4, at: 9), scroll(2, dx: -4, at: 9.01)], one)
@@ -15202,16 +15332,18 @@ enum SelfTest {
         let legacy = try? JSONDecoder().decode(
             SpaceAppearance.self, from: Data(#"{"fill":"glass","glassBlur":0.3}"#.utf8))
         record(
-            "glass frost: a glass space saved before the sidebar slider keeps its frost on both",
-            legacy?.backgroundFrost == 0.3 && legacy?.sidebarFrost == 0.3,
-            "background \(legacy?.backgroundFrost ?? -1) sidebar \(legacy?.sidebarFrost ?? -1)")
+            "glass frost: a glass space saved before the sidebar slider keeps its frost on both, at full brightness",
+            legacy?.backgroundFrost == 0.3 && legacy?.sidebarFrost == 0.3 && legacy?.glassBrightness == 1,
+            "background \(legacy?.backgroundFrost ?? -1) sidebar \(legacy?.sidebarFrost ?? -1) "
+                + "brightness \(legacy?.glassBrightness ?? -1)")
         var split = SpaceAppearance(fill: .glass)
         split.backgroundFrost = 0.2
         split.sidebarFrost = 0.9
+        split.glassBrightness = 0.25
         let decoded = (try? JSONEncoder().encode(split)).flatMap {
             try? JSONDecoder().decode(SpaceAppearance.self, from: $0)
         }
-        record("glass frost: the two levels round-trip separately", decoded == split)
+        record("glass frost: the two levels and the brightness round-trip separately", decoded == split)
 
         guard let window = BrowserWindows.shared.window(of: manager) ?? mainWindow(),
             let content = window.contentView

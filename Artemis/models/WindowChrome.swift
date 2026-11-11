@@ -9,6 +9,8 @@ import SwiftUI
 /// from this one setting; at 0 the page fills the window
 enum WindowChrome {
     static let edgeInsetKey = "windowEdgeInset"
+    static let sidebarOnRightKey = "sidebarOnRight"
+    static var isSidebarOnRight: Bool { UserDefaults.standard.bool(forKey: sidebarOnRightKey) }
     static let defaultEdgeInset: Double = 10
     /// 0 = full bleed; past ~16 the card starts looking lost on its backdrop
     static let range: ClosedRange<Double> = 0...16

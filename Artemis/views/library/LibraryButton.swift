@@ -126,7 +126,7 @@ private struct StorageBox: View {
 
 /// floating peek of the most recent downloads, shown while hovering the inbox
 struct RecentDownloadsPeek: View {
-    @State private var files: [DownloadFile] = []
+    let files: [DownloadFile]
 
     var body: some View {
         Group {
@@ -142,9 +142,6 @@ struct RecentDownloadsPeek: View {
                 .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
             }
         }
-        .task {
-            files = Array(await DownloadFile.loadAllOffMain().prefix(4))
-        }
     }
 }
 
@@ -152,8 +149,6 @@ private struct PeekRow: View {
     @Environment(\.chromeInk) private var ink
     let file: DownloadFile
     @State private var isHovering = false
-    /// NSWorkspace's icon is a synchronous fetch, so it is read once per row
-    @State private var icon: NSImage?
 
     private var relativeTime: String {
         RelativeDateTimeFormatter().localizedString(for: file.date, relativeTo: Date())
@@ -161,11 +156,8 @@ private struct PeekRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Group {
-                if let icon { Image(nsImage: icon).resizable().scaledToFit() } else { Color.clear }
-            }
-            .frame(width: 32, height: 32)
-            .onAppear { if icon == nil { icon = file.icon } }
+            Image(nsImage: file.icon).resizable().scaledToFit()
+                .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.name.replacingOccurrences(of: " ", with: "\u{00A0}"))
@@ -192,5 +184,6 @@ private struct PeekRow: View {
             NSWorkspace.shared.open(file.url)
         }
         .onHover { isHovering = $0 }
+        .onDrag { file.dragItem }
     }
 }

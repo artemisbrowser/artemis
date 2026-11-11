@@ -1426,6 +1426,8 @@ struct PiPGesture {
     struct Screen { var frame: NSRect; var visible: NSRect }
     enum Move: Equatable { case to(NSRect), glide(NSRect, velocity: Double) }
     static let margin: CGFloat = 0
+    /// how much of a panel tucked off a screen's side stays showing
+    static let stashPeek: CGFloat = 28
     static var screens: [Screen] { NSScreen.screens.map { Screen(frame: $0.frame, visible: $0.visibleFrame) } }
 
     private struct Swipe {
@@ -1505,17 +1507,23 @@ struct PiPGesture {
         return CGVector(dx: (last.point.x - first.point.x) / dt, dy: (last.point.y - first.point.y) / dt)
     }
 
-    /// the corner of `r`'s screen nearest where `v` would carry it; nil below flick speed.
+    /// the corner of `r`'s screen nearest where `v` would carry it, or tucked off a side no screen
+    /// continues when thrown mostly sideways past it; nil below flick speed.
     /// the glide's velocity is a fraction of its distance per second
     static func flick(_ r: NSRect, velocity v: CGVector, screens: [Screen]) -> Move? {
         let speed = hypot(v.dx, v.dy)
-        guard speed > 700,
-            let area = screen(for: NSPoint(x: r.midX, y: r.midY), in: screens)?.visible.insetBy(dx: margin, dy: margin)
-        else { return nil }
+        guard speed > 700, let s = screen(for: NSPoint(x: r.midX, y: r.midY), in: screens) else { return nil }
+        let area = s.visible.insetBy(dx: margin, dy: margin)
         let flung = NSPoint(x: r.midX + v.dx * 0.25, y: r.midY + v.dy * 0.25)
-        let target = NSRect(
+        var target = NSRect(
             x: flung.x < area.midX ? area.minX : area.maxX - r.width,
             y: flung.y < area.midY ? area.minY : area.maxY - r.height, width: r.width, height: r.height)
+        if flung.x < area.minX || flung.x > area.maxX, abs(v.dx) >= 2 * abs(v.dy) {
+            let tuck = NSRect(
+                x: flung.x < area.minX ? area.minX - r.width + stashPeek : area.maxX - stashPeek,
+                y: min(max(r.minY, area.minY), area.maxY - r.height), width: r.width, height: r.height)
+            if !screens.contains(where: { $0.frame != s.frame && $0.frame.intersects(tuck) }) { target = tuck }
+        }
         let distance = hypot(target.minX - r.minX, target.minY - r.minY)
         return .glide(target, velocity: distance > 1 ? speed / distance : 0)
     }
@@ -1624,6 +1632,7 @@ private final class PiPPanel: NSPanel {
         switch event.type {
         case .leftMouseDown:
             let p = event.locationInWindow
+            if isStashed { return keepOnScreen() }
             if event.modifierFlags.contains(.command) { drag(); return }
             if let edge = resizeEdge(at: p) { startResize(edge, from: event); return }
             // withheld, and forwarded on release, so a button on the handle still clicks
@@ -1650,6 +1659,10 @@ private final class PiPPanel: NSPanel {
             }
             super.sendEvent(event)
         case .scrollWheel where event.hasPreciseScrollingDeltas:
+            if isStashed {
+                if event.phase.contains(.began) { keepOnScreen() }
+                return
+            }
             if !event.phase.isDisjoint(with: [.mayBegin, .began]) { ride = nil }
             // a gesture whose began went missing must still stop a spring before it moves the panel
             if event.momentumPhase.isEmpty, !event.phase.isEmpty, event.phase.isDisjoint(with: [.ended, .cancelled]) {
@@ -1721,6 +1734,9 @@ private final class PiPPanel: NSPanel {
             setFrameOrigin(PiPGesture.clampLive(r, anchor: m, in: PiPGesture.screens).origin)
         }
     }
+
+    /// tucked off a screen's side by a throw: only ever settled there, so any overhang is one
+    private var isStashed: Bool { onScreen(frame) != frame }
 
     /// springs back fully onto the screen holding the panel's centre
     private func keepOnScreen() {
@@ -1813,6 +1829,8 @@ final class PanelMotion: NSObject {
     private var link: CADisplayLink?
     /// the visible frame the spring's overshoot stays inside, when it starts and ends on one screen
     private var bounds: NSRect?
+    /// the target lay on a screen: only then is the settled frame clamped, so a tuck stays tucked
+    private var endsOnScreen = false
     var isRunning: Bool { link != nil }
 
     func animate(_ panel: NSWindow, to frame: NSRect, velocity: Double = 0) {
@@ -1822,6 +1840,7 @@ final class PanelMotion: NSObject {
         to = frame.origin
         let area = PiPGesture.screen(for: NSPoint(x: frame.midX, y: frame.midY), in: PiPGesture.screens)?.visible
         bounds = area.flatMap { $0.contains(panel.frame) && $0.contains(frame) ? $0 : nil }
+        endsOnScreen = area?.contains(frame) ?? false
         self.velocity = velocity
         start = CACurrentMediaTime()
         let link = panel.contentView?.displayLink(target: self, selector: #selector(step))
@@ -1842,6 +1861,7 @@ final class PanelMotion: NSObject {
             // stopped first: the panel's frame is saved only on a move with no motion running
             stop()
             let end = NSRect(origin: to, size: panel.frame.size)
+            guard endsOnScreen else { return panel.setFrameOrigin(to) }
             return panel.setFrameOrigin(
                 PiPGesture.clamp(end, anchor: NSPoint(x: end.midX, y: end.midY), in: PiPGesture.screens).origin)
         }
