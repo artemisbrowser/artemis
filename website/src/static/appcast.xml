@@ -5,6 +5,16 @@
     <!-- items -->
     <item>
       <title>Artemis 1.1.0</title>
+      <pubDate>Wed, 11 Nov 2026 09:26:41 +0000</pubDate>
+      <sparkle:version>1010001.26111109</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}h2{font-size:15px;margin:14px 0 6px}h3{font-size:13px;margin:10px 0 4px}</style><p>New since <a href="https://github.com/artemisbrowser/artemis/releases/tag/v1.1.0">Artemis 1.1.0 (beta)</a>.</p><h2>New</h2><ul><li>Hold ⌃⇥ to pick a recent tab from cards</li><li>Sites that need Chrome now get Chrome's headers and browser features, not just its user agent</li><li>The hovered link's address moves to the bottom right when the link sits under it</li><li>Filter lists convert with AdGuard's SafariConverterLib, so more of their rules work</li></ul><h2>Fixed</h2><ul><li>⌃⇥ notices when you let go of ⌃ and stays in its window, sized to fit</li><li>Chrome mode keeps the right user agent through redirects and failed loads</li><li>Incognito and new windows open even with no browser window open</li><li>Only a clicked link hands its click to a new tab</li><li>Downloads from new-tab links go ahead, and a blocked site's file shows on the shelf (<a href="https://discord.com/channels/1567657796055470090/1569712151818670190">report</a>)</li><li>Reloading a turned-off extension's page returns to the site (<a href="https://discord.com/channels/1567657796055470090/1568908150944301138">report</a>)</li><li>⇧⌘V pastes and matches style, as in Chrome (<a href="https://discord.com/channels/1567657796055470090/1569354781800005762">report</a>)</li><li>A link that launches Artemis opens Scout alone (<a href="https://discord.com/channels/1567657796055470090/1569796791329886279">report</a>)</li><li>Dock click after closing the last window opens one window, not two (<a href="https://discord.com/channels/1567657796055470090/1569796791329886279">report</a>)</li><li>No second browser window when the first registers late at launch (<a href="https://discord.com/channels/1567657796055470090/1569043271492182017">report</a>)</li><li>Filter lists past WebKit's rule limit keep every exception</li><li>Extensions see Peek pages as tabs (<a href="https://discord.com/channels/1567657796055470090/1569538927268733030">report</a>)</li></ul>]]></description>
+      <sparkle:channel>nightly</sparkle:channel>
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-nightly.26111109/Artemis-1.1.0-nightly.26111109.dmg" type="application/octet-stream" sparkle:edSignature="Drr/XdBn2lueN8wyYHNsHmR4DRryBb+TYJiAxDhq34HzZjO/2EeZjqtQr6NVOsiMYyN6b0srsaidG501TkZvCw==" length="27712990" />
+    </item>
+    <item>
+      <title>Artemis 1.1.0</title>
       <pubDate>Tue, 10 Nov 2026 17:02:09 +0000</pubDate>
       <sparkle:version>1010001</sparkle:version>
       <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
