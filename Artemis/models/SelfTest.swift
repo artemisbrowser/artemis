@@ -1187,6 +1187,7 @@ enum SelfTest {
             ("windowdrag", { await testWindowDrag(manager: manager) }),
             ("commandbarthroughsidebar", { await testCommandBarThroughSidebar(manager: manager) }),
             ("sidebarright", { await testSidebarOnRight(manager: manager) }),
+            ("linkbubblepage", { await testLinkBubblePage(manager: manager) }),
             ("librarypeek", { await testLibraryPeek(manager: manager) }),
             ("edgeapproach", { testEdgeApproach() }),
             ("overlayclicks", { await testOverlaySidebarClicks(manager: manager) }),
@@ -1211,6 +1212,7 @@ enum SelfTest {
         let withExtensions: [(String, () async -> Void)] = [
             ("extensionruntimeprobe", { await testExtensionRuntimeProbe() }),
             ("extensionpage", { await testExtensionPageInTab() }),
+            ("extensionviews", { await testExtensionViews() }),
             ("extensionmv2probe", { await testExtensionMV2Probe() }),
             ("extensionescalation", { await testExtensionEscalation() }),
             ("extensionapibridgeprobe", { await testExtensionAPIBridgeProbe() }),
@@ -5598,6 +5600,18 @@ enum SelfTest {
 
     /// the sidebar on the right: its host, the traffic lights inside it and the card all mirror,
     /// and hiding it slides it off the right edge
+    /// what `-[NSWindow _findDragTargetFrom:]` reads of a drag: where it is and what it carries
+    private final class DragProbe: NSObject {
+        private let point: NSPoint
+        init(at point: NSPoint) { self.point = point }
+        @objc func draggingLocation() -> NSPoint { point }
+        @objc func draggingPasteboard() -> NSPasteboard {
+            let board = NSPasteboard(name: .init("artemis-selftest-drag"))
+            board.declareTypes([.URL, .fileURL], owner: nil)
+            return board
+        }
+    }
+
     private static func testSidebarOnRight(manager: TabManager) async {
         func sidebarHost(in view: NSView) -> NSView? {
             view is PassthroughHostingView<AnyView>
@@ -5860,6 +5874,28 @@ enum SelfTest {
             manager.isLibraryOpen = false
         }
 
+        // the host is wider than a sidebar narrower than the Library's; AppKit's own choice of
+        // drag target (not `hitTest`) must give the page what is dragged over that spare strip
+        UserDefaults.standard.set(false, forKey: WindowChrome.sidebarOnRightKey)
+        let pickedWidth = UserDefaults.standard.object(forKey: "sidebarWidth")
+        let dragPage = manager.newTab(url: URL(string: "about:blank"))
+        for sidebarWidth in [250.0, 160.0] {
+            UserDefaults.standard.set(sidebarWidth, forKey: "sidebarWidth")
+            try? await Task.sleep(for: .milliseconds(900))
+            func target(_ x: CGFloat) -> NSView? {
+                window.perform(NSSelectorFromString("_findDragTargetFrom:"), with: DragProbe(at: NSPoint(x: x, y: content.bounds.midY)))?
+                    .takeUnretainedValue() as? NSView
+            }
+            let inSidebar = target(sidebarWidth / 2), overPage = target(card.frame.minX + 40)
+            record(
+                "sidebar drag (\(Int(sidebarWidth)) wide): a drag over the sidebar is the sidebar's, and one over the page beside it is the page's",
+                inSidebar?.isDescendant(of: host) == true && overPage.map { !$0.isDescendant(of: host) } == true
+                    && card.frame.minX + 40 < host.frame.maxX,
+                "sidebar \(inSidebar.map { "\(type(of: $0))" } ?? "nil"), page \(overPage.map { "\(type(of: $0))" } ?? "nil"), host to \(host.frame.maxX), card from \(card.frame.minX)")
+        }
+        manager.close(dragPage)
+        UserDefaults.standard.set(pickedWidth, forKey: "sidebarWidth")
+
         // the link bubble and the load bar belong to the page, which is never mirrored
         func bubble() -> CGRect? {
             func find(_ e: NSObject, _ depth: Int) -> CGRect? {
@@ -6017,8 +6053,7 @@ enum SelfTest {
                 manager.sidebarPeekRequest += 1
                 try? await Task.sleep(for: .milliseconds(900))
                 let defaults = UserDefaults.standard
-                let panel = (defaults.object(forKey: "sidebarWidth") as? Double ?? 250)
-                    + (open ? LibrarySidebar.railWidth : 0)
+                let panel = (open ? LibrarySidebar.sidebarWidth : defaults.object(forKey: "sidebarWidth") as? Double ?? 250)
                     + (defaults.object(forKey: WindowChrome.edgeInsetKey) as? Double ?? WindowChrome.defaultEdgeInset)
                 let name = "overlay corners (\(onRight ? "right" : "left"), \(fill), Library \(open ? "open" : "closed"))"
                 guard let image = createImage?(.null, 1 << 3, CGWindowID(window.windowNumber), 1 | 1 << 3)?
@@ -6105,6 +6140,53 @@ enum SelfTest {
     /// the ⌘T and ⌘L bars keep the keyboard, text and caret through the sidebar
     /// hiding, pinning, peeking and timing out, and through a press on the bar
     /// where it covers the sidebar; a field in the sidebar gives it up
+    /// the link bubble lasts only while the page that reported its link is the one shown, unchanged
+    private static func testLinkBubblePage(manager: TabManager) async {
+        let home = manager.selectedTabID
+        defer { manager.selectedTabID = home }
+        func hovered() async -> BrowserTab {
+            let tab = manager.newTab()
+            await load(tab, html: "<html><body><a id='l' href='https://selftest-bubble.example/page'>link</a></body></html>")
+            tab.webView.evaluateJavaScript(
+                "document.getElementById('l').dispatchEvent(new MouseEvent('mouseover', {bubbles: true}))", completionHandler: nil)
+            await settle { manager.hoveredLinkURL != nil }
+            return tab
+        }
+        func gone() async -> Bool {
+            await settle(.seconds(2)) { manager.hoveredLinkURL == nil }
+            return manager.hoveredLinkURL == nil
+        }
+        defer { manager.hoveredLinkURL = nil }
+
+        let left = await hovered()
+        let reported = manager.hoveredLinkURL != nil
+        try? await Task.sleep(for: .milliseconds(400))
+        record("link bubble: a link the page reports stays up while that page is shown", reported && manager.hoveredLinkURL != nil)
+        let other = manager.newTab()
+        let leftWithIt = await gone()
+        manager.selectedTabID = left.id
+        try? await Task.sleep(for: .milliseconds(400))
+        record(
+            "link bubble: it goes when another tab is shown, and is not back with its own",
+            reported && leftWithIt && manager.hoveredLinkURL == nil, "left \(leftWithIt), now \(String(describing: manager.hoveredLinkURL))")
+        manager.close(other)
+        manager.close(left)
+
+        let moved = await hovered()
+        let before = manager.hoveredLinkURL != nil
+        await load(moved, html: "<html><body>elsewhere</body></html>")
+        let navigated = await gone()
+        record("link bubble: it goes when its page loads another", before && navigated)
+        manager.hoveredLinkURL = nil
+        manager.close(moved)
+
+        let closed = await hovered()
+        let had = manager.hoveredLinkURL != nil
+        manager.close(closed)
+        let shut = await gone()
+        record("link bubble: it goes when its tab is closed", had && shut)
+    }
+
     private static func testCommandBarThroughSidebar(manager: TabManager) async {
         func sidebarHost(in view: NSView) -> NSView? {
             view is PassthroughHostingView<AnyView>
@@ -7257,6 +7339,15 @@ enum SelfTest {
         player.toggle(tab)
         await settle(.seconds(5)) { await js(videoFillsJS) as? Bool == true }
         let opened = await js(videoFillsJS) as? Bool == true
+        // what the page held when the short did not fill, read before the step changes it
+        let unfilled = opened ? nil : "panel active \(player.isActive), page " + (await js("""
+            JSON.stringify({href: location.href, inner: [innerWidth, innerHeight],
+              videos: Array.prototype.map.call(document.querySelectorAll('video'), function (v) {
+                var r = v.getBoundingClientRect();
+                return {paused: v.paused, ready: v.readyState, w: Math.round(r.width), h: Math.round(r.height), shorts: !!v.closest('#shorts-player')};
+              }),
+              browser: typeof browser === 'object' && browser ? Object.keys(browser) : typeof browser})
+            """) as? String ?? "unread")
         let frames = try? await tab.webView.callAsyncJavaScript(videoFramesJS, arguments: ["ms": 3000], contentWorld: .page)
             as? [String: Any]
         let url = tab.webView.url
@@ -7276,7 +7367,8 @@ enum SelfTest {
         player.returnToBrowser()
         record(
             "mini-player (live): a YouTube short fills the panel, and so does the next after a step",
-            opened && stepped, "opened \(opened), stepped \(stepped) in \(took)")
+            opened && stepped,
+            "opened \(opened), stepped \(stepped) in \(took)" + (unfilled.map { ", " + $0 } ?? ""))
         record("mini-player (live): seeking moves the short that is showing", seeked)
         note("mini-player live Shorts frames: open \(frames ?? [:]), after a step \(after ?? [:]) (3s each)")
     }
@@ -12244,6 +12336,8 @@ enum SelfTest {
             manager.close(make("cap\(i)"))
             await turn()
         }
+        // the trimmed act leaves ⌘Z once the group its close was made in has closed
+        await settle { undo.undoCount <= 25 }
         let grouping = undo.groupingLevel
         var undone = 0
         while undo.canUndo, undone < 40 {
@@ -14972,6 +15066,180 @@ enum SelfTest {
                 onSite() && tab.loadError == nil && browserView,
                 "url \(tab.webView.url?.absoluteString ?? "nil"), error \(tab.loadError ?? "nil"), browser view \(browserView)")
             tabs.close(tab)
+            manager.remove(ext)
+        }
+    }
+
+    /// what Chrome and Firefox tell an extension's views and the pages it names: `tabs.getCurrent`
+    /// has a tab only in a page shown in one, and a web page has `browser.runtime` only where an
+    /// extension is externally connectable
+    private static func testExtensionViews() async {
+        let gate = { (pattern: String, url: String) -> Bool in
+            guard let source = PageNamespaceGate.regexSource(of: pattern) else { return false }
+            return url.range(of: source, options: .regularExpression) != nil
+        }
+        record(
+            "extension views: externally connectable patterns match as Chrome's do",
+            gate("https://*.proton.me/*", "https://account.proton.me/pass") && gate("*://proton.me/*", "http://proton.me/")
+                && !gate("https://*.proton.me/*", "https://notproton.me/") && !gate("https://a.com/b*", "https://a.com/c")
+                && gate("<all_urls>", "https://a.com/") && !gate("*.proton.me", "https://proton.me/"))
+
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("extension views: a browser window", false) }
+        let app = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-safari-\(UUID().uuidString).app", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: app) }
+        let appex = app.appendingPathComponent("Contents/PlugIns/Probe.appex/Contents", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: appex.appendingPathComponent("Resources"), withIntermediateDirectories: true)
+        (["NSExtension": ["NSExtensionPointIdentifier": "com.apple.Safari.web-extension"]] as NSDictionary)
+            .write(to: appex.appendingPathComponent("Info.plist"), atomically: true)
+        try? #"{"manifest_version": 3, "name": "Artemis Safari Probe", "version": "1.0"}"#.write(
+            to: appex.appendingPathComponent("Resources/manifest.json"), atomically: true, encoding: .utf8)
+        let fromSafari = try? await manager.installFromDisk(app)
+        record(
+            "extension views: a Safari extension's app installs the web extension inside it",
+            fromSafari?.name == "Artemis Safari Probe", fromSafari?.name ?? "install failed")
+        if let fromSafari { manager.remove(fromSafari) }
+        let plain = app.deletingLastPathComponent().appendingPathComponent("selftest-plain-\(UUID().uuidString).app")
+        try? FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: plain) }
+        let refused = try? await manager.installFromDisk(plain)
+        record("extension views: an app with no Safari web extension is refused", refused == nil)
+        if let refused { manager.remove(refused) }
+
+        // what `script` evaluates to in a web page whose body is `body`
+        let inPage = { (body: String, script: String) async -> String in
+            let tab = tabs.newTab(url: nil, select: true)
+            let mark = UUID().uuidString
+            tab.webView.loadHTMLString(
+                "<html><head><title>\(mark)</title></head><body>\(body)</body></html>",
+                baseURL: URL(string: "https://views.selftest.example/"))
+            let ready = "document.title === '\(mark)' && document.readyState === 'complete'"
+            for _ in 0..<80 where (try? await tab.webView.evaluateJavaScript(ready) as? Bool) != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let value = try? await tab.webView.evaluateJavaScript(script) as? String
+            tabs.close(tab)
+            return value ?? "nil"
+        }
+        if manager.installed.contains(where: { $0.contexts[Profile.defaultID]?.isLoaded == true }) {
+            note("extension views: skipped the no-extension page — the profile already runs one")
+        } else {
+            let bare = await inPage("", "typeof (globalThis.browser && browser.runtime)")
+            record("extension views: with no extension running, a page has no `browser.runtime`", bare == "undefined", bare)
+        }
+        let hider = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-hider-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: hider) }
+        try? FileManager.default.createDirectory(at: hider, withIntermediateDirectories: true)
+        // Proton Pass for Firefox: not externally connectable, with a main-world script on every page
+        try? #"""
+        {"manifest_version": 3, "name": "Artemis Hider Probe", "version": "1.0", "host_permissions": ["<all_urls>"],
+         "content_scripts": [{"matches": ["<all_urls>"], "js": ["main.js"], "world": "MAIN", "run_at": "document_start"}]}
+        """#.write(to: hider.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        try? "window.__hiderRan = 1;".write(
+            to: hider.appendingPathComponent("main.js"), atomically: true, encoding: .utf8)
+        if let ext = try? await manager.installFromDisk(hider) {
+            manager.setEnabled(ext, true, in: Profile.defaultID)
+            for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let plain = await inPage(
+                "", "window.__hiderRan !== 1 ? 'no main-world script' : typeof (globalThis.browser && browser.runtime)")
+            record(
+                "extension views: a page has no `browser.runtime` beside an extension it can't connect to", plain == "undefined",
+                plain)
+            let own = [
+                "var": "var browser = 'page';", "let": "let browser = 'page';", "const": "const browser = 'page';",
+                "function": "function browser() { return 'page'; }", "window.browser": "window.browser = 'page';",
+            ]
+            for (form, declaration) in own.sorted(by: { $0.key < $1.key }) {
+                let value = await inPage(
+                    "<script>onerror = (m) => { window.err = m; };</script><script>\(declaration) window.ok = 1;</script>",
+                    "window.ok !== 1 ? 'script died: ' + window.err : typeof browser === 'function' ? browser() : String(browser)")
+                record("extension views: a page's own `\(form)` browser is the one it reads", value == "page", value)
+            }
+            manager.remove(ext)
+        } else {
+            record("extension views: the hider probe installs", false)
+        }
+
+        let runtime = "typeof (globalThis.browser && browser.runtime)"
+        let report = { (view: String) in
+            """
+            const api = globalThis.browser ?? globalThis.chrome;
+            api.tabs.getCurrent().then((tab) => api.storage.local.set({ \(view): tab ? "tab" : "none" }));
+            """
+        }
+        let manifests = [
+            "manifest 2": #""manifest_version": 2, "background": {"scripts": ["background.js"]}, "browser_action": {"default_popup": "popup.html"}"#,
+            "manifest 3": #""manifest_version": 3, "background": {"service_worker": "background.js"}, "action": {"default_popup": "popup.html"}"#,
+        ]
+        for (kind, keys) in manifests.sorted(by: { $0.key < $1.key }) {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("selftest-views-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? """
+            {"name": "Artemis Views Probe", "version": "1.0", "permissions": ["tabs", "storage"],
+             "externally_connectable": {"matches": ["https://example.com/*"]}, \(keys)}
+            """.write(to: folder.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+            for view in ["background", "popup", "page"] {
+                try? report(view).write(
+                    to: folder.appendingPathComponent("\(view).js"), atomically: true, encoding: .utf8)
+                try? "<html><body><script src=\"\(view).js\"></script></body></html>".write(
+                    to: folder.appendingPathComponent("\(view).html"), atomically: true, encoding: .utf8)
+            }
+            let name = "extension views: tabs.getCurrent has a tab only in a page shown in one (\(kind))"
+            guard let ext = try? await manager.installFromDisk(folder) else {
+                record(name, false, "install failed")
+                continue
+            }
+            manager.setEnabled(ext, true, in: Profile.defaultID)
+            for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard let context = ext.contexts[Profile.defaultID] else {
+                record(name, false, "no context")
+                manager.remove(ext)
+                continue
+            }
+            let site = tabs.newTab(url: URL(string: "https://example.com/"), select: true)
+            site.load(URL(string: "https://example.com/")!)
+            for _ in 0..<80 where site.webView.isLoading || site.webView.url?.host() != "example.com" {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let named = try? await site.webView.evaluateJavaScript(runtime) as? String
+            site.load(URL(string: "https://example.org/")!)
+            for _ in 0..<80 where site.webView.isLoading || site.webView.url?.host() != "example.org" {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let unnamed = try? await site.webView.evaluateJavaScript(runtime) as? String
+            record(
+                "extension views: a web page has `browser.runtime` only where an extension is externally connectable (\(kind))",
+                named == "object" && unnamed == "undefined", "named \(named ?? "nil"), unnamed \(unnamed ?? "nil")")
+
+            let popup = manager.action(for: ext)?.popupWebView
+            let page = tabs.newTab(
+                url: context.baseURL.appendingPathComponent("page.html"),
+                configuration: context.webViewConfiguration, select: true)
+            page.load(context.baseURL.appendingPathComponent("page.html"))
+            var seen: [String: String] = [:]
+            for _ in 0..<80 where seen.count < 3 {
+                try? await Task.sleep(for: .milliseconds(100))
+                let stored = try? await popup?.callAsyncJavaScript(
+                    "return await (globalThis.browser ?? globalThis.chrome).storage.local.get(null)",
+                    contentWorld: .page)
+                seen = stored as? [String: String] ?? seen
+            }
+            record(
+                name, seen == ["background": "none", "popup": "none", "page": "tab"],
+                "\(seen.sorted { $0.key < $1.key })")
+            tabs.close(page)
+            tabs.close(site)
             manager.remove(ext)
         }
     }

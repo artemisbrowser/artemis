@@ -56,6 +56,7 @@ struct RowHighlight: View {
     let opacity: Double
     var isSelected = false
     var radius: CGFloat = 10
+    static let glassBleed: CGFloat = 4
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -68,6 +69,12 @@ struct RowHighlight: View {
 }
 
 extension View {
+    /// `clipped()` with room at the sides: a selected row's glass draws its edge just outside its
+    /// shape, and the rows span the full width. must stay under the gutters between sliding panels
+    func clippedPastSides(_ bleed: CGFloat = RowHighlight.glassBleed) -> some View {
+        padding(.horizontal, bleed).clipped().padding(.horizontal, -bleed)
+    }
+
     /// glass in the variant that matches the backdrop under the sidebar, not the
     /// system appearance: dark glass over a light space reads as grey murk
     func chromeGlass(in shape: some Shape, interactive: Bool = false, lit: Bool = false) -> some View {

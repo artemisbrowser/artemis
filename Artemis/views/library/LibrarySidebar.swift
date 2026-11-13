@@ -136,11 +136,9 @@ enum LibraryMode: String, CaseIterable {
 /// the library: search, filter, and the contents of ~/Downloads
 /// grouped by how long ago files arrived
 struct LibrarySidebar: View {
-    /// added on top of the sidebar width, so the lists keep the full sidebar width
-    static let railWidth: CGFloat = 56
-
-    /// current sidebar width — drives the filter's icon-only collapse
-    var width: Double = 250
+    static let railWidth: CGFloat = 72
+    /// the whole sidebar's width while the Library is open, whatever width the spaces' sidebar is set to
+    static let sidebarWidth: CGFloat = 380
 
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink
@@ -151,10 +149,6 @@ struct LibrarySidebar: View {
     @State private var filter: DownloadFilter = .all
     /// nil until ~/Downloads has been read
     @State private var files: [DownloadFile]?
-
-    /// below this the search box would start clipping its placeholder,
-    /// so the filter drops its label and becomes a square icon button
-    private var isFilterCompact: Bool { width < 230 }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -231,24 +225,20 @@ struct LibrarySidebar: View {
             HStack(spacing: 4) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .font(.system(size: 12))
-                if !isFilterCompact {
-                    Text(filter == .all ? "Filter" : filter.rawValue)
-                        .font(.system(size: 12))
-                }
+                Text(filter == .all ? "Filter" : filter.rawValue)
+                    .font(.system(size: 12))
             }
             .foregroundStyle(ink.opacity(filter == .all ? 0.7 : 0.95))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        // the label collapses to a bare glyph at narrow widths, taking the name
-        // with it
         .accessibilityLabel("Filter downloads")
         .accessibilityValue(filter.rawValue)
         // hug the content, then pad inside the pill and force the height to
         // match the search box (padding the label directly gets eaten by the menu)
         .fixedSize()
-        .padding(.horizontal, isFilterCompact ? 0 : 12)
-        .frame(width: isFilterCompact ? metrics.rowHeight : nil, height: metrics.rowHeight)
+        .padding(.horizontal, 12)
+        .frame(height: metrics.rowHeight)
         .chromeGlass(in: .capsule)
     }
 
@@ -461,20 +451,20 @@ private struct RailButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
                 // fixed icon box so the three glyphs share one centerline
                 Image(systemName: icon)
-                    .font(.system(size: 16))
-                    .frame(width: 22, height: 20)
+                    .font(.system(size: 20))
+                    .frame(width: 28, height: 24)
                 Text(label)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
             .multilineTextAlignment(.center)
             .foregroundStyle(ink.opacity(isActive ? 0.95 : 0.55))
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .frame(height: 64)
             .background(RowHighlight(opacity: isActive ? 0.22 : (isHovering ? 0.09 : 0), isSelected: isActive))
             .animation(Motion.hover, value: isHovering)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -536,7 +526,7 @@ private struct DownloadFileRow: View {
     let file: DownloadFile
 
     var body: some View {
-        LibraryRow(title: file.name, detail: file.kind, open: { NSWorkspace.shared.open(file.url) }) {
+        LibraryRow(title: file.name, detail: file.kind, open: { NSWorkspace.shared.open(file.url) }, iconSide: 30) {
             Image(nsImage: file.icon).resizable().scaledToFit()
         }
         .onDrag { file.dragItem }
@@ -556,13 +546,15 @@ private struct LibraryRow<Icon: View, Trailing: View>: View {
     let title: String
     let detail: String
     let open: () -> Void
+    /// 30 is the two text lines' height, the most a row holds without growing
+    var iconSide: CGFloat = 22
     @ViewBuilder let icon: () -> Icon
     @ViewBuilder var trailing: (Bool) -> Trailing
     @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 10) {
-            icon().frame(width: 22, height: 22)
+            icon().frame(width: iconSide, height: iconSide)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title.replacingOccurrences(of: " ", with: "\u{00A0}"))
                     .font(.system(size: 13))
@@ -592,8 +584,12 @@ private struct LibraryRow<Icon: View, Trailing: View>: View {
 }
 
 extension LibraryRow where Trailing == EmptyView {
-    init(title: String, detail: String, open: @escaping () -> Void, @ViewBuilder icon: @escaping () -> Icon) {
-        self.init(title: title, detail: detail, open: open, icon: icon, trailing: { _ in EmptyView() })
+    init(
+        title: String, detail: String, open: @escaping () -> Void, iconSide: CGFloat = 22,
+        @ViewBuilder icon: @escaping () -> Icon
+    ) {
+        self.init(
+            title: title, detail: detail, open: open, iconSide: iconSide, icon: icon, trailing: { _ in EmptyView() })
     }
 }
 

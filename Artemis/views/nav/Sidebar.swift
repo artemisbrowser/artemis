@@ -256,7 +256,7 @@ struct Sidebar: View {
                 let pitch = lib + Self.libraryGutter
                 HStack(spacing: Self.libraryGutter) {
                     Group {
-                        if isLibraryMounted { LibrarySidebar(width: width) } else { Color.clear }
+                        if isLibraryMounted { LibrarySidebar() } else { Color.clear }
                     }
                     .frame(width: lib)
                     spaceContent
@@ -264,7 +264,7 @@ struct Sidebar: View {
                 }
                 .frame(height: geo.size.height, alignment: .topLeading)
                 // content widths are fixed (not the live, animating frame width),
-                // so as the sidebar grows by the rail width on open the rows never
+                // so as the sidebar moves to the Library's width on open the rows never
                 // re-truncate — only the surrounding frame widens, revealing them
                 .offset(x: isLibrarySlidIn ? 0 : -pitch)
                 .animation(Motion.panel, value: isLibrarySlidIn)
@@ -285,7 +285,7 @@ struct Sidebar: View {
             }
             .frame(maxHeight: .infinity)
             // clip so the off-screen panel stays hidden under the sidebar's edge
-            .clipped()
+            .clippedPastSides()
             .overlay { folderPeekOverlay.environment(\.layoutDirection, .leftToRight) }
             .onChange(of: drag.dropTick) { _, _ in commitDrop() }
             .background {
@@ -552,6 +552,9 @@ struct Sidebar: View {
                 if live { ScrollViewProbe(scroll: scroll) }
             }
         }
+        // the scroll view clips too: it is wider than its rows by the glass's bleed
+        .contentMargins(.horizontal, RowHighlight.glassBleed, for: .scrollContent)
+        .padding(.horizontal, -RowHighlight.glassBleed)
         // `GutterScroller` stands in, out in the margin
         .scrollIndicators(.never)
         .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 0.5 } action: {
@@ -1535,10 +1538,10 @@ struct Sidebar: View {
     static func contentWidth(sidebarWidth: Double, rim: Double, collapsed: Bool) -> CGFloat {
         CGFloat(sidebarWidth) - contentInset - trailingInset(rim: rim, collapsed: collapsed)
     }
-    /// wider by the library's icon rail, which the whole sidebar grows to fit
-    /// (see MainView.libraryRailExtra). fixing the panel at this width keeps the
-    /// list from reflowing while that growth animates
-    private var libraryContentWidth: CGFloat { baseContentWidth + LibrarySidebar.railWidth }
+    /// fixed, so the list doesn't reflow while the sidebar animates to the Library's width
+    private var libraryContentWidth: CGFloat {
+        Self.contentWidth(sidebarWidth: LibrarySidebar.sidebarWidth, rim: edgeInset, collapsed: isSidebarCollapsed)
+    }
 
     /// the normal sidebar contents — url field, fixed favourites, and the space
     /// carousel — i.e. everything shown when the library is closed. lives beside
@@ -1638,7 +1641,7 @@ struct Sidebar: View {
             }
             .modifier(PagerOffset(pitch: pitch))
             .frame(width: w, height: geo.size.height, alignment: .topLeading)
-            .clipped()
+            .clippedPastSides()
             // parked panels report nothing, so this is the live panel's geometry, and
             // an empty or locked space clears what the last one left
             .onPreferenceChange(SidebarRowFrameKey.self) { measured.rowFrames = $0 }

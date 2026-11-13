@@ -35,6 +35,7 @@ struct LinkHoverCapsule: View {
         .onChange(of: tabManager.hoveredLinkURL != nil) { _, hovering in
             if hovering { startMoveMonitor() } else { stopMoveMonitor() }
         }
+        .onChange(of: tabManager.onScreenTabIDs) { tabManager.dropStaleHoveredLink() }
         .onAppear { startFlagsMonitor() }
         .onDisappear {
             stopFlagsMonitor()

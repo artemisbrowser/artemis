@@ -1398,6 +1398,7 @@ extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         committedAt = Date()
         committedDisguised = !(webView.customUserAgent ?? "").isEmpty
+        BrowserWindows.shared.manager(for: webView.window)?.dropStaleHoveredLink(navigating: webView)
         endRequestedLoad()
         adoptCommittedURL()
         // every response before this commit has been decided

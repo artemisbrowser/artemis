@@ -459,6 +459,17 @@ enum ExtensionLab {
         try? await Task.sleep(for: .seconds(3))
         var state = await evaluateState(in: webView)
         state["shot"] = await snapshot(webView, name: key, part: "popup")
+        let wanted = webView.intrinsicContentSize
+        state["wants"] = [Int(wanted.width), Int(wanted.height)]
+        // `ARTEMIS_EXTLAB_PROBE`: an expression (a promise is awaited) read in the popup's own world
+        if let probe = ProcessInfo.processInfo.environment["ARTEMIS_EXTLAB_PROBE"] {
+            let reply = await bounded(8) {
+                try? await webView.callAsyncJavaScript(
+                    "try { return String(await (\(probe))); } catch (e) { return 'probe threw ' + e; }",
+                    contentWorld: .page)
+            }
+            state["probe"] = (reply ?? nil) as? String ?? "no reply"
+        }
         return state
     }
 

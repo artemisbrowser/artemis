@@ -324,7 +324,7 @@ struct ExtensionsDropdownSection: View {
                     extensions.openStorePage(ExtensionStores.firefoxAddonsHome)
                 }
                 Divider().overlay(.primary.opacity(0.08)).padding(.vertical, 2)
-                AddSourceRow(title: "From Disk…", subtitle: "Folder, .zip, .xpi, .crx", icon: "folder") {
+                AddSourceRow(title: "From Disk…", subtitle: "Folder, .zip, .xpi, .crx, Safari app", icon: "folder") {
                     showSourceChooser = false
                     pickAndInstall()
                 }
@@ -387,7 +387,7 @@ private struct AddSourceRow: View {
 
 // MARK: - Install
 
-/// the open panel for sideloading: an unpacked folder or a .zip, .xpi or .crx
+/// the open panel for sideloading: an unpacked folder, a .zip, .xpi or .crx, or a Safari extension's app
 enum ExtensionPicker {
     @MainActor static func run() -> URL? {
         let panel = NSOpenPanel()
@@ -395,8 +395,8 @@ enum ExtensionPicker {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Add Extension"
-        panel.message = "Choose an unpacked extension folder, or a .zip / .xpi / .crx archive."
-        var types: [UTType] = [.folder, .zip]
+        panel.message = "Choose an extension folder, a .zip / .xpi / .crx archive, or a Safari extension's app."
+        var types: [UTType] = [.folder, .zip, .applicationBundle, .applicationExtension]
         if let xpi = UTType(filenameExtension: "xpi") { types.append(xpi) }
         if let crx = UTType(filenameExtension: "crx") { types.append(crx) }
         panel.allowedContentTypes = types

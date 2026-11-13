@@ -194,6 +194,8 @@ final class TabManager {
     var peekTab: BrowserTab?
     /// the link under the pointer, for the status capsule
     var hoveredLinkURL: URL?
+    /// the web view whose page reported that link; nil for a link no page reported
+    @ObservationIgnored private var hoveredLinkPage: ObjectIdentifier?
     /// where the pointer hovered that link, in the window's top-left coordinates (SwiftUI's .global)
     var hoveredLinkPointer: CGPoint?
     /// the Library panel is open in place of the sidebar's tab list; the window
@@ -401,7 +403,7 @@ final class TabManager {
                 let point = window.mouseLocationOutsideOfEventStream
                 return CGPoint(x: point.x, y: (window.contentView?.bounds.height ?? 0) - point.y)
             }
-            BrowserWindows.shared.manager(for: window)?.setHoveredLink(url, at: pointer)
+            BrowserWindows.shared.manager(for: window)?.setHoveredLink(url, at: pointer, in: webView)
         }
         SharedWebContent.everywhere { LinkHoverReporter.install(into: $0, handler: reporter) }
         linkHoverReporter = reporter
@@ -505,17 +507,32 @@ final class TabManager {
 
     /// update the hovered-link capsule; a clear is deferred a beat so moving
     /// straight from one link to another doesn't flash the capsule away
-    private func setHoveredLink(_ url: URL?, at pointer: CGPoint?) {
+    private func setHoveredLink(_ url: URL?, at pointer: CGPoint?, in page: WKWebView?) {
         clearHoverTask?.cancel()
         if let url {
             hoveredLinkURL = url
             hoveredLinkPointer = pointer
+            hoveredLinkPage = page.map(ObjectIdentifier.init)
         } else {
             clearHoverTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(40))
                 if !Task.isCancelled { hoveredLinkURL = nil }
             }
         }
+    }
+
+    /// a page that loads another, or is no longer on screen, never reports the pointer leaving its link:
+    /// drops the capsule's link if `navigating` reported it, or if the page that did is not shown
+    func dropStaleHoveredLink(navigating: WKWebView? = nil) {
+        guard let page = hoveredLinkPage else { return }
+        let shown = onScreenTabIDs
+        let onScreen = (allTabs + [peekTab].compactMap { $0 }).contains {
+            shown.contains($0.id) && ObjectIdentifier($0.webView) == page
+        }
+        guard navigating.map(ObjectIdentifier.init) == page || !onScreen else { return }
+        clearHoverTask?.cancel()
+        hoveredLinkURL = nil
+        hoveredLinkPage = nil
     }
 
     /// with auto-PiP on, another app or desktop hiding a window pops its playing video

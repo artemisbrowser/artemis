@@ -41,7 +41,7 @@ nonisolated enum ExtensionCompat {
     /// to whether they exist (an empty file) or not (a failed fetch)
     private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    static let shimVersion = 53
+    static let shimVersion = 54
 
     // MARK: - Entry point
 

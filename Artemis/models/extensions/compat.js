@@ -1764,6 +1764,21 @@
       };
     });
   }
+  // Chrome and Firefox give a popup or a background no current tab; WebKit hands them the
+  // active one (Proton Pass lays its popup out as a full tab when it gets one)
+  if (api.tabs && typeof api.tabs.getCurrent === "function") {
+    const original = api.tabs.getCurrent;
+    const tabless = () => {
+      if (typeof document === "undefined") return true;
+      try {
+        return api.extension.getViews({ type: "popup" }).includes(globalThis)
+          || api.extension.getBackgroundPage() === globalThis;
+      } catch (e) { return false; }
+    };
+    try {
+      api.tabs.getCurrent = (cb) => settle(cb, tabless() ? Promise.resolve() : Promise.resolve(original.call(api.tabs)));
+    } catch (e) {}
+  }
   // there is no keyword mode for a default suggestion to show in
   if (api.omnibox && typeof api.omnibox.setDefaultSuggestion !== "function") {
     api.omnibox.setDefaultSuggestion = (suggestion, cb) => settle(cb, Promise.resolve());

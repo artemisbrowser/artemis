@@ -39,9 +39,11 @@ nonisolated enum ExtensionInstaller {
         return manifestRoot(under: dir)
     }
 
-    /// copy a sideloaded source (folder, .zip, .xpi, or .crx) into storage, returning its stored id
-    @concurrent static func install(from source: URL) async throws -> String {
+    /// copy a sideloaded source (folder, .zip, .xpi, .crx, or a Safari extension's app) into
+    /// storage, returning its stored id
+    @concurrent static func install(from picked: URL) async throws -> String {
         let fm = FileManager.default
+        let source = safariResources(in: picked) ?? picked
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else {
             throw InstallError.notReadable
@@ -91,6 +93,24 @@ nonisolated enum ExtensionInstaller {
             try? fm.removeItem(at: dest)
             throw InstallError.copyFailed(error.localizedDescription)
         }
+    }
+
+    /// the web extension a Safari extension's `.app` or `.appex` carries; nil for anything else
+    static func safariResources(in bundle: URL) -> URL? {
+        let fm = FileManager.default
+        let appexes: [URL] =
+            switch bundle.pathExtension.lowercased() {
+            case "appex": [bundle]
+            case "app":
+                (try? fm.contentsOfDirectory(
+                    at: bundle.appendingPathComponent("Contents/PlugIns"), includingPropertiesForKeys: nil)) ?? []
+            default: []
+            }
+        return appexes.sorted { $0.path < $1.path }.first {
+            let info = NSDictionary(contentsOf: $0.appendingPathComponent("Contents/Info.plist"))
+            return (info?["NSExtension"] as? [String: Any])?["NSExtensionPointIdentifier"] as? String
+                == "com.apple.Safari.web-extension"
+        }?.appendingPathComponent("Contents/Resources", isDirectory: true)
     }
 
     /// drop a stored extension's resources from disk

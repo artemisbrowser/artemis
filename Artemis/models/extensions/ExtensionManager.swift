@@ -150,13 +150,14 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     func setAllowsIncognito(_ ext: InstalledExtension, _ allowed: Bool) {
         ext.allowsIncognito = allowed && !ext.refusesIncognito
+        for profile in ext.contexts.keys { gatePageNamespace(in: profile) }
         persist()
     }
 
     // MARK: - Install
 
-    /// sideload a folder, .zip, .xpi or .crx, added switched off: the caller's consent sheet
-    /// enables it
+    /// sideload a folder, .zip, .xpi, .crx or Safari extension's app, added switched off: the
+    /// caller's consent sheet enables it
     @MainActor
     func installFromDisk(_ url: URL) async throws -> InstalledExtension {
         try await register(id: ExtensionInstaller.install(from: url), source: .disk)
@@ -229,6 +230,20 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         prepareStorage(for: ext, in: profile, context: context)
         for tab in openTabs(in: profile) { context.didOpenTab(tab) }
         try? controller.load(context)
+        gatePageNamespace(in: profile)
+    }
+
+    /// the profile's pages keep `browser` only where an extension running there is externally connectable
+    @MainActor
+    private func gatePageNamespace(in profile: UUID) {
+        let running = installed.filter { $0.contexts[profile]?.isLoaded == true }
+        for isPrivate in [false, true] {
+            let patterns = running.filter { !isPrivate || $0.allowsIncognito }.flatMap {
+                ($0.webExtension.manifest["externally_connectable"] as? [String: Any])?["matches"] as? [String] ?? []
+            }
+            PageNamespaceGate.apply(
+                patterns, to: SharedWebContent.userContentController(for: profile, isPrivate: isPrivate))
+        }
     }
 
     /// a legacy install's first instance in another profile is seeded from the
@@ -272,6 +287,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // keyed by the controller, which an unloaded context no longer has
         ExtensionAPIBridge.shared.tearDown(context)
         try? controller.unload(context)
+        gatePageNamespace(in: profile)
     }
 
     /// every window's tabs live in the shared core, so one manager lists them all
@@ -306,6 +322,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     fileprivate func controllerCreated(for profile: UUID) {
         guard hasRehydrated else { return }
         for ext in installed where ext.profiles.contains(profile) { load(ext, in: profile) }
+        gatePageNamespace(in: profile)
         ExtensionProxyBridge.shared.releaseUnless(in: profile) { owner in
             installed.contains { $0.id == owner && $0.contexts[profile]?.isLoaded == true }
         }

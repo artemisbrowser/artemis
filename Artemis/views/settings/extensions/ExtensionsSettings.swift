@@ -89,7 +89,7 @@ struct ExtensionsSettings: View {
                     .disabled(isAdding)
                     .tooltip("Sideload an unpacked extension")
                     InfoButton(
-                        "Installs an extension folder or a .zip, .xpi or .crx archive. Some extensions may only partly work."
+                        "Installs an extension folder, a .zip, .xpi or .crx archive, or a Safari extension's app. Some extensions may only partly work."
                     )
                 }
                 .settingsAnchor(.extensionFromDisk)

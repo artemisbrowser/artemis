@@ -57,9 +57,9 @@ struct MainView: View {
     /// fullscreen with the sidebar away: pure content, no rim, no rounding
     private var isEdgeToEdge: Bool { isFullScreen && isSidebarCollapsed }
 
-    /// the Library's icon rail widens the whole sidebar, so its list keeps full width
-    private var libraryRailExtra: CGFloat {
-        tabManager.isLibraryOpen ? LibrarySidebar.railWidth : 0
+    /// the sidebar as drawn: the Library has its own width, the same in every space
+    private var shownSidebarWidth: CGFloat {
+        tabManager.isLibraryOpen ? LibrarySidebar.sidebarWidth : sidebarWidth
     }
 
     var body: some View {
@@ -460,12 +460,12 @@ struct MainView: View {
 
     /// what the card yields when the sidebar is pinned; the hover buffer takes no room
     private var pinnedFootprint: CGFloat {
-        sidebarWidth + libraryRailExtra + rigGripWidth
+        shownSidebarWidth + rigGripWidth
     }
 
     /// everything that slides: sidebar + grip + hover buffer
     private var rigContentWidth: CGFloat {
-        sidebarWidth + libraryRailExtra + rigGripWidth + Self.overlayBufferWidth
+        shownSidebarWidth + rigGripWidth + Self.overlayBufferWidth
     }
 
     /// the one sidebar, floating at the window's leading edge in both modes;
@@ -473,7 +473,7 @@ struct MainView: View {
     private var sidebarRig: some View {
         HStack(spacing: 0) {
             Sidebar(width: sidebarWidth)
-                .frame(width: sidebarWidth + libraryRailExtra)
+                .frame(width: shownSidebarWidth)
                 .frame(maxHeight: .infinity)
                 // overlay mode: empty sidebar areas must not click through to the page
                 .background {
@@ -483,12 +483,16 @@ struct MainView: View {
                 .background(alignment: .leading) {
                     if isSidebarCollapsed {
                         OverlayPanelBackground(
-                            width: sidebarWidth + libraryRailExtra + edgeInset,
+                            width: shownSidebarWidth + edgeInset,
                             windowWidth: windowSize.width)
                     }
                 }
 
-            resizeHandle(width: rigGripWidth)
+            if tabManager.isLibraryOpen {
+                Color.clear.frame(width: rigGripWidth)
+            } else {
+                resizeHandle(width: rigGripWidth)
+            }
 
             // extends the overlay's hover area past the grip
             Color.clear
@@ -531,10 +535,10 @@ struct MainView: View {
     /// past the grip it passes clicks through unless a folder's peek hangs there
     private var shellPlacement: BrowserShell<AnyView, AnyView>.Placement {
         let slack = Self.overlayOvershootSlack
-        let rig = sidebarWidth + libraryRailExtra
+        let rig = shownSidebarWidth
         let peek = tabManager.isFolderPeekOpen ? FolderPeek.width + 10 : 0
         let hostWidth =
-            slack + sidebarWidth + LibrarySidebar.railWidth + max(Self.overlayGripWidth, edgeInset)
+            slack + max(sidebarWidth, LibrarySidebar.sidebarWidth) + max(Self.overlayGripWidth, edgeInset)
             + Self.overlayBufferWidth + peek
         return .init(
             sidebarX: isSidebarRevealed ? -slack : -hostWidth,
