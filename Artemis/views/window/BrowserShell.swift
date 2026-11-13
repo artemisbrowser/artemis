@@ -21,10 +21,9 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
         /// hover-only strips at the sidebar host's edges; clicks pass through them
         var sidebarPassLeading: CGFloat
         var sidebarPassTrailing: CGFloat
-        /// where the card's host starts; it runs to the window's trailing edge
+        /// where the card's host starts; it runs to the window's trailing edge.
+        /// every x is from the leading edge: right to left, the window's right
         var contentX: CGFloat
-        /// the sidebar sits on the right: every x above is measured from the window's right edge
-        var mirrored = false
     }
 
     /// the state whose changes pick the motion: pinning, peeking, and the Library's rail
@@ -44,7 +43,7 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ShellView<Sidebar, Content> {
         let view = ShellView(sidebar: sidebar, content: content)
-        view.move(to: placement, spring: nil)
+        view.move(to: placement, mirrored: context.environment.layoutDirection == .rightToLeft, spring: nil)
         return view
     }
 
@@ -63,7 +62,7 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
             spring = Motion.panelSpring
         }
         if context.transaction.disablesAnimations { spring = nil }
-        view.move(to: placement, spring: spring)
+        view.move(to: placement, mirrored: context.environment.layoutDirection == .rightToLeft, spring: spring)
     }
 
     final class Coordinator {
@@ -101,7 +100,7 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
 
     override var isFlipped: Bool { true }
 
-    func move(to placement: BrowserShell<Sidebar, Content>.Placement, spring: Spring?) {
+    func move(to placement: BrowserShell<Sidebar, Content>.Placement, mirrored: Bool, spring: Spring?) {
         let now = CACurrentMediaTime()
         // a sidebar leaving the window drops the keyboard its own fields hold,
         // and nothing else's. deferred: resigning a SwiftUI field writes its state
@@ -118,7 +117,7 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
         // its width would re-lay out the whole sidebar every frame
         sidebarWidth.set(placement.sidebarWidth, spring: nil, at: now)
         contentX.set(placement.contentX, spring: spring, at: now)
-        mirrored = placement.mirrored
+        self.mirrored = mirrored
         sidebarHost.passLeading = mirrored ? placement.sidebarPassTrailing : placement.sidebarPassLeading
         sidebarHost.passTrailing = mirrored ? placement.sidebarPassLeading : placement.sidebarPassTrailing
         place(at: now)

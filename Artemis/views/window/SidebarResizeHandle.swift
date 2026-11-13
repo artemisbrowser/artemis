@@ -14,33 +14,28 @@ struct SidebarResizeHandle: NSViewRepresentable {
 
     @Binding var width: Double
     let range: ClosedRange<Double>
-    /// the sidebar is on the window's right, so dragging left widens it
-    var onRight = false
     /// fires true on mouse-down, false on mouse-up — lets the overlay
     /// sidebar lock itself open while a resize is in flight
     var onDraggingChanged: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> HandleView {
         let view = HandleView()
-        configure(view)
+        updateNSView(view, context: context)
         return view
     }
 
-    func updateNSView(_ nsView: HandleView, context: Context) {
-        configure(nsView)
-    }
-
-    private func configure(_ view: HandleView) {
+    func updateNSView(_ view: HandleView, context: Context) {
         view.width = $width
         view.range = range
-        view.onRight = onRight
+        view.mirrored = context.environment.layoutDirection == .rightToLeft
         view.onDraggingChanged = onDraggingChanged
     }
 
     final class HandleView: NSView {
         fileprivate var width: Binding<Double>?
         fileprivate var range: ClosedRange<Double> = 0...0
-        fileprivate var onRight = false
+        /// right to left, dragging left widens the sidebar
+        fileprivate var mirrored = false
         fileprivate var onDraggingChanged: ((Bool) -> Void)?
         /// window x and sidebar width at mouse-down: the drag moves the edge by the
         /// pointer's travel, wherever in the strip it was grabbed
@@ -63,7 +58,7 @@ struct SidebarResizeHandle: NSViewRepresentable {
         override func mouseDragged(with event: NSEvent) {
             guard let start, let width else { return }
             let travel = Double(event.locationInWindow.x - start.x)
-            let asked = start.width + (onRight ? -travel : travel)
+            let asked = start.width + (mirrored ? -travel : travel)
             width.wrappedValue = min(max(asked, range.lowerBound), range.upperBound)
         }
     }

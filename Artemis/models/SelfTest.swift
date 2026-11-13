@@ -1107,6 +1107,7 @@ enum SelfTest {
             ("hiddenpagekeepsplaying", { await testHiddenPageKeepsPlaying(manager: manager) }),
             ("nowebkitpip", { await testNoWebKitPiP(manager: manager) }),
             ("miniplayer", { await testMiniPlayer(manager: manager) }),
+            ("miniplayernotch", { await testMiniPlayerNotch(manager: manager) }),
             ("pageresizesettles", { await testPageResizeSettles(manager: manager) }),
             ("pagestack", { await testPageStack(manager: manager) }),
             ("splitresizeholds", { testSplitResizeHolds(manager: manager) }),
@@ -1186,6 +1187,8 @@ enum SelfTest {
             ("windowdrag", { await testWindowDrag(manager: manager) }),
             ("commandbarthroughsidebar", { await testCommandBarThroughSidebar(manager: manager) }),
             ("sidebarright", { await testSidebarOnRight(manager: manager) }),
+            ("librarypeek", { await testLibraryPeek(manager: manager) }),
+            ("edgeapproach", { testEdgeApproach() }),
             ("overlayclicks", { await testOverlaySidebarClicks(manager: manager) }),
             ("downloadshelf", { await testDownloadShelf(manager: manager) }),
             ("settingspanesrender", { testSettingsPanesRender(manager: manager) }),
@@ -5624,13 +5627,470 @@ enum SelfTest {
                 && lights().minX > width / 2 && lights().maxX < width,
             layout())
 
-        manager.isSidebarCollapsed = true
-        await settle(.seconds(3)) { host.frame.minX >= width }
+        // the pill, favourites, header and rows: between the top row and the bottom bar
+        func inList(_ r: CGRect, light: CGRect, host: CGRect) -> Bool {
+            r.midY < light.minY - 8 && r.midY > host.minY + 56
+        }
+        // every named control in the sidebar, the hosts and the lights, in window points keyed by
+        // name and order (left to right in the list, else from the sidebar's edge), so a pair shares a key
+        func frames(onRight: Bool) -> [String: CGRect] {
+            func ax(_ e: NSObject, _ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+            var named: [(String, CGRect)] = []
+            func visit(_ e: NSObject, _ depth: Int) {
+                guard depth < 60 else { return }
+                if (ax(e, "isAccessibilityElement") as? Bool) == true,
+                    let label = ax(e, "accessibilityLabel") as? String, !label.isEmpty,
+                    let screen = (ax(e, "accessibilityFrame") as? NSValue)?.rectValue, screen.width > 0
+                {
+                    let r = screen.offsetBy(dx: -window.frame.minX, dy: -window.frame.minY)
+                    // the panel slid off under the clip still reports its frames
+                    if (host.frame.minX...host.frame.maxX).contains(r.midX) { named.append((label, r)) }
+                }
+                for case let child as NSObject in ax(e, "accessibilityChildren") as? [Any] ?? [] { visit(child, depth + 1) }
+            }
+            visit(host, 0)
+            func fromEdge(_ r: CGRect) -> CGFloat { onRight ? width - r.maxX : r.minX }
+            var out: [String: CGRect] = ["host": host.frame, "card": card.frame]
+            for (i, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+                if let b = window.standardWindowButton(kind) { out["light \(i)"] = b.convert(b.bounds, to: nil) }
+            }
+            let light = out["light 0"] ?? .zero
+            func order(_ r: CGRect) -> CGFloat { inList(r, light: light, host: host.frame) ? r.minX : fromEdge(r) }
+            var seen: [String: Int] = [:]
+            for (label, r) in named.sorted(by: { (($0.1.minY * 2).rounded(), order($0.1)) < (($1.1.minY * 2).rounded(), order($1.1)) }) {
+                out["\(label) #\(seen[label, default: 0])"] = r
+                seen[label, default: 0] += 1
+            }
+            return out
+        }
+        // the list and the nav buttons keep left mode's order, each moved as one by its span's
+        // reflection; everything else reflects
+        func mirrorMismatches(_ left: [String: CGRect], _ right: [String: CGRect], rail: Set<String> = []) -> [String] {
+            let light = left["light 0"] ?? .zero, hostFrame = left["host"] ?? .zero
+            let fixed: Set = ["host", "card", "light 0", "light 1", "light 2"]
+            let nav: Set = ["Back", "Forward", "Reload", "Stop"]
+            func group(_ key: String, _ r: CGRect) -> Int? {
+                if fixed.contains(key) { return nil }
+                let label = String(key.split(separator: " #")[0])
+                if inList(r, light: light, host: hostFrame) { return rail.contains(label) ? nil : 0 }
+                return nav.contains(label) ? 1 : nil
+            }
+            let shifts = [0, 1].map { g in
+                left.filter { group($0.key, $0.value) == g }.values.reduce(CGRect.null) { $0.union($1) }
+            }.map { $0.isNull ? 0 : width - $0.maxX - $0.minX }
+            return left.keys.sorted().compactMap { key in
+                guard let l = left[key], let r = right[key] else { return "\(key) only on the \(left[key] == nil ? "right" : "left")" }
+                let x = group(key, l).map { l.minX + shifts[$0] } ?? width - l.maxX
+                let ok = abs(r.minX - x) <= 1 && abs(r.minY - l.minY) <= 1
+                    && abs(r.width - l.width) <= 1 && abs(r.height - l.height) <= 1
+                return ok ? nil : "\(key) \(l) vs \(r)"
+            }
+        }
+        // the same window in each state on each side: right must be left reflected about the midline,
+        // its list (pill, favourites, header, rows) translated instead; in the Library only the rail
+        // reflects, so each list gets a seeded row
+        let seeded = FileManager.default.temporaryDirectory.appendingPathComponent("artemis-library-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: seeded, withIntermediateDirectories: true)
+        try? Data("x".utf8).write(to: seeded.appendingPathComponent("selftest-library.pdf"))
+        let pickedFolder = UserDefaults.standard.string(forKey: DownloadManager.folderKey)
+        let pickedMode = UserDefaults.standard.string(forKey: LibraryMode.storageKey)
+        UserDefaults.standard.set(seeded.path, forKey: DownloadManager.folderKey)
+        let seedURL = URL(string: "https://selftest-library.example/row")!
+        manager.archive.add(id: UUID(), url: seedURL, title: "selftest-archived", spaceName: "Personal", name: nil)
+        manager.history.record(url: seedURL, title: "selftest-visited")
+        let modes = LibraryMode.allCases
+        let seededRow: [LibraryMode: String] = [.downloads: "selftest-library", .archive: "selftest-archived", .history: "selftest-visited"]
+        for state in ["pinned", "overlay", "hidden"] + modes.map(\.rawValue) {
+            let mode = LibraryMode(rawValue: state)
+            var captured: [[String: CGRect]] = []
+            for onRight in [false, true] {
+                UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+                manager.isSidebarCollapsed = state != "pinned" && mode == nil
+                manager.isLibraryOpen = mode != nil
+                if let mode { UserDefaults.standard.set(mode.rawValue, forKey: LibraryMode.storageKey) }
+                try? await Task.sleep(for: .milliseconds(900))
+                if state == "overlay" {
+                    manager.sidebarPeekRequest += 1
+                    try? await Task.sleep(for: .milliseconds(900))
+                }
+                captured.append(frames(onRight: onRight))
+            }
+            manager.isLibraryOpen = false
+            var misses = mirrorMismatches(captured[0], captured[1], rail: mode == nil ? [] : Set(modes.map(\.rawValue)))
+            if let row = mode.flatMap({ seededRow[$0] }), !captured.allSatisfy({ $0.keys.contains { $0.contains(row) } }) {
+                misses.insert("no \(row) row", at: 0)
+            }
+            record(
+                mode != nil
+                    ? "sidebar on right (library \(state)): the rail and every control mirror left mode about the midline; the list, its seeded row and the nav buttons read as in left mode, moved across"
+                    : "sidebar on right (\(state)): the list and nav buttons read as in left mode, moved across; every other control, the lights and both hosts mirror about the midline",
+                misses.isEmpty && captured[0].count > 12,
+                "\(captured[0].count) frames; " + misses.prefix(6).joined(separator: "; "))
+        }
+
+        // the Library slides in and out with the card held at its edge and the lists moving as one
+        // strip, sampled every frame: the lights ride the card, the lists are NSScrollViews, and
+        // the seeded history row gives the Library a list of its own
+        UserDefaults.standard.set(LibraryMode.history.rawValue, forKey: LibraryMode.storageKey)
+        func scrollViews(_ view: NSView) -> [NSView] {
+            (view is NSScrollView ? [view] : []) + view.subviews.flatMap(scrollViews)
+        }
+        for onRight in [false, true] {
+            for state in ["pinned", "overlay"] {
+                UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+                manager.isSidebarCollapsed = state == "overlay"
+                try? await Task.sleep(for: .milliseconds(900))
+                if state == "overlay" {
+                    manager.sidebarPeekRequest += 1
+                    try? await Task.sleep(for: .milliseconds(900))
+                }
+                for open in [true, false] {
+                    manager.isLibraryOpen = open
+                    var edges: [CGFloat] = [], drift: CGFloat = 0, frames = 0
+                    var last: [ObjectIdentifier: CGFloat] = [:]
+                    for _ in 0..<60 {
+                        try? await Task.sleep(for: .milliseconds(8))
+                        edges.append(onRight ? width - lights().maxX : lights().minX)
+                        var now: [ObjectIdentifier: CGFloat] = [:]
+                        for view in scrollViews(host) { now[ObjectIdentifier(view)] = view.convert(view.bounds, to: nil).minX }
+                        let moves = now.compactMap { id, x in last[id].map { x - $0 } }
+                        if let lo = moves.min(), let hi = moves.max() { drift = max(drift, hi - lo) }
+                        if moves.contains(where: { $0 != 0 }) { frames += 1 }
+                        last = now
+                    }
+                    let side = onRight ? "right" : "left", action = open ? "opening" : "closing"
+                    let edgeMoved = (edges.max() ?? 0) - (edges.min() ?? 0)
+                    record(
+                        "library slide (\(side), \(state), \(action)): the card holds its edge and the lists slide as one strip",
+                        edgeMoved <= 1 && drift <= 1 && frames >= 5,
+                        "edge moved \(edgeMoved), lists drifted \(drift) apart, \(frames) moving frames")
+                }
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+        }
+        UserDefaults.standard.set(pickedFolder, forKey: DownloadManager.folderKey)
+        UserDefaults.standard.set(pickedMode, forKey: LibraryMode.storageKey)
+        try? FileManager.default.removeItem(at: seeded)
+        manager.archive.forget { $0.url == seedURL }
+        manager.history.forget { $0.url == seedURL }
+
+        // locking the peek swaps it in place on either side: no card slide, no sidebar dip; unlocking slides
+        let page = manager.newTab(url: URL(string: "about:blank"))
+        for onRight in [false, true] {
+            let side = onRight ? "right" : "left"
+            UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+            manager.isSidebarCollapsed = true
+            await settle(.seconds(3)) { onRight ? host.frame.minX >= width : host.frame.maxX <= 0 }
+            manager.sidebarPeekRequest += 1
+            try? await Task.sleep(for: .milliseconds(900))
+            let web = page.webView
+            guard web.isDescendant(of: card) else {
+                record("sidebar lock (\(side)): the card shows a page", false)
+                continue
+            }
+            // the page keeps its widest size inside the card; the card is the view holding it
+            func edge() -> CGFloat { web.superview.map { $0.convert($0.bounds, to: nil).width } ?? 0 }
+            let peekHost = host.frame, peekEdge = edge()
+            manager.isSidebarCollapsed = false
+            var hosts: [CGRect] = [], edges: [CGFloat] = []
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(8))
+                hosts.append(host.frame)
+                edges.append(edge())
+            }
+            let pinnedEdge = edge()
+            let between = edges.filter { $0 < peekEdge - 2 && $0 > pinnedEdge + 2 }
+            record(
+                "sidebar lock (\(side)): locking the peek pins it in place, the card jumps straight to its pinned width",
+                hosts.allSatisfy { $0 == peekHost } && between.isEmpty && pinnedEdge < peekEdge - 100,
+                "card \(Int(peekEdge))→\(Int(pinnedEdge)), \(between.count) frames between, "
+                    + "sidebar moved \(hosts.contains { $0 != peekHost })")
+            manager.isSidebarCollapsed = true
+            var widths: [CGFloat] = []
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(8))
+                widths.append(edge())
+            }
+            record(
+                "sidebar lock (\(side)): unlocking slides the sidebar away and the card widens",
+                widths.last.map { $0 > pinnedEdge + 100 } == true,
+                "card \(Int(pinnedEdge))→\(Int(widths.last ?? 0))")
+        }
+        manager.close(page)
+
+        // a trackpad swipe from the first space toward the Library's side opens it, and that side
+        // flips with the sidebar; queued as real events through the local monitors. field 51 is the
+        // event's window and CGEventSetWindowLocation its top-left-origin point there
+        typealias SetWindowLocation = @convention(c) (CGEvent, CGPoint) -> Void
+        let setWindowLocation = dlsym(dlopen(nil, RTLD_NOW), "CGEventSetWindowLocation")
+            .map { unsafeBitCast($0, to: SetWindowLocation.self) }
+        func swipe(_ dx: Int32) async {
+            let r = host.convert(host.bounds, to: nil)
+            for (i, phase) in ([1] + Array(repeating: 2, count: 12) + [4] as [Int64]).enumerated() {
+                guard let cg = CGEvent(
+                    scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: 0,
+                    wheel2: phase == 2 ? dx : 0, wheel3: 0),
+                    let field = CGEventField(rawValue: 51)
+                else { continue }
+                cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+                cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+                cg.setIntegerValueField(field, value: Int64(window.windowNumber))
+                setWindowLocation?(cg, CGPoint(x: r.midX, y: window.frame.height - r.midY))
+                if let event = NSEvent(cgEvent: cg) { NSApp.postEvent(event, atStart: false) }
+                try? await Task.sleep(for: .milliseconds(i == 0 ? 30 : 12))
+            }
+            try? await Task.sleep(for: .milliseconds(900))
+        }
+        manager.isSidebarCollapsed = false
+        for onRight in [false, true] {
+            UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+            manager.selectSpace(at: 0, animatePosition: false)
+            manager.isLibraryOpen = false
+            try? await Task.sleep(for: .milliseconds(900))
+            let toward: Int32 = onRight ? -20 : 20
+            await swipe(-toward)
+            let away = manager.isLibraryOpen
+            manager.selectSpace(at: 0, animatePosition: false)
+            try? await Task.sleep(for: .milliseconds(600))
+            await swipe(toward)
+            let opened = manager.isLibraryOpen
+            record(
+                "sidebar swipe (\(onRight ? "right" : "left")): past the first space, only the swipe toward the window's \(onRight ? "right" : "left") edge opens the Library",
+                opened && !away, "toward \(opened), away \(away)")
+            manager.isLibraryOpen = false
+        }
+
+        // the link bubble and the load bar belong to the page, which is never mirrored
+        func bubble() -> CGRect? {
+            func find(_ e: NSObject, _ depth: Int) -> CGRect? {
+                guard depth < 60 else { return nil }
+                // static text carries its string as the value
+                if let text = e.value(forKey: "accessibilityValue") as? String, text.contains("selftest-bubble"),
+                    let screen = (e.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue, screen.width > 0
+                {
+                    return screen.offsetBy(dx: -window.frame.minX, dy: -window.frame.minY)
+                }
+                for case let child as NSObject in e.value(forKey: "accessibilityChildren") as? [Any] ?? [] {
+                    if let found = find(child, depth + 1) { return found }
+                }
+                return nil
+            }
+            return find(card, 0)
+        }
+        var rests: [CGFloat] = []
+        for onRight in [false, true] {
+            let side = onRight ? "right" : "left"
+            UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+            manager.isSidebarCollapsed = false
+            manager.isLibraryOpen = false
+            try? await Task.sleep(for: .milliseconds(900))
+            let page = card.frame
+            manager.hoveredLinkPointer = CGPoint(x: page.midX, y: page.midY)
+            manager.hoveredLinkURL = URL(string: "https://selftest-bubble.example/")
+            try? await Task.sleep(for: .milliseconds(400))
+            let rest = bubble()
+            if let rest { manager.hoveredLinkPointer = CGPoint(x: rest.midX, y: content.bounds.height - rest.midY) }
+            try? await Task.sleep(for: .milliseconds(400))
+            let hopped = bubble()
+            manager.hoveredLinkURL = nil
+            // the card's rim lies on the host's window-edge side
+            let rim = UserDefaults.standard.object(forKey: WindowChrome.edgeInsetKey) as? Double ?? WindowChrome.defaultEdgeInset
+            rests.append((rest?.minX ?? -1) - page.minX - (onRight ? rim : 0))
+            record(
+                "link bubble (\(side)): it rests in the page's bottom-left corner",
+                rest.map { $0.maxX < page.midX && $0.minX - page.minX < 40 } == true,
+                "bubble \(String(describing: rest)) page \(page)")
+            record(
+                "link bubble (\(side)): a link under it sends it to the other corner",
+                rest.flatMap { rest in hopped.map { ($0.midX > page.midX) != (rest.midX > page.midX) } } == true, "bubble \(String(describing: hopped)) page \(page)")
+        }
+        // the pointer moving along one link: the page reports nothing new. points are the window's, y up
+        func move(_ p: CGPoint) async {
+            if let event = NSEvent.mouseEvent(
+                with: .mouseMoved, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+            {
+                NSApp.sendEvent(event)
+            }
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        // the hover above must be seen to end, or this one continues it from its corner
         try? await Task.sleep(for: .milliseconds(300))
+        let pane = card.frame, middle = CGPoint(x: pane.midX, y: pane.midY)
+        manager.hoveredLinkPointer = middle
+        manager.hoveredLinkURL = URL(string: "https://selftest-bubble.example/")
+        try? await Task.sleep(for: .milliseconds(400))
+        if let left = bubble().map({ CGPoint(x: $0.midX, y: $0.midY) }) {
+            await move(left)
+            let dodged = bubble()
+            let reported = manager.hoveredLinkPointer
+            record(
+                "link bubble: the pointer moving under it along one link sends it to the other corner",
+                dodged.map { $0.midX > pane.midX } == true && left.x < pane.midX, "bubble \(String(describing: dodged)) pointer \(left)")
+            await move(middle)
+            let home = bubble()
+            let returned = manager.hoveredLinkPointer
+            await move(CGPoint(x: middle.x + 40, y: middle.y))
+            record(
+                "link bubble: it returns left once the pointer leaves the left corner, and moves elsewhere write nothing",
+                home.map { $0.midX < pane.midX } == true && returned != reported && manager.hoveredLinkPointer == returned,
+                "bubble \(String(describing: home)) pointer \(String(describing: manager.hoveredLinkPointer))")
+            await move(left)
+            let again = bubble()
+            record(
+                "link bubble: it dodges again each time the pointer comes back under it",
+                again.map { $0.midX > pane.midX } == true, "bubble \(String(describing: again))")
+            manager.hoveredLinkURL = nil
+            try? await Task.sleep(for: .milliseconds(300))
+            let idle = manager.hoveredLinkPointer
+            await move(left)
+            await move(middle)
+            record(
+                "link bubble: with no link hovered, pointer moves write nothing",
+                manager.hoveredLinkPointer == idle && manager.hoveredLinkURL == nil)
+        } else {
+            manager.hoveredLinkURL = nil
+            record("link bubble: it shows for a hovered link", false)
+        }
+        let box = CGRect(x: 100, y: 0, width: 900, height: 600), capsule = CGSize(width: 200, height: 24)
+        func dodged(_ x: CGFloat, _ y: CGFloat, in card: CGRect = box) -> Bool {
+            LinkHoverCapsule.dodged(CGPoint(x: x, y: y), size: capsule, card: card)
+        }
         record(
-            "sidebar on right: hidden, the sidebar leaves past the right edge and the card spans the window",
-            host.frame.minX >= width && card.frame.minX == 0 && card.frame.maxX >= width - WindowChrome.range.upperBound,
-            layout())
+            "link bubble: it leaves the left corner once the pointer is within its margin there, and not before",
+            dodged(330, 545) && dodged(150, 590) && !dodged(340, 545) && !dodged(330, 535))
+        record(
+            "link bubble: it is on the left wherever else the pointer is, the right corner included",
+            !dodged(900, 590) && !dodged(770, 545) && !dodged(500, 300))
+        record(
+            "link bubble: on a card too narrow to dodge in, it stays left",
+            !dodged(250, 590, in: CGRect(x: 100, y: 0, width: 300, height: 600)))
+        record(
+            "link bubble: the same place on the page, sidebar left or right",
+            rests.count == 2 && rests[0] >= 0 && abs(rests[0] - rests[1]) <= 1, "from the card's left edge: \(rests)")
+
+        let stallConfiguration = WKWebViewConfiguration()
+        stallConfiguration.setURLSchemeHandler(StallScheme(), forURLScheme: "artemis-stall")
+        let stalled = manager.newTab(configuration: stallConfiguration, select: false)
+        stalled.webView.loadHTMLString(
+            "<html><body><img src='artemis-stall://x.png'></body></html>",
+            baseURL: URL(string: "https://selftest.example/"))
+        for _ in 0..<20 where !stalled.isLoading { try? await Task.sleep(for: .milliseconds(50)) }
+        let barHost = NSHostingView(
+            rootView: PageLoadBar(tab: stalled, accent: .blue)
+                .frame(width: 200, height: 8, alignment: .top)
+                .environment(\.layoutDirection, .rightToLeft))
+        barHost.frame = NSRect(x: 0, y: 0, width: 200, height: 8)
+        let barWindow = NSWindow(contentRect: barHost.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        barWindow.contentView = barHost
+        barWindow.setFrameOrigin(NSPoint(x: -12000, y: -12000))
+        barWindow.orderFront(nil)
+        try? await Task.sleep(for: .milliseconds(600))
+        if let rep = barHost.bitmapImageRepForCachingDisplay(in: barHost.bounds) {
+            barHost.cacheDisplay(in: barHost.bounds, to: rep)
+            let inked = (0..<rep.pixelsWide).filter { x in
+                (0..<rep.pixelsHigh).contains { (rep.colorAt(x: x, y: $0)?.alphaComponent ?? 0) > 0.1 }
+            }
+            record(
+                "load bar (right): it still fills from the page's left edge",
+                stalled.isLoading && inked.first.map { $0 < 8 } == true
+                    && inked.last.map { $0 < rep.pixelsWide * 3 / 4 } == true,
+                "loading \(stalled.isLoading), ink \(inked.first ?? -1)...\(inked.last ?? -1) of \(rep.pixelsWide)")
+        }
+        barWindow.orderOut(nil)
+        manager.close(stalled)
+
+        // the overlay card's page-side corners show what lies past the card, read from the
+        // window as composited: an offscreen draw of the host clips correctly either way
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let createImage = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage")
+            .map { unsafeBitCast($0, to: CreateImage.self) }
+        if let space = manager.stripSpaces.first {
+            let look = space.appearance
+            manager.selectSpace(at: 0, animatePosition: false)
+            for fill in [SpaceFill.glass, .gradient] { for onRight in [false, true] { for open in [false, true] {
+                space.appearance.fill = fill
+                UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+                manager.isSidebarCollapsed = true
+                manager.isLibraryOpen = open
+                try? await Task.sleep(for: .milliseconds(900))
+                manager.sidebarPeekRequest += 1
+                try? await Task.sleep(for: .milliseconds(900))
+                let defaults = UserDefaults.standard
+                let panel = (defaults.object(forKey: "sidebarWidth") as? Double ?? 250)
+                    + (open ? LibrarySidebar.railWidth : 0)
+                    + (defaults.object(forKey: WindowChrome.edgeInsetKey) as? Double ?? WindowChrome.defaultEdgeInset)
+                let name = "overlay corners (\(onRight ? "right" : "left"), \(fill), Library \(open ? "open" : "closed"))"
+                guard let image = createImage?(.null, 1 << 3, CGWindowID(window.windowNumber), 1 | 1 << 3)?
+                    .takeRetainedValue()
+                else {
+                    record("\(name): the window can be captured", false)
+                    continue
+                }
+                let rep = NSBitmapImageRep(cgImage: image)
+                let scale = CGFloat(rep.pixelsWide) / window.frame.width
+                // window points, top-left origin; inward is away from the page
+                let edge = onRight ? width - panel : panel
+                let inward: CGFloat = onRight ? 1 : -1
+                func rgb(_ x: CGFloat, _ y: CGFloat) -> [CGFloat] {
+                    let c = rep.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB)
+                    return [c?.redComponent ?? 0, c?.greenComponent ?? 0, c?.blueComponent ?? 0]
+                }
+                func distance(_ a: [CGFloat], _ b: [CGFloat]) -> CGFloat { zip(a, b).map { abs($0 - $1) }.reduce(0, +) }
+                var notes: [String] = []
+                let height = window.frame.height
+                let rounded = [(2.0, 20.0), (height - 2, height - 20)].allSatisfy { y, below in
+                    let corner = rgb(edge + 2 * inward, y)
+                    let past = rgb(edge - 3 * inward, y)
+                    let card = rgb(edge + 2 * inward, below)
+                    notes.append("y\(Int(y)) corner \(corner.map { Int($0 * 255) }) past \(past.map { Int($0 * 255) }) card \(card.map { Int($0 * 255) })")
+                    return distance(corner, past) < distance(corner, card)
+                }
+                record("\(name): the page-side corners are rounded, not filled", rounded, notes.joined(separator: "; "))
+            } } }
+            // pinned glass is one surface: the rim around the card reads at the sidebar's level,
+            // over a flat backdrop so only the window's own layers can vary
+            let behind = NSWindow(contentRect: window.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            behind.backgroundColor = NSColor(white: 0.1, alpha: 1)
+            behind.order(.below, relativeTo: window.windowNumber)
+            manager.isLibraryOpen = false
+            space.appearance = SpaceAppearance(fill: .glass)
+            // a card with a page casts its shadow on the rim: measured with none selected
+            let chosen = manager.selectedTabID
+            manager.selectedTabID = nil
+            for onRight in [false, true] {
+                UserDefaults.standard.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+                manager.isSidebarCollapsed = false
+                try? await Task.sleep(for: .milliseconds(1500))
+                let name = "pinned glass (\(onRight ? "right" : "left"))"
+                let top = (NSScreen.screens.first?.frame.maxY ?? 0) - window.frame.maxY
+                let bounds = CGRect(origin: CGPoint(x: window.frame.minX, y: top), size: window.frame.size)
+                guard let image = createImage?(bounds, 1 << 2 | 1 << 3, CGWindowID(window.windowNumber), 1 << 3)?
+                    .takeRetainedValue()
+                else {
+                    record("\(name): the window can be captured", false)
+                    continue
+                }
+                let rep = NSBitmapImageRep(cgImage: image)
+                let scale = CGFloat(rep.pixelsWide) / window.frame.width
+                let rim = (UserDefaults.standard.object(forKey: WindowChrome.edgeInsetKey) as? Double
+                    ?? WindowChrome.defaultEdgeInset) / 2
+                func level(_ x: CGFloat, _ y: CGFloat) -> Int {
+                    Int((rep.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.deviceGray)?.whiteComponent ?? 0) * 255)
+                }
+                let rows = [rim, window.frame.height - rim].map { y in
+                    stride(from: 24.0, through: width - 24, by: 12).map { level($0, y) }
+                }
+                record(
+                    "\(name): the rim above and below the card is as bright as the sidebar's",
+                    rows.allSatisfy { ($0.max() ?? 255) - ($0.min() ?? 0) <= 3 },
+                    "top \(rows[0]) bottom \(rows[1])")
+            }
+            behind.orderOut(nil)
+            manager.selectedTabID = chosen
+            space.appearance = look
+            manager.isLibraryOpen = false
+        }
 
         UserDefaults.standard.set(saved, forKey: WindowChrome.sidebarOnRightKey)
         manager.isSidebarCollapsed = false
@@ -6203,7 +6663,7 @@ enum SelfTest {
             panel.alphaValue = 0.01
             panel.orderFrontRegardless()
             let motion = PanelMotion()
-            let tuck = NSRect(x: visible.maxX - PiPGesture.stashPeek, y: visible.midY.rounded(), width: 240, height: 135)
+            let tuck = NSRect(x: (NSScreen.main?.frame.maxX ?? visible.maxX), y: visible.midY.rounded(), width: 240, height: 135)
             motion.animate(panel, to: tuck, velocity: 2)
             await settle(.seconds(3)) { !motion.isRunning }
             record("mini-player: a tucked panel settles where it was thrown, not back on screen",
@@ -6428,6 +6888,177 @@ enum SelfTest {
         addEventListener('resize', place); place();
         </script></body></html>
         """
+
+    /// a panel thrown off a screen's side leaves only its notch there: a tap or a pull brings it back,
+    /// the video plays on meanwhile, and closing the player takes the notch with it
+    private static func testMiniPlayerNotch(manager: TabManager) async {
+        let screen = PiPGesture.Screen(
+            frame: NSRect(x: 0, y: 0, width: 1440, height: 900), visible: NSRect(x: 0, y: 0, width: 1440, height: 875))
+        for onRight in [true, false] {
+            let side = onRight ? "right" : "left"
+            let tucked = NSRect(x: onRight ? 1440 : -480, y: 300, width: 480, height: 270)
+            let inward: CGFloat = onRight ? -1 : 1
+            let notch = PiPGesture.notch(for: tucked, screens: [screen])
+            record(
+                "mini-player notch (\(side)): flush on the side the panel left by, level with it",
+                notch?.onRight == onRight && notch?.frame.midY == tucked.midY
+                    && (onRight ? notch?.frame.maxX == 1440 : notch?.frame.minX == 0), "\(String(describing: notch))")
+            record(
+                "mini-player notch (\(side)): none while any of the panel is on screen",
+                PiPGesture.notch(for: tucked.offsetBy(dx: 40 * inward, dy: 0), screens: [screen]) == nil)
+            let anchor = NSPoint(x: onRight ? 1300 : 140, y: 400)
+            let pulled = PiPGesture.dragged(tucked, by: CGVector(dx: 100 * inward, dy: 0), anchor: anchor, screens: [screen])
+            let out = PiPGesture.dragged(tucked, by: CGVector(dx: 700 * inward, dy: 0), anchor: anchor, screens: [screen])
+            record(
+                "mini-player notch (\(side)): a pull brings the panel out as far as it is pulled",
+                pulled.minX == tucked.minX + 100 * inward && out.minX == tucked.minX + 700 * inward, "\(pulled) \(out)")
+            // y runs down from the window's top; the screen's side is x 22 on the right, 0 on the left
+            let size = PiPGesture.notchSize, flare = PiPGesture.notchFlare
+            let outline = PiPNotchShape(onRight: onRight).path(in: CGRect(origin: .zero, size: size))
+            let screenSide: CGFloat = onRight ? size.width - 1 : 1, inwardSide = size.width - screenSide
+            record(
+                "mini-player notch (\(side)): shoulders curve the screen's side into it, and its outer corners stay empty",
+                [flare - 2, size.height - flare + 2].allSatisfy { outline.contains(CGPoint(x: screenSide, y: $0)) }
+                    && [1, size.height - 1].allSatisfy { !outline.contains(CGPoint(x: inwardSide, y: $0)) }
+                    && [flare - 2, size.height - flare + 2].allSatisfy { !outline.contains(CGPoint(x: size.width / 2, y: $0)) }
+                    && outline.contains(CGPoint(x: inwardSide, y: size.height / 2)), "\(outline.boundingRect)")
+            func kind(_ dx: CGFloat, _ dy: CGFloat, sliding: Bool = false) -> PiPGesture.NotchDrag {
+                PiPGesture.notchDrag(CGVector(dx: dx * inward, dy: dy), onRight: onRight, sliding: sliding)
+            }
+            record(
+                "mini-player notch (\(side)): a press that barely moves is still a tap",
+                kind(2, 3) == .none && kind(-3, -2) == .none)
+            record(
+                "mini-player notch (\(side)): a drag along the screen's side slides it, either way",
+                kind(3, 12) == .slide && kind(-2, -9) == .slide && kind(20, 60, sliding: true) == .slide
+                    && kind(0, 0, sliding: true) == .slide)
+            record(
+                "mini-player notch (\(side)): a drag inward still pulls the panel out, and so does a slide taken well inward",
+                kind(9, 2) == .pull && kind(6, -5) == .pull && kind(30, 200, sliding: true) == .pull)
+            let moved = PiPGesture.slid(tucked, toMidY: 600, screens: [screen])
+            let top = PiPGesture.slid(tucked, toMidY: 5000, screens: [screen])
+            let bottom = PiPGesture.slid(tucked, toMidY: -5000, screens: [screen])
+            record(
+                "mini-player notch (\(side)): sliding moves the tucked panel level with the notch and leaves it tucked",
+                moved.midY == 600 && moved.minX == tucked.minX && moved.size == tucked.size
+                    && PiPGesture.notch(for: moved, screens: [screen])?.frame.midY == 600, "\(moved)")
+            record(
+                "mini-player notch (\(side)): a slide stops with the notch at the visible frame's top and bottom",
+                PiPGesture.notch(for: top, screens: [screen])?.frame.maxY == 875 && top.midY == 875 - size.height / 2
+                    && PiPGesture.notch(for: bottom, screens: [screen])?.frame.minY == 0 && bottom.midY == size.height / 2,
+                "\(top) \(bottom)")
+            // a window's frame holds whole points, which leaves a panel of odd height half a point short of its stop
+            var odd = top
+            odd.size.height = 361
+            odd.origin.y = (875 - PiPGesture.notchSize.height / 2 - odd.height / 2).rounded(.down)
+            record(
+                "mini-player notch (\(side)): under a panel of odd height held to whole points at the top stop, it is still flush there",
+                PiPGesture.notch(for: odd, screens: [screen])?.frame.maxY == 875,
+                "\(odd) \(String(describing: PiPGesture.notch(for: odd, screens: [screen])?.frame))")
+        }
+
+        let player = manager.miniPlayer
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(url: nil, select: true)
+        defer { manager.close(tab); manager.selectedTabID = previous }
+        tab.webView.loadHTMLString(wideLayoutFixture, baseURL: URL(string: "https://www.youtube.com/watch?v=fixture"))
+        await settle { (try? await tab.webView.evaluateJavaScript("v.play(), true")) as? Bool == true }
+        let windows = Set(NSApp.windows.map(ObjectIdentifier.init))
+        player.toggle(tab)
+        guard let panel = NSApp.windows.first(where: { !windows.contains(ObjectIdentifier($0)) && $0.level == .floating }),
+            let display = panel.screen
+        else { return record("mini-player notch: the player opens", false) }
+        await settle { panel.alphaValue == 1 && player.isPlaying }
+        func notch() -> PiPNotch? { NSApp.windows.lazy.compactMap { $0 as? PiPNotch }.first { $0.isVisible } }
+        func time() async -> Double {
+            (try? await tab.webView.evaluateJavaScript("document.querySelector('video').currentTime")) as? Double ?? 0
+        }
+        func ax(_ e: NSObject, _ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+        func button(in e: NSObject, depth: Int = 0) -> NSObject? {
+            if ax(e, "accessibilityLabel") as? String == "Show Mini Player" { return e }
+            guard depth < 20 else { return nil }
+            for case let child as NSObject in ax(e, "accessibilityChildren") as? [Any] ?? [] {
+                if let found = button(in: child, depth: depth + 1) { return found }
+            }
+            return nil
+        }
+        let visible = display.visibleFrame
+        for onRight in [true, false] {
+            let side = onRight ? "right" : "left"
+            let off = NSPoint(x: onRight ? display.frame.maxX : display.frame.minX - panel.frame.width, y: visible.midY)
+            guard !NSScreen.screens.contains(where: { $0.frame.intersects(NSRect(origin: off, size: panel.frame.size)) })
+            else { continue }
+            panel.setFrameOrigin(off)
+            await settle { notch() != nil }
+            let before = await time()
+            try? await Task.sleep(for: .seconds(2))
+            let after = await time()
+            let shown = notch()?.frame ?? .zero
+            record(
+                "mini-player notch (\(side)): tucked, none of the panel shows and the notch sits flush on that side",
+                !panel.frame.intersects(visible) && (onRight ? shown.maxX == visible.maxX : shown.minX == visible.minX)
+                    && abs(shown.midY - panel.frame.midY) < 1, "panel \(panel.frame) notch \(shown) visible \(visible)")
+            record("mini-player notch (\(side)): the video plays on while tucked", after - before > 1, "\(before) to \(after)")
+            let half = PiPGesture.notchSize.height / 2
+            if let handle = notch() {
+                let rest = handle.outline(hovered: false).boundingRect
+                handle.hovered = true
+                let grown = handle.outline(hovered: true).boundingRect
+                handle.hovered = false
+                let bounds = CGRect(origin: .zero, size: handle.frame.size)
+                record(
+                    "mini-player notch (\(side)): hovered it is larger, still flush on the screen's side and inside its window",
+                    grown.width > rest.width + 2 && grown.height > rest.height + 6 && abs(grown.midY - rest.midY) < 0.01
+                        && abs(onRight ? grown.maxX - bounds.maxX : grown.minX) < 0.01 && (onRight ? rest.maxX == bounds.maxX : rest.minX == 0)
+                        && bounds.insetBy(dx: -0.01, dy: -0.01).contains(grown), "rest \(rest) grown \(grown) window \(bounds)")
+                let down = NSPoint(x: handle.frame.midX, y: handle.frame.midY), from = handle.frame.midY
+                func slide(_ dy: CGFloat) -> Bool {
+                    handle.pressed(from: down, midY: from, to: NSPoint(x: down.x + 2, y: down.y + dy))
+                }
+                var kept = slide(5000)
+                let top = (panel.frame, handle.frame)
+                kept = slide(-5000) && kept
+                let bottom = (panel.frame, handle.frame)
+                record(
+                    "mini-player notch (\(side)): dragged along the side it stops at the visible frame's top and bottom, panel level",
+                    kept && abs(top.1.midY - (visible.maxY - half)) < 1 && abs(top.0.midY - top.1.midY) < 1
+                        && abs(bottom.1.midY - (visible.minY + half)) < 1 && abs(bottom.0.midY - bottom.1.midY) < 1,
+                    "top \(top) bottom \(bottom) visible \(visible)")
+                kept = slide(-120)
+                record(
+                    "mini-player notch (\(side)): dragged along the side it and the tucked panel move together, nothing comes out",
+                    kept && abs(handle.frame.midY - (from - 120)) < 1 && abs(panel.frame.midY - (from - 120)) < 1
+                        && !panel.frame.intersects(visible) && notch() === handle
+                        && (onRight ? handle.frame.maxX == visible.maxX : handle.frame.minX == visible.minX),
+                    "panel \(panel.frame) notch \(handle.frame) from \(from)")
+            } else {
+                record("mini-player notch (\(side)): the notch can be hovered and slid", false)
+            }
+            let slidTo = panel.frame.midY
+            _ = notch()?.contentView.flatMap { button(in: $0) }?.perform(Selector(("accessibilityPerformPress")))
+            // the spring's last tick would undo the next tuck: wait out 0.3 s of stillness
+            var rest = NSRect.zero
+            var still = 0
+            await settle(.seconds(4)) {
+                still = rest == panel.frame ? still + 1 : 0
+                rest = panel.frame
+                return still > 7 && visible.contains(rest) && notch() == nil
+            }
+            record(
+                "mini-player notch (\(side)): a tap brings the panel back on screen and the notch goes",
+                visible.contains(panel.frame) && notch() == nil, "panel \(panel.frame)")
+            record(
+                "mini-player notch (\(side)): after a slide the tap brings the panel out where the notch was left",
+                abs(panel.frame.midY - slidTo) < 1 && abs(slidTo - (visible.midY + panel.frame.height / 2 - 120)) < 1,
+                "panel \(panel.frame) slid to \(slidTo)")
+        }
+        panel.setFrameOrigin(NSPoint(x: display.frame.maxX, y: visible.midY))
+        await settle { notch() != nil }
+        let tucked = notch() != nil
+        player.dismiss()
+        await settle { !player.isActive && notch() == nil }
+        record("mini-player notch: closing the player while tucked leaves no notch", tucked && notch() == nil, "tucked \(tucked)")
+    }
 
     /// the panel grown past a site's wide-layout breakpoint still shows the video over its backdrop
     private static func testMiniPlayerWideLayout(manager: TabManager) async {
@@ -6762,9 +7393,9 @@ enum SelfTest {
         let tucked = throwSideways(one), cornered = throwSideways(two), beside = throwSideways([laptop, PiPGesture.Screen(
             frame: external.frame.offsetBy(dx: 0, dy: 500), visible: external.visible.offsetBy(dx: 0, dy: 500))])
         var stashed = false, notStashed = false
-        if case .glide(let r, _)? = tucked { stashed = r.minX == area.maxX - PiPGesture.stashPeek && r.minY == 300 }
+        if case .glide(let r, _)? = tucked { stashed = r.minX == laptop.frame.maxX && r.minY == 300 }
         if case .glide(let r, _)? = cornered, case .glide(let b, _)? = beside { notStashed = r.maxX == area.maxX && b.maxX == area.maxX }
-        record("mini-player gestures: a sideways throw off the screen's last side tucks it away, a strip showing",
+        record("mini-player gestures: a sideways throw off the screen's last side tucks it away, none of it showing",
             stashed, "\(String(describing: tucked))")
         record("mini-player gestures: a sideways throw toward a neighbouring screen corners instead of tucking",
             notStashed, "\(String(describing: cornered)) \(String(describing: beside))")
@@ -7257,6 +7888,57 @@ enum SelfTest {
         record(
             "permissions: an unremembered answer isn't stored",
             store.decision(for: origin, .location, ephemeral: false) == nil)
+
+        // the prompt on screen: input already on its way as it appears grants nothing
+        decided = nil
+        manager.requestPermission([.camera], origin: origin, tab: nil) { decided = $0 }
+        if let request = manager.currentPermissionRequest {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.alphaValue = 0
+            let hosting = NSHostingView(rootView: PermissionPrompt(request: request).environment(manager))
+            window.contentView = hosting
+            window.orderFrontRegardless()
+            hosting.layoutSubtreeIfNeeded()
+            func allow(in e: NSObject, depth: Int = 0) -> NSObject? {
+                func ax(_ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+                if ax("accessibilityLabel") as? String == "Allow" { return e }
+                guard depth < 20 else { return nil }
+                return (ax("accessibilityChildren") as? [Any] ?? []).lazy
+                    .compactMap { ($0 as? NSObject).flatMap { allow(in: $0, depth: depth + 1) } }.first
+            }
+            func pressReturn() {
+                guard let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                    isARepeat: false, keyCode: 36)
+                else { return }
+                if !window.performKeyEquivalent(with: event) { window.keyDown(with: event) }
+            }
+            let early = allow(in: hosting)
+            _ = early?.perform(Selector(("accessibilityPerformPress")))
+            pressReturn()
+            try? await Task.sleep(for: .milliseconds(100))
+            record(
+                "permissions: a press or Return landing as the prompt appears allows nothing",
+                early != nil && decided == nil && manager.currentPermissionRequest === request, "\(String(describing: decided))")
+            try? await Task.sleep(for: PermissionPrompt.armDelay + .milliseconds(400))
+            pressReturn()
+            try? await Task.sleep(for: .milliseconds(100))
+            record("permissions: Return never allows", decided == nil, "\(String(describing: decided))")
+            _ = allow(in: hosting)?.perform(Selector(("accessibilityPerformPress")))
+            try? await Task.sleep(for: .milliseconds(100))
+            record(
+                "permissions: once armed, Allow allows, and remembers nothing unless asked to",
+                decided == .allow && store.decision(for: origin, .camera, ephemeral: false) == nil,
+                "\(String(describing: decided))")
+            window.close()
+        } else {
+            record("permissions: the prompt hosts for the arming checks", false)
+        }
+        while manager.permissionQueue.contains(where: { $0.origin == origin }) { manager.answerPermission(.deny, remember: false) }
+        store.forget(origin)
 
         // and the burner space never writes one to disk
         store.set(.allow, for: origin, .camera, ephemeral: true)
@@ -8301,12 +8983,12 @@ enum SelfTest {
                 && PasswordStore.registrableDomain("com.co") == nil && PasswordStore.registrableDomain("abc.go.com") == "go.com"
                 && PasswordStore.registrableDomain("shop.example.internal") == "example.internal",
             PasswordStore.registrableDomain("evil.com.co") ?? "nil")
-        let recipe = PasswordRecipe(root: "greentea-", sitePart: .firstLetters)
+        let recipe = PasswordRecipe(root: "greentea-", sitePart: .firstLetters, letters: 5)
         let rules = PasswordRules("minlength: 8; required: upper, digit; allowed: ascii-printable")
         record(
             "passwords: a recipe joins its root to the site's name, and site rules catch what it lacks",
             recipe.password(for: "www.instagram.com") == "greentea-insta"
-                && PasswordRecipe(root: "Tea!", letterCase: .upper, siteFirst: true).password(for: "accounts.google.co.uk")
+                && PasswordRecipe(root: "Tea!", sitePart: .name, letterCase: .upper, siteFirst: true).password(for: "accounts.google.co.uk")
                     == "GOOGLETea!"
                 && rules.problem(with: "greentea-insta") != nil && rules.problem(with: "greentea-Insta1") == nil)
         let sparse = try? JSONDecoder().decode(
@@ -8314,6 +8996,27 @@ enum SelfTest {
         record(
             "passwords: a recipe item with missing or unknown fields still opens",
             sparse?.first.map { $0.root == "tea" && $0.sitePart == .name && $0.letters == 5 } == true)
+        let fresh = PasswordRecipe(root: "greentea-")
+        let stored = (try? JSONEncoder().encode(PasswordRecipe(root: "greentea-", sitePart: .name)))
+            .flatMap { try? JSONDecoder().decode(PasswordRecipe.self, from: $0) }
+        record(
+            "passwords: a new recipe takes a site's first three letters; a stored one keeps its part",
+            fresh.sitePart == .firstLetters && fresh.letters == 3 && fresh.password(for: "instagram.com") == "greentea-ins"
+                && stored?.password(for: "instagram.com") == "greentea-instagram"
+                && sparse?.first?.password(for: "www.instagram.com") == "teainstagram",
+            fresh.masked(for: "instagram.com") ?? "nil")
+        func titles(strong: Bool, _ recipes: [PasswordRecipe]) -> [String] {
+            LoginSuggestions(
+                logins: [], origin: "https://instagram.com", offersStrongPassword: strong, fillsCodes: false,
+                recipes: recipes, rules: PasswordRules(), pick: { _ in }, generate: { _ in }, manage: {}
+            ).rows.map(\.title)
+        }
+        let pair = [PasswordRecipe(name: "First", root: "a-"), PasswordRecipe(name: "Second", root: "b-", sitePart: .name)]
+        record(
+            "passwords: a new password's list leads with the random ones, then each recipe in order; recipes alone where none is offered",
+            titles(strong: true, pair) == ["Use Strong Password", "Strong Password Without Symbols", "First", "Second"]
+                && titles(strong: false, pair) == ["First", "Second"] && titles(strong: true, []).first == "Use Strong Password",
+            titles(strong: true, pair).joined(separator: ", "))
         let scrambled = PasswordRecipe(root: "tea-", sitePart: .scrambled, letters: 6, key: Data(repeating: 7, count: 32))
         let insta = scrambled.site(for: "www.instagram.com") ?? ""
         let keyless = try? JSONDecoder().decode(
@@ -11519,12 +12222,6 @@ enum SelfTest {
         await turn()
         record("undo: a space theme goes back", space.appearance == theme)
         undo.removeAllActions()
-        manager.previewRevert = theme
-        manager.updateSpace(space, appearance: SpacePreset.all[4].appearance)
-        manager.updateSpace(space, appearance: theme)
-        manager.previewRevert = nil
-        await turn()
-        record("undo: a theme preview registers nothing", !undo.canUndo)
 
         // Clear Today's Tabs comes back whole, out of the archive. its undo brings the tabs back
         // as new objects, so it runs once nothing above holds one
@@ -11992,6 +12689,34 @@ enum SelfTest {
         record("reader: keeps sections folded until found", folded?.html.contains("A folded section.") == true, folded.map { "\($0.wordCount) words" } ?? "nil")
         let short = await extract("<html><body><article><p>Too short to be an article, only a line.</p></article></body></html>")
         record("reader: a page under 120 words is no article", short == nil)
+
+        let base = URL(string: "https://example.com/a")!
+        let hostile = ReaderMode.sanitize(
+            """
+            <p><a href=" javascript:x()">a</a><a href="java&#9;script:x()">b</a><a href="&#106;avascript:x()">c</a>\
+            <a href="JaVaScRiPt:x()">d</a><a href="data:text/html,<script>x()</script>">e</a><a href="/next?a=1&amp;b=2">f</a>\
+            <a href="mailto:a@example.com">g</a><img src="vbscript:x()" alt="ok"><img src="pic.png"></p><script src=//evil.example/x.js
+            """, base: base)
+        let urls = (try? NSRegularExpression(pattern: "(?:href|src)=\"([^\"]*)\""))?
+            .matches(in: hostile, range: NSRange(hostile.startIndex..., in: hostile))
+            .compactMap { Range($0.range(at: 1), in: hostile).map { String(hostile[$0]) } } ?? []
+        record(
+            "reader: a link or image keeps only an absolute http, https or mailto address",
+            urls.count >= 3 && urls.allSatisfy { $0.hasPrefix("https://") || $0.hasPrefix("http://") || $0.hasPrefix("mailto:") }
+                && urls.contains("https://example.com/next?a=1&amp;b=2") && urls.contains("https://example.com/pic.png")
+                && urls.contains("mailto:a@example.com") && !hostile.contains("<script"),
+            hostile)
+        let armed = ReaderMode.Article(
+            title: "calm",
+            html: """
+                <script>document.title = 'pwned'</script><a id="go" href="javascript:document.title='pwned'">x</a>\
+                <p onclick="document.title='pwned'" id="tap">y</p>
+                """, url: base, wordCount: 1)
+        await load(tab, html: ReaderMode.page(for: armed))
+        _ = try? await tab.webView.evaluateJavaScript("document.getElementById('go').click(); document.getElementById('tap').click()")
+        try? await Task.sleep(for: .milliseconds(300))
+        let title = (try? await tab.webView.evaluateJavaScript("document.title")) as? String
+        record("reader: the reading view runs no script, even one its cleaner missed", title == "calm", title ?? "nil")
     }
 
     /// the reader has to work on a real loaded page, not just a string fixture
@@ -12642,21 +13367,66 @@ enum SelfTest {
             "creator: new space is selected with its first tab open",
             manager.selectedSpaceID == created.id && created.tabs.count == 1)
 
-        // the editor's eye wears a theme on the space; a save in the meantime keeps its own
+        // the space editor through its own controls: a change is worn live, committed only by the tick
         let kept = created.appearance
-        (manager.resumeGradientEdit, manager.previewRevert) = ((created.id, SpacePreset.all[2].appearance), kept)
-        created.appearance = SpacePreset.all[2].appearance
-        let saved = manager.sessionSnapshot().spaces.first { $0.id == created.id }?.appearance
-        created.appearance = kept
-        (manager.resumeGradientEdit, manager.previewRevert) = (nil, nil)
-        record("creator: a previewed theme never reaches the saved session", saved == kept)
-        let previewing = TabManager(core: manager.core, kind: .main, startingOn: created.id)
-        (previewing.resumeGradientEdit, previewing.previewRevert) = ((created.id, SpacePreset.all[2].appearance), kept)
-        created.appearance = SpacePreset.all[2].appearance
-        previewing.windowWillClose()
+        let preset = SpacePreset.all[2]
+        func editor() -> NSView? {
+            NSApp.windows.lazy.compactMap(\.contentView).first { control("Discard changes", in: $0) != nil }
+        }
+        func control(_ label: String, in element: NSObject, depth: Int = 0) -> NSObject? {
+            func ax(_ key: String) -> Any? { element.responds(to: Selector(key)) ? element.value(forKey: key) : nil }
+            if ax("accessibilityLabel") as? String == label { return element }
+            guard depth < 60 else { return nil }
+            return (ax("accessibilityChildren") as? [Any] ?? []).lazy
+                .compactMap { ($0 as? NSObject).flatMap { control(label, in: $0, depth: depth + 1) } }.first
+        }
+        func press(_ label: String) async {
+            _ = editor().flatMap { control(label, in: $0) }?.perform(Selector(("accessibilityPerformPress")))
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        func open() async {
+            manager.editSpaceRequest += 1
+            await settle { editor() != nil }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        func close() async {
+            editor()?.window?.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil)
+            await settle { editor() == nil }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        func saved() -> SpaceAppearance? { manager.sessionSnapshot().spaces.first { $0.id == created.id }?.appearance }
+        let wasCollapsed = manager.isSidebarCollapsed
+        manager.isSidebarCollapsed = false
+        manager.undo.removeAllActions()
+        await open()
+        await press(preset.name)
+        var worn = created.appearance
         record(
-            "creator: a window closed mid-preview hands the space back its own theme",
-            created.appearance == kept && previewing.previewRevert == nil)
+            "editor: a change is worn by the space at once, uncommitted",
+            worn == preset.appearance && worn != kept && !manager.undo.canUndo, "editor up \(editor() != nil)")
+        record("editor: a save during an uncommitted edit writes the committed theme", saved() == kept)
+        await press("Discard changes")
+        record("editor: the x gives the space back its committed theme", worn != kept && created.appearance == kept)
+        await press(preset.name)
+        worn = created.appearance
+        await close()
+        record(
+            "editor: closed without the tick, the space takes its committed theme back",
+            editor() == nil && worn != kept && created.appearance == kept && saved() == kept && !manager.undo.canUndo)
+        await open()
+        await press(preset.name)
+        await press("Save")
+        let committed = created.appearance == preset.appearance && saved() == preset.appearance
+        await close()
+        let stays = created.appearance == preset.appearance
+        manager.undo.undo()
+        try? await Task.sleep(for: .milliseconds(100))
+        record(
+            "editor: the tick commits the theme as exactly one undo entry",
+            committed && stays && created.appearance == kept && !manager.undo.canUndo,
+            "committed \(committed), stays after close \(stays), undone \(created.appearance == kept)")
+        manager.undo.removeAllActions()
+        manager.isSidebarCollapsed = wasCollapsed
 
         await testProfiles(manager: manager, space: created)
         let doomed = created.tabs.map(\.id)
@@ -13929,6 +14699,15 @@ enum SelfTest {
         } else {
             record("bridge: a package's own artemis_ keys and origin sidecar are dropped at install", false, "install failed")
         }
+        let packedID = "selftest-packed-" + UUID().uuidString.lowercased()
+        let packed = ExtensionInstaller.storageRoot.appendingPathComponent(packedID, isDirectory: true)
+        try? FileManager.default.createDirectory(at: packed, withIntermediateDirectories: true)
+        try? Data("not an archive".utf8).write(to: packed.appendingPathComponent("extension.zip"))
+        let handed = await ExtensionCompat.prepare(storedID: packedID)
+        record(
+            "bridge: an archive that won't unpack is refused, never loaded with its keys unread",
+            handed == nil, handed?.lastPathComponent ?? "nil")
+        ExtensionInstaller.removeStorage(forID: packedID)
 
         // user-script files and registries are each profile's own
         let scriptsID = "selftest-userscripts-\(UUID().uuidString)"
@@ -15121,6 +15900,224 @@ enum SelfTest {
             } else {
                 UserDefaults.standard.removeObject(forKey: key)
             }
+        }
+    }
+
+    /// the Library button's recent-downloads peek waits out a rested pointer
+    private static func testLibraryPeek(manager: TabManager) async {
+        func sidebarHost(in view: NSView) -> NSView? {
+            view is PassthroughHostingView<AnyView>
+                ? view : view.subviews.lazy.compactMap { sidebarHost(in: $0) }.first
+        }
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView,
+            let host = sidebarHost(in: content), let primary = NSScreen.screens.first
+        else { return record("library peek: the window and its sidebar are up", false) }
+        func ax(_ e: NSObject, _ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+        func element(_ matches: (String) -> Bool, in e: NSObject, depth: Int = 0) -> NSObject? {
+            if let label = ax(e, "accessibilityLabel") as? String, matches(label) { return e }
+            guard depth < 60 else { return nil }
+            for case let child as NSObject in ax(e, "accessibilityChildren") as? [Any] ?? [] {
+                if let found = element(matches, in: child, depth: depth + 1) { return found }
+            }
+            return nil
+        }
+        func peekShown() -> Bool { element({ $0.contains("selftest-peek") }, in: content) != nil }
+        /// the pointer at `spot`, in screen points from the bottom-left, as the sidebar's host hears it
+        func rest(at spot: CGPoint) async {
+            CGWarpMouseCursorPosition(CGPoint(x: spot.x, y: primary.frame.maxY - spot.y))
+            let inWindow = NSPoint(x: spot.x - window.frame.minX, y: spot.y - window.frame.minY)
+            let inside = host.frame.contains(inWindow)
+            func event(_ type: NSEvent.EventType) -> NSEvent? {
+                type == .mouseMoved
+                    ? NSEvent.mouseEvent(
+                        with: type, location: inWindow, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+                    : NSEvent.enterExitEvent(
+                        with: type, location: inWindow, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
+            }
+            if inside {
+                event(.mouseEntered).map(host.mouseEntered)
+                event(.mouseMoved).map(host.mouseMoved)
+            } else {
+                event(.mouseMoved).map(host.mouseMoved)
+                event(.mouseExited).map(host.mouseExited)
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-peek-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for index in 0..<10000 { close(open(folder.appendingPathComponent("bulk-\(index).txt").path, O_CREAT | O_WRONLY, 0o644)) }
+        for name in ["selftest-peek-1.pdf", "selftest-peek-2.zip", "selftest-peek-3.txt", "selftest-peek-4.png"] {
+            try? Data("peek".utf8).write(to: folder.appendingPathComponent(name))
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        try? FileManager.default.createDirectory(at: folder.appendingPathComponent("selftest-peek-dir"), withIntermediateDirectories: true)
+        try? Data("peek".utf8).write(to: folder.appendingPathComponent(".selftest-peek-dot"))
+        var flagged = folder.appendingPathComponent("selftest-peek-flagged.txt")
+        try? Data("peek".utf8).write(to: flagged)
+        var hidden = URLResourceValues()
+        hidden.isHidden = true
+        try? flagged.setResourceValues(hidden)
+        // a folder changed in the last two seconds is read afresh each time
+        try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)], ofItemAtPath: folder.path)
+        let defaults = UserDefaults.standard
+        let savedFolder = defaults.object(forKey: DownloadManager.folderKey)
+        let savedSide = defaults.object(forKey: WindowChrome.sidebarOnRightKey)
+        let wasCollapsed = manager.isSidebarCollapsed
+        defaults.set(folder.path, forKey: DownloadManager.folderKey)
+        defaults.set(false, forKey: WindowChrome.sidebarOnRightKey)
+        manager.isLibraryOpen = false
+        manager.isSidebarCollapsed = false
+        NSApp.activate()
+        becomeKey(window)
+        let page = CGPoint(x: window.frame.midX + 120, y: window.frame.midY)
+        await rest(at: page)
+        try? await Task.sleep(for: .milliseconds(900))
+        defer {
+            if let savedFolder { defaults.set(savedFolder, forKey: DownloadManager.folderKey) } else { defaults.removeObject(forKey: DownloadManager.folderKey) }
+            if let savedSide { defaults.set(savedSide, forKey: WindowChrome.sidebarOnRightKey) } else { defaults.removeObject(forKey: WindowChrome.sidebarOnRightKey) }
+            manager.isLibraryOpen = false
+            manager.isSidebarCollapsed = wasCollapsed
+            try? FileManager.default.removeItem(at: folder)
+        }
+        guard let library = element({ $0 == "Library" }, in: content),
+            let frame = (ax(library, "accessibilityFrame") as? NSValue)?.rectValue, frame.width > 0
+        else { return record("library peek: the Library button is in the sidebar", false) }
+        let button = CGPoint(x: frame.midX, y: frame.midY)
+
+        func displaced() -> Bool { hypot(NSEvent.mouseLocation.x - button.x, NSEvent.mouseLocation.y - button.y) > 3 }
+        /// rests on the button until the peek shows: whether it showed by 0.7 s, how long it took, and the rests taken.
+        /// A person moving the real pointer mid-wait ends the hover, so that rest alone is taken again
+        func hover() async -> (early: Bool, took: Duration, rests: Int) {
+            var early = false, rested = ContinuousClock.now, rests = 0
+            repeat {
+                if rests > 0 {
+                    await rest(at: page)
+                    try? await Task.sleep(for: .milliseconds(400))
+                }
+                rests += 1
+                rested = .now
+                await rest(at: button)
+                try? await Task.sleep(for: .milliseconds(620))
+                early = peekShown()
+                await settle(.seconds(2)) { peekShown() }
+            } while !peekShown() && displaced() && rests < 5
+            return (early, ContinuousClock.now - rested, rests)
+        }
+        func state() -> String {
+            let now = element({ $0 == "Library" }, in: content).flatMap { (ax($0, "accessibilityFrame") as? NSValue)?.rectValue }
+            return "pointer \(NSEvent.mouseLocation) of \(button), button now \(String(describing: now)), key \(window.isKeyWindow), on top "
+                + "\(NSWindow.windowNumber(at: button, belowWindowWithWindowNumber: 0) == window.windowNumber), "
+                + "library \(manager.isLibraryOpen), collapsed \(manager.isSidebarCollapsed), "
+                + "windows \(NSApp.windows.filter(\.isVisible).map { "\(type(of: $0)) \($0.frame)" })"
+        }
+        func shows(_ name: String) -> Bool { element({ $0.contains(name) }, in: content) != nil }
+        let scans = DownloadFile.recentScans
+        let cold = await hover()
+        record("library peek: no peek after 0.7 s on the button", !cold.early)
+        record(
+            "library peek: it shows once the pointer has rested 1.0 s, as soon over 10000 files, having read them once",
+            shows("selftest-peek-4") && cold.took < .milliseconds(1300) && DownloadFile.recentScans == scans + 1,
+            "after \(cold.took), rest \(cold.rests), \(DownloadFile.recentScans - scans) scans; \(state())")
+        await rest(at: page)
+        await settle(.seconds(2)) { !peekShown() }
+        /// a later hover. Once the mini-player group has run the button hears no pointer after its first peek,
+        /// and is hovered only by the sidebar laying out under one that rests on it
+        func hoverAgain() async {
+            await rest(at: button)
+            for collapsed in [true, false] {
+                manager.isSidebarCollapsed = collapsed
+                try? await Task.sleep(for: .milliseconds(800))
+            }
+            await settle(.seconds(3)) { peekShown() }
+        }
+        await hoverAgain()
+        record(
+            "library peek: a second hover over the untouched folder does not read it again",
+            peekShown() && DownloadFile.recentScans == scans + 1, "\(DownloadFile.recentScans - scans) scans; \(state())")
+        await rest(at: page)
+        await settle(.seconds(2)) { !peekShown() }
+
+        let kept = await DownloadFile.recent(4, in: folder)
+        let all = await DownloadFile.loadAllOffMain(in: folder)
+        record(
+            "library peek: it lists the newest four, newest first, as the Library does, past a folder and hidden files",
+            kept.map(\.name) == ["selftest-peek-4.png", "selftest-peek-3.txt", "selftest-peek-2.zip", "selftest-peek-1.pdf"]
+                && kept.map(\.name) == all.prefix(4).map(\.name) && kept.map(\.contentType) == [.png, .plainText, .zip, .pdf]
+                && all.count == 10004 && DownloadFile.recentScans == scans + 1,
+            "\(kept.map(\.name)) of \(all.count), \(DownloadFile.recentScans - scans) scans")
+        try? Data("peek".utf8).write(to: folder.appendingPathComponent("selftest-peek-5.txt"))
+        await hoverAgain()
+        record(
+            "library peek: a file added since is read, and leads the next peek",
+            shows("selftest-peek-5") && !shows("selftest-peek-1") && DownloadFile.recentScans > scans + 1,
+            "\(DownloadFile.recentScans - scans) scans; \(state())")
+
+        await rest(at: page)
+        await settle(.seconds(2)) { !peekShown() }
+        await rest(at: button)
+        try? await Task.sleep(for: .milliseconds(500))
+        await rest(at: page)
+        try? await Task.sleep(for: .milliseconds(1200))
+        record("library peek: none when the pointer left before the wait ended", !peekShown())
+
+        await rest(at: button)
+        try? await Task.sleep(for: .milliseconds(400))
+        _ = library.perform(Selector(("accessibilityPerformPress")))
+        let opened = manager.isLibraryOpen
+        try? await Task.sleep(for: .milliseconds(1200))
+        manager.isLibraryOpen = false
+        try? await Task.sleep(for: .milliseconds(300))
+        record("library peek: a click during the wait opens Library at once and drops the peek", opened && !peekShown(), "opened \(opened)")
+        await rest(at: page)
+        try? await Task.sleep(for: .milliseconds(400))
+    }
+
+    /// the sidebar's hover area tells a pointer that came for it from one passing through
+    private static func testEdgeApproach() {
+        let frame = NSRect(x: 300, y: 100, width: 1000, height: 600)
+        for onRight in [false, true] {
+            let side = onRight ? "right" : "left"
+            /// feeds depths 8 ms apart, then holds the last one for `hold`; whether any sample revealed, and the last
+            func run(_ depths: [CGFloat], hold: TimeInterval = 0) -> (any: Bool, last: Bool) {
+                var approach = EdgeApproach(strip: 8)
+                var any = false, last = false, t = 0.0
+                func feed(_ depth: CGFloat) {
+                    let x = onRight ? frame.maxX - depth : frame.minX + depth
+                    last = approach.reveals(
+                        depth: EdgeApproach.depth(of: NSPoint(x: x, y: 400), in: frame, onRight: onRight), at: t)
+                    any = any || last
+                }
+                for depth in depths {
+                    feed(depth)
+                    t += 0.008
+                }
+                if hold > 0, let depth = depths.last {
+                    t += hold
+                    feed(depth)
+                }
+                return (any, last)
+            }
+            let through = run(stride(from: -90, through: 120, by: 14).map { CGFloat($0) })
+            record("edge approach (\(side)): from outside, a pass through the band and strip does not reveal", !through.any)
+            let brief = run([-90, -60, -30, -22], hold: 0.1)
+            let rested = run([-90, -60, -30, -22], hold: EdgeApproach.restTime)
+            record(
+                "edge approach (\(side)): from outside, resting in the area reveals", !brief.any && rested.last,
+                "after 0.1 s \(brief.last), after \(EdgeApproach.restTime) s \(rested.last)")
+            let turned = run([-90, -50, -20, 4, -4])
+            record("edge approach (\(side)): from outside, turning back toward the edge reveals", turned.last)
+            let flick = run([240, 150, 60, -25])
+            record("edge approach (\(side)): from the window, a flick overshooting into the band reveals", flick.last)
+            let slow = run([40, 30, 20, 12, 7])
+            record("edge approach (\(side)): from the window, a slow approach reveals at the strip", slow.last)
+            // a window flush to the screen's edge: the pointer stops on the edge, depth 0
+            let flush = run([120, 60, 0, 0])
+            record("edge approach (\(side)): pinned on a flush window's edge reveals", flush.last)
         }
     }
 

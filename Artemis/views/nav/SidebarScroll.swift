@@ -160,6 +160,8 @@ struct ScrollViewProbe: NSViewRepresentable {
 struct GutterScroller: View {
     let scroll: SidebarScroll
     let gutter: CGFloat
+    /// the gutter lies left of the track, as when the sidebar sits on the right
+    var onLeft = false
     @Environment(\.chromeInk) private var ink
     @State private var hovering = false
     @State private var grabbed: CGFloat?
@@ -188,7 +190,7 @@ struct GutterScroller: View {
                         }
                         .onEnded { _ in grabbed = nil }
                 )
-                .position(x: track.maxX + gutter / 2, y: track.minY + travel * min(1, m.offset / m.maxOffset) + thumb / 2)
+                .position(x: onLeft ? track.minX - gutter / 2 : track.maxX + gutter / 2, y: track.minY + travel * min(1, m.offset / m.maxOffset) + thumb / 2)
                 .animation(Motion.hover, value: wide)
                 .animation(Motion.fade, value: scroll.isActive)
                 .accessibilityHidden(true)

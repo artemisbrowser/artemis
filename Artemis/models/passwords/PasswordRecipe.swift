@@ -4,7 +4,8 @@
 import CryptoKit
 import Foundation
 
-/// a suggested password the person's own way: a root they remember plus part of each site's name
+/// a suggested password the person's own way: a root they remember plus part of each site's name.
+/// every part but `.scrambled` lets a site that saw its own password work out the others
 nonisolated struct PasswordRecipe: Codable, Identifiable, Hashable {
     enum SitePart: String, Codable, CaseIterable { case name, firstLetters, initial, scrambled }
     enum LetterCase: String, Codable, CaseIterable { case lower, capitalized, upper }
@@ -12,9 +13,9 @@ nonisolated struct PasswordRecipe: Codable, Identifiable, Hashable {
     var id = UUID()
     var name = "My Password"
     var root = ""
-    var sitePart = SitePart.name
+    var sitePart = SitePart.firstLetters
     /// how many characters `.firstLetters` and `.scrambled` keep
-    var letters = 5
+    var letters = 3
     var letterCase = LetterCase.lower
     var siteFirst = false
     /// nil is the default profile
@@ -72,8 +73,8 @@ nonisolated struct PasswordRecipe: Codable, Identifiable, Hashable {
 }
 
 nonisolated extension PasswordRecipe {
-    /// a field this build doesn't know, or one an older build never wrote, falls back to its default;
-    /// a missing key stays missing, since a new one would change every scrambled password
+    /// a field this build doesn't know, or one an older build never wrote, falls back to its default.
+    /// a missing key, part or length keeps what it meant when written, or stored passwords would change
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func field<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
@@ -82,7 +83,7 @@ nonisolated extension PasswordRecipe {
         let base = PasswordRecipe()
         self.init(
             id: field(.id, base.id), name: field(.name, base.name), root: field(.root, base.root),
-            sitePart: field(.sitePart, base.sitePart), letters: field(.letters, base.letters),
+            sitePart: field(.sitePart, .name), letters: field(.letters, 5),
             letterCase: field(.letterCase, base.letterCase), siteFirst: field(.siteFirst, base.siteFirst),
             profileID: field(.profileID, base.profileID), key: field(.key, Data?.none))
     }

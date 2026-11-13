@@ -11,6 +11,7 @@ struct LinkHoverCapsule: View {
     @Environment(TabManager.self) private var tabManager
     @State private var click: LinkClick?
     @State private var flagsMonitor: Any?
+    @State private var moveMonitor: Any?
     @State private var card: CGRect = .zero
     @State private var size: CGSize = .zero
 
@@ -25,17 +26,52 @@ struct LinkHoverCapsule: View {
         }
         .animation(.easeOut(duration: 0.12), value: tabManager.hoveredLinkURL)
         .animation(.easeOut(duration: 0.12), value: click)
+        .animation(.easeOut(duration: 0.12), value: isRight)
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isRight ? .bottomTrailing : .bottomLeading)
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { card = $0 }
+        // part of the page, which is never mirrored
+        .environment(\.layoutDirection, .leftToRight)
+        .onChange(of: tabManager.hoveredLinkURL != nil) { _, hovering in
+            if hovering { startMoveMonitor() } else { stopMoveMonitor() }
+        }
         .onAppear { startFlagsMonitor() }
-        .onDisappear { stopFlagsMonitor() }
+        .onDisappear {
+            stopFlagsMonitor()
+            stopMoveMonitor()
+        }
     }
 
-    /// bottom-right while the hovered link sits under the bottom-left corner's capsule, with a 24pt margin
+    /// bottom-left is home; bottom-right only while the last pointer written lies on the left corner's capsule
     private var isRight: Bool {
-        guard let pointer = tabManager.hoveredLinkPointer else { return false }
-        return pointer.x < card.minX + size.width + 36 && pointer.y > card.maxY - size.height - 36
+        tabManager.hoveredLinkPointer.map { Self.dodged($0, size: size, card: card) } ?? false
+    }
+
+    /// `pointer` is within 24pt of the left corner's capsule, and the right corner's is not as close
+    static func dodged(_ pointer: CGPoint, size: CGSize, card: CGRect) -> Bool {
+        pointer.y > card.maxY - size.height - 36 && pointer.x < card.minX + size.width + 36
+            && pointer.x <= card.maxX - size.width - 36
+    }
+
+    /// the page reports a link once, as the pointer enters it: this follows the pointer along it.
+    /// a moved event that names no window carries a screen point
+    private func startMoveMonitor() {
+        stopMoveMonitor()
+        moveMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
+            if let window = BrowserWindows.shared.window(of: tabManager), event.window == nil || event.window === window {
+                let at = event.window == nil ? window.convertPoint(fromScreen: event.locationInWindow) : event.locationInWindow
+                let pointer = CGPoint(x: at.x, y: (window.contentView?.bounds.height ?? 0) - at.y)
+                if Self.dodged(pointer, size: size, card: card) != isRight {
+                    tabManager.hoveredLinkPointer = pointer
+                }
+            }
+            return event
+        }
+    }
+
+    private func stopMoveMonitor() {
+        if let moveMonitor { NSEvent.removeMonitor(moveMonitor) }
+        moveMonitor = nil
     }
 
     private func capsule(for url: URL) -> some View {

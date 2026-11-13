@@ -16,7 +16,7 @@ nonisolated enum ExtensionInstaller {
             switch self {
             case .notReadable: "The extension file couldn't be read."
             case .noManifest: "No manifest.json was found in the extension."
-            case .holdsLink: "The extension contains a symbolic link, which Artemis won't install."
+            case .holdsLink: "The extension holds a symbolic link or can't be unpacked, so Artemis won't install it."
             case .copyFailed(let why): "Couldn't store the extension: \(why)"
             }
         }

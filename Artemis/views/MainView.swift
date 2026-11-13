@@ -97,36 +97,38 @@ struct MainView: View {
         }
         // the grab strip when the rim is too thin to hold one; it must sit above
         // the sidebar's overlay or the sidebar's side of the seam loses its clicks
-        .overlay(alignment: sidebarOnRight ? .trailing : .leading) {
+        .overlay(alignment: .leading) {
             if !isSidebarCollapsed, edgeInset < WindowChrome.minGrabWidth {
                 resizeHandle(width: Self.seamGrabWidth)
                     // padding, not .offset: offset is render-only and leaves the AppKit hit area behind
-                    .padding(nearEdge, pinnedFootprint - Self.seamGrabWidth / 2)
+                    .padding(.leading, pinnedFootprint - Self.seamGrabWidth / 2)
             }
         }
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
-        .overlay(alignment: sidebarOnRight ? .bottomTrailing : .bottomLeading) {
+        .overlay(alignment: .bottomLeading) {
             // the sidebar's download pill is off-screen with it, so downloads show over the page's corner
             if isSidebarCollapsed, !isSidebarOverlayVisible {
                 DownloadPill(isLanding: true)
                     .frame(width: 240)
-                    .padding(nearEdge, max(edgeInset, 0) + 12)
+                    .padding(.leading, max(edgeInset, 0) + 12)
                     .padding(.bottom, max(edgeInset, 0) + 12)
                     .environment(\.chromeInk, tabManager.blendedInk)
             }
         }
         .animation(Motion.pop, value: isSidebarCollapsed && DownloadManager.shared.shelf.isEmpty)
-        .overlay(alignment: sidebarOnRight ? .trailing : .leading) {
+        .overlay(alignment: .leading) {
             // collapsed with the rig away: hover the window edge to peek it back
             if isSidebarCollapsed, !isSidebarOverlayVisible {
                 edgeRevealZone
                     // its top corner, out to the rim, drags the window like the band beside it
-                    .overlay(alignment: sidebarOnRight ? .topTrailing : .topLeading) {
+                    .overlay(alignment: .topLeading) {
                         WindowDragStrip()
                             .frame(width: max(rim, sidebarHoverAreaWidth), height: max(rim, PageDragBand.height))
                     }
             }
         }
+        // right mode is left mode laid out right to left; the hosts take it in `hosted`
+        .environment(\.layoutDirection, direction)
         .onChange(of: isSidebarCollapsed) { _, collapsed in
             // collapsing under the pointer hands over to the overlay in place until the mouse leaves;
             // from the keyboard or a menu, with the pointer elsewhere, it slides away now
@@ -219,26 +221,6 @@ struct MainView: View {
             }
             .animation(Motion.fade, value: tabManager.peekTab?.id)
         }
-        .overlay {
-            // the space editor's full-window gradient preview; exiting resumes the editor
-            Group {
-                if tabManager.gradientPreview != nil {
-                    GradientPreview {
-                        // the space header resumes the edit once this goes nil
-                        if let resume = tabManager.resumeGradientEdit,
-                            let space = tabManager.spaces.first(where: { $0.id == resume.id }),
-                            let revert = tabManager.previewRevert
-                        {
-                            tabManager.updateSpace(space, appearance: revert)
-                        }
-                        tabManager.previewRevert = nil
-                        tabManager.gradientPreview = nil
-                    }
-                    .transition(.opacity)
-                }
-            }
-            .animation(Motion.fade, value: tabManager.gradientPreview != nil)
-        }
         .overlay { TabSwitcherOverlay() }
         .overlay {
             feedbackOverlay
@@ -249,12 +231,12 @@ struct MainView: View {
                 .animation(Motion.fade, value: tabManager.liveFolderDraft == nil)
         }
         .background {
-            WindowBackdrop(sidebarWidth: isSidebarCollapsed ? 0 : sidebarWidth + libraryRailExtra)
+            WindowBackdrop(sidebarPinned: !isSidebarCollapsed)
                 // in step with the shell's slide; pinning from the peek swaps in place
                 .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
                 .animation(Motion.panel, value: tabManager.isLibraryOpen)
                 // the pinned sidebar's frost strip sits on its leading side
-                .environment(\.layoutDirection, sidebarOnRight ? .rightToLeft : .leftToRight)
+                .environment(\.layoutDirection, direction)
         }
         .onGeometryChange(for: CGSize.self, of: { $0.size }) { windowSize = $0 }
         .background {
@@ -418,25 +400,17 @@ struct MainView: View {
         }
     }
 
-    /// thin strip on the window edge, and the band past it off the window; dwelling on either peeks the sidebar
+    /// thin strip on the window edge, and the band past it off the window; a pointer that came for either peeks the sidebar
     private var edgeRevealZone: some View {
         Color.clear
             .frame(width: sidebarHoverAreaWidth)
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
-            .onHover { edgeHovered($0, offWindow: false) }
-            .background(EdgeOverhang(onRight: sidebarOnRight) { edgeHovered($0, offWindow: true) })
+            .background(EdgeOverhang(strip: sidebarHoverAreaWidth, onHover: edgeHovered))
     }
 
     private func edgeHovered(_ hovering: Bool, offWindow: Bool) {
         let window = BrowserWindows.shared.window(of: tabManager)
-        // crossing the window's edge, one zone's exit can arrive after the other's enter
-        if !hovering, offWindow
-            ? window?.frame.contains(NSEvent.mouseLocation) == true
-            : EdgeOverhang.contains(window, onRight: sidebarOnRight)
-        {
-            return
-        }
         edgeHoverTask?.cancel()
         guard hovering else { return }
         edgeHoverTask = Task {
@@ -450,18 +424,11 @@ struct MainView: View {
                 repeat {
                     try? await Task.sleep(for: .milliseconds(150))
                 } while !Task.isCancelled
-                    && (EdgeOverhang.contains(window, onRight: sidebarOnRight) || pointerInsideRig)
+                    && (EdgeOverhang.contains(window) || pointerInsideRig)
                 guard !Task.isCancelled, !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen else { return }
                 isSidebarOverlayVisible = false
             }
         }
-    }
-
-    /// the overlay sidebar's outline, rounded on its page side
-    private var panelShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 0, bottomLeadingRadius: 0,
-            bottomTrailingRadius: 14, topTrailingRadius: 14, style: .continuous)
     }
 
     // MARK: - The sidebar rig
@@ -506,7 +473,6 @@ struct MainView: View {
     private var sidebarRig: some View {
         HStack(spacing: 0) {
             Sidebar(width: sidebarWidth)
-                .environment(\.layoutDirection, .leftToRight)
                 .frame(width: sidebarWidth + libraryRailExtra)
                 .frame(maxHeight: .infinity)
                 // overlay mode: empty sidebar areas must not click through to the page
@@ -517,7 +483,6 @@ struct MainView: View {
                 .background(alignment: .leading) {
                     if isSidebarCollapsed {
                         OverlayPanelBackground(
-                            shape: panelShape,
                             width: sidebarWidth + libraryRailExtra + edgeInset,
                             windowWidth: windowSize.width)
                     }
@@ -559,33 +524,30 @@ struct MainView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
-        // on the right, the rig's leading side faces the window's edge
-        .environment(\.layoutDirection, sidebarOnRight ? .rightToLeft : .leftToRight)
     }
 
     /// where the shell puts the sidebar and the card. the sidebar host is as wide
-    /// as the rig ever gets, so pinning never resizes it; past the grip it passes
-    /// clicks through unless a folder's peek hangs there
+    /// as the rig ever gets, so pinning or opening the Library never resizes it;
+    /// past the grip it passes clicks through unless a folder's peek hangs there
     private var shellPlacement: BrowserShell<AnyView, AnyView>.Placement {
         let slack = Self.overlayOvershootSlack
         let rig = sidebarWidth + libraryRailExtra
         let peek = tabManager.isFolderPeekOpen ? FolderPeek.width + 10 : 0
         let hostWidth =
-            slack + rig + max(Self.overlayGripWidth, edgeInset) + Self.overlayBufferWidth + peek
+            slack + sidebarWidth + LibrarySidebar.railWidth + max(Self.overlayGripWidth, edgeInset)
+            + Self.overlayBufferWidth + peek
         return .init(
             sidebarX: isSidebarRevealed ? -slack : -hostWidth,
             sidebarWidth: hostWidth,
             sidebarPassLeading: slack,
             sidebarPassTrailing: peek > 0 ? 0 : hostWidth - (slack + rig + rigGripWidth),
-            contentX: isSidebarCollapsed ? (isEdgeToEdge ? 0 : edgeInset) : pinnedFootprint,
-            mirrored: sidebarOnRight)
+            contentX: isSidebarCollapsed ? (isEdgeToEdge ? 0 : edgeInset) : pinnedFootprint)
     }
 
     /// a modal over the window takes the pointer from everything under it
     private var isModalOverlayUp: Bool {
         tabManager.peekTab != nil || tabManager.isSpaceCreatorVisible
             || tabManager.importer != nil
-            || tabManager.gradientPreview != nil
             || tabManager.feedback != nil || tabManager.liveFolderDraft != nil
     }
 
@@ -599,8 +561,11 @@ struct MainView: View {
                 .environment(tooltipState)
                 .environment(ExtensionManager.shared)
                 .environment(drag)
-                .environment(rearrange))
+                .environment(rearrange)
+                .environment(\.layoutDirection, direction))
     }
+
+    private var direction: LayoutDirection { sidebarOnRight ? .rightToLeft : .leftToRight }
 
     private var rim: CGFloat { isEdgeToEdge ? 0 : CGFloat(edgeInset) }
     /// below the toolbar the page keeps its rim, but never touches the row
@@ -611,14 +576,19 @@ struct MainView: View {
         VStack(spacing: 0) {
             if showsToolbar {
                 BrowserToolbar()
-                    .padding(.top, BrowserToolbar.top)
-                    .padding(nearEdge, rim == 0 && isSidebarCollapsed ? BrowserToolbar.top : 0)
-                    .padding(farEdge, toolbarGap)
+                    .animation(Motion.sidebar) {
+                        $0.padding(.top, BrowserToolbar.top)
+                            .padding(.leading, rim == 0 && isSidebarCollapsed ? BrowserToolbar.top : 0)
+                            .padding(.trailing, toolbarGap)
+                    }
             }
             webCard
                 .overlay { LinkHoverCapsule().allowsHitTesting(false) }
-                .padding(.top, showsToolbar ? toolbarGap : rim)
-                .padding([farEdge, .bottom], rim)
+                // only the rim animates: the host's own resize, already glided by the shell, lands as is
+                .animation(Motion.sidebar) {
+                    $0.padding(.top, showsToolbar ? toolbarGap : rim)
+                        .padding([.trailing, .bottom], rim)
+                }
                 // the visible card frame, for drag-to-split
                 .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
                     frames.contentFrame = $0
@@ -626,8 +596,6 @@ struct MainView: View {
         }
         // behind everything: the rim, the toolbar row's gaps and an empty space's card
         .background(WindowDragStrip())
-        // the rim and corners change with fullscreen pinning; they move with the slide
-        .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
     }
 
     /// invisible grab strip between sidebar and web card
@@ -635,7 +603,6 @@ struct MainView: View {
         SidebarResizeHandle(
             width: $sidebarWidth,
             range: Self.sidebarWidthRange,
-            onRight: sidebarOnRight,
             onDraggingChanged: { dragging in
                 isResizingSidebar = dragging
                 if !dragging, !overlayHeld {
@@ -653,15 +620,10 @@ struct MainView: View {
     private var cardShape: UnevenRoundedRectangle {
         let radius = isEdgeToEdge ? 0 : WindowChrome.cardRadius(inset: edgeInset)
         let near = radius == 0 && !isSidebarCollapsed ? WindowChrome.outerWindowRadius : radius
-        let leading = sidebarOnRight ? radius : near, trailing = sidebarOnRight ? near : radius
         return UnevenRoundedRectangle(
-            topLeadingRadius: leading, bottomLeadingRadius: leading,
-            bottomTrailingRadius: trailing, topTrailingRadius: trailing, style: .continuous)
+            topLeadingRadius: near, bottomLeadingRadius: near,
+            bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous)
     }
-
-    /// the card's side facing the sidebar, and the one facing the window's far edge
-    private var nearEdge: Edge.Set { sidebarOnRight ? .trailing : .leading }
-    private var farEdge: Edge.Set { sidebarOnRight ? .leading : .trailing }
 
     @ViewBuilder
     private var webCard: some View {
@@ -685,6 +647,7 @@ struct MainView: View {
         .overlay(alignment: .topLeading) {
             if let request = tabManager.currentPermissionRequest {
                 PermissionPrompt(request: request)
+                    .environment(\.layoutDirection, .leftToRight)
                     .padding(14)
                     .transition(Motion.slide(.top))
             }
@@ -847,11 +810,11 @@ private struct CommandBarPageShield: View {
 private struct WindowBackdrop: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(TooltipState.self) private var tooltipState
-    let sidebarWidth: CGFloat
+    let sidebarPinned: Bool
 
     var body: some View {
         SpaceBackdrop(
-            spaces: tabManager.stripSpaces, position: tabManager.backdropPosition, sidebarWidth: sidebarWidth)
+            spaces: tabManager.stripSpaces, position: tabManager.backdropPosition, sidebarPinned: sidebarPinned)
             .onChange(of: tabManager.blendedAccent, initial: true) { _, accent in
                 tooltipState.accent = accent
             }
@@ -905,6 +868,7 @@ private struct CardStack: View {
             if tabManager.activeEssentialID == nil, SpaceLock.shared.isLocked(tabManager.currentSpace) {
                 // nothing of a locked space is mounted, so nothing of it can be seen or typed into
                 LockedSpaceView(space: tabManager.currentSpace)
+                    .environment(\.layoutDirection, .leftToRight)
                     .background(alignment: .top) { WindowDragStrip().frame(height: PageDragBand.height) }
                     .background(tabManager.currentSpace.appearance.cardBase)
                     .environment(\.chromeInk, tabManager.currentSpace.appearance.cardInk)
@@ -913,6 +877,7 @@ private struct CardStack: View {
                 // panes carry their own base, rounding and shadow. keyed, so another split
                 // starts with no pane frames or link pick of this one's
                 SplitContentView(group: split)
+                    .environment(\.layoutDirection, .leftToRight)
                     .id(split.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -922,6 +887,7 @@ private struct CardStack: View {
             // a pane being rearranged, or a sidebar tab dragged into the content
             if rearrange.isDragging {
                 RearrangeOverlay(accent: accent)
+                    .environment(\.layoutDirection, .leftToRight)
             }
         }
         // seeded at once so the first swipe already has its neighbours mounted
@@ -991,6 +957,8 @@ private struct CardStack: View {
                 }
             }
         }
+        // the page is never mirrored; its card's rounding and rim are
+        .environment(\.layoutDirection, .leftToRight)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // a card with no page on it drags the window from the same top band
         .background(alignment: .top) { WindowDragStrip().frame(height: PageDragBand.height) }
@@ -1016,15 +984,21 @@ private struct CardStack: View {
 private struct OverlayPanelBackground: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(\.layoutDirection) private var layoutDirection
-    let shape: UnevenRoundedRectangle
     let width: CGFloat
     let windowWidth: CGFloat
 
     var body: some View {
         let glassInView = isGlassInView
+        let onRight = layoutDirection == .rightToLeft
+        let edge: Alignment = onRight ? .trailing : .leading
+        // laid out left to right with the page side picked by hand: a mirrored clip
+        // leaves the frost's page-side corners square
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: onRight ? 14 : 0, bottomLeadingRadius: onRight ? 14 : 0,
+            bottomTrailingRadius: onRight ? 0 : 14, topTrailingRadius: onRight ? 0 : 14, style: .continuous)
         SpaceBackdrop(spaces: tabManager.stripSpaces, position: tabManager.backdropPosition, overPage: true)
-            .frame(width: max(windowWidth, width), alignment: .leading)
-            .frame(width: width, alignment: .leading)
+            .frame(width: max(windowWidth, width), alignment: edge)
+            .frame(width: width, alignment: edge)
             .clipShape(shape)
             // the clip crops the substrate's glass rim, so the lens is re-added at the panel shape
             .overlay {
@@ -1036,8 +1010,9 @@ private struct OverlayPanelBackground: View {
             }
             // gated to clear rather than branched, so the substrate's VEV stays
             // mounted and never grey-flashes mid-slide
-            .shadow(color: .black.opacity(glassInView ? 0 : 0.45), radius: 18, x: layoutDirection == .rightToLeft ? -6 : 6, y: 0)
+            .shadow(color: .black.opacity(glassInView ? 0 : 0.45), radius: 18, x: onRight ? -6 : 6, y: 0)
             .allowsHitTesting(false)
+            .environment(\.layoutDirection, .leftToRight)
     }
 
     /// mirrors SpaceBackdrop's own floor/incoming check

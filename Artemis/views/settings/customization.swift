@@ -8,7 +8,6 @@ struct AppearanceSettings: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     @AppStorage(AppIconChoice.storageKey) private var appIconRaw = AppIconChoice.bundled.rawValue
     @AppStorage(NowPlayingCard.enabledKey) private var showsNowPlaying = true
-    @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
     @AppStorage(FolderPeekDetail.storageKey) private var folderPeekDetailRaw = FolderPeekDetail.none.rawValue
     @AppStorage(FolderTabCount.storageKey) private var folderTabCountRaw = FolderTabCount.count.rawValue
 
@@ -35,14 +34,6 @@ struct AppearanceSettings: View {
             }
 
             Section("Sidebar") {
-                Picker(selection: $sidebarOnRight.undoable("Sidebar Position")) {
-                    Text("Left").tag(false)
-                    Text("Right").tag(true)
-                } label: {
-                    InfoLabel("Position", info: "Which side of the window the sidebar sits on.")
-                }
-                .settingsAnchor(.sidebarPosition)
-
                 Toggle(isOn: $showsNowPlaying.undoable("Now Playing")) {
                     InfoLabel(
                         "Show Now Playing",
@@ -172,9 +163,20 @@ struct SidebarSettings: View {
     @AppStorage("sidebarHoverAreaWidth") private var sidebarHoverAreaWidth = 8.0
     @AppStorage("sidebarRevealDuration") private var sidebarRevealDuration = 0.2
     @AppStorage("spaceTransitionDuration") private var spaceTransitionDuration = 0.2
+    @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
 
     var body: some View {
         Form {
+            Section("Layout") {
+                Picker(selection: $sidebarOnRight.undoable("Sidebar Position")) {
+                    Text("Left").tag(false)
+                    Text("Right").tag(true)
+                } label: {
+                    InfoLabel("Position", info: "Which side of the window the sidebar sits on.")
+                }
+                .settingsAnchor(.sidebarPosition)
+            }
+
             Section("Reveal") {
                 Slider(value: $sidebarRevealDelay.undoable("Reveal Delay"), in: 0...600, step: 25) {
                     InfoLabel(

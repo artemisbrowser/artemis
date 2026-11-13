@@ -44,6 +44,8 @@ struct PageLoadBar: View {
                 .opacity(shown ? 1 : 0)
         }
         .frame(height: height)
+        // fills from the page's left edge whichever side the sidebar is on
+        .environment(\.layoutDirection, .leftToRight)
         .allowsHitTesting(false)
         .onChange(of: target, initial: true) { _, new in update(to: new) }
         .onDisappear { reveal?.cancel() }

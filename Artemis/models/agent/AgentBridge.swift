@@ -261,7 +261,8 @@ final class AgentBridge {
         var detail = "It will be able to read and control tabs in the spaces you've shared with agents in Settings › Agents."
         if !session.parentPath.isEmpty { detail += "\n\nLaunched by \(session.parentPath)" }
         alert.informativeText = detail
-        alert.addButton(withTitle: "Allow")
+        // click-only: a Return typed for something else must not let an agent in
+        alert.addButton(withTitle: "Allow").keyEquivalent = ""
         alert.addButton(withTitle: "Don't Allow").keyEquivalent = "\u{1b}"
         NSApp.activate()
         return alert.runModal() == .alertFirstButtonReturn

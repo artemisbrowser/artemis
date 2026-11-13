@@ -11,6 +11,10 @@ final class Space: Identifiable {
     var name: String
     var icon: String  // SF Symbol name or emoji glyph
     var appearance: SpaceAppearance
+    /// the committed theme while the editor's uncommitted one is worn, else nil
+    @ObservationIgnored var committedAppearance: SpaceAppearance?
+    /// what a save or sync writes: never an uncommitted theme
+    var persistedAppearance: SpaceAppearance { committedAppearance ?? appearance }
     var tabs: [BrowserTab]
     var selectedTabID: BrowserTab.ID?
     /// the favourite this space last showed over its own tab, nil when it showed

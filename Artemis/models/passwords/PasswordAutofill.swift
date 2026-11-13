@@ -509,7 +509,7 @@ struct LoginSuggestions: View {
     /// the row ↑ and ↓ in the page have reached, an index into `rows`
     var highlighted: Int?
 
-    /// every row but Manage Passwords…, in order
+    /// every row but Manage Passwords…, in order: the random passwords lead where they are offered
     var rows: [Row] {
         let host = URL(string: origin)?.host() ?? origin
         let saved = logins.map { login in
@@ -539,7 +539,7 @@ struct LoginSuggestions: View {
         let plain = Row(icon: "textformat.abc", title: "Strong Password Without Symbols", detail: nil) {
             generate((0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
         }
-        return saved + suggested + (rules.namesCharacters ? [strong] : [strong, plain])
+        return (rules.namesCharacters ? [strong] : [strong, plain]) + saved + suggested
     }
 
     var body: some View {

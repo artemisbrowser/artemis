@@ -67,7 +67,7 @@ struct Sidebar: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     /// the url pill and navigation live in the toolbar instead
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
-    @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
+    @Environment(\.layoutDirection) private var layoutDirection
 
     private let metrics = SidebarMetrics.standard
     /// the settled space's ink, not the blended one: the tab lists slide away with
@@ -103,6 +103,8 @@ struct Sidebar: View {
     @State private var scrolledSpaces: Set<Space.ID> = []
     /// the Library is built only while open or sliding out
     @State private var isLibraryMounted = false
+    /// trails `isLibraryMounted` by a commit: a list mounted mid-slide starts at its final spot
+    @State private var isLibrarySlidIn = false
     @State private var libraryUnmountTask: Task<Void, Never>?
     @State private var renameDraft = ""
     /// the name the dialog opened with: confirming it untouched renames nothing
@@ -234,6 +236,7 @@ struct Sidebar: View {
                     NavigationControls(isCompact: isCompact) {
                         tabManager.isSidebarCollapsed.toggle()
                     }
+                    .environment(\.layoutDirection, .leftToRight)
                 }
             }
             // glass buttons are url-bar tall, so their row is too, sitting
@@ -263,14 +266,16 @@ struct Sidebar: View {
                 // content widths are fixed (not the live, animating frame width),
                 // so as the sidebar grows by the rail width on open the rows never
                 // re-truncate — only the surrounding frame widens, revealing them
-                .offset(x: tabManager.isLibraryOpen ? 0 : -pitch)
-                .animation(Motion.panel, value: tabManager.isLibraryOpen)
+                .offset(x: isLibrarySlidIn ? 0 : -pitch)
+                .animation(Motion.panel, value: isLibrarySlidIn)
             }
             .onChange(of: tabManager.isLibraryOpen, initial: true) { _, open in
                 libraryUnmountTask?.cancel()
                 if open {
                     isLibraryMounted = true
+                    DispatchQueue.main.async { isLibrarySlidIn = tabManager.isLibraryOpen }
                 } else {
+                    isLibrarySlidIn = false
                     // held through the slide out, then released
                     libraryUnmountTask = Task {
                         try? await Task.sleep(for: .milliseconds(600))
@@ -281,7 +286,7 @@ struct Sidebar: View {
             .frame(maxHeight: .infinity)
             // clip so the off-screen panel stays hidden under the sidebar's edge
             .clipped()
-            .overlay { folderPeekOverlay }
+            .overlay { folderPeekOverlay.environment(\.layoutDirection, .leftToRight) }
             .onChange(of: drag.dropTick) { _, _ in commitDrop() }
             .background {
                 Live {
@@ -303,15 +308,18 @@ struct Sidebar: View {
             .modifier(BlendedInk())
         }
         // one coordinate space over favourites, tabs and the space icons: every
-        // drag frame is reported into it, and the ghost and insertion line draw in it
+        // drag frame is reported into it, and the ghost and insertion line draw in it.
+        // its frames are physical, so whatever draws by them is laid out left to right
         .coordinateSpace(.named(Self.contentSpace))
         .overlay {
             GutterScroller(
-                scroll: scroll, gutter: trailingInset + Self.rimContribution(rim: edgeInset, collapsed: isSidebarCollapsed))
+                scroll: scroll, gutter: trailingInset + Self.rimContribution(rim: edgeInset, collapsed: isSidebarCollapsed),
+                onLeft: layoutDirection == .rightToLeft)
+            .environment(\.layoutDirection, .leftToRight)
         }
         // what follows the cursor lives in a leaf of its own, so a drag re-runs
         // it rather than this whole body on every move
-        .overlay { Live { dragOverlay } }
+        .overlay { Live { dragOverlay }.environment(\.layoutDirection, .leftToRight) }
         .onAppear {
             // each step re-posts the pointer, so the drop line follows the rows scrolling under it
             drag.onMove = { [scroll, drag] point in scroll.follow(point) { drag.location = drag.location } }
@@ -361,8 +369,11 @@ struct Sidebar: View {
             // recent downloads peek while hovering the inbox
             if isPeekVisible, !tabManager.isLibraryOpen {
                 RecentDownloadsPeek(files: peekFiles)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 44)  // sits just above the bottom bar
+                    .environment(\.layoutDirection, .leftToRight)
+                    .padding(.leading, Self.contentInset)
+                    .padding(.trailing, trailingInset)
+                    // the bottom bar's 10pt margin and its buttons, then the gap the buttons keep between them
+                    .padding(.bottom, 10 + SidebarMetrics.glassSide + 8)
                     .transition(Motion.slide(.bottom))
                     .onHover { hovering in
                         isPeekHovered = hovering
@@ -432,7 +443,7 @@ struct Sidebar: View {
                         if !hovering { setFolderPeek(nil, visible: false) }
                     }
                     .position(
-                        x: sidebarOnRight
+                        x: layoutDirection == .rightToLeft
                             ? row.rect.minX - origin.x - 10 - FolderPeek.width / 2
                             : row.rect.maxX - origin.x + 10 + FolderPeek.width / 2,
                         y: min(max(row.rect.midY - origin.y, height / 2), proxy.size.height - height / 2))
@@ -477,16 +488,20 @@ struct Sidebar: View {
         }
     }
 
+    /// how long the pointer rests on the Library button before its recent downloads show
+    private static let peekDelay: Duration = .seconds(1)
+
     /// debounced show/hide so cursor trips between button and peek don't flicker
     private func setPeek(visible: Bool) {
         peekTask?.cancel()
         peekTask = Task {
-            try? await Task.sleep(for: .milliseconds(visible ? 150 : 200))
+            async let recent = visible ? await DownloadFile.recent(4, in: DownloadManager.folder) : []
+            try? await Task.sleep(for: visible ? Self.peekDelay : .milliseconds(200))
             guard !Task.isCancelled else { return }
             if visible {
-                let files = await DownloadFile.loadAllOffMain(in: DownloadManager.folder)
+                let files = await recent
                 guard !files.isEmpty, !Task.isCancelled else { return }
-                peekFiles = Array(files.prefix(4))
+                peekFiles = files
                 isPeekVisible = true
             } else if !isPeekHovered {
                 isPeekVisible = false
@@ -563,7 +578,8 @@ struct Sidebar: View {
             else { return false }
             // the ScrollView's own space, lifted into the shared one the
             // resolver works in
-            let point = CGPoint(x: location.x + measured.tabContentRect.minX, y: location.y + measured.tabContentRect.minY)
+            let list = measured.tabContentRect
+            let point = CGPoint(x: location.x + list.minX, y: location.y + list.minY)
             switch resolveDrop(at: point, excluding: []) {
             case .list(let container, let index, _, _):
                 tabManager.addTab(from: url, to: container, at: index)
@@ -586,7 +602,7 @@ struct Sidebar: View {
                         }
                         .onChange(of: proxy.frame(in: .named(Self.contentSpace))) { _, f in
                             measured.tabContentRect = f
-                            scroll.track = f
+                            scroll.track = measured.tabContentRect
                         }
                 }
             }
@@ -1532,6 +1548,7 @@ struct Sidebar: View {
             if !showsToolbar {
                 UrlField()
                     .modifier(BlendedInk())
+                    .environment(\.layoutDirection, .leftToRight)
             }
             // global favourites stay fixed here, above the swiping space pager,
             // so they persist across space switches. with none yet, the drop zone
@@ -1543,6 +1560,7 @@ struct Sidebar: View {
                         hiddenID: drag.fromEssentials ? drag.tab?.id : nil,
                         dragActive: drag.isDragging)
                         .modifier(BlendedInk())
+                        .environment(\.layoutDirection, .leftToRight)
                         .background {
                             GeometryReader { proxy in
                                 Color.clear
@@ -1594,6 +1612,7 @@ struct Sidebar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.chromeInk, live ? ink : space.appearance.chromeInk)
         .environment(\.spaceAccent, live ? tabManager.currentSpace.appearance.accent : space.appearance.accent)
+        .environment(\.layoutDirection, .leftToRight)
         .accessibilityHidden(!live)
     }
 
@@ -1819,7 +1838,7 @@ struct Sidebar: View {
                 IncognitoBadge()
                 Spacer(minLength: 0)
             } else if tabManager.isLibraryOpen {
-                HoverIconButton("chevron.left", size: 14, weight: .semibold, standalone: true) {
+                HoverIconButton("chevron.backward", size: 14, weight: .semibold, standalone: true) {
                     tabManager.isLibraryOpen = false
                 }
                 .tooltip("Back to Spaces")
@@ -1984,16 +2003,6 @@ private struct SpaceHeader: View {
         .onDisappear { stopClickMonitor() }
         // the bottom icons' "Edit Space…" routes here so there's only ever one editor
         .onChange(of: tabManager.editSpaceRequest) { isEditing = true }
-        // the gradient eye launches a full-window preview: tuck the editor away
-        // while it's up, then reopen it (the editor resumes the stashed edit) once
-        // the preview closes
-        .onChange(of: tabManager.gradientPreview) { _, preview in
-            if preview != nil {
-                isEditing = false
-            } else if tabManager.resumeGradientEdit != nil {
-                isEditing = true
-            }
-        }
         // anchored to the stable row, not the hover-only button, so moving onto
         // the popover doesn't unhover and dismiss it
         .popover(isPresented: $isEditing) {

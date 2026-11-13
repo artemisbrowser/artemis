@@ -23,11 +23,13 @@ struct BrowserToolbar: View {
                 // the lights and toggle ride the sidebar off-window
                 if tabManager.isSidebarCollapsed { SidebarToggleButton() }
                 NavigationControls()
+                    .environment(\.layoutDirection, .leftToRight)
             }
             .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { navigationWidth = $0 }
             .frame(maxWidth: .infinity, alignment: .leading)
             // centred on the toolbar, kept clear of the navigation on both sides
             UrlField(inToolbar: true)
+                .environment(\.layoutDirection, .leftToRight)
                 .padding(.horizontal, navigationWidth + 6)
         }
         .frame(height: Self.height)

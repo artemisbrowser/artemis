@@ -3,6 +3,7 @@
 
 import AppKit
 import SwiftUI
+import Synchronization
 import UniformTypeIdentifiers
 
 /// a file in the downloads folder, as shown in the library
@@ -26,37 +27,68 @@ nonisolated struct DownloadFile: Identifiable {
     /// drags the file itself, so it can be dropped into Finder or another app
     var dragItem: NSItemProvider { NSItemProvider(contentsOf: url) ?? NSItemProvider() }
 
+    private static let rankKeys: Set<URLResourceKey> = [
+        .isDirectoryKey, .isHiddenKey, .addedToDirectoryDateKey, .creationDateKey, .contentModificationDateKey,
+    ]
+
+    /// the files in `folder` with the date each is ranked by; directories and hidden files are left out
+    private static func ranked(in folder: URL, also extra: Set<URLResourceKey> = []) -> [(url: URL, date: Date)] {
+        let keys = rankKeys.union(extra)
+        // contentsOfDirectory won't enumerate through a symlink (ENOTDIR)
+        let urls = try? FileManager.default.contentsOfDirectory(
+            at: folder.resolvingSymlinksInPath(), includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
+        return (urls ?? []).compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: rankKeys), values.isDirectory != true,
+                values.isHidden != true
+            else { return nil }
+            let date = values.addedToDirectoryDate ?? values.creationDate ?? values.contentModificationDate
+            return (url, date ?? .distantPast)
+        }
+    }
+
+    /// newest first; files of one date go by name
+    private static func isNewer(_ a: (url: URL, date: Date), _ b: (url: URL, date: Date)) -> Bool {
+        a.date != b.date ? a.date > b.date : a.url.lastPathComponent < b.url.lastPathComponent
+    }
+
+    private static func described(_ file: (url: URL, date: Date)) -> DownloadFile {
+        let type = (try? file.url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+        return DownloadFile(
+            url: file.url, name: file.url.lastPathComponent, date: file.date,
+            kind: LibrarySidebar.kindLabel(for: type), contentType: type)
+    }
+
     /// everything in `folder`, newest first, scanned off the main thread
     @concurrent static func loadAllOffMain(in folder: URL) async -> [DownloadFile] {
-        // the folder may be a symlink, which contentsOfDirectory won't enumerate
-        // through (ENOTDIR): resolve it first
-        let downloads = folder.resolvingSymlinksInPath()
-        let keys: Set<URLResourceKey> = [
-            .isDirectoryKey, .isHiddenKey, .contentTypeKey,
-            .addedToDirectoryDateKey, .creationDateKey, .contentModificationDateKey,
-        ]
-        guard
-            let urls = try? FileManager.default.contentsOfDirectory(
-                at: downloads, includingPropertiesForKeys: Array(keys),
-                options: [.skipsHiddenFiles])
-        else { return [] }
+        ranked(in: folder, also: [.contentTypeKey]).sorted(by: isNewer).map(described)
+    }
 
-        return
-            urls.compactMap { url -> DownloadFile? in
-                guard let values = try? url.resourceValues(forKeys: keys),
-                    values.isDirectory != true, values.isHidden != true
-                else { return nil }
-                let date =
-                    values.addedToDirectoryDate ?? values.creationDate
-                    ?? values.contentModificationDate ?? .distantPast
-                return DownloadFile(
-                    url: url,
-                    name: url.lastPathComponent,
-                    date: date,
-                    kind: LibrarySidebar.kindLabel(for: values.contentType),
-                    contentType: values.contentType)
-            }
-            .sorted { $0.date > $1.date }
+    /// the last `recent` answer with the folder state it was read from, and how many scans `recent` has made
+    private static let lastRecent = Mutex<(key: String, modified: Date, files: [DownloadFile], scans: Int)>(
+        ("", .distantPast, [], 0))
+    static var recentScans: Int { lastRecent.withLock { $0.scans } }
+
+    /// the newest `count` files in `folder`, in `loadAllOffMain`'s order; an unchanged folder is not scanned again
+    @concurrent static func recent(_ count: Int, in folder: URL) async -> [DownloadFile] {
+        let resolved = folder.resolvingSymlinksInPath()
+        let modified = (try? resolved.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let key = "\(count) \(resolved.path)"
+        let last = lastRecent.withLock { $0 }
+        if let modified, last.key == key, last.modified == modified { return last.files }
+        var newest: [(url: URL, date: Date)] = []
+        for file in ranked(in: resolved) {
+            guard let slot = newest.firstIndex(where: { isNewer(file, $0) }) ?? (newest.count < count ? newest.count : nil)
+            else { continue }
+            newest.insert(file, at: slot)
+            if newest.count > count { newest.removeLast() }
+        }
+        let files = newest.map(described)
+        lastRecent.withLock {
+            $0.scans += 1
+            // a folder changed within its timestamp's grain of this scan may change again unseen
+            if let modified, modified.timeIntervalSinceNow < -2 { ($0.key, $0.modified, $0.files) = (key, modified, files) }
+        }
+        return files
     }
 }
 
@@ -142,6 +174,8 @@ struct LibrarySidebar: View {
                 case .history: historyList
                 }
             }
+            // only the rail's side follows the sidebar; the lists read as in left mode
+            .environment(\.layoutDirection, .leftToRight)
         }
         .task(id: [downloadsFolder] + finishedDownloads.map(\.path)) { files = await DownloadFile.loadAllOffMain(in: DownloadManager.folder) }
     }

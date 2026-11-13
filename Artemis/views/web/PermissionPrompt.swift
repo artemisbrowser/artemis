@@ -3,14 +3,17 @@
 
 import SwiftUI
 
-/// "meet.google.com wants to use your camera and microphone", over the page that
-/// asked. no dismiss: WebKit's decision handler must be answered by a button, or
-/// refused when the tab closes
+/// a site's camera, microphone or location question, over the page that asked. no dismiss:
+/// WebKit's handler is answered by a button, or refused when the tab closes. input already
+/// on its way as it appears must not grant: no key allows, and Allow is dead for `armDelay`
 struct PermissionPrompt: View {
+    static let armDelay = Duration.milliseconds(600)
+
     @Environment(TabManager.self) private var tabManager
     let request: PermissionRequest
 
-    @State private var remember = true
+    @State private var remember = false
+    @State private var armed = false
 
     private var host: String {
         request.origin
@@ -50,7 +53,7 @@ struct PermissionPrompt: View {
                 Button("Allow") {
                     tabManager.answerPermission(.allow, remember: remember)
                 }
-                .keyboardShortcut(.defaultAction)
+                .disabled(!armed)
             }
         }
         .padding(14)
@@ -59,8 +62,12 @@ struct PermissionPrompt: View {
         .shadow(color: .black.opacity(0.35), radius: 20, y: 6)
         .accessibilityElement(children: .contain)
         // the page stays live under it, so VoiceOver is told rather than moved
+        .task {
+            try? await Task.sleep(for: Self.armDelay)
+            armed = !Task.isCancelled
+        }
         .onAppear { AccessibilityNotification.Announcement("\(host) wants to \(request.summary).").post() }
-        // a fresh question never inherits the last one's checkbox
+        // a fresh question never inherits the last one's checkbox or its armed Allow
         .id(request.id)
     }
 }

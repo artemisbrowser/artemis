@@ -605,12 +605,12 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         unrestored = records
         for record in records {
             guard let resourceURL = await ExtensionCompat.prepare(storedID: record.id) else {
-                // a package still on disk was refused for a link: its record stays, as for one that fails to load
+                // a package still on disk was refused: its record stays, as for one that fails to load
                 if FileManager.default.fileExists(
                     atPath: ExtensionInstaller.storageRoot.appendingPathComponent(record.id).path)
                 {
                     Diagnostics.record(
-                        area: "extensions", message: "a stored extension holds a symbolic link and wasn't loaded")
+                        area: "extensions", message: "a stored extension holds a symbolic link or can't be unpacked, and wasn't loaded")
                 } else {
                     debugLog("extension \(record.id): resources missing, skipping")
                     unrestored.removeAll { $0.id == record.id }

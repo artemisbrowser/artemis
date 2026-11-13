@@ -48,7 +48,7 @@ nonisolated enum ReaderMode {
     }
 
     @concurrent private static func article(_ found: [String: String], url: URL) async -> Article? {
-        let cleaned = sanitize(found["content"] ?? "")
+        let cleaned = sanitize(found["content"] ?? "", base: url)
         let words = stripTags(cleaned).split(whereSeparator: \.isWhitespace).count
         guard words >= 120 else { return nil }
         func text(_ key: String) -> String? {
@@ -61,7 +61,8 @@ nonisolated enum ReaderMode {
 
     // MARK: - Cleaning
 
-    private static func sanitize(_ html: String) -> String {
+    /// `html` with `keptTags` only; never leaves a `<` it didn't write
+    static func sanitize(_ html: String, base: URL) -> String {
         var out = ""
         var index = html.startIndex
         while let open = html[index...].firstIndex(of: "<") {
@@ -73,35 +74,42 @@ nonisolated enum ReaderMode {
                 .prefix { !$0.isWhitespace && $0 != "/" }
                 .lowercased()
             if keptTags.contains(name) {
-                out += rebuild(tag: tagText, name: name)
+                out += rebuild(tag: tagText, name: name, base: base)
             }
             index = html.index(after: close)
         }
-        out += html[index...]
+        out += html[index...].replacingOccurrences(of: "<", with: "&lt;")
         return out
     }
 
-    /// the kept tag with only `href`, `src` and `alt`, minus `javascript:` urls
-    private static func rebuild(tag: String, name: String) -> String {
+    /// the kept tag with only `alt` and an absolute `href` or `src`; a url is written only
+    /// as parsed, and only under a scheme listed here
+    private static func rebuild(tag: String, name: String, base: URL) -> String {
         if tag.hasPrefix("/") { return "</\(name)>" }
+        func value(_ attribute: String) -> String? {
+            firstMatch(in: tag, pattern: "\\b\(attribute)\\s*=\\s*[\"']([^\"']*)[\"']").map(decodeEntities)
+        }
         var attributes = ""
-        for attribute in ["href", "src", "alt"] {
-            if let value = firstMatch(in: tag, pattern: "\(attribute)\\s*=\\s*[\"']([^\"']*)[\"']"),
-                !value.isEmpty,
-                !value.lowercased().hasPrefix("javascript:") {
-                attributes += " \(attribute)=\"\(value)\""
+        for (attribute, schemes) in [("href", ["http", "https", "mailto"]), ("src", ["http", "https"])] {
+            if let raw = value(attribute)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+                let url = URL(string: raw, relativeTo: base)?.absoluteURL,
+                schemes.contains(url.scheme?.lowercased() ?? "") {
+                attributes += " \(attribute)=\"\(escape(url.absoluteString))\""
             }
         }
+        if let alt = value("alt"), !alt.isEmpty { attributes += " alt=\"\(escape(alt))\"" }
         let selfClosing = name == "br" || name == "hr" || name == "img"
         return "<\(name)\(attributes)\(selfClosing ? " /" : "")>"
     }
 
     // MARK: - Rendering
 
-    /// a self-contained document, styled inline for light and dark; `style` lands last, in #reader-style
+    /// a self-contained document, styled inline for light and dark; `style` lands last, in #reader-style.
+    /// its policy runs no script, whatever `article.html` holds
     static func page(for article: Article, style: String = "") -> String {
         """
         <!doctype html><html><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>\(escape(article.title))</title>
         <style>
@@ -278,5 +286,6 @@ nonisolated enum ReaderMode {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 }

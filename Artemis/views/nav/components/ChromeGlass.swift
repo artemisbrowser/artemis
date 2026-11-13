@@ -55,9 +55,10 @@ struct RowHighlight: View {
     @Environment(\.chromeInk) private var ink
     let opacity: Double
     var isSelected = false
+    var radius: CGFloat = 10
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         if isSelected {
             Color.clear.chromeGlass(in: shape, lit: true)
         } else {

@@ -949,11 +949,16 @@ private struct PasswordRecipeEditor: View {
                     if let leakNote { Text(leakNote.text).font(.caption).foregroundStyle(leakNote.color) }
                 }
                 Section {
-                    Picker("Part of its name", selection: $recipe.sitePart) {
-                        Text("Whole name").tag(PasswordRecipe.SitePart.name)
-                        Text("First letters").tag(PasswordRecipe.SitePart.firstLetters)
-                        Text("First letter").tag(PasswordRecipe.SitePart.initial)
-                        Text("Scrambled").tag(PasswordRecipe.SitePart.scrambled)
+                    HStack {
+                        Picker("Part of its name", selection: $recipe.sitePart) {
+                            Text("Whole name").tag(PasswordRecipe.SitePart.name)
+                            Text("First letters").tag(PasswordRecipe.SitePart.firstLetters)
+                            Text("First letter").tag(PasswordRecipe.SitePart.initial)
+                            Text("Scrambled").tag(PasswordRecipe.SitePart.scrambled)
+                        }
+                        if recipe.sitePart != .scrambled {
+                            InfoButton("Easy to remember, but someone who sees one password could guess your others. Scrambled stops that.")
+                        }
                     }
                     if recipe.sitePart == .firstLetters {
                         Stepper("\(recipe.letters) letters", value: $recipe.letters, in: 2...12)
@@ -1012,7 +1017,9 @@ private struct PasswordRecipeEditor: View {
         }
         .frame(width: 440, height: 560)
         .onChange(of: recipe.sitePart) {
-            if recipe.sitePart == .scrambled, recipe.key == nil { recipe.key = PasswordRecipe.newKey() }
+            guard recipe.sitePart == .scrambled else { return }
+            if recipe.key == nil { recipe.key = PasswordRecipe.newKey() }
+            recipe.letters = max(recipe.letters, 8)
         }
         .task(id: checksLeaks ? recipe.root : "") {
             leakNote = nil

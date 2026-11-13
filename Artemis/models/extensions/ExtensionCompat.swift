@@ -46,7 +46,7 @@ nonisolated enum ExtensionCompat {
     // MARK: - Entry point
 
     /// unpack and patch a stored extension in place, returning the URL for
-    /// `WKWebExtension(resourceBaseURL:)`; nil for a package that is missing or holds a link.
+    /// `WKWebExtension(resourceBaseURL:)`; nil for a package that is missing, holds a link or won't unpack.
     /// idempotent per shim version
     @concurrent static func prepare(storedID id: String) async -> URL? {
         guard var root = await migrateZipIfNeeded(id: id), !holdsLink(root) else { return nil }
@@ -59,7 +59,7 @@ nonisolated enum ExtensionCompat {
     // MARK: - Zip migration
 
     /// a stored `extension.zip` unpacked into the package directory, which can be patched as
-    /// files; the zip itself when unpacking fails
+    /// files; nil when unpacking fails, as an archive left packed is never checked or stripped
     private static func migrateZipIfNeeded(id: String) async -> URL? {
         let dir = ExtensionInstaller.storageRoot.appendingPathComponent(id, isDirectory: true)
         let zip = dir.appendingPathComponent("extension.zip")
@@ -74,7 +74,7 @@ nonisolated enum ExtensionCompat {
         else {
             debugLog("compat: unzip failed for \(id)")
             try? fm.removeItem(at: unpacked)
-            return zip  // fall back to the zip; WebKit still loads it unpatched
+            return nil
         }
         try? fm.removeItem(at: zip)
         debugLog("compat: unpacked \(id) for patching")

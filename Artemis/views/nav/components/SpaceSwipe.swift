@@ -5,7 +5,7 @@ import AppKit
 import SwiftUI
 
 /// a two-finger horizontal swipe over the backing view: `onChanged` streams the
-/// cumulative translation (points, right positive) once the axis locks horizontal,
+/// cumulative translation (points, trailing positive) once the axis locks horizontal,
 /// `onEnded` the final one. only a horizontal-locked gesture's moves are consumed
 struct SpaceSwipeDetector: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
@@ -18,15 +18,15 @@ struct SpaceSwipeDetector: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = SwipeView()
-        view.onChanged = onChanged
-        view.onEnded = onEnded
+        updateNSView(view, context: context)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? SwipeView else { return }
-        view.onChanged = onChanged
-        view.onEnded = onEnded
+        let sign: CGFloat = context.environment.layoutDirection == .rightToLeft ? -1 : 1
+        view.onChanged = { [onChanged] in onChanged($0 * sign) }
+        view.onEnded = { [onEnded] in onEnded($0 * sign) }
     }
 
     private final class SwipeView: NSView {

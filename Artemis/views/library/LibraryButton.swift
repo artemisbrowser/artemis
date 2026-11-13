@@ -126,6 +126,9 @@ private struct StorageBox: View {
 
 /// floating peek of the most recent downloads, shown while hovering the inbox
 struct RecentDownloadsPeek: View {
+    /// the panel rounds like the bottom bar's glass buttons under it
+    static let radius = SidebarMetrics.glassSide / 2
+    static let inset: CGFloat = 6
     let files: [DownloadFile]
 
     var body: some View {
@@ -136,9 +139,9 @@ struct RecentDownloadsPeek: View {
                         PeekRow(file: file)
                     }
                 }
-                .padding(6)
+                .padding(Self.inset)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .chromeGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .chromeGlass(in: RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
                 .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
             }
         }
@@ -146,6 +149,8 @@ struct RecentDownloadsPeek: View {
 }
 
 private struct PeekRow: View {
+    /// concentric with the panel's corners
+    static let radius = RecentDownloadsPeek.radius - RecentDownloadsPeek.inset
     @Environment(\.chromeInk) private var ink
     let file: DownloadFile
     @State private var isHovering = false
@@ -174,9 +179,9 @@ private struct PeekRow: View {
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
-        .background(RowHighlight(opacity: isHovering ? 0.09 : 0))
+        .background(RowHighlight(opacity: isHovering ? 0.09 : 0, radius: Self.radius))
         .animation(Motion.hover, value: isHovering)
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { NSWorkspace.shared.open(file.url) }

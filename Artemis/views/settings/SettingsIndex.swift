@@ -184,7 +184,7 @@ nonisolated extension SettingID {
                 keywords: ["border", "padding", "inset", "frame", "margin"])
         case .sidebarPosition:
             SettingsEntry(
-                pane: .appearance, title: "Position", section: "Sidebar",
+                pane: .sidebar, title: "Position", section: "Layout",
                 keywords: ["sidebar on the right", "right side", "left side", "flip", "swap"])
         case .nowPlaying:
             SettingsEntry(

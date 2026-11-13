@@ -51,8 +51,8 @@ struct SpaceBackdrop: View, Animatable {
     var position: Double
     /// glass frosts the page beneath (the floating sidebar) instead of the desktop behind the window
     var overPage = false
-    /// the pinned sidebar's leading strip, frosted at the sidebar's own level; 0 while it floats
-    var sidebarWidth: CGFloat = 0
+    /// the sidebar is pinned: its frost stacks on the background's across the whole window
+    var sidebarPinned = false
 
     // `withAnimation` interpolates only animatable data: exposing `position`
     // re-runs `body` per frame of a click switch instead of jumping to the end
@@ -89,7 +89,7 @@ struct SpaceBackdrop: View, Animatable {
                 background: frost(\.backgroundFrost, floorSpace, nextSpace, frac),
                 sidebar: frost(\.sidebarFrost, floorSpace, nextSpace, frac),
                 brightness: frost(\.glassBrightness, floorSpace, nextSpace, frac),
-                sidebarWidth: sidebarWidth, overPage: overPage, edge: glassInvolved)
+                sidebarPinned: sidebarPinned, overPage: overPage, edge: glassInvolved)
                 .opacity(glassInvolved ? 1 : 0)
 
             ForEach(Array(spaces.enumerated()), id: \.element.id) { index, space in
@@ -132,14 +132,14 @@ struct SpaceBackdrop: View, Animatable {
 }
 
 /// the single liquid-glass surface, shared across all spaces so two glass spaces never
-/// stack two frosts. as the window backdrop it frosts the desktop behind the window, the
-/// pinned sidebar's strip at its own level; over the page it frosts the page beneath
+/// stack two frosts. as the window backdrop it frosts the desktop behind the window, a
+/// pinned sidebar's frost on top; over the page it frosts the page beneath
 private struct GlassSubstrate: View {
     static let fullDim = 0.4
     var background: Double
     var sidebar: Double
     var brightness: Double
-    var sidebarWidth: CGFloat
+    var sidebarPinned: Bool
     var overPage: Bool
     var edge: Bool
     /// Reduce Transparency flattens any vibrancy to a system grey too light for white ink
@@ -159,17 +159,15 @@ private struct GlassSubstrate: View {
                 Frost(amount: sidebar, blending: .withinWindow)
                 dim
             } else {
-                // the pinned sidebar is glass on glass: its frost and rim stack on the background's,
-                // running a corner's width under the card so its rounded sidebar side shows no seam
-                let tucked = sidebarWidth > 0 ? sidebarWidth + WindowChrome.outerWindowRadius : 0
+                // the pinned sidebar is glass on glass: its frost and rim stack on the background's
+                // window-wide, so the rim around the card is the sidebar's own surface
                 ZStack(alignment: .leading) {
                     Frost(amount: background, blending: .behindWindow)
                     Frost(amount: sidebar, blending: .behindWindow)
-                        .frame(width: tucked)
+                        .frame(width: sidebarPinned ? nil : 0)
                     dim
-                    if edge && sidebarWidth > 0 {
+                    if edge && sidebarPinned {
                         GlassLens(identifier: GlassLens.sidebar)
-                            .frame(width: tucked)
                     }
                 }
                 if edge {
@@ -180,7 +178,7 @@ private struct GlassSubstrate: View {
         .ignoresSafeArea()
     }
 
-    /// one layer over both regions, so the pinned sidebar's stacked frosts dim once
+    /// one layer, so the pinned sidebar's stacked frosts dim once
     private var dim: some View { Color.black.opacity(Self.fullDim * (1 - brightness)) }
 }
 

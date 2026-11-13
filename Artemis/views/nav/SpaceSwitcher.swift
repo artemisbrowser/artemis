@@ -236,9 +236,8 @@ struct SpaceEditor: View {
     let space: Space
     @State private var name = ""
     @State private var appearance = SpaceAppearance()
-    // theme edits are buffered in `appearance` and reach the space only on the
-    // tick (the eye wears them until the preview ends); `original` is what the
-    // space shows meanwhile, and what the x reverts to
+    // the space wears `appearance` live, uncommitted until the tick;
+    // `original` is the committed theme the x and a close go back to
     @State private var original = SpaceAppearance()
     @State private var grainPct = 0  // mirror of grain×100, animated for the rolling label
 
@@ -294,16 +293,8 @@ struct SpaceEditor: View {
         .frame(maxHeight: 480)
         .onAppear {
             name = space.name
-            // resume an edit that was interrupted by a full-window preview, else
-            // load the space fresh. the space is never committed mid-edit, so its
-            // current appearance is the original either way
-            if let resume = tabManager.resumeGradientEdit, resume.id == space.id {
-                appearance = resume.appearance
-                tabManager.resumeGradientEdit = nil
-            } else {
-                appearance = space.appearance
-            }
-            original = space.appearance
+            appearance = space.appearance
+            original = appearance
             grainPct = Int(appearance.grain * 100)
             tabManager.isSidebarPopoverOpen = true  // keep the overlay pinned
         }
@@ -318,33 +309,12 @@ struct SpaceEditor: View {
                 appearance.colors = [base, RGBA(base.r * 1.5, base.g * 1.5, base.b * 1.5)]
             }
         }
+        .onChange(of: appearance) { _, worn in tabManager.wearTheme(worn, on: space) }
         .onDisappear {
             commitName()
+            tabManager.revertTheme()
             tabManager.isSidebarPopoverOpen = false
         }
-    }
-
-    // MARK: Preview / commit / revert
-
-    /// the eye: show the working theme on the real space (frozen, no interaction)
-    /// and stash both what to restore and the in-progress edit. the space header
-    /// tucks this editor away while the preview is up and reopens it on exit
-    private func launchPreview() {
-        tabManager.resumeGradientEdit = (space.id, appearance)
-        tabManager.previewRevert = original           // what the space goes back to
-        tabManager.updateSpace(space, appearance: appearance)  // wear it for real
-        tabManager.gradientPreview = appearance        // flag the overlay + close editor
-    }
-
-    private func confirmEdit() {
-        tabManager.updateSpace(space, appearance: appearance)
-        original = appearance  // becomes the new revert point
-    }
-
-    /// the x: throw away the working edits; the space never changed, so this just
-    /// snaps the editor UI back to where it started
-    private func cancelEdit() {
-        appearance = original
     }
 
     // MARK: - Sections
@@ -363,12 +333,12 @@ struct SpaceEditor: View {
                     selection: $appearance.fill)
 
                 Spacer(minLength: 6)
-                GlassIconButton("eye", label: "Preview") { launchPreview() }
                 GlassIconButton("xmark", label: "Discard changes", tint: .red.opacity(0.85)) {
-                    cancelEdit()
+                    appearance = original
                 }
                 GlassIconButton("checkmark", label: "Save", tint: .green.opacity(0.9)) {
-                    confirmEdit()
+                    tabManager.commitTheme()
+                    original = appearance
                 }
             }
 
@@ -448,7 +418,7 @@ struct SpaceEditor: View {
         }
     }
 
-    /// applied live, unlike the buffered theme: a profile change rebuilds the
+    /// committed at once, unlike the theme: a profile change rebuilds the
     /// space's web views in the new jar
     private var profileSection: some View {
         section("PROFILE") {

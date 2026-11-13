@@ -309,6 +309,7 @@ final class MiniPlayer {
         if isCall { PanelMotion.appear(panel) }
         let save: (Notification) -> Void = { [weak self, weak panel] _ in
             guard let self, let panel else { return }
+            panel.updateNotch()
             self.layoutCaptionMenu()
             guard !self.motion.isRunning else { return }
             UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: frameKey)
@@ -1426,8 +1427,15 @@ struct PiPGesture {
     struct Screen { var frame: NSRect; var visible: NSRect }
     enum Move: Equatable { case to(NSRect), glide(NSRect, velocity: Double) }
     static let margin: CGFloat = 0
-    /// how much of a panel tucked off a screen's side stays showing
-    static let stashPeek: CGFloat = 28
+    /// the shoulders that curve the screen's side into the notch, above and below its body
+    static let notchFlare: CGFloat = 11
+    /// the notch's window: a 22 x 44 body between its two shoulders
+    static let notchSize = NSSize(width: 22, height: 44 + 2 * notchFlare)
+    /// how much the notch grows under the pointer, about the screen's side
+    static let notchHover: CGFloat = 1.12
+    /// a press on the notch moves this far before it is a drag, and a slide this far inward before it is a pull
+    static let notchSlop: CGFloat = 4, notchPull: CGFloat = 24
+    enum NotchDrag { case none, slide, pull }
     static var screens: [Screen] { NSScreen.screens.map { Screen(frame: $0.frame, visible: $0.visibleFrame) } }
 
     private struct Swipe {
@@ -1520,12 +1528,54 @@ struct PiPGesture {
             y: flung.y < area.midY ? area.minY : area.maxY - r.height, width: r.width, height: r.height)
         if flung.x < area.minX || flung.x > area.maxX, abs(v.dx) >= 2 * abs(v.dy) {
             let tuck = NSRect(
-                x: flung.x < area.minX ? area.minX - r.width + stashPeek : area.maxX - stashPeek,
+                x: flung.x < area.minX ? s.frame.minX - r.width : s.frame.maxX,
                 y: min(max(r.minY, area.minY), area.maxY - r.height), width: r.width, height: r.height)
             if !screens.contains(where: { $0.frame != s.frame && $0.frame.intersects(tuck) }) { target = tuck }
         }
         let distance = hypot(target.minX - r.minX, target.minY - r.minY)
         return .glide(target, velocity: distance > 1 ? speed / distance : 0)
+    }
+
+    /// the notch of a panel at `r`, flush to the side it left its nearest screen's visible frame by and
+    /// level with it; nil while any of the panel is on a screen
+    static func notch(for r: NSRect, screens: [Screen]) -> (frame: NSRect, onRight: Bool)? {
+        guard !screens.contains(where: { $0.frame.insetBy(dx: 1, dy: 0).intersects(r) }),
+            let s = screen(for: NSPoint(x: r.midX, y: r.midY), in: screens)
+        else { return nil }
+        let onRight = r.midX > s.frame.midX
+        return (
+            NSRect(
+                x: onRight ? s.visible.maxX - notchSize.width : s.visible.minX,
+                y: min(max((r.midY - notchSize.height / 2).rounded(), s.visible.minY), s.visible.maxY - notchSize.height),
+                width: notchSize.width, height: notchSize.height), onRight
+        )
+    }
+
+    /// what a press on the notch that has travelled `d` is: along the side slides it, inward pulls the panel out
+    static func notchDrag(_ d: CGVector, onRight: Bool, sliding: Bool) -> NotchDrag {
+        if sliding { return d.dx * (onRight ? -1 : 1) > notchPull ? .pull : .slide }
+        guard hypot(d.dx, d.dy) > notchSlop else { return .none }
+        return abs(d.dy) > abs(d.dx) ? .slide : .pull
+    }
+
+    /// tucked `r` moved along its screen's side to centre on `midY`, its notch kept inside the visible frame
+    static func slid(_ r: NSRect, toMidY midY: CGFloat, screens: [Screen]) -> NSRect {
+        guard let s = screen(for: NSPoint(x: r.midX, y: r.midY), in: screens) else { return r }
+        let half = notchSize.height / 2
+        var to = r
+        to.origin.y = min(max(midY, s.visible.minY + half), s.visible.maxY - half) - r.height / 2
+        if screens.contains(where: { $0.frame != s.frame && $0.frame.intersects(to) }) {
+            to.origin.y = min(max(to.minY, s.frame.minY), s.frame.maxY - r.height)
+        }
+        return to
+    }
+
+    /// `start` dragged by `delta` under `clampLive`, keeping what overhang it began with until pulled out of it
+    static func dragged(_ start: NSRect, by delta: CGVector, anchor: NSPoint, screens: [Screen]) -> NSRect {
+        let r = start.offsetBy(dx: delta.dx, dy: delta.dy)
+        var c = clampLive(r, anchor: anchor, in: screens)
+        c.origin.x = start.minX > c.minX ? max(c.minX, min(r.minX, start.minX)) : min(c.minX, max(r.minX, start.minX))
+        return c
     }
 
     /// the screen holding `p`, else the nearest
@@ -1602,6 +1652,7 @@ private final class PiPPanel: NSPanel {
     override func close() {
         TrackpadSpread.stop()
         super.close()
+        updateNotch()
     }
 
     /// the only pinch source: a magnify event never reaches this panel, active app or not
@@ -1632,7 +1683,6 @@ private final class PiPPanel: NSPanel {
         switch event.type {
         case .leftMouseDown:
             let p = event.locationInWindow
-            if isStashed { return keepOnScreen() }
             if event.modifierFlags.contains(.command) { drag(); return }
             if let edge = resizeEdge(at: p) { startResize(edge, from: event); return }
             // withheld, and forwarded on release, so a button on the handle still clicks
@@ -1659,10 +1709,6 @@ private final class PiPPanel: NSPanel {
             }
             super.sendEvent(event)
         case .scrollWheel where event.hasPreciseScrollingDeltas:
-            if isStashed {
-                if event.phase.contains(.began) { keepOnScreen() }
-                return
-            }
             if !event.phase.isDisjoint(with: [.mayBegin, .began]) { ride = nil }
             // a gesture whose began went missing must still stop a spring before it moves the panel
             if event.momentumPhase.isEmpty, !event.phase.isEmpty, event.phase.isDisjoint(with: [.ended, .cancelled]) {
@@ -1730,13 +1776,33 @@ private final class PiPPanel: NSPanel {
             let m = NSEvent.mouseLocation
             recent.append((m, e.timestamp))
             recent.removeAll { e.timestamp - $0.time > 0.15 }
-            let r = startFrame.offsetBy(dx: m.x - startMouse.x, dy: m.y - startMouse.y)
-            setFrameOrigin(PiPGesture.clampLive(r, anchor: m, in: PiPGesture.screens).origin)
+            let delta = CGVector(dx: m.x - startMouse.x, dy: m.y - startMouse.y)
+            setFrameOrigin(PiPGesture.dragged(startFrame, by: delta, anchor: m, screens: PiPGesture.screens).origin)
         }
     }
 
-    /// tucked off a screen's side by a throw: only ever settled there, so any overhang is one
-    private var isStashed: Bool { onScreen(frame) != frame }
+    private var notch: PiPNotch?
+
+    /// the notch shows while the panel is tucked off a screen's side
+    func updateNotch() {
+        guard isVisible, let place = PiPGesture.notch(for: frame, screens: PiPGesture.screens) else {
+            notch?.close()
+            notch = nil
+            return
+        }
+        if let notch, notch.onRight == place.onRight { return notch.place(place.frame) }
+        notch?.close()
+        let made = PiPNotch(shape: place.frame, onRight: place.onRight, level: level, behavior: collectionBehavior)
+        made.onTap = { [weak self] in self?.keepOnScreen() }
+        made.onPull = { [weak self] in self?.drag() }
+        made.onSlide = { [weak self] midY in
+            guard let self else { return }
+            onGestureBegan?()
+            setFrameOrigin(PiPGesture.slid(frame, toMidY: midY, screens: PiPGesture.screens).origin)
+        }
+        made.orderFrontRegardless()
+        notch = made
+    }
 
     /// springs back fully onto the screen holding the panel's centre
     private func keepOnScreen() {
@@ -1817,6 +1883,142 @@ private final class PiPPanel: NSPanel {
     }
 }
 
+/// a tucked panel's handle on the screen's side: a tap springs the panel back, a pull drags it out,
+/// a drag along the side moves it. its window is the resting shape plus room for the hovered growth
+final class PiPNotch: NSPanel {
+    let onRight: Bool
+    var onTap: (() -> Void)?
+    var onPull: (() -> Void)?
+    /// the screen y to centre the notch on
+    var onSlide: ((CGFloat) -> Void)?
+    private var sliding = false
+    var hovered = false {
+        didSet { (contentView as? NSHostingView<NotchFace>)?.rootView = face }
+    }
+    private var face: NotchFace { NotchFace(onRight: onRight, hovered: hovered) { [weak self] in self?.onTap?() } }
+
+    init(shape: NSRect, onRight: Bool, level: NSWindow.Level, behavior: NSWindow.CollectionBehavior) {
+        self.onRight = onRight
+        super.init(
+            contentRect: Self.window(for: shape, onRight: onRight), styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        self.level = level
+        collectionBehavior = behavior
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: face)
+        host.addTrackingArea(
+            NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        contentView = host
+    }
+
+    private static func window(for shape: NSRect, onRight: Bool) -> NSRect {
+        let w = (shape.width * PiPGesture.notchHover).rounded(.up), h = (shape.height * PiPGesture.notchHover).rounded(.up)
+        return NSRect(x: onRight ? shape.maxX - w : shape.minX, y: shape.midY - h / 2, width: w, height: h)
+    }
+
+    func place(_ shape: NSRect) { setFrame(Self.window(for: shape, onRight: onRight), display: true) }
+
+    /// the hover room may lie under the menu bar
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    /// the shape in the window, y down from its top
+    func outline(hovered: Bool) -> Path {
+        let size = PiPGesture.notchSize, edge: CGFloat = onRight ? frame.width : 0
+        let rest = PiPNotchShape(onRight: onRight).path(
+            in: CGRect(x: onRight ? edge - size.width : 0, y: (frame.height - size.height) / 2, width: size.width, height: size.height))
+        guard hovered, !Motion.reduceMotion else { return rest }
+        let k = PiPGesture.notchHover
+        return rest.applying(
+            CGAffineTransform(translationX: edge, y: frame.height / 2).scaledBy(x: k, y: k)
+                .translatedBy(x: -edge, y: -frame.height / 2))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    /// a press begun at `down` with the notch centred on `midY` has reached `m`; false once it became a pull
+    func pressed(from down: NSPoint, midY: CGFloat, to m: NSPoint) -> Bool {
+        let d = CGVector(dx: m.x - down.x, dy: m.y - down.y)
+        switch PiPGesture.notchDrag(d, onRight: onRight, sliding: sliding) {
+        case .none: return true
+        case .slide:
+            sliding = true
+            onSlide?(midY + d.dy)
+            return true
+        case .pull:
+            onPull?()
+            return false
+        }
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        let at = NSPoint(x: event.locationInWindow.x, y: frame.height - event.locationInWindow.y)
+        guard event.type == .leftMouseDown, outline(hovered: hovered).contains(at) else { return super.sendEvent(event) }
+        let down = NSEvent.mouseLocation, midY = frame.midY
+        sliding = false
+        while let e = NSApp.nextEvent(
+            matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true)
+        {
+            if e.type == .leftMouseUp {
+                if !sliding { onTap?() }
+                return
+            }
+            if !pressed(from: down, midY: midY, to: NSEvent.mouseLocation) { return }
+        }
+    }
+}
+
+/// the notch's outline: flat on the screen's side, a concave shoulder at each end, round inward corners
+struct PiPNotchShape: Shape {
+    let onRight: Bool
+
+    func path(in rect: CGRect) -> Path {
+        let f = PiPGesture.notchFlare, r = rect.width / 2, w = rect.width, h = rect.height
+        var path = Path()
+        path.move(to: CGPoint(x: w, y: 0))
+        path.addArc(center: CGPoint(x: w - f, y: 0), radius: f, startAngle: .zero, endAngle: .degrees(90), clockwise: false)
+        path.addArc(center: CGPoint(x: r, y: f + r), radius: r, startAngle: .degrees(270), endAngle: .degrees(180), clockwise: true)
+        path.addArc(center: CGPoint(x: r, y: h - f - r), radius: r, startAngle: .degrees(180), endAngle: .degrees(90), clockwise: true)
+        path.addArc(center: CGPoint(x: w - f, y: h), radius: f, startAngle: .degrees(270), endAngle: .zero, clockwise: false)
+        path.closeSubpath()
+        let placed = onRight ? path : path.applying(CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -w, y: 0))
+        return placed.offsetBy(dx: rect.minX, dy: rect.minY)
+    }
+}
+
+struct NotchFace: View {
+    let onRight: Bool
+    let hovered: Bool
+    let action: () -> Void
+    @State private var shown = false
+
+    var body: some View {
+        let shape = PiPNotchShape(onRight: onRight)
+        Button(action: action) {
+            Image(systemName: onRight ? "chevron.left" : "chevron.right")
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: PiPGesture.notchSize.width, height: PiPGesture.notchSize.height)
+                .contentShape(shape)
+                .glassEffect(.regular.interactive(), in: shape)
+                .overlay(shape.fill(.white.opacity(hovered && Motion.reduceMotion ? 0.18 : 0)).allowsHitTesting(false))
+        }
+        .buttonStyle(.plain)
+        .tooltip("Show Mini Player")
+        .accessibilityLabel("Show Mini Player")
+        .environment(\.layoutDirection, .leftToRight)
+        .scaleEffect(hovered && !Motion.reduceMotion ? PiPGesture.notchHover : 1, anchor: onRight ? .trailing : .leading)
+        .animation(Motion.hover, value: hovered)
+        .offset(x: shown ? 0 : (onRight ? 1 : -1) * PiPGesture.notchSize.width)
+        .opacity(shown ? 1 : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: onRight ? .trailing : .leading)
+        .onAppear { withAnimation(Motion.pop) { shown = true } }
+    }
+}
+
 /// springs a panel's position on the display clock, since AppKit can only ease
 /// a window frame; retargeting mid-flight starts from where it is. size never
 /// animates here: every size change makes the borrowed page re-lay itself out
@@ -1843,7 +2045,8 @@ final class PanelMotion: NSObject {
         endsOnScreen = area?.contains(frame) ?? false
         self.velocity = velocity
         start = CACurrentMediaTime()
-        let link = panel.contentView?.displayLink(target: self, selector: #selector(step))
+        // a panel off every screen has none, and its own view's link never fires there
+        let link = (panel.screen ?? NSScreen.main)?.displayLink(target: self, selector: #selector(step))
         link?.add(to: .main, forMode: .common)
         self.link = link
     }

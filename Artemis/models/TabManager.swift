@@ -242,12 +242,8 @@ final class TabManager {
     /// a folder's peek panel hangs off the sidebar's trailing edge, over the page
     var isFolderPeekOpen = false
 
-    /// the theme the space editor's eye is previewing on the real space
-    var gradientPreview: SpaceAppearance?
-    /// the space's own theme: restored when the preview exits, and what a save writes meanwhile
-    @ObservationIgnored var previewRevert: SpaceAppearance?
-    /// the editor's in-progress edit, resumed when the preview closes
-    @ObservationIgnored var resumeGradientEdit: (id: UUID, appearance: SpaceAppearance)?
+    /// the space wearing this window's editor's uncommitted theme
+    @ObservationIgnored private weak var themeEditSpace: Space?
 
     private var saveTask: Task<Void, Never>? {
         get { core.saveTask }
@@ -443,13 +439,7 @@ final class TabManager {
     func windowWillClose() {
         closePeek()
         endContentSwitch()
-        // already out of the registry a save reads previews from: the space takes its own theme back
-        if let edit = resumeGradientEdit, let revert = previewRevert,
-            let space = spaces.first(where: { $0.id == edit.id })
-        {
-            updateSpace(space, appearance: revert)
-        }
-        (resumeGradientEdit, previewRevert, gradientPreview) = (nil, nil, nil)
+        revertTheme()
         if kind != .main {
             discardPrivateSpace()
             undo.removeAllActions()
@@ -2587,13 +2577,12 @@ final class TabManager {
         _ space: Space, name: String? = nil, icon: String? = nil,
         appearance: SpaceAppearance? = nil
     ) {
-        // a theme preview wears a look without choosing it
         let change: String? =
             if let name, name != space.name { "Rename Space" }
             else if let icon, icon != space.icon { "Change Space Icon" }
             else if let appearance, appearance != space.appearance { "Change Space Theme" }
             else { nil }
-        if previewRevert == nil, let change {
+        if let change {
             let (id, oldName, oldIcon, oldAppearance) = (space.id, space.name, space.icon, space.appearance)
             undo.registerUndo(withTarget: self) { manager in
                 guard let space = manager.allSpaces.first(where: { $0.id == id }) else { return }
@@ -2607,6 +2596,31 @@ final class TabManager {
         if let icon { space.icon = icon }
         if let appearance { space.appearance = appearance }
         scheduleSave()
+    }
+
+    /// the editor's working theme, shown live on the space: no save, no undo entry
+    func wearTheme(_ appearance: SpaceAppearance, on space: Space) {
+        if themeEditSpace !== space { revertTheme() }
+        let committed = space.persistedAppearance
+        space.committedAppearance = appearance == committed ? nil : committed
+        themeEditSpace = space
+        space.appearance = appearance
+    }
+
+    /// the tick: the worn theme becomes the space's own, as one undoable change
+    func commitTheme() {
+        guard let space = themeEditSpace, let committed = space.committedAppearance else { return }
+        let worn = space.appearance
+        (space.appearance, space.committedAppearance, themeEditSpace) = (committed, nil, nil)
+        updateSpace(space, appearance: worn)
+    }
+
+    /// the space takes back its committed theme
+    func revertTheme() {
+        if let space = themeEditSpace, let committed = space.committedAppearance {
+            (space.appearance, space.committedAppearance) = (committed, nil)
+        }
+        themeEditSpace = nil
     }
 
     /// move a space to another profile, rebuilding its tabs' web views in that
@@ -3790,8 +3804,8 @@ final class TabManager {
         }
     }
 
-    /// one space as the session stores it; `appearance` stands in for a theme being previewed
-    private func spaceData(of space: Space, appearance: SpaceAppearance? = nil) -> SpaceData {
+    /// one space as the session stores it
+    private func spaceData(of space: Space) -> SpaceData {
         // a tab with no url yet (a command bar left open) is not persistable.
         // Both the records and the split pane indices come off this one
         // filtered list, or a dropped tab shifts every pane index by one
@@ -3842,7 +3856,7 @@ final class TabManager {
         }
         return SpaceData(
             id: space.id, name: space.name, icon: space.icon,
-            appearance: appearance ?? space.appearance, profileID: space.profileID,
+            appearance: space.persistedAppearance, profileID: space.profileID,
             splitGroups: splitData, tabs: records,
             selectedTabID: saved.first { $0.id == space.selectedTabID }?.id,
             selectedEssentialID: space.selectedEssentialID,
@@ -3854,12 +3868,7 @@ final class TabManager {
     /// the session exactly as it stands — the shape both the on-disk save and the
     /// export file are built from
     func sessionSnapshot() -> BrowsingSession {
-        let previewed = Dictionary(
-            BrowserWindows.shared.allManagers.compactMap { manager in
-                manager.resumeGradientEdit.flatMap { edit in manager.previewRevert.map { (edit.id, $0) } }
-            },
-            uniquingKeysWith: { first, _ in first })
-        let data = spaces.map { spaceData(of: $0, appearance: previewed[$0.id]) }
+        let data = spaces.map { spaceData(of: $0) }
         return BrowsingSession(
             profiles: profiles.map { profile in
                 ProfileData(

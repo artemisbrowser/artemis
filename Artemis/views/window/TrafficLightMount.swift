@@ -25,24 +25,29 @@ struct TrafficLightMount: NSViewRepresentable {
     /// stock titlebar height; keeps the buttons' 9pt-from-bottom centring sane
     static let height: CGFloat = 32
 
-    /// where button `index` (0 = close) sits inside the mount
-    private static func buttonFrame(_ index: Int) -> NSRect {
-        NSRect(
-            x: leadingInset + CGFloat(index) * buttonPitch, y: 9,
-            width: buttonSize, height: buttonSize)
+    /// where button `index` (0 = close) sits inside the mount; mirrored right to left
+    private static func buttonFrame(_ index: Int, mirrored: Bool) -> NSRect {
+        let x = leadingInset + CGFloat(index) * buttonPitch
+        return NSRect(x: mirrored ? width - x - buttonSize : x, y: 9, width: buttonSize, height: buttonSize)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = MountView()
+        view.mirrored = context.environment.layoutDirection == .rightToLeft
         DispatchQueue.main.async {
             context.coordinator.attach(view)
         }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let mirrored = context.environment.layoutDirection == .rightToLeft
+        guard let mount = nsView as? MountView, mount.mirrored != mirrored else { return }
+        mount.mirrored = mirrored
+        mount.needsLayout = true
+    }
 
     /// the buttons' home: transparent to clicks outside them, and it answers
     /// AppKit's private group-hover question so the glyphs show on hover, as
@@ -51,6 +56,7 @@ struct TrafficLightMount: NSViewRepresentable {
         private var tracking: NSTrackingArea?
         private var mouseInside = false
         private var frameObservers: [NSObjectProtocol] = []
+        var mirrored = false
         /// asks the coordinator to adopt if it hasn't: a mount is laid out before
         /// its window exists, and a second window's is built while the first is
         /// key, so adoption is re-checked rather than awaited
@@ -83,7 +89,7 @@ struct TrafficLightMount: NSViewRepresentable {
 
         fileprivate func applyButtonFrames() {
             for (index, button) in orderedButtons.enumerated() {
-                let frame = TrafficLightMount.buttonFrame(index)
+                let frame = TrafficLightMount.buttonFrame(index, mirrored: mirrored)
                 if button.frame != frame { button.frame = frame }
             }
         }
@@ -118,7 +124,7 @@ struct TrafficLightMount: NSViewRepresentable {
 
         private func correctIfNeeded() {
             for (index, button) in orderedButtons.enumerated()
-            where button.frame != TrafficLightMount.buttonFrame(index) {
+            where button.frame != TrafficLightMount.buttonFrame(index, mirrored: mirrored) {
                 needsLayout = true
                 return
             }
