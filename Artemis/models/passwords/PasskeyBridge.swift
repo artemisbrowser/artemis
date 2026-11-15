@@ -27,6 +27,14 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
     /// when each tab's last ceremony ended; the next needs a gesture made after it
     private var finished: [BrowserTab.ID: Date] = [:]
     private var busy: Set<BrowserTab.ID> = []
+    /// a conditional request, held until the login suggestions pick a passkey or its page goes
+    private struct Waiting {
+        let origin: String
+        let rpID: String
+        let allowed: Set<String>
+        let pick: CheckedContinuation<SavedPasskey?, Never>
+    }
+    private var waiting: [BrowserTab.ID: Waiting] = [:]
     /// UV is claimed only while the passwords policy asks the owner at all; the gesture is always UP
     private static var verifies: Bool { OwnerUnlock.Kind.passwords.policy != .never }
 
@@ -55,16 +63,34 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         let frame = message.frameInfo
         guard frame.isMainFrame, let webView = message.webView,
             let tab = webView.navigationDelegate as? BrowserTab, tab.webView === webView,
-            let body = message.body as? [String: Any], let type = body["type"] as? String,
-            let challenge = (body["challenge"] as? String).flatMap(Data.init(base64URL:)), !challenge.isEmpty
+            let body = message.body as? [String: Any], let type = body["type"] as? String
         else { return .refused(prompted: false) }
+        if type == "cancel" {
+            answer(nil, for: tab.id)
+            return .refused(prompted: true)
+        }
         let origin = SitePermissionStore.originString(frame.securityOrigin)
         let host = frame.securityOrigin.host.lowercased()
         let rpID = ((body["rpId"] as? String) ?? host).lowercased()
+        guard let challenge = (body["challenge"] as? String).flatMap(Data.init(base64URL:)), !challenge.isEmpty,
+            PasswordStore.isSecure(origin), tab.offersCredentials(to: origin), Passkeys.isValid(rpID: rpID, for: host)
+        else { return .refused(prompted: false) }
+        let clientData = { (kind: String) in
+            Passkeys.clientDataJSON(type: kind, challenge: challenge.base64URL, origin: origin)
+        }
+        // the pick in Artemis's own list is this ceremony's gesture
+        if type == "get", body["conditional"] as? Bool == true {
+            let id = tab.id
+            answer(nil, for: id)
+            let picked = await withCheckedContinuation {
+                waiting[id] = Waiting(origin: origin, rpID: rpID, allowed: Set(body["allow"] as? [String] ?? []), pick: $0)
+            }
+            guard let picked else { return .refused(prompted: true) }
+            return await sign(with: picked, rpID: rpID, clientData: clientData("webauthn.get"))
+        }
         let now = Date()
         let last = finished[tab.id] ?? .distantPast
-        guard PasswordStore.isSecure(origin), tab.offersCredentials(to: origin), Passkeys.isValid(rpID: rpID, for: host),
-            let pressed = UserGesture.recent(in: webView, within: Self.gestureWindow), pressed > last,
+        guard let pressed = UserGesture.recent(in: webView, within: Self.gestureWindow), pressed > last,
             now.timeIntervalSince(last) > Self.spacing,
             busy.insert(tab.id).inserted
         else { return .refused(prompted: false) }
@@ -72,14 +98,24 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             busy.remove(tab.id)
             finished[tab.id] = Date()
         }
-        let clientData = { (kind: String) in
-            Passkeys.clientDataJSON(type: kind, challenge: challenge.base64URL, origin: origin)
-        }
         switch type {
         case "create": return await create(body, rpID: rpID, tab: tab, clientData: clientData("webauthn.create"))
         case "get": return await get(body, rpID: rpID, tab: tab, clientData: clientData("webauthn.get"))
         default: return .refused(prompted: false)
         }
+    }
+
+    /// the passkeys the conditional request waiting in `tab` would take from `origin`'s page
+    func offered(to origin: String, in tab: BrowserTab) -> [SavedPasskey] {
+        guard let request = waiting[tab.id], request.origin == origin else { return [] }
+        return PasswordStore.shared.passkeys(in: tab.loginProfile).filter {
+            $0.rpID == request.rpID && (request.allowed.isEmpty || request.allowed.contains($0.id))
+        }
+    }
+
+    /// ends the tab's waiting conditional request: signed with `passkey`, or refused
+    func answer(_ passkey: SavedPasskey?, for tab: BrowserTab.ID) {
+        waiting.removeValue(forKey: tab)?.pick.resume(returning: passkey)
     }
 
     private func create(_ body: [String: Any], rpID: String, tab: BrowserTab, clientData: Data) async -> Outcome {
@@ -136,12 +172,16 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
             await Self.inform(tab, "Artemis has no passkey for \(rpID).")
             return .refused(prompted: true)
         }
-        guard let passkey = await Self.choose(candidates, rpID, tab),
-            await OwnerUnlock.authenticate(
-                .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}")
-        else { return .refused(prompted: true) }
+        guard let passkey = await Self.choose(candidates, rpID, tab) else { return .refused(prompted: true) }
+        return await sign(with: passkey, rpID: rpID, clientData: clientData)
+    }
+
+    private func sign(with passkey: SavedPasskey, rpID: String, clientData: Data) async -> Outcome {
         let authData = Passkeys.authenticatorData(rpID: rpID, verified: Self.verifies)
-        guard let blob = store.passkeyKey(passkey),
+        guard
+            await OwnerUnlock.authenticate(
+                .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}"),
+            let blob = PasswordStore.shared.passkeyKey(passkey),
             let signature = try? Passkeys.sign(
                 authData: authData, clientData: clientData, blob: blob, enclave: passkey.enclave)
         else { return .refused(prompted: true) }

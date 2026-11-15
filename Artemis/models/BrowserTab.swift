@@ -1002,6 +1002,8 @@ final class BrowserTab: NSObject, Identifiable {
         configuration.writingToolsBehavior = .complete
         // the in-app Web Inspector needs this as well as `isInspectable`
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        // Delete is the page's key: WebKit would go back on any press the page lets through
+        configuration.preferences.setValue(false, forKey: "backspaceKeyNavigationEnabled")
         let prefs = configuration.preferences
         if prefs.responds(to: Selector(("_setAllowsPictureInPictureMediaPlayback:"))) {
             unsafeBitCast(prefs, to: WKPreferencesPiPSPI.self)
@@ -1417,6 +1419,7 @@ extension BrowserTab: WKNavigationDelegate {
         syncZoomToSite()
         endPageTranslation()
         PasswordAutofill.shared.pageDidCommit(in: self)
+        PasskeyBridge.shared.answer(nil, for: id)
         Autofill.shared.pageDidCommit(in: self)
     }
 

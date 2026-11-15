@@ -103,7 +103,12 @@ enum PasskeyPage {
             clientExtensionResults: this.getClientExtensionResults(), response: this.#response.toJSON() };
         }
         static isUserVerifyingPlatformAuthenticatorAvailable() { return Promise.resolve(true); }
-        static isConditionalMediationAvailable() { return Promise.resolve(false); }
+        static isConditionalMediationAvailable() { return Promise.resolve(true); }
+        static getClientCapabilities() {
+          return Promise.resolve({ conditionalCreate: false, conditionalGet: true, hybridTransport: false,
+            passkeyPlatformAuthenticator: true, relatedOrigins: false, signalAllAcceptedCredentials: false,
+            signalCurrentUserDetails: false, signalUnknownCredential: false, userVerifyingPlatformAuthenticator: true });
+        }
       }
       if (globalThis.Credential) Object.setPrototypeOf(PublicKeyCredential.prototype, Credential.prototype);
 
@@ -111,10 +116,6 @@ enum PasskeyPage {
       async function ceremony(kind, options) {
         const pk = options.publicKey, signal = options.signal;
         if (signal?.aborted) throw aborted(signal);
-        // conditional UI isn't offered; such a request waits until the page gives up on it
-        if (kind === "get" && options.mediation === "conditional") {
-          return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(aborted(signal))));
-        }
         const request = kind === "create" ? {
           type: "create", challenge: encode(pk.challenge), rpId: pk.rp?.id,
           user: { id: encode(pk.user.id), name: String(pk.user.name ?? ""),
@@ -122,11 +123,14 @@ enum PasskeyPage {
           algorithms: (pk.pubKeyCredParams ?? []).map(p => p.alg),
           exclude: (pk.excludeCredentials ?? []).map(c => encode(c.id)),
         } : {
-          type: "get", challenge: encode(pk.challenge), rpId: pk.rpId,
+          type: "get", conditional: options.mediation === "conditional", challenge: encode(pk.challenge), rpId: pk.rpId,
           allow: (pk.allowCredentials ?? []).map(c => encode(c.id)),
         };
         const reply = await new Promise((resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(aborted(signal)));
+          signal?.addEventListener("abort", () => {
+            if (request.conditional) send({ type: "cancel" });
+            reject(aborted(signal));
+          });
           send(request).then(resolve, reject);
         });
         if (reply.error === "TypeError") throw new TypeError(reply.message);

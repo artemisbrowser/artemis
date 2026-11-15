@@ -1548,6 +1548,7 @@ final class TabManager {
         tab.stopLoading()
         TabStateStore.remove(tab.id)
         ExtensionManager.shared.tabDidClose(tab)
+        PasskeyBridge.shared.answer(nil, for: tab.id)
         for manager in BrowserWindows.shared.allManagers { manager.forgetSelection(of: tab.id) }
     }
 
@@ -2353,6 +2354,15 @@ final class TabManager {
         } completion: {
             if token == self.glideToken { self.glideOrigin = nil }
         }
+        // a view re-run for the switch while the write above is announced reads the old
+        // position and is not told again: announce both once more, next turn
+        DispatchQueue.main.async {
+            guard token == self.glideToken else { return }
+            withAnimation(.easeInOut(duration: duration)) {
+                self.withMutation(keyPath: \.spacePagePosition) {}
+                self.withMutation(keyPath: \.backdropPosition) {}
+            }
+        }
     }
 
     func selectSpace(at index: Int, animatePosition: Bool = true) {
@@ -2364,6 +2374,23 @@ final class TabManager {
     func cycleSpace(by delta: Int) {
         guard let i = spaces.firstIndex(where: { $0.id == selectedSpaceID }) else { return }
         selectSpace(at: min(max(i + delta, 0), spaces.count - 1))
+    }
+
+    /// put `space` at `index` in the row swipes and ⌃1–⌃9 follow. every window
+    /// keeps its space, so its positions snap to that space's new slot
+    func moveSpace(_ space: Space, to index: Int) {
+        guard let from = spaces.firstIndex(where: { $0.id == space.id }), spaces.indices.contains(index),
+            index != from
+        else { return }
+        spaces.move(fromOffsets: [from], toOffset: index > from ? index + 1 : index)
+        for window in mainWindows {
+            window.glideOrigin = nil
+            if let i = spaces.firstIndex(where: { $0.id == window.selectedSpaceID }) {
+                window.spacePagePosition = Double(i)
+                window.backdropPosition = Double(i)
+            }
+        }
+        scheduleSave()
     }
 
     /// materialise a configured space — the creator dialog's "Create" (every

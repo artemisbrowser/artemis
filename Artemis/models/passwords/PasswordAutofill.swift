@@ -309,7 +309,8 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             ? store.codeMatches(for: target.origin, in: tab.loginProfile)
             : isNew ? [] : store.matches(for: target.origin, in: tab.loginProfile)
         let recipes = isNew ? store.recipes(in: tab.loginProfile).filter(\.isUsable) : []
-        guard offersStrong || !logins.isEmpty || !recipes.isEmpty else { return closeSuggestions() }
+        let passkeys = isNew || fillsCodes ? [] : PasskeyBridge.shared.offered(to: target.origin, in: tab)
+        guard offersStrong || !logins.isEmpty || !recipes.isEmpty || !passkeys.isEmpty else { return closeSuggestions() }
         let host = URL(string: target.origin)?.host() ?? ""
         let rules = PasswordRules(field: body["rules"] as? [String: Any] ?? [:], host: host)
         let number = { (key: String) in (box[key] as? Double) ?? 0 }
@@ -344,6 +345,11 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
                 manage: {
                     self.closeSuggestions()
                     ProfilesNavigator.show(.passwords, for: tab.loginProfile)
+                },
+                passkeys: passkeys,
+                usePasskey: { passkey in
+                    self.closeSuggestions()
+                    PasskeyBridge.shared.answer(passkey, for: tab.id)
                 })
             present(list, below: field, in: tab, from: target.frame)
         }
@@ -506,13 +512,22 @@ struct LoginSuggestions: View {
     /// fills the first candidate the field's `pattern` accepts, else the first
     let generate: ([String]) -> Void
     let manage: () -> Void
+    /// what the page's waiting conditional passkey request would take
+    var passkeys: [SavedPasskey] = []
+    var usePasskey: (SavedPasskey) -> Void = { _ in }
     /// the row ↑ and ↓ in the page have reached, an index into `rows`
     var highlighted: Int?
 
     /// every row but Manage Passwords…, in order: the random passwords lead where they are offered
     var rows: [Row] {
         let host = URL(string: origin)?.host() ?? origin
-        let saved = logins.map { login in
+        let keys = passkeys.map { passkey in
+            let name = PasskeyPage.clean(passkey.userName)
+            return Row(icon: "person.badge.key.fill", title: name.isEmpty ? "Passkey" : name, detail: name.isEmpty ? nil : "Passkey") {
+                usePasskey(passkey)
+            }
+        }
+        let saved = keys + logins.map { login in
             let name = login.username.isEmpty ? "No username" : login.username
             let elsewhere = login.origin == origin ? nil : login.host
             return fillsCodes

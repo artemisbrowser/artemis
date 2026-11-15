@@ -1205,6 +1205,7 @@ enum SelfTest {
             ("sidebarresizehandle", { await testSidebarResizeHandle() }),
             ("performancebudgets", { await testPerformanceBudgets(manager: manager) }),
             ("tabswitcher", { await testTabSwitcher(manager: manager) }),
+            ("deletekey", { await testDeleteKey(manager: manager) }),
             ("chromedisguiseheaders", { await testChromeDisguiseHeaders(manager: manager) }),
         ]
         // last: its background web view is briefly another window, which confuses the
@@ -10349,6 +10350,41 @@ enum SelfTest {
         }
         record("passkeys: the page sees a platform authenticator", uvpa == "true", uvpa)
         record("passkeys: a ceremony without a click Artemis saw is refused", unasked == "NotAllowedError", unasked)
+
+        let origin = "https://selftest.example"
+        let waiting = SavedPasskey(
+            id: "selftest-conditional", rpID: "selftest.example", userHandle: Data("selftest".utf8).base64URL,
+            userName: "selftest", displayName: "", created: Date(), enclave: false,
+            profileID: PasswordStore.stored(tab.loginProfile))
+        _ = PasswordStore.shared.add(waiting, key: Data([1]))
+        await load(tab, html: """
+            <html><body><script>
+            PublicKeyCredential.isConditionalMediationAvailable().then(v => window.__cma = String(v));
+            (PublicKeyCredential.getClientCapabilities?.() ?? Promise.resolve({}))
+              .then(c => window.__caps = c.conditionalGet + "|" + c.passkeyPlatformAuthenticator);
+            window.__abort = new AbortController();
+            navigator.credentials.get({ mediation: "conditional", signal: __abort.signal,
+              publicKey: { challenge: new Uint8Array(32) } }).then(() => window.__waited = "resolved", e => window.__waited = e.name);
+            </script></body></html>
+            """)
+        var offered: [String] = []
+        await settle(.seconds(5)) {
+            offered = PasskeyBridge.shared.offered(to: origin, in: tab).map(\.id)
+            return !offered.isEmpty
+        }
+        let claims = await read("return window.__cma + ' ' + window.__caps")
+        record("passkeys: the page is told its fields can offer passkeys", claims == "true true|true", claims)
+        record("passkeys: a waiting conditional request offers the site's passkey", offered == [waiting.id], "\(offered)")
+        var waited = "nil"
+        _ = await read("__abort.abort(); return 1")
+        await settle(.seconds(5)) {
+            waited = await read("return window.__waited ?? 'nil'")
+            return waited != "nil" && PasskeyBridge.shared.offered(to: origin, in: tab).isEmpty
+        }
+        record(
+            "passkeys: a page that gives its conditional request up is offered nothing",
+            waited == "AbortError" && PasskeyBridge.shared.offered(to: origin, in: tab).isEmpty, waited)
+        PasswordStore.shared.delete(waiting)
     }
 
     private static func testChromeDisguise(manager: TabManager) async {
@@ -13433,6 +13469,27 @@ enum SelfTest {
         destination.tabs.removeAll { $0.id == tab.id || $0.id == carried.id }
         destination.normalizeTree()
         destination.selectedTabID = destination.tabs.first?.id
+
+        // the switcher's drag commits through moveSpace; the moved space is the selected one
+        let order = manager.spaces.map(\.id)
+        let from = order.firstIndex(of: home.id)!
+        let to = from == 0 ? order.count - 1 : 0
+        var expected = order
+        expected.move(fromOffsets: [from], toOffset: to > from ? to + 1 : to)
+        manager.moveSpace(home, to: to)
+        record("spaces: a dragged space takes its new slot", manager.spaces.map(\.id) == expected)
+        record(
+            "spaces: a reorder keeps the selected space, its positions on the new slot",
+            manager.selectedSpaceID == home.id && manager.spacePagePosition == Double(to)
+                && manager.backdropPosition == Double(to),
+            "selected \(manager.selectedSpaceID == home.id), page \(manager.spacePagePosition), want \(to)")
+        manager.saveNow()
+        record(
+            "spaces: the new order is what the session file loads",
+            SessionStore.load()?.spaces.map(\.id) == expected)
+        manager.moveSpace(home, to: from)
+        manager.saveNow()
+        record("spaces: moving it back restores the order", manager.spaces.map(\.id) == order)
     }
 
     // MARK: - Profiles, incognito windows & space creation
@@ -20358,6 +20415,120 @@ private nonisolated final class LiveLoopback: @unchecked Sendable {
 extension SelfTest {
     /// ⌃⇥ through the window's real event path: the tap flip, the held cards' order, stepping and
     /// wrap, letting go, Esc, a click and the window losing focus
+    /// ⌃⇥ from the third space onto a tab one space back and two back: a flip, a release over the cards, a clicked card
+    private static func testTabSwitcherAcrossSpaces(manager: TabManager, window: NSWindow) async {
+        let switcher = manager.tabSwitcher
+        let home = manager.currentSpace
+        let homeTab = manager.selectedTab
+        /// the left edge of a tab's sidebar row in the window, from the accessibility tree
+        func rowX(_ tab: BrowserTab) -> CGFloat? {
+            func ax(_ e: NSObject, _ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+            var found: [CGFloat] = []
+            func visit(_ e: NSObject, depth: Int) {
+                if ax(e, "accessibilityLabel") as? String == tab.displayTitle,
+                    let frame = (ax(e, "accessibilityFrame") as? NSValue)?.rectValue, frame.width > 0
+                {
+                    found.append(frame.minX - window.frame.minX)
+                }
+                guard depth < 60 else { return }
+                for case let child as NSObject in ax(e, "accessibilityChildren") as? [Any] ?? [] { visit(child, depth: depth + 1) }
+            }
+            if let content = window.contentView { visit(content, depth: 0) }
+            return found.min()
+        }
+        let far = manager.newTab(select: true)
+        await load(far, html: "<title>Far</title><body style='background:#e8553d'>far</body>")
+        try? await Task.sleep(for: .milliseconds(300))
+        let rest = rowX(far)
+        let made = (1...2).map {
+            manager.createSpace(
+                name: "Switcher \($0)", icon: "star.fill", appearance: SpacePreset.all[$0].appearance,
+                profileID: manager.currentProfile.id)
+        }
+        manager.selectSpace(home)
+        let near = made[0].tabs[0]
+        defer {
+            switcher.cancel()
+            manager.selectSpace(home)
+            for space in made { manager.deleteSpace(space) }
+            manager.close(far)
+            manager.selectedTabID = homeTab?.id
+        }
+        await load(near, html: "<title>Near</title><body style='background:#3d8be8'>near</body>")
+        for (target, space) in [(near, made[0]), (far, home)] {
+            for way in ["a flip", "a release over the cards", "a clicked card"] {
+                manager.focus(target)
+                // by way of the middle space, so the pager has let go of the first one's panel
+                for space in made {
+                    try? await Task.sleep(for: .milliseconds(20))
+                    manager.selectSpace(space)
+                    try? await Task.sleep(for: .milliseconds(600))
+                }
+                target.touch()
+                switcher.controlOverride = true
+                switcher.begin()
+                if way != "a flip" { await settle(.seconds(1)) { switcher.isShown } }
+                let picked = switcher.cards.indices.contains(switcher.selection) ? switcher.cards[switcher.selection] : nil
+                if way == "a clicked card" { switcher.pick(switcher.selection) } else { switcher.controlOverride = false }
+                let index = Double(manager.spaces.firstIndex { $0.id == space.id } ?? -1)
+                await settle(.seconds(2)) {
+                    manager.selectedTabID == target.id && manager.glideOrigin == nil && manager.spacePagePosition == index
+                        && target.webView.window === window
+                }
+                try? await Task.sleep(for: .milliseconds(600))
+                switcher.controlOverride = false
+                let strip = manager.stripSpaces.map(\.id) == manager.spaces.map(\.id)
+                let row = rowX(target)
+                record(
+                    "switcher: \(way) from the third space onto a tab in space \(Int(index) + 1) lands whole",
+                    picked === target && manager.selectedSpaceID == space.id && manager.selectedTab === target
+                        && manager.displayedContentTab === target && manager.spacePagePosition == index
+                        && manager.backdropPosition == index && manager.tintPosition == index && strip
+                        && target.webView.window === window && !switcher.isActive
+                        && rest != nil && row.map { abs($0 - (rest ?? 0)) < 2 } == true,
+                    "picked \(picked?.displayTitle ?? "nil"), space \(manager.currentSpace.name), tab \(manager.selectedTab?.displayTitle ?? "nil"), shown \(manager.displayedContentTab?.displayTitle ?? "nil"), page \(manager.spacePagePosition), backdrop \(manager.backdropPosition), tint \(manager.tintPosition), strip in order \(strip), on screen \(target.webView.window === window), its row at \(row.map { "\($0)" } ?? "nil") for \(rest.map { "\($0)" } ?? "nil")")
+            }
+        }
+    }
+
+    /// Delete outside a text field reaches the page and leaves its history alone
+    static func testDeleteKey(manager: TabManager) async {
+        guard let window = BrowserWindows.shared.window(of: manager) else {
+            return record("delete key: the browser window is up", false)
+        }
+        // two file loads: an HTML-string load leaves no back item
+        let pages = ["first", "later"].map { AppStorageLocation.file("selftest-delete-\($0).html") }
+        let html = "<html><body>page<script>window.seen=0;addEventListener('keydown',e=>{if(e.key==='Backspace')seen++})</script></body></html>"
+        for page in pages { try? html.write(to: page, atomically: true, encoding: .utf8) }
+        let previous = manager.selectedTabID
+        let tab = manager.newTab(select: true)
+        manager.isCommandBarVisible = false
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+            for page in pages { try? FileManager.default.removeItem(at: page) }
+        }
+        for page in pages {
+            tab.load(page)
+            await settle(.seconds(6)) { tab.webView.url?.lastPathComponent == page.lastPathComponent && !tab.webView.isLoading }
+        }
+        await settle { tab.webView.window === window }
+        window.makeFirstResponder(tab.webView)
+        if let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, characters: "\u{7f}", charactersIgnoringModifiers: "\u{7f}", isARepeat: false, keyCode: 51)
+        {
+            tab.webView.keyDown(with: event)
+        }
+        await settle(.seconds(2)) { tab.webView.url?.lastPathComponent != pages[1].lastPathComponent }
+        let seen = (try? await tab.webView.evaluateJavaScript("window.seen")) as? Int
+        record(
+            "delete key: a press the page lets through leaves it on its page",
+            tab.canGoBack && seen == 1 && tab.webView.url?.lastPathComponent == pages[1].lastPathComponent,
+            "page saw \(seen.map(String.init) ?? "nil"), on \(tab.webView.url?.lastPathComponent ?? "nil"), can go back \(tab.canGoBack)")
+    }
+
     static func testTabSwitcher(manager: TabManager) async {
         guard let window = BrowserWindows.shared.window(of: manager) else {
             return record("switcher: the browser window is up", false)
@@ -20530,6 +20701,27 @@ extension SelfTest {
             "switcher: a snapshot landing after the cards go is dropped",
             shown.capturable > 0 && !switcher.isShown && switcher.frames.isEmpty,
             "\(shown.capturable) asked, \(switcher.frames.count) stored")
+
+        await reset()
+        window.makeFirstResponder(tabs[3].webView)
+        switcher.controlOverride = false
+        last = manager.recentTabs.first?.id
+        // straight to the page, where a key window sends it first
+        if let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .control,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48)
+        {
+            _ = tabs[3].webView.performKeyEquivalent(with: event)
+        }
+        await settle(.seconds(2)) { manager.selectedTabID == last }
+        record(
+            "switcher: ⌃⇥ with the page holding focus flips to the last tab",
+            manager.selectedTabID == last && !switcher.isActive,
+            manager.selectedTab?.displayTitle ?? "nil")
+        switcher.controlOverride = true
+
+        await testTabSwitcherAcrossSpaces(manager: manager, window: window)
 
         final class KeyStandIn: NSWindow {
             override var isKeyWindow: Bool { true }

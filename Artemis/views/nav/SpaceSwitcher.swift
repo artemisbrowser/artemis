@@ -50,6 +50,11 @@ struct SpaceSwitcher: View {
     /// which space the cursor is on, held here because the neighbours collapse
     /// to dots in response — a local hover in each icon can't be read sideways
     @State private var hovered: Space.ID?
+    /// the row's order mid-drag; the model takes it on release
+    @State private var dragOrder: [Space.ID]?
+    /// the dot being dragged, held expanded under the cursor
+    @State private var dragged: Space.ID?
+    @Environment(SidebarDragState.self) private var drag
     /// ⌃ alone is held in this window: the first nine dots show the ⌃1–⌃9 numbers
     @State private var showsNumbers = false
     @State private var flagsMonitor: Any?
@@ -93,13 +98,42 @@ struct SpaceSwitcher: View {
     }
 
     private func icons(_ layout: SpaceRowLayout) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Array(tabManager.spaces.enumerated()), id: \.element.id) { index, space in
+        let shown = dragOrder?.compactMap { id in tabManager.spaces.first { $0.id == id } } ?? tabManager.spaces
+        let hover = Binding { dragged ?? hovered } set: { if dragged == nil { hovered = $0 } }
+        return HStack(spacing: 0) {
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, space in
                 SpaceIcon(
-                    space: space, index: index, layout: layout, hovered: $hovered,
-                    showsNumber: showsNumbers && index < 9)
+                    space: space, index: index, layout: layout, hovered: hover,
+                    showsNumber: showsNumbers && index < 9
+                )
+                // outranks the dot's button only once the cursor has moved, so a click still switches
+                .highPriorityGesture(reorderGesture(space))
             }
         }
+    }
+
+    /// a dot dragged onto a neighbour's slot takes it; the release commits the order
+    private func reorderGesture(_ space: Space) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(SidebarDragState.contentSpace))
+            .onChanged { value in
+                dragged = space.id
+                var order = dragOrder ?? tabManager.spaces.map(\.id)
+                let x = value.location.x
+                if let from = order.firstIndex(of: space.id),
+                    let to = order.firstIndex(where: { id in
+                        drag.spaceDropFrames[id].map { $0.minX <= x && x < $0.maxX } ?? false
+                    }),
+                    to != from
+                {
+                    order.move(fromOffsets: [from], toOffset: to > from ? to + 1 : to)
+                }
+                withAnimation(Motion.pop) { dragOrder = order }
+            }
+            .onEnded { _ in
+                if let index = dragOrder?.firstIndex(of: space.id) { tabManager.moveSpace(space, to: index) }
+                dragOrder = nil
+                dragged = nil
+            }
     }
 }
 

@@ -126,6 +126,10 @@ final class ArtemisWebView: WKWebView {
     /// ⇧⌘V the page let through pastes plain here: AppKit gives it to ⌘V's Paste
     /// whenever SwiftUI is mid-rebuild of the Edit menu
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌃⇥ is the text system's next-key-view command: WebKit runs it and never hands the key back
+        if event.keyCode == 48, event.modifierFlags.intersection([.control, .command, .option]) == .control {
+            return NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+        }
         if super.performKeyEquivalent(with: event) { return true }
         guard window?.firstResponder === self,
             event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
