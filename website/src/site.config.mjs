@@ -8,7 +8,7 @@ export const PRICE = "Free";
 // a release stage such as "Public alpha", or null; leads both fine print lines and joins every description.
 export const STAGE = null;
 // the release DMG; when set, Download shows the four steps to open it and starts it, else /download says none yet.
-export const DOWNLOAD_URL = "https://github.com/artemisbrowser/artemis/releases/download/v1.0.0-2/Artemis-1.0.0-2.dmg";
+export const DOWNLOAD_URL = "https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-2/Artemis-1.1.0-2.dmg";
 // the Arc block ships only while this is true and src/partials/07-arc.html exists.
 export const ARC_BLOCK = true;
 // the real sites the replica shows, only as page shots, favicons and titles inside its window; each maps to the
