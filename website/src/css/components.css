@@ -1377,9 +1377,131 @@ button.ctl:active {
 .solo-ticket + h1 {
   margin-top: 0;
 }
-.solo-more {
-  margin-top: 20px;
-  color: var(--ink-2);
+.solo-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+.solo-row .btn:first-child {
+  background: var(--cta-bg);
+  box-shadow: none;
+  color: var(--cta-ink);
+}
+@media (hover: hover) and (pointer: fine) {
+  .solo-row .btn:first-child:hover {
+    background: var(--cta-hover);
+  }
+}
+
+/* ---------- invite: confetti in the icon colours, once, as the page arrives ---------- */
+.confetti {
+  display: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .confetti {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    overflow: clip;
+    pointer-events: none;
+  }
+  .confetti i {
+    position: absolute;
+    top: -24px;
+    left: calc(var(--x) + var(--dx));
+    width: 8px;
+    height: var(--h);
+    border-radius: 2px;
+    background: var(--c);
+    animation: confetti var(--t) cubic-bezier(0.3, 0.2, 0.8, 0.9)
+      calc(0.3s + var(--d) + var(--dd)) both;
+  }
+  /* the periods 7 and 4 share no factor, so each of the 28 pieces falls in a place of its own */
+  .confetti i:nth-child(7n + 1) {
+    --x: 3%;
+  }
+  .confetti i:nth-child(7n + 2) {
+    --x: 59%;
+  }
+  .confetti i:nth-child(7n + 3) {
+    --x: 17%;
+  }
+  .confetti i:nth-child(7n + 4) {
+    --x: 73%;
+  }
+  .confetti i:nth-child(7n + 5) {
+    --x: 31%;
+  }
+  .confetti i:nth-child(7n + 6) {
+    --x: 86%;
+  }
+  .confetti i:nth-child(7n) {
+    --x: 45%;
+  }
+  .confetti i:nth-child(4n + 1) {
+    --dx: 0%;
+    --h: 14px;
+    --sway: 40px;
+    --axis: 1 0.4 0.2;
+  }
+  .confetti i:nth-child(4n + 2) {
+    --dx: 7%;
+    --h: 8px;
+    --sway: -30px;
+    --axis: 0.3 1 0.4;
+  }
+  .confetti i:nth-child(4n + 3) {
+    --dx: 3.5%;
+    --h: 12px;
+    --sway: 16px;
+    --axis: 1 1 0;
+  }
+  .confetti i:nth-child(4n) {
+    --dx: 10.5%;
+    --h: 6px;
+    --sway: -50px;
+    --axis: 0.2 0.6 1;
+  }
+  .confetti i:nth-child(5n + 1) {
+    --c: #4a8fd8;
+    --dd: 0s;
+  }
+  .confetti i:nth-child(5n + 2) {
+    --c: #57c89a;
+    --dd: 0.12s;
+  }
+  .confetti i:nth-child(5n + 3) {
+    --c: #e2bf55;
+    --dd: 0.24s;
+  }
+  .confetti i:nth-child(5n + 4) {
+    --c: #da8097;
+    --dd: 0.06s;
+  }
+  .confetti i:nth-child(5n) {
+    --c: #e8a77c;
+    --dd: 0.18s;
+  }
+  .confetti i:nth-child(3n + 1) {
+    --t: 2.6s;
+    --d: 0s;
+  }
+  .confetti i:nth-child(3n + 2) {
+    --t: 3.3s;
+    --d: 0.35s;
+  }
+  .confetti i:nth-child(3n) {
+    --t: 2.9s;
+    --d: 0.7s;
+  }
+}
+@keyframes confetti {
+  to {
+    translate: var(--sway) 110vh;
+    rotate: var(--axis) 3turn;
+  }
 }
 .dl {
   justify-content: flex-start;
