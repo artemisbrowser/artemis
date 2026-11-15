@@ -50,6 +50,14 @@ const PAGES = {
     body: "download",
     robots: '<meta name="robots" content="noindex" />',
   },
+  "invite.html": {
+    title: "You’re invited to Artemis",
+    description: "A browser for Mac, from a friend.",
+    og: "A browser for Mac, from a friend.",
+    ogAlt: "A ticket to Artemis, with a code that opens the site.",
+    path: "invite",
+    robots: '<meta name="robots" content="noindex" />',
+  },
 };
 const HEADERS = `/*
   Content-Security-Policy: default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
@@ -206,6 +214,7 @@ export async function build(out) {
   const ROOT_FILES = {
     "apple-touch-icon.png": "apple-touch-icon.png",
     "og-home.png": "og/home.png",
+    "og-invite.jpg": "og/invite.jpg",
   };
   const plan = (ref, file, rootName) => {
     const buf = fs.readFileSync(file);
@@ -518,8 +527,10 @@ export async function build(out) {
         .replace(/\{\{TITLE\}\}/g, escape(page.title))
         .replace(/\{\{DESCRIPTION\}\}/g, escape(page.description ?? about))
         .replace(/\{\{OG_DESCRIPTION\}\}/g, escape(page.og ?? share))
-        .replace(/\{\{OG_IMAGE\}\}/g, ogImage)
-        .replace(/\{\{OG_IMAGE_ALT\}\}/g, escape(ogAlt))
+        .replace(/\{\{OG_TITLE\}\}/g, escape(page.path ? page.title : "Artemis for Mac"))
+        .replace(/\{\{OG_URL\}\}/g, `https://${cfg.DOMAIN}/${page.path ?? ""}`)
+        .replace(/\{\{OG_IMAGE\}\}/g, page.ogImage ?? ogImage)
+        .replace(/\{\{OG_IMAGE_ALT\}\}/g, escape(page.ogAlt ?? ogAlt))
         .replace(/\{\{ROBOTS\}\}/g, page.robots)
         .replace(/\{\{DOWNLOAD_URL\}\}/g, escape(cfg.DOWNLOAD_URL ?? ""))
         .replace(/\{\{DOWNLOAD_JS\}\}/g, jsUrl["download.js"])
@@ -589,6 +600,15 @@ export async function build(out) {
           include(read(path.join(SRC, "pages/download-none.html")), 1),
           PAGES["download/index.html"],
         ),
+  );
+
+  // the page a gifted link opens, whose preview is the ticket; a file at the root, which answers /invite with no redirect
+  write(
+    "invite.html",
+    shell(include(read(path.join(SRC, "pages/invite.html")), 1), {
+      ...PAGES["invite.html"],
+      ogImage: `https://${cfg.DOMAIN}/og/invite.jpg?v=${hash(fs.readFileSync(path.join(SRC, "img/og-invite.jpg")))}`,
+    }),
   );
 
   // Crawl and sharing files
@@ -745,6 +765,7 @@ const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
   ".webp": "image/webp",
   ".avif": "image/avif",
   ".mp4": "video/mp4",
@@ -771,6 +792,7 @@ function serve(out, port) {
       if (!f.startsWith(out)) f = out;
       if (fs.existsSync(f) && fs.statSync(f).isDirectory())
         f = path.join(f, "index.html");
+      else if (fs.existsSync(f + ".html")) f += ".html";
       const found = fs.existsSync(f);
       if (!found) f = path.join(out, "404.html");
       const body = fs.existsSync(f) ? fs.readFileSync(f) : Buffer.alloc(0);

@@ -34,6 +34,13 @@ const pngSize = (buf) =>
   buf.readUInt32BE(0) === 0x89504e47
     ? [buf.readUInt32BE(16), buf.readUInt32BE(20)]
     : null;
+// width and height from a JPEG's frame header, the first SOF marker past the segments before it
+const jpgSize = (buf) => {
+  for (let i = 2; i + 9 < buf.length; i += 2 + buf.readUInt16BE(i + 2))
+    if (buf[i + 1] >> 4 === 0xc && ![0xc4, 0xc8, 0xcc].includes(buf[i + 1]))
+      return [buf.readUInt16BE(i + 7), buf.readUInt16BE(i + 5)];
+  return null;
+};
 
 // The <section data-arc> block, matched across nested sections.
 function withoutArc(html) {
@@ -87,6 +94,7 @@ export async function check(out) {
   const pages = [
     "index.html",
     "404.html",
+    "invite.html",
     ...(cfg.DOWNLOAD_URL ? [] : ["download/index.html"]),
   ];
   for (const p of pages) if (!exists(p)) fail("files", `missing ${p}`);
@@ -313,6 +321,10 @@ export async function check(out) {
     exists("og/home.png") && fs.readFileSync(path.join(out, "og/home.png"));
   if (!og || pngSize(og)?.join("x") !== "1200x630" || og.length > 1024 * 1024)
     fail("files", "og/home.png must be a 1200x630 PNG under 1 MB");
+  const ticket =
+    exists("og/invite.jpg") && fs.readFileSync(path.join(out, "og/invite.jpg"));
+  if (!ticket || jpgSize(ticket)?.join("x") !== "1200x630" || ticket.length > 300 * 1024)
+    fail("files", "og/invite.jpg must be a 1200x630 JPEG under 300 KB");
   const ids = new Set([...index.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
   for (const p of pages.filter(exists)) {
     const html = read(p);

@@ -1369,6 +1369,18 @@ button.ctl:active {
 .solo .btn {
   margin-top: 36px;
 }
+/* the image carries 60px of clear margin for its shadow */
+.solo-ticket {
+  width: min(600px, 100%);
+  height: auto;
+}
+.solo-ticket + h1 {
+  margin-top: 0;
+}
+.solo-more {
+  margin-top: 20px;
+  color: var(--ink-2);
+}
 .dl {
   justify-content: flex-start;
   padding-top: 96px;
