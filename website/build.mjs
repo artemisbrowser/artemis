@@ -52,8 +52,8 @@ const PAGES = {
   },
   "invite.html": {
     title: "You’re invited to Artemis",
-    description: "A browser for Mac. You must be special.",
-    og: "A browser for Mac. You must be special.",
+    description: "A browser for Mac, from someone with good taste.",
+    og: "A browser for Mac, from someone with good taste.",
     ogAlt: "A ticket to Artemis, with a code that opens the site.",
     path: "invite",
     robots: '<meta name="robots" content="noindex" />',
