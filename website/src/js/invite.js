@@ -1,14 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-// Confetti over /invite once the page has loaded. A quarter of it comes to rest on the ticket, a quarter
+// The ticket leans under the pointer, and confetti falls over /invite once the page has loaded. A quarter of it comes to rest on the ticket, a quarter
 // passes in front and rests on the heading's letters, the rest on the foot of the page. Once all of it
 // has landed it fades.
+const light = document.querySelector(".ticket-light");
+// --tx and --ty, which the stylesheet turns into the lean
+const lean = (x, y) => {
+  light.parentNode.style.setProperty("--tx", x);
+  light.parentNode.style.setProperty("--ty", y);
+};
+light.addEventListener("pointermove", (e) =>
+  lean(e.offsetX / light.offsetWidth - 0.5, e.offsetY / light.offsetHeight - 0.5),
+);
+light.addEventListener("pointerleave", () => lean(0, 0));
+
 const COLOURS = ["#4a8fd8", "#57c89a", "#e2bf55", "#da8097", "#e8a77c"];
 const rand = (a, b) => a + Math.random() * (b - a);
 
 async function confetti() {
-  const ticket = document.querySelector(".solo-ticket");
+  const ticket = document.querySelector(".ticket img");
   const heading = document.querySelector(".solo h1");
   // WebKit draws an <img> it has yet to paint into a canvas as nothing, so the edge is read from the file
   const paper = await createImageBitmap(
@@ -105,6 +116,20 @@ async function confetti() {
     if (document.documentElement.clientWidth !== W) pieces.length = 0;
   });
 
+  // a ticket that leans holds nothing: what rested on it falls on to the next surface
+  light.addEventListener(
+    "pointermove",
+    () => {
+      surfaces[0].fill(Infinity);
+      for (const p of pieces)
+        if (p.rest && !p.on) {
+          p.rest = false;
+          p.flip = Math.acos(p.face);
+        }
+    },
+    { once: true },
+  );
+
   let settled = 0;
   let last = performance.now();
   const frame = (now) => {
@@ -134,6 +159,7 @@ async function confetti() {
           // only from above, bar the foot of the page, which nothing gets under
           if ((k < 2 && before > top) || p.y <= top) continue;
           p.rest = true;
+          p.on = k;
           p.y = top - p.size * 0.15;
           p.flat = rand(0.35, 0.75) * (p.face < 0 ? -1 : 1);
           p.lie = Math.round(p.rot / Math.PI) * Math.PI + rand(-0.3, 0.3);

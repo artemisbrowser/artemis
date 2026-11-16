@@ -695,7 +695,7 @@ export function sizes(out, sources) {
   const row = (name, buf, note = "") =>
     `  ${name.padEnd(38)} ${kb(buf.length).padStart(9)} ${kb(gz(buf)).padStart(9)} gz${note}`;
   // per module, as minified; only the shipped files count against the 24 KB total, bar the script
-  // that /invite alone loads, which has 2 KB of its own
+  // that /invite alone loads, which has 3 KB of its own
   const jsLines = [...(sources ?? [])]
     .sort()
     .map(([rel, code]) => row(`src/js/${rel}`, Buffer.from(code)));
@@ -704,12 +704,12 @@ export function sizes(out, sources) {
     const buf = fs.readFileSync(f);
     const invite = path.basename(f).startsWith("invite.");
     if (!invite) jsTotal += gz(buf);
-    else if (gz(buf) > 2 * 1024) errors.push("invite.js over 2 KB gz");
+    else if (gz(buf) > 3 * 1024) errors.push("invite.js over 3 KB gz");
     jsLines.push(
       row(
         path.relative(out, f).split(path.sep).join("/"),
         buf,
-        invite ? "  (budget 2 KB)" : "",
+        invite ? "  (budget 3 KB)" : "",
       ),
     );
   }

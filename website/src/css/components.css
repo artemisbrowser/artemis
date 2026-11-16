@@ -1369,13 +1369,66 @@ button.ctl:active {
 .solo .btn {
   margin-top: 36px;
 }
-/* the image carries 60px of clear margin for its shadow */
-.solo-ticket {
+/* ---------- invite: the ticket as paper, mark and words, each image with 60px of clear margin ---------- */
+.ticket {
+  position: relative;
   width: min(600px, 100%);
+}
+.ticket + h1 {
+  margin-top: 0;
+}
+.ticket img {
+  display: block;
+  width: 100%;
   height: auto;
 }
-.solo-ticket + h1 {
-  margin-top: 0;
+.ticket img + img {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+/* the ticket's own shape inside that margin: where invite.js reads the pointer, and where its light falls */
+.ticket-light {
+  position: absolute;
+  inset: 16.95% 10%;
+  border-radius: 5% / 10.26%;
+  background: radial-gradient(
+    circle 225px at calc((var(--tx) + 0.5) * 100%)
+      calc((var(--ty) + 0.5) * 100%),
+    rgb(255 255 255 / 0.18),
+    transparent
+  );
+  mask:
+    radial-gradient(ellipse 2.19% 4.49% at 67.5% 0, #0000 97%, #000),
+    radial-gradient(ellipse 2.19% 4.49% at 67.5% 100%, #0000 97%, #000);
+  mask-composite: intersect;
+  opacity: 0;
+}
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .ticket {
+    transform: perspective(960px) rotateY(calc(var(--tx) * 10deg))
+      rotateX(calc(var(--ty) * -9deg));
+    translate: calc(var(--tx) * 4.5px) calc(var(--ty) * 4.5px);
+    transition:
+      --tx 0.55s var(--ease-reveal),
+      --ty 0.55s var(--ease-reveal),
+      scale 0.55s var(--ease-reveal);
+  }
+  .ticket:has(.ticket-light:hover) {
+    scale: 1.02;
+  }
+  .ticket img + img {
+    translate: calc(var(--tx) * 6px) calc(var(--ty) * 6px);
+  }
+  .ticket img + img + img {
+    translate: calc(var(--tx) * 4.5px) calc(var(--ty) * 4.5px);
+  }
+  .ticket-light {
+    transition: opacity 0.3s;
+  }
+  .ticket-light:hover {
+    opacity: 1;
+  }
 }
 .solo-row {
   display: flex;
