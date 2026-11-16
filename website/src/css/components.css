@@ -1373,9 +1373,10 @@ button.ctl:active {
 .ticket {
   position: relative;
   width: min(600px, 100%);
-  /* the lean, -0.5 to 0.5 from the ticket's centre; invite.js eases both toward the pointer */
+  /* the lean, -0.5 to 0.5 from the ticket's centre, and the lift, 0 to 1; invite.js eases all three */
   --tx: 0;
   --ty: 0;
+  --lift: 0;
 }
 .ticket + h1 {
   margin-top: 0;
@@ -1412,10 +1413,7 @@ button.ctl:active {
     transform: perspective(960px) rotateY(calc(var(--tx) * 10deg))
       rotateX(calc(var(--ty) * -9deg));
     translate: calc(var(--tx) * 4.5px) calc(var(--ty) * 4.5px);
-    transition: scale 0.55s var(--ease-reveal);
-  }
-  .ticket:has(.ticket-light:hover) {
-    scale: 1.02;
+    scale: calc(1 + var(--lift) * 0.02);
   }
   .ticket img + img {
     translate: calc(var(--tx) * 6px) calc(var(--ty) * 6px);

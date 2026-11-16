@@ -5,32 +5,44 @@
 // the ticket, the heading, the line under it, the buttons and the foot of the page. Once all of it has
 // landed it fades.
 const light = document.querySelector(".ticket-light");
-// the pointer from the ticket's centre, -0.5 to 0.5, and the lean on its way there
-let aim = [0, 0];
-const at = [0, 0];
+// the pointer from the ticket's centre, -0.5 to 0.5, then 1 while it is over the ticket;
+// and the lean on its way there
+let aim = [0, 0, 0];
+const at = [0, 0, 0];
 let then = 0;
 let following = 0;
 const follow = (now) => {
   // a tenth of a second to close 63% of the gap, at any frame rate
   const k = then ? 1 - Math.exp((then - now) / 100) : 0;
   then = now;
-  const far = Math.abs(aim[0] - at[0]) + Math.abs(aim[1] - at[1]) > 0.002;
+  const far = aim.some((to, i) => Math.abs(to - at[i]) > 0.002);
   // the last step lands on the pointer, so a ticket at rest is exactly flat
-  at[0] += (aim[0] - at[0]) * (far ? k : 1);
-  at[1] += (aim[1] - at[1]) * (far ? k : 1);
-  light.parentNode.style.setProperty("--tx", at[0]);
-  light.parentNode.style.setProperty("--ty", at[1]);
+  aim.forEach((to, i) => {
+    at[i] += (to - at[i]) * (far ? k : 1);
+    light.parentNode.style.setProperty(["--tx", "--ty", "--lift"][i], at[i]);
+  });
   if (!far) then = 0;
   following = far && requestAnimationFrame(follow);
 };
-const lean = (x, y) => {
-  aim = [x, y];
+const lean = (...to) => {
+  aim = to;
   following ||= requestAnimationFrame(follow);
 };
-light.addEventListener("pointermove", (e) =>
-  lean(e.offsetX / light.offsetWidth - 0.5, e.offsetY / light.offsetHeight - 0.5),
-);
-light.addEventListener("pointerleave", () => lean(0, 0));
+// the stylesheet leans the ticket under these same conditions
+if (
+  matchMedia(
+    "(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)",
+  ).matches
+) {
+  light.addEventListener("pointermove", (e) =>
+    lean(
+      e.offsetX / light.offsetWidth - 0.5,
+      e.offsetY / light.offsetHeight - 0.5,
+      1,
+    ),
+  );
+  light.addEventListener("pointerleave", () => lean(0, 0, 0));
+}
 
 const COLOURS = ["#4a8fd8", "#57c89a", "#e2bf55", "#da8097", "#e8a77c"];
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -56,9 +68,29 @@ async function confetti() {
   document.body.append(canvas);
   const ctx = canvas.getContext("2d");
 
-  // the top edge of what `draw` paints in `el`'s box, as a page y for each column of the page
-  const edge = (el, draw) => {
-    const box = el.getBoundingClientRect();
+  // the ticket's centre on the page as laid out, whatever its lean
+  let cx = ticket.offsetWidth / 2;
+  let cy = ticket.offsetHeight / 2;
+  for (let el = ticket; el; el = el.offsetParent) {
+    cx += el.offsetLeft;
+    cy += el.offsetTop;
+  }
+  // where the leaning ticket carries a point of its flat self: the stylesheet's transform
+  const carry = (x, y) => {
+    const a = at[0] * 0.1745;
+    const b = at[1] * -0.1571;
+    const z = (y - cy) * Math.sin(b);
+    const f =
+      ((1 + at[2] * 0.02) * 960) /
+      (960 + (x - cx) * Math.sin(a) - z * Math.cos(a));
+    return [
+      cx + at[0] * 4.5 + ((x - cx) * Math.cos(a) + z * Math.sin(a)) * f,
+      cy + at[1] * 4.5 + (y - cy) * Math.cos(b) * f,
+    ];
+  };
+
+  // the top edge of what `draw` paints in `box`, as a page y for each column of the page
+  const edge = (el, draw, box = el.getBoundingClientRect()) => {
     const w = Math.ceil(box.width);
     const h = Math.ceil(box.height);
     const scratch = document.createElement("canvas");
@@ -107,7 +139,12 @@ async function confetti() {
   // a piece in lane n can land on surfaces n and after; the last is the foot of the page
   const targets = [ticket, heading, line, row];
   const surfaces = [
-    edge(ticket, (c, box) => c.drawImage(paper, 0, 0, box.width, box.height)),
+    edge(null, (c, box) => c.drawImage(paper, 0, 0, box.width, box.height), {
+      left: cx - ticket.offsetWidth / 2 - scrollX,
+      top: cy - ticket.offsetHeight / 2 - scrollY,
+      width: ticket.offsetWidth,
+      height: ticket.offsetHeight,
+    }),
     edge(heading, letters(heading)),
     edge(line, letters(line)),
     edge(row, buttons),
@@ -153,20 +190,6 @@ async function confetti() {
     if (document.documentElement.clientWidth !== W) pieces.length = 0;
   });
 
-  // a ticket that leans holds nothing: what rested on it falls on to the next surface
-  light.addEventListener(
-    "pointermove",
-    () => {
-      surfaces[0].fill(Infinity);
-      for (const p of pieces)
-        if (p.rest && !p.on) {
-          p.rest = false;
-          p.flip = Math.acos(p.face);
-        }
-    },
-    { once: true },
-  );
-
   let settled = 0;
   let last = performance.now();
   const frame = (now) => {
@@ -208,7 +231,9 @@ async function confetti() {
       const gone = settled ? (now - settled - p.hold) / 350 : 0;
       if (gone >= 1) continue;
       live++;
-      ctx.setTransform(dpr, 0, 0, dpr, p.x * dpr, p.y * dpr);
+      // what rests on the ticket leans with it
+      const [x, y] = p.rest && !p.on ? carry(p.x, p.y) : [p.x, p.y];
+      ctx.setTransform(dpr, 0, 0, dpr, x * dpr, y * dpr);
       ctx.rotate(p.rot);
       ctx.scale(1, p.face);
       ctx.globalAlpha = Math.min(1, 1 - gone) * (p.face < 0 ? 0.75 : 1);
