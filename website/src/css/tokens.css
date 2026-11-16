@@ -41,18 +41,6 @@
   inherits: false;
   initial-value: 0%;
 }
-/* the pointer over the invite's ticket from its centre, -0.5 to 0.5; registered, so the lean can ease */
-@property --tx {
-  syntax: "<number>";
-  inherits: true;
-  initial-value: 0;
-}
-@property --ty {
-  syntax: "<number>";
-  inherits: true;
-  initial-value: 0;
-}
-
 :root {
   color-scheme: light dark;
 

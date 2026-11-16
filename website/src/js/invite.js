@@ -1,14 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-// The ticket leans under the pointer, and confetti falls over /invite once the page has loaded. A quarter of it comes to rest on the ticket, a quarter
-// passes in front and rests on the heading's letters, the rest on the foot of the page. Once all of it
-// has landed it fades.
+// The ticket leans under the pointer, and confetti falls over /invite once the page has loaded: on to
+// the ticket, the heading, the line under it, the buttons and the foot of the page. Once all of it has
+// landed it fades.
 const light = document.querySelector(".ticket-light");
-// --tx and --ty, which the stylesheet turns into the lean
+// the pointer from the ticket's centre, -0.5 to 0.5, and the lean on its way there
+let aim = [0, 0];
+const at = [0, 0];
+let then = 0;
+let following = 0;
+const follow = (now) => {
+  // a tenth of a second to close 63% of the gap, at any frame rate
+  const k = then ? 1 - Math.exp((then - now) / 100) : 0;
+  then = now;
+  const far = Math.abs(aim[0] - at[0]) + Math.abs(aim[1] - at[1]) > 0.002;
+  // the last step lands on the pointer, so a ticket at rest is exactly flat
+  at[0] += (aim[0] - at[0]) * (far ? k : 1);
+  at[1] += (aim[1] - at[1]) * (far ? k : 1);
+  light.parentNode.style.setProperty("--tx", at[0]);
+  light.parentNode.style.setProperty("--ty", at[1]);
+  if (!far) then = 0;
+  following = far && requestAnimationFrame(follow);
+};
 const lean = (x, y) => {
-  light.parentNode.style.setProperty("--tx", x);
-  light.parentNode.style.setProperty("--ty", y);
+  aim = [x, y];
+  following ||= requestAnimationFrame(follow);
 };
 light.addEventListener("pointermove", (e) =>
   lean(e.offsetX / light.offsetWidth - 0.5, e.offsetY / light.offsetHeight - 0.5),
@@ -21,6 +38,8 @@ const rand = (a, b) => a + Math.random() * (b - a);
 async function confetti() {
   const ticket = document.querySelector(".ticket img");
   const heading = document.querySelector(".solo h1");
+  const line = document.querySelector(".solo-body");
+  const row = document.querySelector(".solo-row");
   // WebKit draws an <img> it has yet to paint into a canvas as nothing, so the edge is read from the file
   const paper = await createImageBitmap(
     await (await fetch(ticket.currentSrc)).blob(),
@@ -58,12 +77,12 @@ async function confetti() {
     return tops;
   };
   // each letter where the page set it, so the edge follows wrapping, kerning and tracking
-  const letters = (c, box) => {
-    const style = getComputedStyle(heading);
+  const letters = (el) => (c, box) => {
+    const style = getComputedStyle(el);
     c.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
     const rise = c.measureText("").fontBoundingBoxAscent;
     const range = document.createRange();
-    const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     for (let node; (node = walker.nextNode()); )
       for (let i = 0; i < node.length; i++) {
         range.setStart(node, i);
@@ -72,12 +91,29 @@ async function confetti() {
         c.fillText(node.data[i], at.left - box.left, at.top - box.top + rise);
       }
   };
-  // a piece in lane n can land on surfaces n and after
+  const buttons = (c, box) => {
+    for (const b of row.children) {
+      const at = b.getBoundingClientRect();
+      c.roundRect(
+        at.left - box.left,
+        at.top - box.top,
+        at.width,
+        at.height,
+        parseFloat(getComputedStyle(b).borderRadius),
+      );
+    }
+    c.fill();
+  };
+  // a piece in lane n can land on surfaces n and after; the last is the foot of the page
+  const targets = [ticket, heading, line, row];
   const surfaces = [
     edge(ticket, (c, box) => c.drawImage(paper, 0, 0, box.width, box.height)),
-    edge(heading, letters),
+    edge(heading, letters(heading)),
+    edge(line, letters(line)),
+    edge(row, buttons),
     new Float32Array(W).fill(H - 6),
   ];
+  const foot = surfaces.length - 1;
 
   const over = (el) => {
     const box = el.getBoundingClientRect();
@@ -88,11 +124,12 @@ async function confetti() {
   const pieces = Array.from(
     { length: Math.min(160, Math.max(70, W / 8)) },
     (_, n) => {
-      const lane = Math.min(n % 4, 2);
+      // of sixteen: four each for the ticket and the heading, one each for the line and the buttons
+      const lane = [0, 1, 4, 4, 0, 1, 4, 2, 0, 1, 4, 4, 0, 1, 4, 3][n % 16];
       const depth = rand(0.7, 1.3);
       return {
         lane,
-        x: lane === 2 ? rand(0, W) : over(lane ? heading : ticket),
+        x: targets[lane] ? over(targets[lane]) : rand(0, W),
         y: scrollY - rand(20, innerHeight * 0.6),
         drift: rand(-0.4, 0.4),
         fall: rand(3, 4.2) * depth * pace,
@@ -154,10 +191,10 @@ async function confetti() {
         // slower face on to the fall, faster edge on
         p.y += p.fall * (0.75 + 0.5 * Math.abs(Math.sin(p.flip))) * dt;
         const column = Math.max(0, Math.min(W - 1, Math.round(p.x)));
-        for (let k = p.lane; k < 3 && !p.rest; k++) {
+        for (let k = p.lane; k <= foot && !p.rest; k++) {
           const top = surfaces[k][column];
           // only from above, bar the foot of the page, which nothing gets under
-          if ((k < 2 && before > top) || p.y <= top) continue;
+          if ((k < foot && before > top) || p.y <= top) continue;
           p.rest = true;
           p.on = k;
           p.y = top - p.size * 0.15;
