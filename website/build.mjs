@@ -317,6 +317,8 @@ export async function build(out) {
   }
   const dl = sources.get("download.js");
   if (dl) shipped.set("download.js", [`download.${hash(dl)}.js`, dl]);
+  const invite = sources.get("invite.js");
+  shipped.set("invite.js", [`invite.${hash(invite)}.js`, invite]);
   const jsUrl = {};
   for (const [rel, [file, code]] of shipped) {
     write(`assets/js/${file}`, code);
@@ -534,6 +536,7 @@ export async function build(out) {
         .replace(/\{\{ROBOTS\}\}/g, page.robots)
         .replace(/\{\{DOWNLOAD_URL\}\}/g, escape(cfg.DOWNLOAD_URL ?? ""))
         .replace(/\{\{DOWNLOAD_JS\}\}/g, jsUrl["download.js"])
+        .replace(/\{\{INVITE_JS\}\}/g, jsUrl["invite.js"])
         .replace(
           /<!-- @canonical -->/g,
           isIndex
@@ -691,15 +694,24 @@ export function sizes(out, sources) {
   const css = cssRel ? file(cssRel) : Buffer.alloc(0);
   const row = (name, buf, note = "") =>
     `  ${name.padEnd(38)} ${kb(buf.length).padStart(9)} ${kb(gz(buf)).padStart(9)} gz${note}`;
-  // per module, as minified; only the shipped files count against the 24 KB total
+  // per module, as minified; only the shipped files count against the 24 KB total, bar the script
+  // that /invite alone loads, which has 2 KB of its own
   const jsLines = [...(sources ?? [])]
     .sort()
     .map(([rel, code]) => row(`src/js/${rel}`, Buffer.from(code)));
   let jsTotal = 0;
   for (const f of walk(path.join(out, "assets/js"))) {
     const buf = fs.readFileSync(f);
-    jsTotal += gz(buf);
-    jsLines.push(row(path.relative(out, f).split(path.sep).join("/"), buf));
+    const invite = path.basename(f).startsWith("invite.");
+    if (!invite) jsTotal += gz(buf);
+    else if (gz(buf) > 2 * 1024) errors.push("invite.js over 2 KB gz");
+    jsLines.push(
+      row(
+        path.relative(out, f).split(path.sep).join("/"),
+        buf,
+        invite ? "  (budget 2 KB)" : "",
+      ),
+    );
   }
   // a template's images load only once cloned, a 2x screen takes the last srcset candidate,
   // and the hero's page shot is a CSS background that paints at once
