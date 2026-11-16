@@ -10,6 +10,10 @@ const rand = (a, b) => a + Math.random() * (b - a);
 async function confetti() {
   const ticket = document.querySelector(".solo-ticket");
   const heading = document.querySelector(".solo h1");
+  // WebKit draws an <img> it has yet to paint into a canvas as nothing, so the edge is read from the file
+  const paper = await createImageBitmap(
+    await (await fetch(ticket.currentSrc)).blob(),
+  );
   await document.fonts.ready;
   const W = document.documentElement.clientWidth;
   const H = document.documentElement.scrollHeight;
@@ -59,7 +63,7 @@ async function confetti() {
   };
   // a piece in lane n can land on surfaces n and after
   const surfaces = [
-    edge(ticket, (c, box) => c.drawImage(ticket, 0, 0, box.width, box.height)),
+    edge(ticket, (c, box) => c.drawImage(paper, 0, 0, box.width, box.height)),
     edge(heading, letters),
     new Float32Array(W).fill(H - 6),
   ];
@@ -93,7 +97,7 @@ async function confetti() {
         round: n % 5 === 0,
         colour: COLOURS[n % COLOURS.length],
         rest: false,
-        hold: rand(1200, 3200),
+        hold: rand(500, 1100),
       };
     },
   );
@@ -138,7 +142,7 @@ async function confetti() {
         }
       }
       if (!p.rest) falling++;
-      const gone = settled ? (now - settled - p.hold) / 600 : 0;
+      const gone = settled ? (now - settled - p.hold) / 350 : 0;
       if (gone >= 1) continue;
       live++;
       ctx.setTransform(dpr, 0, 0, dpr, p.x * dpr, p.y * dpr);
