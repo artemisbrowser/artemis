@@ -149,6 +149,8 @@ final class AgentTask: Identifiable {
     @ObservationIgnored private var concealed: [Regex<Substring>] = []
     @ObservationIgnored private(set) var concealing: Set<BrowserTab.ID> = []
     @ObservationIgnored private var isStopped = false
+    /// Stop cut a turn short; its result, the next to arrive, reports an error that isn't one
+    @ObservationIgnored private var interrupted = false
     @ObservationIgnored private var permitting = 0
     /// what the user answered pages' permission requests, for the agent's next result
     @ObservationIgnored private var told = ""
@@ -499,6 +501,7 @@ final class AgentTask: Identifiable {
         isStopped = true
         for question in questions { question.answer(.refuse) }
         questions = []
+        if isWorking { interrupted = true }
         write(["type": "control_request", "request_id": UUID().uuidString, "request": ["subtype": "interrupt"]])
     }
 
@@ -572,7 +575,7 @@ final class AgentTask: Identifiable {
     static let unasked = ["take_snapshot", "screenshot", "list_tabs", "list_spaces", "scroll", "hover", "wait_for", "show_tab", "close_tab"]
         .map { "mcp__artemis__\($0)" }.joined(separator: ",")
     /// the Claude Code release whose auto mode, permission asks and denial limit Artemis was checked against
-    static let checkedRelease = "2.1.314"
+    static let checkedRelease = "2.1.328"
 
     /// Auto runs under Claude Code's auto mode, whose classifier sees the user's messages and the
     /// calls; Manual and Bypass under its default mode, where Artemis answers each permission ask
@@ -634,7 +637,9 @@ final class AgentTask: Identifiable {
                 }
             case "result":
                 isWorking = false
-                if event["is_error"] as? Bool == true { note(.problem, event["result"] as? String ?? "Claude Code reported an error.") }
+                if interrupted {
+                    interrupted = false
+                } else if event["is_error"] as? Bool == true { note(.problem, event["result"] as? String ?? "Claude Code reported an error.") }
             default:
                 break
             }

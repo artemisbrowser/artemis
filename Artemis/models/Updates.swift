@@ -110,6 +110,7 @@ final class Updates: NSObject {
             Task {
                 try? await Task.sleep(for: .seconds(Self.finish))
                 if finishing == now { finishing = nil }
+                if restartsWhenReady, reply != nil { act() }
             }
         }
     }
@@ -125,6 +126,8 @@ final class Updates: NSObject {
     @ObservationIgnored private var reply: ((SPUUserUpdateChoice) -> Void)?
     /// installs the quietly downloaded update; does nothing once its session ends
     @ObservationIgnored private var install: (() -> Void)?
+    /// Update & restart was pressed: a download that turns ready relaunches once its finish has played
+    @ObservationIgnored private var restartsWhenReady = false
     @ObservationIgnored private var updater: SPUUpdater?
     @ObservationIgnored private var version = ""
     @ObservationIgnored private var expected: UInt64 = 0
@@ -186,6 +189,12 @@ final class Updates: NSObject {
             return reply(.install)
         }
         check()
+    }
+
+    /// one press for the whole way: download if need be, then relaunch into it
+    func updateAndRestart() {
+        restartsWhenReady = true
+        act()
     }
 
     /// the menu's check: About shows how it goes, and an offer already there keeps waiting for its own press
@@ -316,6 +325,7 @@ extension Updates: @preconcurrency SPUUserDriver {
     func dismissUpdateInstallation() {
         reply = nil
         install = nil
+        restartsWhenReady = false
         switch flow {
         case .upToDate, .failed: break
         default: flow = .idle
@@ -406,6 +416,29 @@ struct UpdateStatus: View {
     }
 }
 
+/// About's toolbar press for an update on offer, laid out as `UpdateStatus` is
+struct UpdateRestart: View {
+    private var failed: Bool { if case .failed = Updates.shared.flow { true } else { false } }
+
+    var body: some View {
+        Button { Updates.shared.updateAndRestart() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: failed ? "arrow.clockwise.circle.fill" : "arrow.down.circle.fill")
+                    .font(.system(size: UpdateStatus.bar.height))
+                    .padding(.leading, -1)
+                Text(failed ? "Try Again" : "Update & restart")
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.tint)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, UpdateStatus.gap)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// the update bar drawn as layers the render server animates, so nothing here runs per frame
 struct UpdateBar: NSViewRepresentable {
     var progress: Double
@@ -427,8 +460,6 @@ struct UpdateBar: NSViewRepresentable {
         private var bar = CGSize.zero
         /// the light's half-lit point sits this far into its layer, all of it lit behind that; the layer ends dark
         private var lit: CGFloat { bar.width + 20 }
-        /// how far past its outline the bar grows on every side at the finish
-        private var swell: CGFloat { gap / 4 }
         private static let dot = stencil(CGSize(width: 2, height: 2)) { x, y in (1 - hypot(x - 1, y - 1)) * 3 }
 
         let capsule = CALayer()
@@ -498,7 +529,10 @@ struct UpdateBar: NSViewRepresentable {
             lens.frame = whole
             glass.frame = whole
             flood.position = CGPoint(x: bar.width / 2, y: bar.height / 2)
-            grow(by: shown?.finishing == true && !Motion.reduceMotion ? swell : 0)
+            for layer in [capsule, flood] {
+                layer.bounds = whole
+                layer.cornerRadius = bar.height / 2
+            }
             light.bounds = CGRect(x: 0, y: 0, width: lit + bar.height * 1.1, height: bar.height)
             light.anchorPoint = CGPoint(x: lit / light.bounds.width, y: 0.5)
             light.position.y = bar.height / 2
@@ -508,6 +542,8 @@ struct UpdateBar: NSViewRepresentable {
             glassClip.frame = CGRect(origin: .zero, size: size)
             glassClip.cornerRadius = size.height / 2
             reach(shown?.progress ?? 0, still: true)
+            // a bar that turned up finishing plays it once it has a size
+            if shown?.finishing == true, sparks.sublayers == nil, !Motion.reduceMotion { finish() }
             CATransaction.commit()
         }
 
@@ -560,7 +596,8 @@ struct UpdateBar: NSViewRepresentable {
             lens.opacity = full ? 0 : 1
             if finishing != (shown?.finishing ?? false) {
                 sparks.sublayers = nil
-                if finishing, !calm { finish() } else { grow(by: 0) }
+                // the dots' outline needs the bar's size: NaN positions raise inside SwiftUI's update
+                if finishing, !calm, bar.height > 0 { finish() }
             }
             CATransaction.commit()
             shown = (progress, finishing)
@@ -586,32 +623,12 @@ struct UpdateBar: NSViewRepresentable {
             layer.setValue(value, forKeyPath: key)
         }
 
-        /// the capsule and its flood `out` past the bar on every side, still a capsule
-        private func grow(by out: CGFloat, animated: Bool = false) {
-            let rect = CGRect(origin: .zero, size: bar).insetBy(dx: -out, dy: -out), radius = bar.height / 2 + out
-            let changes: [(CALayer, String, Any)] = [
-                (capsule, "bounds", rect), (capsule, "cornerRadius", radius),
-                (flood, "bounds", CGRect(origin: .zero, size: rect.size)), (flood, "cornerRadius", radius),
-            ]
-            for (layer, key, value) in changes {
-                if animated {
-                    let spring = CASpringAnimation(perceptualDuration: Motion.popSpring.duration, bounce: Motion.popSpring.bounce)
-                    spring.keyPath = key
-                    spring.fromValue = (layer.presentation() ?? layer).value(forKeyPath: key)
-                    spring.duration = spring.settlingDuration
-                    layer.add(spring, forKey: key)
-                }
-                layer.setValue(value, forKeyPath: key)
-            }
-        }
-
-        /// the bar swells and stays swollen while dots leave its outline all round, slow to a stop and fade
+        /// dots leave the bar's outline all round, slow to a stop and fade
         private func finish() {
-            grow(by: swell, animated: true)
             for dot in 0..<80 {
                 let (from, out) = outline((Double(dot) + Self.unit(dot, 7)) / 80)
                 let far = Self.unit(dot, 8), size = 0.3 + 1.5 * Self.unit(dot, 9)
-                let room = gap - size / 2 - swell, reach = swell + room * (0.16 + 0.73 * far * far)
+                let reach = (gap - size / 2) * (0.16 + 0.73 * far * far)
                 let spark = CALayer()
                 spark.bounds.size = CGSize(width: size, height: size)
                 spark.cornerRadius = size / 2

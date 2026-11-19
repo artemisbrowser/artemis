@@ -13,6 +13,8 @@ nonisolated struct ImportHaul {
     /// new profiles to adopt, never the default one
     var profiles: [ProfileData] = []
     var spaces: [SpaceData] = []
+    /// one per source profile, its only pinned entry the bookmarks folder to land in a space here
+    var bookmarks: [SpaceData] = []
     /// by Artemis profile id; every `url` and `home` is already a web link
     var favourites: [UUID: [ImportedTab]] = [:]
     var archive: [UUID: [ArchiveEntry]] = [:]
@@ -30,6 +32,7 @@ nonisolated enum ImportBuilder {
     ) -> ImportHaul {
         var out = ImportHaul()
         var names = names
+        let marked = browser.profiles.filter { destinations[$0.id] != nil && !$0.bookmarks.isEmpty }.count
         for profile in browser.profiles {
             guard let into = destinations[profile.id] else { continue }
             if into == profile.id {
@@ -37,11 +40,11 @@ nonisolated enum ImportBuilder {
                 names.insert(name)
                 out.profiles.append(ProfileData(id: into, name: name, icon: profile.icon ?? "person.crop.circle"))
             }
-            var spaces = categories.contains(.spaces) ? profile.spaces : []
-            if categories.contains(.bookmarks) {
-                spaces += bookmarks(profile, of: browser).map { [$0] } ?? []
+            if categories.contains(.bookmarks), let folder = bookmarks(profile, of: browser, into: into, named: marked > 1) {
+                out.bookmarks.append(folder.data)
+                out.titles.merge(folder.titles) { first, _ in first }
             }
-            for space in spaces {
+            for space in categories.contains(.spaces) ? profile.spaces : [] {
                 var walk = Walk()
                 let pinned = walk.entries(space.pinned, pinned: true)
                 let today = walk.entries(space.today, pinned: false)
@@ -108,16 +111,25 @@ nonisolated enum ImportBuilder {
         return raw
     }
 
-    /// each bookmark root as a collapsed pinned folder, in one space per source profile
-    private static func bookmarks(_ profile: ImportedProfile, of browser: ImportedBrowser) -> ImportedSpace? {
+    /// the profile's bookmarks as one collapsed folder of collapsed roots; its id is stable, so importing again finds it
+    private static func bookmarks(
+        _ profile: ImportedProfile, of browser: ImportedBrowser, into: UUID, named: Bool
+    ) -> (data: SpaceData, titles: [String: String])? {
         let roots = profile.bookmarks.compactMap { item -> ImportedItem? in
             guard case .folder(let name, _, let children) = item else { return item }
             return children.isEmpty ? nil : .folder(name: name, expanded: false, children)
         }
-        guard !roots.isEmpty else { return nil }
-        return ImportedSpace(
-            id: Importers.stableID("\(browser.bundleID)/\(profile.key)/space/bookmarks"),
-            name: "\(browser.name) Bookmarks", icon: "bookmark", pinned: roots)
+        var walk = Walk()
+        let inner = walk.entries(roots, pinned: true, depth: 1)
+        guard !inner.isEmpty else { return nil }
+        let folder = EntryData(
+            kind: "folder", id: Importers.stableID("\(browser.bundleID)/\(profile.key)/bookmarks"),
+            name: "Imported bookmarks from \(browser.name)" + (named ? " (\(profile.name))" : ""), expanded: false,
+            children: inner)
+        let data = SpaceData(
+            id: UUID(), name: "", icon: "bookmark", appearance: SpaceAppearance(), profileID: into, tabs: walk.tabs,
+            pinnedEntries: [folder])
+        return (data, walk.titles)
     }
 
     /// up to three visible colours; none falls back to a preset picked by `index`

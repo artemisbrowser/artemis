@@ -38,6 +38,7 @@ struct PeekView: View {
     @AppStorage(PeekControlsCorner.storageKey) private var cornerRaw = PeekControlsCorner.topTrailing.rawValue
     let tab: BrowserTab
     @State private var escMonitor: Any?
+    @State private var isGrown = false
 
     private var corner: PeekControlsCorner { PeekControlsCorner(rawValue: cornerRaw) ?? .topTrailing }
 
@@ -51,8 +52,11 @@ struct PeekView: View {
             panel
                 .frame(maxWidth: 1120, maxHeight: 820)
                 .padding(56)
+                .scaleEffect(isGrown || Motion.reduceMotion ? 1 : 0.97)
         }
-        .transition(Motion.grow(from: 0.97))
+        // the scrim only fades: scaled with the panel, its edges would show sliding in
+        .transition(.opacity)
+        .onAppear { withAnimation(Motion.fade) { isGrown = true } }
         .onAppear { startEscMonitor() }
         .onDisappear { stopEscMonitor() }
     }

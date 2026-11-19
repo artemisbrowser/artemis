@@ -16,7 +16,16 @@ final class Space: Identifiable {
     /// what a save or sync writes: never an uncommitted theme
     var persistedAppearance: SpaceAppearance { committedAppearance ?? appearance }
     var tabs: [BrowserTab]
-    var selectedTabID: BrowserTab.ID?
+    var selectedTabID: BrowserTab.ID? {
+        didSet {
+            guard let selectedTabID, selectedTabID != oldValue else { return }
+            shown.removeAll { $0 == selectedTabID }
+            shown.append(selectedTabID)
+            if shown.count > 64 { shown.removeFirst() }
+        }
+    }
+    /// tabs this space has selected, most recent last
+    @ObservationIgnored private var shown: [BrowserTab.ID] = []
     /// the favourite this space last showed over its own tab, nil when it showed
     /// its own: where a new window and the next launch start in it
     var selectedEssentialID: BrowserTab.ID?
@@ -67,13 +76,16 @@ final class Space: Identifiable {
     var firstOpenTab: BrowserTab? { tabs.first { !$0.isDormantPin } }
 
     /// where the selection lands when tab `id` closes: a pane of its split that stays a split, else the
-    /// nearest open tab, the one after it first. a dormant pin is nothing to land on
-    func successor(of id: BrowserTab.ID) -> BrowserTab.ID? {
-        if let group = splitGroup(containing: id), group.leafCount > SplitGroup.minPanes {
+    /// tab selected before it, else the nearest, the one after it first. a dormant pin, or a pane of
+    /// `leaving`, is nothing to land on
+    func successor(of id: BrowserTab.ID, leaving: SplitGroup? = nil) -> BrowserTab.ID? {
+        if leaving == nil, let group = splitGroup(containing: id), group.leafCount > SplitGroup.minPanes {
             return group.tabIDs.first { $0 != id }
         }
+        func lands(_ tab: BrowserTab) -> Bool { tab.id != id && !tab.isDormantPin && leaving?.contains(tab.id) != true }
+        if let back = shown.last(where: { id in tabs.contains { $0.id == id && lands($0) } }) { return back }
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
-        let open = tabs.filter { $0.id != id }.enumerated().filter { !$0.element.isDormantPin }
+        let open = tabs.filter { $0.id != id }.enumerated().filter { lands($0.element) }
         return open.min { abs($0.offset - index) < abs($1.offset - index) }?.element.id
     }
 

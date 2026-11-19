@@ -336,7 +336,7 @@ struct TabsSettings: View {
                 } label: {
                     InfoLabel(
                         "Sleep background tabs after",
-                        info: "A sleeping tab frees its memory and comes back as you left it. Tabs on screen or playing media never sleep.")
+                        info: "A sleeping tab frees its memory and comes back as you left it. Pinned tabs, favourites and tabs on screen or playing media never sleep.")
                 }
                 .settingsAnchor(.tabSleep)
             }

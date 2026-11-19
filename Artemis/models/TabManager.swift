@@ -307,6 +307,14 @@ final class TabManager {
 
     /// the space wearing this window's editor's uncommitted theme
     @ObservationIgnored private weak var themeEditSpace: Space?
+    @ObservationIgnored private let themeStepStack = {
+        let steps = UndoManager()
+        steps.groupsByEvent = false
+        return steps
+    }()
+    @ObservationIgnored private var lastThemeStep = Date.distantPast
+    /// ⌘Z's stack while the editor wears a theme: one step per change, never on `undo`
+    var themeSteps: UndoManager? { themeEditSpace == nil ? nil : themeStepStack }
 
     private var saveTask: Task<Void, Never>? {
         get { core.saveTask }
@@ -1844,14 +1852,7 @@ final class TabManager {
             for id in group?.tabIDs ?? [tab.id] { manager.forgetSelection(of: id) }
         }
         if let selected = space.selectedTabID, selected == tab.id || group?.contains(selected) == true {
-            // pick the nearest tab that's still open; a row of dormant pins
-            // is nothing to land on
-            let index = space.tabs.firstIndex { $0.id == tab.id } ?? 0
-            let open = space.tabs.enumerated().filter {
-                !$0.element.isDormantPin && group?.contains($0.element.id) != true
-            }
-            let nearest = open.min { abs($0.offset - index) < abs($1.offset - index) }
-            space.selectedTabID = nearest?.element.id
+            space.selectedTabID = space.successor(of: tab.id, leaving: group)
             space.selectedTab?.activateIfNeeded()
             settleSelection()
         }
@@ -2276,38 +2277,29 @@ final class TabManager {
         return ids
     }
 
+    /// background tabs that sleep on their own: never a pin, a favourite or what is on screen
+    private func sleepers(idleSince cutoff: Date) -> [BrowserTab] {
+        let keep = visibleTabIDs
+        return allTabs.filter { !keep.contains($0.id) && !$0.isPinned && !$0.isEssential && $0.lastAccessed < cutoff }
+    }
+
     /// release the web view of any background tab left untouched past the
     /// threshold. the tab stays in the sidebar exactly as it was — selecting it
     /// restores scroll position and form state from its interaction blob
-    private func hibernateIdleTabs() {
+    func hibernateIdleTabs() {
         let interval = hibernateInterval
         guard interval > 0 else { return }
-        let cutoff = Date(timeIntervalSinceNow: -interval)
-        let keep = visibleTabIDs
-        for tab in allTabs where !keep.contains(tab.id) && tab.lastAccessed < cutoff {
-            tab.hibernate()
-        }
+        for tab in sleepers(idleSince: Date(timeIntervalSinceNow: -interval)) { tab.hibernate() }
     }
 
-    /// critical memory pressure sleeps every eligible background tab at once; a warning, which
-    /// macOS raises often, only those idle a quarter of the chosen wait (five minutes at least), none at Never
+    /// critical memory pressure sleeps every background tab that may sleep; a warning sleeps none
+    func relieveMemoryPressure() {
+        for tab in sleepers(idleSince: Date()) { tab.hibernate() }
+    }
+
     private func watchMemoryPressure() {
-        let source = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self, weak source] in
-            guard let self else { return }
-            let keep = self.visibleTabIDs
-            let critical = source?.data.contains(.critical) == true
-            let idle = Date(timeIntervalSinceNow: -max(300, self.hibernateInterval / 4))
-            var slept = 0
-            for tab in self.allTabs where !keep.contains(tab.id) && (critical || self.hibernateInterval > 0 && tab.lastAccessed < idle) {
-                if tab.canHibernate {
-                    tab.hibernate()
-                    slept += 1
-                }
-            }
-            debugLog("memory pressure: hibernated \(slept) tabs")
-        }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
+        source.setEventHandler { [weak self] in self?.relieveMemoryPressure() }
         source.resume()
         memoryPressureSource = source
     }
@@ -2542,13 +2534,18 @@ final class TabManager {
     }
 
     /// Land another browser's import: its profiles, then its spaces beside the ones here with
-    /// folders, splits and pins intact, its favourites and its archive. A space an earlier
-    /// import made is left as it is. Returns the spaces made and how many favourites and archived tabs landed.
+    /// folders, splits and pins intact, its bookmarks as a folder in the first space it lands in, its
+    /// favourites and its archive. A space or bookmarks folder an earlier import made is left as it is.
     @discardableResult
-    func importBrowser(_ haul: ImportHaul) -> (spaces: [Space], favourites: Int, archived: Int) {
+    func importBrowser(_ haul: ImportHaul) -> (spaces: [Space], bookmarks: Int, favourites: Int, archived: Int) {
         undo.disableUndoRegistration()
         defer { undo.enableUndoRegistration() }
         adoptProfiles(haul.profiles)
+        // a fresh install's lone Personal, never touched, gives way to spaces landing in its profile
+        let untouched = spaces.count == 1 ? spaces.first.flatMap { only in
+            only.name == "Personal" && only.icon == "circle.fill" && only.appearance == SpacePreset.all[0].appearance
+                && only.tabs.isEmpty && only.folders.isEmpty && !only.requiresUnlock ? only : nil
+        } : nil
         let made = haul.spaces.filter { data in !spaces.contains { $0.id == data.id } }.map { data in
             var data = data
             // a destination profile deleted mid-import: the space lands in the default one, as its cookies do
@@ -2565,6 +2562,32 @@ final class TabManager {
             }
         }
         spaces.append(contentsOf: made)
+        if let untouched, made.contains(where: { $0.profileID == untouched.profileID }) { deleteSpace(untouched) }
+
+        var bookmarks = 0
+        var marked: Space?
+        for carrier in haul.bookmarks {
+            guard let folder = carrier.pinnedEntries.first, !spaces.contains(where: { $0.folder(folder.id) != nil }),
+                let target = made.first(where: { $0.profileID == carrier.profileID })
+                    ?? spaces.first(where: { $0.profileID == carrier.profileID }) ?? made.first ?? spaces.first
+            else { continue }
+            var data = carrier
+            data.profileID = target.profileID
+            let loose = Self.makeSpace(from: data)
+            for tab in loose.tabs {
+                wire(tab)
+                ExtensionManager.shared.tabDidOpen(tab)
+                if let url = tab.pendingURL?.absoluteString, let title = haul.titles[url] {
+                    tab.adopt(restoredTitle: title)
+                }
+            }
+            target.tabs += loose.tabs
+            target.folders += loose.folders
+            target.pinnedEntries += loose.pinnedEntries
+            target.normalizeTree()
+            bookmarks += loose.tabs.count
+            marked = marked ?? target
+        }
 
         var favourites = 0
         for (id, links) in haul.favourites {
@@ -2589,9 +2612,9 @@ final class TabManager {
         let archived = haul.archive.reduce(0) { total, group in
             total + (core.profile(group.key) ?? core.defaultProfile).archive.merge(group.value)
         }
-        if let first = made.first { selectSpace(first) }
+        if let first = made.first ?? marked { selectSpace(first) }
         scheduleSave()
-        return (made, favourites, archived)
+        return (made, bookmarks, favourites, archived)
     }
 
     func deleteSpace(_ space: Space) {
@@ -2714,9 +2737,21 @@ final class TabManager {
         scheduleSave()
     }
 
-    /// the editor's working theme, shown live on the space: no save, no undo entry
+    /// the editor's working theme, shown live on the space: no save, a step on `themeSteps` only
     func wearTheme(_ appearance: SpaceAppearance, on space: Space) {
         if themeEditSpace !== space { revertTheme() }
+        let worn = space.appearance
+        if appearance != worn {
+            // changes under 0.5 s apart, as in a drag, are one step
+            let replaying = themeStepStack.isUndoing || themeStepStack.isRedoing
+            if replaying || lastThemeStep.timeIntervalSinceNow < -0.5 {
+                themeStepStack.beginUndoGrouping()
+                themeStepStack.registerUndo(withTarget: self) { $0.wearTheme(worn, on: space) }
+                themeStepStack.setActionName("Theme Change")
+                themeStepStack.endUndoGrouping()
+            }
+            lastThemeStep = replaying ? .distantPast : .now
+        }
         let committed = space.persistedAppearance
         space.committedAppearance = appearance == committed ? nil : committed
         themeEditSpace = space
@@ -2725,9 +2760,12 @@ final class TabManager {
 
     /// the tick: the worn theme becomes the space's own, as one undoable change
     func commitTheme() {
-        guard let space = themeEditSpace, let committed = space.committedAppearance else { return }
+        themeStepStack.removeAllActions()
+        guard let space = themeEditSpace else { return }
+        themeEditSpace = nil
+        guard let committed = space.committedAppearance else { return }
         let worn = space.appearance
-        (space.appearance, space.committedAppearance, themeEditSpace) = (committed, nil, nil)
+        (space.appearance, space.committedAppearance) = (committed, nil)
         updateSpace(space, appearance: worn)
     }
 
@@ -2737,6 +2775,7 @@ final class TabManager {
             (space.appearance, space.committedAppearance) = (committed, nil)
         }
         themeEditSpace = nil
+        themeStepStack.removeAllActions()
     }
 
     /// move a space to another profile, rebuilding its tabs' web views in that

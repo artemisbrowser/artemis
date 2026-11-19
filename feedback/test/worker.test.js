@@ -722,6 +722,16 @@ describe("signature grouping", () => {
     assert.deepEqual(JSON.parse(env.kv.get("crash:ab")), { issue: 1 });
   });
 
+  test("a crash's exception reason survives a call stack that fills the cut", async () => {
+    const report = crashReport("100");
+    report.crashes[0].payload = {
+      callStackTree: { frames: Array.from({ length: 20000 }, (_, i) => `frame ${i}`) },
+      diagnosticMetaData: { exceptionReason: { exceptionName: "NSGenericException" } },
+    };
+    await post(report);
+    assert.match(gh.issues[0].body, /"exceptionName": "NSGenericException"/);
+  });
+
   test("a huge crash payload is cut to fit an issue body", async () => {
     const report = crashReport("100");
     report.crashes[0].payload = {

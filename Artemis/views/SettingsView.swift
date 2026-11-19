@@ -108,7 +108,8 @@ struct SettingsView: View {
                         .accessibilityLabel("Forward")
                 }
                 if Updates.shared.isEnabled {
-                    if offering, let offer = Updates.shared.flow.offer {
+                    // an offer is the circle alone, except on About, where the pill replaces it
+                    if offering, selectedPane != .about, let offer = Updates.shared.flow.offer {
                         ToolbarItem(placement: .navigation) {
                             Button { Updates.shared.act() } label: {
                                 Image(systemName: offer.symbol).contentTransition(.symbolEffect(.replace))
@@ -118,7 +119,11 @@ struct SettingsView: View {
                             .tooltip(offer.title)
                         }
                     }
-                    ToolbarItem(placement: .primaryAction) { UpdateStatus() }
+                    if !offering || selectedPane == .about {
+                        ToolbarItem(placement: .primaryAction) {
+                            if offering { UpdateRestart() } else { UpdateStatus() }
+                        }
+                    }
                 }
             }
     }
@@ -230,12 +235,14 @@ struct SettingsView: View {
     }
 }
 
-/// follows the update flow in a body of its own, so a download's progress never rebuilds the settings page
+/// follows the update flow in a body of its own, so a download's progress never rebuilds the settings page.
+/// a download's bar plays its finish out before the offer replaces it
 private struct UpdateOfferWatch: View {
     @Binding var offering: Bool
 
     var body: some View {
-        Color.clear.onChange(of: Updates.shared.flow.offer != nil, initial: true) { offering = $1 }
+        let updates = Updates.shared
+        Color.clear.onChange(of: updates.flow.offer != nil && updates.finishing == nil, initial: true) { offering = $1 }
     }
 }
 

@@ -30,12 +30,12 @@ enum TrackpadSpread {
             unsafeBitCast(stop, to: (@convention(c) (UnsafeMutableRawPointer) -> Void).self))
     }()
     private static var devices: [AnyObject] = []
-    private static var handler: ((Double?) -> Void)?
+    private static var handler: (((spread: Double, mid: CGPoint)?) -> Void)?
     /// touched only on MultitouchSupport's own thread
     nonisolated(unsafe) private static var hadTwo = false
 
-    /// `handler` gets the normalised distance between two touching fingers each frame, and nil once they part
-    static func start(_ handler: @escaping (Double?) -> Void) {
+    /// `handler` gets two touching fingers' normalised distance and midpoint each frame, and nil once they part
+    static func start(_ handler: @escaping ((spread: Double, mid: CGPoint)?) -> Void) {
         guard devices.isEmpty, let mt = symbols else { return }
         self.handler = handler
         devices = mt.list().takeRetainedValue() as [AnyObject]
@@ -65,8 +65,8 @@ enum TrackpadSpread {
         hadTwo = true
         let t = touches.assumingMemoryBound(to: Touch.self)
         let a = t[0].normalized.position, b = t[1].normalized.position
-        let spread = Double(hypot(a.x - b.x, a.y - b.y))
-        DispatchQueue.main.async { MainActor.assumeIsolated { handler?(spread) } }
+        let spread = Double(hypot(a.x - b.x, a.y - b.y)), mid = CGPoint(x: CGFloat(a.x + b.x) / 2, y: CGFloat(a.y + b.y) / 2)
+        DispatchQueue.main.async { MainActor.assumeIsolated { handler?((spread, mid)) } }
         return 0
     }
 }

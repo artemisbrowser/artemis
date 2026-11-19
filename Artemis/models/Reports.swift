@@ -325,10 +325,12 @@ nonisolated enum Reports {
 
     /// one MetricKit diagnostic as a report's crash entry, redacted like the log
     fileprivate static func crashEntry(_ diagnostic: MXDiagnostic) -> Data? {
+        let reason = (diagnostic as? MXCrashDiagnostic)?.exceptionReason
         let summary =
             switch diagnostic {
             case let crash as MXCrashDiagnostic:
                 "crash: exception \(crash.exceptionType?.stringValue ?? "?") signal \(crash.signal?.stringValue ?? "?")"
+                    + (reason.map { " \($0.exceptionName)" } ?? "")
             case let hang as MXHangDiagnostic: "hang: \(hang.hangDuration.formatted())"
             case let cpu as MXCPUExceptionDiagnostic: "cpu exception: \(cpu.totalCPUTime.formatted())"
             case let disk as MXDiskWriteExceptionDiagnostic: "disk writes: \(disk.totalWritesCaused.formatted())"
@@ -341,10 +343,11 @@ nonisolated enum Reports {
             let payload = try? JSONSerialization.jsonObject(
                 with: Data(Diagnostics.redact(String(decoding: text, as: UTF8.self)).utf8))
         else { return nil }
-        // a hang's duration and an exception's totals vary between occurrences
+        // a hang's duration, an exception's totals and its message vary between occurrences
         let kind = diagnostic is MXCrashDiagnostic ? summary : String(summary.prefix { $0 != ":" })
         let sig = Diagnostics.hash(([kind] + innermostFrames(payload)).joined(separator: "|"))
-        return try? JSONSerialization.data(withJSONObject: ["sig": sig, "summary": summary, "payload": payload])
+        let shown = reason.map { "\(summary): \(Diagnostics.redact($0.composedMessage))" } ?? summary
+        return try? JSONSerialization.data(withJSONObject: ["sig": sig, "summary": shown, "payload": payload])
     }
 
     /// the attributed thread's innermost frames, which group one crash across

@@ -1161,6 +1161,7 @@ enum SelfTest {
             ("certificatetrust", { await testCertificateTrust() }),
             ("bookmarkimport", { await testBookmarkImport(manager: manager) }),
             ("arcimport", { await testArcImport(manager: manager) }),
+            ("importfresh", { await testImportTakesFreshSpace(manager: manager) }),
             ("onboarding", { await testOnboarding(manager: manager) }),
             ("whatsnew", { testWhatsNew(manager: manager) }),
             ("browserimport", { await testBrowserImport(manager: manager) }),
@@ -1217,6 +1218,7 @@ enum SelfTest {
                 "commandbar",
                 {
                     await testCommandBar(manager: manager)
+                    await testCommandBarAutofill(manager: manager)
                     await testLockedSpaceHistory(manager: manager)
                 }
             ),
@@ -1225,6 +1227,7 @@ enum SelfTest {
             ("privacycleaner", { await testPrivacyCleaner(manager: manager) }),
             ("printing", { await testPrinting(manager: manager) }),
             ("hibernation", { await testHibernation(manager: manager) }),
+            ("tabsleep", { await testTabSleep(manager: manager) }),
             ("tablifecycleguards", { await testTabLifecycleGuards() }),
             ("crashloop", { await testCrashLoop(manager: manager) }),
             ("storebutton", { await testStoreButton() }),
@@ -1258,9 +1261,12 @@ enum SelfTest {
             ("sidebarright", { await testSidebarOnRight(manager: manager) }),
             ("linkbubblepage", { await testLinkBubblePage(manager: manager) }),
             ("librarypeek", { await testLibraryPeek(manager: manager) }),
+            ("peekpress", { await testPeekPress(manager: manager) }),
             ("libraryfilter", { await testLibraryFilter(manager: manager) }),
+            ("libraryflick", { await testLibraryFlick(manager: manager) }),
             ("gift", { await testGift(manager: manager) }),
             ("updateflow", { await testUpdateFlow() }),
+            ("updateready", { await testUpdateReadyAtOnce() }),
             ("edgeapproach", { testEdgeApproach() }),
             ("overlayclicks", { await testOverlaySidebarClicks(manager: manager) }),
             ("downloadshelf", { await testDownloadShelf(manager: manager) }),
@@ -2918,6 +2924,48 @@ enum SelfTest {
         CertificateTrust.forget(host)
     }
 
+    /// a fresh install's untouched Personal gives way to imported spaces in its profile; a touched one stays
+    private static func testImportTakesFreshSpace(manager: TabManager) async {
+        let saved = manager.spaces, selected = manager.selectedSpaceID
+        let other = manager.createProfile(name: "selftest-import", icon: "person.crop.circle")
+        defer {
+            manager.spaces = saved
+            if let space = saved.first(where: { $0.id == selected }) { manager.selectSpace(space, animatePosition: false) }
+            manager.deleteProfile(other)
+        }
+        func land(touch: (Space) -> Void = { _ in }, into profile: UUID = Profile.defaultID) -> [String] {
+            let fresh = Space(name: "Personal", icon: "circle.fill", appearance: SpacePreset.all[0].appearance)
+            touch(fresh)
+            manager.spaces = [fresh]
+            let haul = ImportHaul(spaces: ["Work", "Study"].map {
+                SpaceData(id: UUID(), name: $0, icon: "square.stack", appearance: SpacePreset.all[1].appearance, profileID: profile)
+            })
+            _ = manager.importBrowser(haul)
+            return manager.spaces.map(\.name)
+        }
+        let plain = land()
+        record("import: a fresh install's untouched Personal gives way to the imported spaces", plain == ["Work", "Study"], "\(plain)")
+        let renamed = land(touch: { $0.name = "Home" })
+        record("import: a renamed first space stays beside them", renamed == ["Home", "Work", "Study"], "\(renamed)")
+        let elsewhere = land(into: other.id)
+        record(
+            "import: spaces landing only in another profile leave Personal be",
+            elsewhere == ["Personal", "Work", "Study"], "\(elsewhere)")
+    }
+
+    /// a second space while a test imports, so a fresh lab's lone Personal is never absorbed; returns its removal
+    private static func anchorSpaces(_ manager: TabManager) -> () -> Void {
+        guard manager.spaces.count == 1 else { return {} }
+        let anchor = Space(name: "Anchor", icon: "anchor", appearance: SpaceAppearance())
+        manager.spaces.append(anchor)
+        return {
+            if manager.selectedSpaceID == anchor.id, let other = manager.spaces.first(where: { $0 !== anchor }) {
+                manager.selectSpace(other, animatePosition: false)
+            }
+            manager.spaces.removeAll { $0 === anchor }
+        }
+    }
+
     /// Moving in from Arc. The sidebar file is parsed from bytes the test writes
     /// itself; this Mac's real Arc folder is read too, when it has one.
     private static func testArcImport(manager: TabManager) async {
@@ -3069,6 +3117,8 @@ enum SelfTest {
             "\(built.profiles.count) profiles")
 
         // and the move itself: spaces in, nothing loaded
+        let unanchor = anchorSpaces(manager)
+        defer { unanchor() }
         let spacesBefore = manager.spaces.count
         let moved = manager.importBrowser(built)
         let landed = moved.spaces.first
@@ -3437,6 +3487,8 @@ enum SelfTest {
                 && zenOld.favourites.map(\.url) == ["https://chat.example/?room=a|b"],
             zenOld.spaces.map { "\($0.name) \(links($0.pinned))" }.joined(separator: ", "))
 
+        let unanchor = anchorSpaces(manager)
+        defer { unanchor() }
         let previous = manager.currentSpace.id
         let csv = root.appending(path: "Passwords.csv")
         try? Data(
@@ -3464,12 +3516,42 @@ enum SelfTest {
         let profilesBefore = manager.profiles.count
         let spacesBefore = Set(manager.spaces.map(\.id))
         func made() -> [Space] { manager.spaces.filter { !spacesBefore.contains($0.id) } }
+        // a browser's bookmarks folder, pinned at the top of whichever space it landed in
+        func mark(_ browser: String, in list: [Space]) -> (space: Space, folder: TabFolder)? {
+            for space in list {
+                for case .folder(let id) in space.pinnedEntries {
+                    if let folder = space.folder(id), folder.name.hasPrefix("Imported bookmarks from \(browser)") {
+                        return (space, folder)
+                    }
+                }
+            }
+            return nil
+        }
+        func roots(_ mark: (space: Space, folder: TabFolder)?) -> [TabFolder] {
+            mark.map { mark in mark.folder.children.compactMap { if case .folder(let id) = $0 { mark.space.folder(id) } else { nil } } } ?? []
+        }
+        func hosts(_ mark: (space: Space, folder: TabFolder)?) -> [String] {
+            guard let mark else { return [] }
+            func walk(_ entries: [SidebarEntry]) -> [String] {
+                entries.flatMap { entry -> [String] in
+                    switch entry {
+                    case .tab(let id): [mark.space.tabs.first { $0.id == id }?.pinnedURL?.host()].compactMap { $0 }
+                    case .folder(let id): mark.space.folder(id).map { walk($0.children) } ?? []
+                    }
+                }
+            }
+            return walk(mark.folder.children)
+        }
         let marksOnly = await land(zen) { $0.selection = [.bookmarks] }
+        let zenMarks = mark("Zen", in: manager.spaces)
         record(
-            "browser import: a source profile with nothing ticked to bring makes no new profile",
-            manager.profiles.count == profilesBefore && made().map(\.name) == ["Zen Bookmarks"],
-            "\(manager.profiles.count - profilesBefore) new profiles, \(made().map(\.name)), \(marksOnly.phase)")
-        for space in made() { manager.deleteSpace(space) }
+            "browser import: bookmarks alone make no profile or space, only a collapsed folder in the profile's first space",
+            manager.profiles.count == profilesBefore && made().isEmpty
+                && zenMarks?.folder.name == "Imported bookmarks from Zen" && zenMarks?.folder.isExpanded == false
+                && zenMarks?.space === manager.spaces.first { $0.profileID == Profile.defaultID },
+            "\(manager.profiles.count - profilesBefore) new profiles, \(made().map(\.name)), "
+                + "\(zenMarks.map { "\($0.folder.name) in \($0.space.name)" } ?? "no folder"), \(marksOnly.phase)")
+        if let zenMarks { manager.closeFolder(zenMarks.folder) }
         let routed = await land(zen) { $0.selection = [.spaces, .cookies] }
         let old = manager.profiles.first { $0.id == zenOld.id }
         let owners = Dictionary(made().map { ($0.name, $0.profileID) }, uniquingKeysWith: { first, _ in first })
@@ -3536,24 +3618,20 @@ enum SelfTest {
         func pins(_ name: String) -> [String] {
             mine().first { $0.name == name }?.pinnedTabs.compactMap { $0.pinnedURL?.host() } ?? []
         }
-        func folders(_ name: String) -> [TabFolder] {
-            guard let space = mine().first(where: { $0.name == name }) else { return [] }
-            return space.pinnedEntries.compactMap { entry in
-                guard case .folder(let id) = entry else { return nil }
-                return space.folder(id)
-            }
-        }
         func visits(_ url: String) -> HistoryEntry? { profile.history.entries.first { $0.url.absoluteString == url } }
 
+        let shelf = manager.createSpace(
+            name: "Shelf", icon: "tray", appearance: SpacePreset.all[1].appearance, profileID: profile.id)
         let chromeRun = await land(chrome, into: profile.id)
+        let chromeFolder = mark("Chrome", in: mine())
         record(
-            "browser import: Chrome's bookmarks become one space of collapsed root folders, nesting kept",
-            mine().map(\.name) == ["Chrome Bookmarks"] && mine().first?.icon == "bookmark"
-                && folders("Chrome Bookmarks").map(\.name) == ["Bookmarks Bar", "Other Bookmarks"]
-                && folders("Chrome Bookmarks").allSatisfy { !$0.isExpanded }
-                && pins("Chrome Bookmarks")
-                    == ["essay.example", "paper.example", "chrome-bar.example", "chrome-other.example"],
-            mine().map { "\($0.name): \(pins($0.name))" }.joined(separator: "; ") + ", \(chromeRun.phase)")
+            "browser import: Chrome's bookmarks become one folder of collapsed roots in the profile's space, nesting kept",
+            mine().map(\.name) == ["Shelf"] && chromeFolder?.space === shelf
+                && chromeFolder?.folder.name == "Imported bookmarks from Chrome"
+                && roots(chromeFolder).map(\.name) == ["Bookmarks Bar", "Other Bookmarks"]
+                && roots(chromeFolder).allSatisfy { !$0.isExpanded }
+                && hosts(chromeFolder) == ["essay.example", "paper.example", "chrome-bar.example", "chrome-other.example"],
+            "\(mine().map(\.name)), \(roots(chromeFolder).map(\.name)), \(hosts(chromeFolder)), \(chromeRun.phase)")
         let often = visits("https://often.example/")
         record(
             "browser import: history keeps visit and typed counts and the real visit time, web pages only",
@@ -3564,11 +3642,12 @@ enum SelfTest {
             "\(often?.visitCount ?? -1) visits, \(often?.typedCount ?? -1) typed")
 
         let pinsBefore = mine().reduce(0) { $0 + $1.pinnedTabs.count }
+        let foldersBefore = shelf.folders.count
         let historyBefore = profile.history.entries.count
         let again = await land(chrome, into: profile.id)
         record(
-            "browser import: importing again adds no space, pin or history row",
-            mine().count == 1 && mine().reduce(0) { $0 + $1.pinnedTabs.count } == pinsBefore
+            "browser import: importing again adds no space, folder, pin or history row",
+            mine().count == 1 && shelf.folders.count == foldersBefore && mine().reduce(0) { $0 + $1.pinnedTabs.count } == pinsBefore
                 && profile.history.entries.count == historyBefore && visits("https://often.example/")?.visitCount == 42
                 && "\(again.phase)".contains("already here"),
             "\(again.phase)")
@@ -3590,9 +3669,10 @@ enum SelfTest {
             Set(profile.essentials.compactMap { ($0.url ?? $0.pendingURL)?.host() }) == ["mail.example", "chat.example"])
         record(
             "browser import: Firefox bookmarks skip tags and place: queries",
-            pins("Zen Bookmarks") == ["fox.example", "den.example", "fox-menu.example"]
-                && folders("Zen Bookmarks").map(\.name) == ["Bookmarks Toolbar", "Bookmarks Menu"],
-            "\(pins("Zen Bookmarks"))")
+            hosts(mark("Zen", in: mine())) == ["fox.example", "den.example", "fox-menu.example"]
+                && roots(mark("Zen", in: mine())).map(\.name) == ["Bookmarks Toolbar", "Bookmarks Menu"]
+                && mark("Zen", in: mine())?.space.name != "Shelf",
+            "\(hosts(mark("Zen", in: mine()))) in \(mark("Zen", in: mine())?.space.name ?? "nothing")")
         let fox = visits("https://fox.example/")
         record(
             "browser import: Firefox history keeps its counts and times",
@@ -3614,12 +3694,12 @@ enum SelfTest {
         record(
             "browser import: Safari's favourites bar becomes favourites, its roots and Reading List folders",
             profile.essentials.contains { $0.pinnedURL?.host() == "safari-bar.example" }
-                && folders("Safari Bookmarks").map(\.name) == ["Favourites", "Bookmarks Menu", "Reading List", "Travel"]
-                && Set(pins("Safari Bookmarks")) == [
+                && roots(mark("Safari", in: mine())).map(\.name) == ["Favourites", "Bookmarks Menu", "Reading List", "Travel"]
+                && Set(hosts(mark("Safari", in: mine()))) == [
                     "soup.example", "cake.example", "safari-bar.example", "safari-menu.example", "later.example",
                     "trip.example",
                 ],
-            "\(folders("Safari Bookmarks").map(\.name)), \(safariRun.phase)")
+            "\(roots(mark("Safari", in: mine())).map(\.name)), \(safariRun.phase)")
         let apple = visits("https://apple.example/")
         record(
             "browser import: Safari history takes the newest visit's title and time",
@@ -6084,7 +6164,6 @@ enum SelfTest {
                 if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
             }
             window.setFrame(frame, display: true)
-            manager.isSidebarCollapsed = wasCollapsed
         }
         UserDefaults.standard.set(0.0, forKey: WindowChrome.edgeInsetKey)
         let tab = manager.newTab(url: nil, select: true)
@@ -6107,12 +6186,23 @@ enum SelfTest {
                 try? await Task.sleep(for: .milliseconds(400))
                 manager.isSidebarCollapsed = true
                 try? await Task.sleep(for: .milliseconds(700))
+                // out and held, as a hover at the edge leaves it
+                manager.sidebarPeekRequest += 1
+                await settle { host.frame.minX > -host.frame.width / 2 }
+                try? await Task.sleep(for: .milliseconds(400))
                 _ = try? await tab.webView.evaluateJavaScript("window.hits=0")
                 var through: [String] = [], pressed = 0
-                for fraction in [0.25, 0.6, 0.9] {
-                    let spot = host.convert(NSPoint(x: 12 + width * fraction, y: root.bounds.height / 2), to: nil)
-                    guard window.isKeyWindow, root.hitTest(root.convert(spot, from: nil))?.isDescendant(of: host) == true
-                    else { continue }
+                // the empty list below a new window's few tabs, halfway and three quarters down
+                for fraction in [0.25, 0.6, 0.9] { for down in [0.5, 0.75] {
+                    guard window.isKeyWindow, host.frame.minX > -host.frame.width / 2 else { continue }
+                    let y = root.bounds.height * (host.isFlipped ? down : 1 - down)
+                    let spot = host.convert(NSPoint(x: 12 + width * fraction, y: y), to: nil)
+                    let hit = root.hitTest(root.convert(spot, from: nil))
+                    guard hit?.isDescendant(of: host) == true else {
+                        through.append("\(Int(width * fraction)),\(Int(y)) hits \(hit.map { "\(type(of: $0))" } ?? "nil")")
+                        pressed += 1
+                        continue
+                    }
                     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                         if let press = NSEvent.mouseEvent(
                             with: type, location: spot, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -6125,10 +6215,10 @@ enum SelfTest {
                     try? await Task.sleep(for: .milliseconds(300))
                     pressed += 1
                     if (try? await tab.webView.evaluateJavaScript("window.hits||0")) as? Int != 0 {
-                        through.append("\(Int(width * fraction))pt")
+                        through.append("\(Int(width * fraction)),\(Int(y)) reached the page")
                         _ = try? await tab.webView.evaluateJavaScript("window.hits=0")
                     }
-                }
+                } }
                 guard pressed > 0 else {
                     note("overlay clicks: skipped \(name), \(Int(width)) wide — the window wasn't key or the overlay left")
                     continue
@@ -6138,6 +6228,9 @@ enum SelfTest {
                     through.isEmpty, "\(pressed) pressed, through at \(through)")
             }
         }
+        // the held overlay lands back in place before the next test reads the rig
+        manager.isSidebarCollapsed = wasCollapsed
+        try? await Task.sleep(for: .milliseconds(700))
     }
 
     /// the sidebar on the right: its host, the traffic lights inside it and the card all mirror,
@@ -6741,6 +6834,124 @@ enum SelfTest {
         record("link bubble: it goes when its tab is closed", had && shut)
     }
 
+    /// the real field, typed into a character at a time
+    private static func testCommandBarAutofill(manager: TabManager) async {
+        let host = "kvasirfill.selftest.example"
+        let tab = manager.newTab(url: URL(string: "https://\(host)/")!, select: false)
+        defer { manager.close(tab) }
+        guard let window = BrowserWindows.shared.window(of: manager) else {
+            return record("autofill field: the window is up", false)
+        }
+        manager.isCommandBarVisible = false
+        try? await Task.sleep(for: .milliseconds(300))
+        manager.openNewTabBar()
+        await settle(.seconds(6)) { window.firstResponder is NSTextView }
+        func field() -> NSTextView? { window.firstResponder as? NSTextView }
+        guard field() != nil else {
+            manager.isCommandBarVisible = false
+            return note("autofill field: skipped, the bar's field never took the keyboard (key window \(window.isKeyWindow))")
+        }
+        func type(_ text: String) async {
+            guard let field = field() else { return }
+            field.insertText(text, replacementRange: field.selectedRange())
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        func key(_ code: UInt16, _ scalar: Int, _ flags: NSEvent.ModifierFlags = []) async {
+            let characters = String(Character(UnicodeScalar(scalar)!))
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
+            else { return }
+            window.sendEvent(event)
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        func state() -> String { "\(field()?.string ?? "no field") \(field().map { NSStringFromRange($0.selectedRange()) } ?? "")" }
+        func shows(_ text: String, selectedFrom start: Int) -> Bool {
+            field()?.string == text && field()?.selectedRange() == NSRange(location: start, length: text.count - start)
+        }
+
+        await type("k")
+        // the first character folds the scope buttons away, which re-hosts the field
+        await settle { field()?.string == "k" }
+        try? await Task.sleep(for: .milliseconds(600))
+        await type("v")
+        await settle { shows(host, selectedFrom: 2) }
+        record("autofill field: typing finishes a worn-in host, the rest selected", shows(host, selectedFrom: 2), state())
+        await type("a")
+        record("autofill field: typing over the completion completes again", shows(host, selectedFrom: 3), state())
+        field()?.deleteBackward(nil)
+        try? await Task.sleep(for: .milliseconds(150))
+        record("autofill field: delete takes only the completion", shows("kva", selectedFrom: 3), state())
+        await type("s")
+        record("autofill field: the next character completes again", shows(host, selectedFrom: 4), state())
+        await key(53, 0x1B)
+        record("autofill field: esc drops the completion", shows("kvas", selectedFrom: 4), state())
+        await type("i")
+        await key(48, 0x09)
+        let end = host.count
+        record("autofill field: ⇥ accepts the completion", shows(host, selectedFrom: end), state())
+        field().map { $0.insertText("kvasi", replacementRange: NSRange(location: 0, length: ($0.string as NSString).length)) }
+        try? await Task.sleep(for: .milliseconds(150))
+        record("autofill field: pasted text is never completed", shows("kvasi", selectedFrom: 5), state())
+
+        await type("r")
+        let tabs = manager.currentSpace.tabs.count
+        field()?.insertNewline(nil)
+        await settle { manager.currentSpace.tabs.count > tabs }
+        let opened = manager.selectedTab
+        record(
+            "autofill field: ↵ opens the completed host",
+            opened !== tab && opened?.lastAttemptedURL?.host() == host,
+            opened?.lastAttemptedURL?.absoluteString ?? "none")
+        if let opened, opened !== tab { manager.close(opened) }
+        manager.isCommandBarVisible = false
+        await testFillHighlight(manager: manager, window: window)
+    }
+
+    /// the completion's highlight is drawn in one colour from the first fill on
+    private static func testFillHighlight(manager: TabManager, window: NSWindow) async {
+        let host = "rubricfill.selftest.example"
+        let tab = manager.newTab(url: URL(string: "https://\(host)/")!, select: false)
+        defer { manager.close(tab) }
+        try? await Task.sleep(for: .milliseconds(300))
+        manager.openNewTabBar()
+        await settle(.seconds(6)) { window.firstResponder is NSTextView }
+        func field() -> NSTextView? { window.firstResponder as? NSTextView }
+        // the field editor's own pixels mid-run, and the blend its layer composites with
+        func highlight() -> String {
+            guard let field = field(), field.selectedRange().length > 0,
+                let layout = field.layoutManager, let container = field.textContainer,
+                let rep = field.bitmapImageRepForCachingDisplay(in: field.bounds)
+            else { return "none" }
+            let glyphs = layout.glyphRange(forCharacterRange: field.selectedRange(), actualCharacterRange: nil)
+            let run = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                .offsetBy(dx: field.textContainerOrigin.x, dy: field.textContainerOrigin.y)
+            field.cacheDisplay(in: field.bounds, to: rep)
+            let scale = CGFloat(rep.pixelsWide) / field.bounds.width
+            let c = rep.colorAt(x: Int((run.minX + 2) * scale), y: Int((run.minY + 2) * scale))?.usingColorSpace(.sRGB)
+            return String(
+                format: "%.2f %.2f %.2f blend %@", c?.redComponent ?? -1, c?.greenComponent ?? -1, c?.blueComponent ?? -1,
+                sequence(first: field as NSView, next: \.superview).prefix { $0 !== (field.delegate as? NSView)?.superview }
+                    .lazy.compactMap { $0.layer?.compositingFilter }.first.map { "\($0)" } ?? "none")
+        }
+        var seen: [String] = []
+        for letter in "rubricf" {
+            field().map { $0.insertText(String(letter), replacementRange: $0.selectedRange()) }
+            try? await Task.sleep(for: .milliseconds(180))
+            seen.append(highlight())
+        }
+        try? await Task.sleep(for: .milliseconds(800))
+        seen.append(highlight())
+        let fills = seen.filter { $0 != "none" }
+        // a blended selection changes colour on screen as the glass under it settles
+        record(
+            "autofill field: the completion's highlight keeps one colour while you type",
+            fills.count > 2 && Set(fills).count == 1 && fills[0].hasSuffix("blend none"),
+            seen.joined(separator: " | "))
+        manager.isCommandBarVisible = false
+    }
+
     private static func testCommandBarThroughSidebar(manager: TabManager) async {
         func sidebarHost(in view: NSView) -> NSView? {
             view is PassthroughHostingView<AnyView>
@@ -6886,6 +7097,55 @@ enum SelfTest {
             "took \(took), sidebar gone \(sidebarGone()), responder \(String(describing: window.firstResponder.map { type(of: $0) }))")
         field.removeFromSuperview()
         manager.isSidebarCollapsed = wasCollapsed
+        await testCommandBarHeldHint(manager: manager, window: window)
+    }
+
+    /// ⌘T's own ⌘ lifting unheard must not leave the bar's hint on ⌘↵
+    private static func testCommandBarHeldHint(manager: TabManager, window: NSWindow) async {
+        // a row reads "kind, …, verb": the verb is what its ↵ hint does
+        func rows(in element: NSObject, depth: Int = 0) -> [NSObject] {
+            func ax(_ key: String) -> Any? { element.responds(to: Selector(key)) ? element.value(forKey: key) : nil }
+            let own = ax("accessibilityValue") is String && ax("accessibilityLabel") != nil ? [element] : []
+            guard depth < 60 else { return own }
+            return own + (ax("accessibilityChildren") as? [Any] ?? []).compactMap { $0 as? NSObject }.flatMap { rows(in: $0, depth: depth + 1) }
+        }
+        func verbs() -> [(String, NSObject)] {
+            NSApp.windows.compactMap(\.contentView).flatMap { rows(in: $0) }
+                .compactMap { row in (row.value(forKey: "accessibilityValue") as? String).map { ($0, row) } }
+                .filter { $0.0.hasSuffix(", Open") || $0.0.hasSuffix("Open in Split") }
+        }
+        func send(_ event: NSEvent?) { event.map(NSApp.sendEvent) }
+        becomeKey(window)
+        manager.isCommandBarVisible = false
+        window.makeFirstResponder(nil)
+        try? await Task.sleep(for: .milliseconds(400))
+        manager.openNewTabBar()
+        await settle { window.firstResponder is NSTextView }
+        (window.firstResponder as? NSTextView)?.insertText("held-hint.selftest.example", replacementRange: NSRange(location: 0, length: 0))
+        try? await Task.sleep(for: .milliseconds(600))
+        // ⌘ goes down and its release never arrives
+        send(NSEvent.keyEvent(
+            with: .flagsChanged, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+            isARepeat: false, keyCode: 55))
+        try? await Task.sleep(for: .milliseconds(300))
+        let stuck = verbs().first { $0.0.hasSuffix("Open in Split") }
+        let row = (stuck?.1.value(forKey: "accessibilityFrame") as? NSRect).map { window.convertPoint(fromScreen: NSPoint(x: $0.midX, y: $0.midY)) }
+        for dx in [0.0, -30, -60] {
+            send(NSEvent.mouseEvent(
+                with: .mouseMoved, location: NSPoint(x: (row?.x ?? 0) + dx, y: row?.y ?? 0), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 0, pressure: 0))
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        let after = verbs().map(\.0)
+        record(
+            "command bar: a ⌘ whose release went unheard leaves the hint once the pointer moves over it",
+            stuck != nil && !after.isEmpty && after.allSatisfy { !$0.hasSuffix("Split") },
+            "while stuck \(stuck?.0 ?? "no split row"), after \(after)")
+        manager.isCommandBarVisible = false
+        await settle { !manager.isCommandBarVisible }
     }
 
     /// what a click on `window` tells `BrowserWindows`, whether or not AppKit lets
@@ -8065,6 +8325,16 @@ enum SelfTest {
         var capped = false
         if case .to(let r)? = huge { capped = inside(r, area) && r.width <= area.width + 0.5 }
         record("mini-player gestures: a pinch never grows the panel past its screen", capped, "\(String(describing: huge))")
+
+        // spread then midpoint travel, in trackpad fractions, from where two fingers touched
+        let together = PiPGesture.isPinch(spread: 0.36, from: 0.3, midpointMoved: 0.25)
+        let wobble = PiPGesture.isPinch(spread: 0.33, from: 0.3, midpointMoved: 0)
+        record("mini-player gestures: fingers swiping or flicking together, or barely spreading, never pinch",
+            !together && !wobble, "together \(together) wobble \(wobble)")
+        let apart = PiPGesture.isPinch(spread: 0.36, from: 0.3, midpointMoved: 0.005)
+        let onePinned = PiPGesture.isPinch(spread: 0.22, from: 0.3, midpointMoved: 0.04)
+        record("mini-player gestures: fingers spreading apart, or closing on a resting one, pinch",
+            apart && onePinned, "apart \(apart) one pinned \(onePinned)")
 
         g = PiPGesture(); frame = start
         _ = g.magnify(.began, by: 0.1, at: &anchor, time: 11, frame: frame, aspect: 16 / 9, minWidth: 260, screens: one)
@@ -12224,6 +12494,28 @@ enum SelfTest {
             scratch.selectedTabID == nil && dormant.pendingURL != nil && openPin.pendingURL != nil)
         manager.selectSpace(home)
         manager.deleteSpace(scratch)
+
+        // ✕ and – go back to the tab shown before; here the nearest is always another
+        let recency = manager.createSpace(
+            name: "Recency Scratch", icon: "clock", appearance: SpacePreset.all[1].appearance, profileID: home.profileID)
+        recency.tabs.forEach { manager.close($0) }
+        let rows = (0..<4).map { BrowserTab(restoring: URL(string: "https://recency\($0).selftest.example/")!, pinned: false) }
+        recency.tabs += rows
+        recency.normalizeTree()
+        for i in [3, 0, 1] { manager.selectedTabID = rows[i].id }
+        manager.close(rows[1])
+        let closedTo = manager.selectedTabID
+        let pin = manager.newTab(url: nil, select: true)
+        await load(pin, html: "<html><title>Recency pin</title><body>hi</body></html>")
+        manager.togglePin(pin)
+        manager.selectedTabID = rows[2].id
+        manager.selectedTabID = pin.id
+        manager.closeAndKeepPinned(pin)
+        record("closing: ✕ and – go back to the tab shown before, not the nearest",
+            closedTo == rows[0].id && manager.selectedTabID == rows[2].id,
+            "\(rows.firstIndex { $0.id == closedTo }.map(String.init) ?? "nil") \(manager.selectedTab?.displayTitle ?? "nil")")
+        manager.selectSpace(home)
+        manager.deleteSpace(recency)
         manager.selectedTabID = previous
     }
 
@@ -13600,6 +13892,45 @@ enum SelfTest {
         manager.selectedTabID = previous
     }
 
+    /// what each automatic sleep takes: background tabs idle 10 minutes and 1 minute, a pin and a
+    /// favourite idle 10 minutes, all loaded and off screen
+    private static func testTabSleep(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        func fixture() async -> [(name: String, tab: BrowserTab)] {
+            let old = manager.newTab(url: nil, select: false)
+            let recent = manager.newTab(url: nil, select: false)
+            let pin = manager.newTab(url: nil, select: false)
+            manager.togglePin(pin)
+            let favourite = BrowserTab()
+            favourite.isEssential = true
+            manager.essentials.append(favourite)
+            let tabs = [("background", old), ("recent", recent), ("pin", pin), ("favourite", favourite)]
+            for (_, tab) in tabs { await load(tab, html: "<title>Sleeper</title>") }
+            for (name, tab) in tabs { tab.lastAccessed = Date(timeIntervalSinceNow: name == "recent" ? -60 : -600) }
+            manager.selectedTabID = previous
+            return tabs
+        }
+        func slept(_ tabs: [(name: String, tab: BrowserTab)]) -> String {
+            let names = tabs.filter { $0.tab.isHibernated }.map(\.name)
+            for (_, tab) in tabs { tab.isEssential ? manager.removeEssential(tab) : manager.close(tab) }
+            return names.isEmpty ? "none" : names.joined(separator: " ")
+        }
+
+        var tabs = await fixture()
+        manager.relieveMemoryPressure()
+        let critical = slept(tabs)
+        record("tabsleep: critical pressure sleeps background tabs, never a pin or favourite",
+            critical == "background recent", "slept \(critical)")
+
+        tabs = await fixture()
+        for (_, tab) in tabs { tab.lastAccessed = .distantPast }
+        manager.hibernateIdleTabs()
+        let idle = slept(tabs)
+        record("tabsleep: the idle sweep never sleeps a pin or favourite",
+            idle == "background recent", "slept \(idle)")
+        manager.selectedTabID = previous
+    }
+
     /// a store item page's own install button reads "Add to Artemis", works, and is ours alone. the
     /// Chrome Web Store changes the URL before it shows the item, keeps the pages it left, hidden,
     /// and disables other buttons outside the item, like search's "Clear all"
@@ -14603,6 +14934,31 @@ enum SelfTest {
             "editor: the tick commits the theme as exactly one undo entry",
             committed && stays && created.appearance == kept && !manager.undo.canUndo,
             "committed \(committed), stays after close \(stays), undone \(created.appearance == kept)")
+        // ⌘Z in the open editor walks back its changes one at a time, off the shared stack
+        let next = SpacePreset.all[3]
+        await open()
+        await press(preset.name)
+        try? await Task.sleep(for: .seconds(1))
+        await press(next.name)
+        let steps = editor()?.window.flatMap(UndoRoute.browserStack(in:))
+        let routed = steps != nil && steps === manager.themeSteps
+        var walk: [Bool] = []
+        var trace: [String] = []
+        for (redo, want) in [(false, preset.appearance), (false, kept), (true, preset.appearance)] {
+            redo ? steps?.redo() : steps?.undo()
+            try? await Task.sleep(for: .milliseconds(200))
+            walk.append(created.appearance == want)
+            trace.append("\(steps?.canUndo == true)/\(steps?.canRedo == true)")
+        }
+        let shared = manager.undo.canUndo
+        await press("Save")
+        await close()
+        manager.undo.undo()
+        try? await Task.sleep(for: .milliseconds(100))
+        record(
+            "editor: ⌘Z steps back through the open editor's changes; the tick still commits one entry",
+            routed && walk == [true, true, true] && !shared && created.appearance == kept && !manager.undo.canUndo,
+            "routed \(routed), walk \(walk), undo/redo \(trace), shared \(shared)")
         manager.undo.removeAllActions()
         manager.isSidebarCollapsed = wasCollapsed
 
@@ -18027,7 +18383,7 @@ enum SelfTest {
             "update flow: the finish's dots all rest inside the item's glass capsule, and the bar's layers clip to that capsule so no dust passes it",
             inItem, itemDetail)
         record("update flow: the sidebar pill's bar finishes the same way, its dust and dots never past the pill's glass", inPill, pillDetail)
-        /// how far the finish grew a bar on each side, left, top, right and bottom, and whether it is still a capsule
+        /// how far past its outline a finished bar sits on each side, left, top, right and bottom, and whether it is still a capsule
         func outset(in host: NSView) -> ([CGFloat], Bool) {
             guard let layers = glass(in: host) else { return ([], false) }
             let grown = layers.capsule.bounds, item = layers.bounds, gap = (item.height - grown.height) / 2 - grown.minY
@@ -18036,8 +18392,8 @@ enum SelfTest {
         }
         let (itemSides, itemRound) = outset(in: status), (pillSides, pillRound) = outset(in: pill)
         record(
-            "update flow: the finish grows each bar by a quarter of its gap on every side and leaves it a capsule, 2.25pt in Settings and 1pt in the pill",
-            Motion.reduceMotion || (itemSides == Array(repeating: 2.25, count: 4) && pillSides == Array(repeating: 1, count: 4) && itemRound && pillRound),
+            "update flow: the finish leaves each bar its own size, a capsule, in Settings and in the pill",
+            itemSides == Array(repeating: 0, count: 4) && pillSides == Array(repeating: 0, count: 4) && itemRound && pillRound,
             "item \(itemSides) round \(itemRound), pill \(pillSides) round \(pillRound)")
         record(
             "update flow: a downloaded update waits for a second press before it relaunches",
@@ -18090,6 +18446,24 @@ enum SelfTest {
             finished && ended && updates.finishing == nil, "\(finished) \(ended) \(updates.finishing as Any)")
         updates.dismissUpdateInstallation()
         record("update flow: a session that ends takes its offer with it", updates.flow == .idle, "\(updates.flow)")
+    }
+
+    /// a download that turns ready before its bar has drawn: the bar mounts already finishing
+    private static func testUpdateReadyAtOnce() async {
+        let updates = Updates.shared
+        var installs = 0
+        let reply: (SPUUserUpdateChoice) -> Void = { if $0 == .install { installs += 1 } }
+        updates.offer("9.9.9", downloaded: false, reply: reply)
+        updates.updateAndRestart()
+        updates.showDownloadInitiated {}
+        updates.showReady(toInstallAndRelaunch: reply)
+        let asked = installs
+        try? await Task.sleep(for: .seconds(Updates.finish + 0.3))
+        record("update flow: a bar that turns up finishing plays it out once it has a size", updates.finishing == nil)
+        record(
+            "update flow: Update & restart downloads, then relaunches by itself once the finish has played",
+            asked == 1 && installs == 2, "\(asked) then \(installs)")
+        updates.dismissUpdateInstallation()
     }
 
     private static func testGift(manager: TabManager) async {
@@ -18368,6 +18742,143 @@ enum SelfTest {
         record(
             "library filter: the search keeps files by name and by kind, and emptied keeps them all",
             search != nil && found.isEmpty, "field \(search != nil); \(found.joined(separator: "; "))")
+    }
+
+    /// a firm press on a link opens Peek before the press lifts, and the release reaches the page under it
+    private static func testPeekPress(manager: TabManager) async {
+        final class Hit: NSObject {
+            @objc let absoluteLinkURL: URL
+            init(_ url: URL) { absoluteLinkURL = url }
+        }
+        let base = URL(string: "https://selftest-peekpress.example/")!
+        let target = base.appendingPathComponent("linked")
+        let tab = manager.newTab(select: true)
+        defer {
+            manager.closePeek()
+            manager.close(tab)
+        }
+        tab.webView.loadHTMLString(
+            "<html><body style='margin:0'><a href='\(target)' style='display:block;height:100vh'>peek</a>"
+                + "<script>window.__ups = 0; addEventListener('mouseup', () => window.__ups++)</script></body></html>",
+            baseURL: base)
+        await settle { tab.url == base && !tab.isLoading }
+        guard let view = tab.webView as? ArtemisWebView, let window = view.window else {
+            return record("peek press: the page is up in a window", false)
+        }
+        _ = view.immediateActionController(Hit(target), type: 0, userData: nil)
+        view.completeForceClick(held: true)
+        await settle(.seconds(2)) { manager.peekTab != nil }
+        record(
+            "peek press: a firm press on a link opens Peek before the press lifts",
+            manager.peekTab?.lastAttemptedURL == target, "\(String(describing: manager.peekTab?.lastAttemptedURL))")
+        let spot = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+        if let up = NSEvent.mouseEvent(
+            with: .leftMouseUp, location: spot, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)
+        {
+            NSApp.postEvent(up, atStart: false)
+        }
+        var ups = 0
+        await settle(.seconds(2)) {
+            ups = (try? await view.evaluateJavaScript("window.__ups")) as? Int ?? 0
+            return ups > 0
+        }
+        record(
+            "peek press: the release reaches the page under the Peek, which stays open",
+            ups == 1 && manager.peekTab != nil, "\(ups) mouseups, peek \(manager.peekTab != nil)")
+    }
+
+    private static func testLibraryFlick(manager: TabManager) async {
+        func sidebarHost(in view: NSView) -> NSView? {
+            view is PassthroughHostingView<AnyView>
+                ? view : view.subviews.lazy.compactMap { sidebarHost(in: $0) }.first
+        }
+        func scrollViews(_ view: NSView) -> [NSView] {
+            (view is NSScrollView ? [view] : []) + view.subviews.flatMap(scrollViews)
+        }
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView,
+            let host = sidebarHost(in: content), let card = host.superview?.subviews.first(where: { $0 !== host })
+        else { return record("library flick: the window and its sidebar are up", false) }
+        let pickedMode = UserDefaults.standard.string(forKey: LibraryMode.storageKey)
+        manager.isSidebarCollapsed = false
+        manager.isLibraryOpen = false
+        UserDefaults.standard.set(LibraryMode.history.rawValue, forKey: LibraryMode.storageKey)
+        let seedURL = URL(string: "https://selftest-flick.example/row")!
+        manager.history.record(url: seedURL, title: "selftest-flick")
+        defer {
+            manager.isLibraryOpen = false
+            manager.history.forget { $0.url == seedURL }
+            UserDefaults.standard.set(pickedMode, forKey: LibraryMode.storageKey)
+        }
+        // window x of the card and of every list, rounded: the Library's list exists only while mounted
+        func reading() -> [Int] {
+            [Int(card.frame.minX.rounded())]
+                + scrollViews(host).map { Int($0.convert($0.bounds, to: nil).minX.rounded()) }.sorted()
+        }
+        func rest() async -> [Int] {
+            var last = reading()
+            await settle(.seconds(5)) {
+                try? await Task.sleep(for: .milliseconds(200))
+                let next = reading()
+                defer { last = next }
+                return next == last
+            }
+            return last
+        }
+        func near(_ a: [Int], _ b: [Int]) -> Bool { a.count == b.count && zip(a, b).allSatisfy { abs($0 - $1) <= 1 } }
+
+        _ = await rest()
+        let closed = await rest()
+        manager.isLibraryOpen = true
+        let open = await rest()
+        manager.isLibraryOpen = false
+        _ = await rest()
+        guard open.count > closed.count else {
+            return record("library flick: the open Library adds a list", false, "open \(open), closed \(closed)")
+        }
+
+        for (toggles, gap) in [(5, 50), (4, 70), (6, 40)] {
+            let endsOpen = toggles % 2 == 1
+            var drift: CGFloat = 0, lastMove = -1, vanished = -1, frame = 0
+            var last: [ObjectIdentifier: CGFloat] = [:], lastCount = scrollViews(host).count
+            func sample() {
+                let views = scrollViews(host)
+                var now: [ObjectIdentifier: CGFloat] = [:]
+                for view in views { now[ObjectIdentifier(view)] = view.convert(view.bounds, to: nil).minX }
+                let moves = now.compactMap { id, x in last[id].map { x - $0 } }
+                if let lo = moves.min(), let hi = moves.max() { drift = max(drift, hi - lo) }
+                if moves.contains(where: { abs($0) > 0.5 }) { lastMove = frame }
+                if views.count < lastCount, vanished < 0 { vanished = frame }
+                last = now
+                lastCount = views.count
+                frame += 1
+            }
+            for _ in 0..<toggles {
+                manager.isLibraryOpen.toggle()
+                for _ in 0..<(gap / 8) {
+                    try? await Task.sleep(for: .milliseconds(8))
+                    sample()
+                }
+            }
+            for _ in 0..<150 {
+                try? await Task.sleep(for: .milliseconds(8))
+                sample()
+            }
+            let settled = await rest(), target = endsOpen ? open : closed
+            let label = "library flick (\(toggles) toggles \(gap) ms apart, ends \(endsOpen ? "open" : "shut"))"
+            record(
+                "\(label): the lists move as one strip and settle where one toggle leaves them",
+                drift <= 1 && near(settled, target),
+                "drift \(drift); settled \(settled), one toggle \(target)")
+            if !endsOpen {
+                record(
+                    "\(label): the Library unmounts only after its slide out comes to rest",
+                    vanished > lastMove,
+                    "list gone at frame \(vanished), last move at frame \(lastMove)")
+            }
+            manager.isLibraryOpen = false
+            _ = await rest()
+        }
     }
 
     private static func testLibraryPeek(manager: TabManager) async {
@@ -20712,7 +21223,7 @@ enum SelfTest {
             isSearchRow(bangsOff.first), bangsOff.first?.title ?? "none")
         UserDefaults.standard.set(true, forKey: Bangs.enabledKey)
 
-        // the completion offer, which is the ⇥ target and nothing else
+        // the host the field completes the typing into
         record(
             "bar: a worn-in host is offered for completion",
             engine.autofill(for: "zephyrtest")?.completion == ".selftest.example",
@@ -20721,10 +21232,13 @@ enum SelfTest {
             "bar: a host already spelled out has nothing left to complete",
             engine.autofill(for: "zephyrtest.selftest.example") == nil)
         record("bar: a bang is never completed as a host", engine.autofill(for: "!ze") == nil)
-        let ghosted = engine.items(input: "zephyrtest", scope: nil, textHits: [], suggestions: [])
+        let filled = engine.items(
+            input: "zephyrtest", scope: nil, textHits: [], suggestions: [],
+            autofill: engine.autofill(for: "zephyrtest"))
         record(
-            "bar: the completion never takes the top row from what you typed",
-            isSearchRow(ghosted.first), ghosted.first?.title ?? "none")
+            "bar: a completed host opens from row 0, what you typed is searched from row 1",
+            filled.first?.url?.host() == "zephyrtest.selftest.example" && isSearchRow(filled.dropFirst().first),
+            filled.prefix(2).map(\.title).joined(separator: " / "))
 
         // a page you live in is the strongest thing the ranking can produce, and
         // it still doesn't get row 0
@@ -23896,7 +24410,8 @@ extension SelfTest {
     }
 
     /// a stand-in for Claude Code: answers each prompt as `first`, and as `later` from the third on.
-    /// It takes each permission mode asked for, auto only while its folder holds no `refuse-auto`; a
+    /// It takes each permission mode asked for, auto only while its folder holds no `refuse-auto`; `LINGER`
+    /// leaves its turn open until an interrupt ends it as an error, as Claude Code does; a
     /// prompt saying BLOCKED gets three classifier denials, then permission asks for an artemis tool,
     /// a tool of its own and something that isn't a permission ask at all
     private static func fakeClaude(first: String, later: String, saying: String? = nil) -> URL {
@@ -23913,7 +24428,13 @@ extension SelfTest {
             while IFS= read -r line; do
               printf '%s\\n' "$line" >> input
               case "$line" in
-                *'"control_response"'*|*interrupt*) ;;
+                *'"control_response"'*) ;;
+                *interrupt*)
+                  [ "$open" = 1 ] && echo '{"type":"result","subtype":"error_during_execution","is_error":true}'
+                  open=0 ;;
+                *LINGER*)
+                  open=1
+                  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"lingering"}]}}' ;;
                 *set_permission_mode*)
                   mode=$(printf '%s' "$line" | sed 's/.*"mode":"\\([a-z]*\\)".*/\\1/')
                   if [ "$mode" = auto ] && [ -f refuse-auto ]; then
@@ -25603,6 +26124,22 @@ extension SelfTest {
             replies == ["reply 1", "reply 2"] && !task.isWorking && flags.contains("--tools  --allowedTools mcp__artemis")
                 && flags.contains("--restricted") && flags.contains("--strict-mcp-config") && task.model == "claude-fable-5-2",
             "\(replies) \(flags) \(task.model ?? "nil")")
+
+        func stopLingering() async {
+            task.send("LINGER")
+            await settle { task.entries.last?.text == "lingering" }
+            task.stop()
+        }
+        await stopLingering()
+        await agentSettled(task)
+        await stopLingering()
+        task.send("third")
+        await settle { task.entries.last?.text == "reply 3" }
+        let problems = task.entries.filter { $0.kind == .problem }.map(\.text)
+        record(
+            "agent engine: Stop leaves no error behind, alone or with a prompt sent straight after",
+            problems.isEmpty && task.entries.filter { $0.text == "lingering" }.count == 2 && task.entries.last?.text == "reply 3",
+            "\(problems) \(task.entries.suffix(3).map(\.text))")
         task.close()
         record("agent engine: closing a task removes its folder", !FileManager.default.fileExists(atPath: folder.path))
 

@@ -38,6 +38,8 @@ final class UndoRoute {
         // a popover's acts belong to the window it hangs off
         guard let manager = BrowserWindows.shared.manager(for: window.parent ?? window), manager.kind != .scout
         else { return nil }
+        // the open theme editor's steps come before its focused name field
+        if let steps = manager.themeSteps, steps.canUndo || steps.canRedo { return steps }
         guard let responder = window.firstResponder as? NSView else { return manager.undo }
         if responder is NSText { return nil }
         guard let page = sequence(first: responder, next: \.superview).first(where: { $0 is WKWebView }) else {

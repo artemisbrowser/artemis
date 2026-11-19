@@ -314,12 +314,17 @@ final class ImportModel {
 
         if !structure.isEmpty {
             phase = .working("Spaces and tabs…")
-            let (made, favourites, archived) = manager.importBrowser(haul)
+            let (made, bookmarks, favourites, archived) = manager.importBrowser(haul)
             if !made.isEmpty {
                 landed.append(
                     "\(Self.count(made.count, "space")), \(Self.count(made.reduce(0) { $0 + $1.tabs.count }, "tab"))")
             } else if !haul.spaces.isEmpty {
                 landed.append("Its spaces were already here")
+            }
+            if bookmarks > 0 {
+                landed.append("\(Self.count(bookmarks, "bookmark")) in a folder")
+            } else if !haul.bookmarks.isEmpty {
+                landed.append("Its bookmarks were already here")
             }
             if favourites > 0 { landed.append(Self.count(favourites, "favourite")) }
             if archived > 0 { landed.append(Self.count(archived, "archived tab")) }

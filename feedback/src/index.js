@@ -491,13 +491,17 @@ function context(r, events) {
 
 function evidence(r, label, sig, items) {
   const first = items[0];
-  if (label === "crash")
+  if (label === "crash") {
+    // the exception's name and reason lead: the call stack alone can spend the cut
+    const { diagnosticMetaData, ...rest } = first.payload;
+    const payload = diagnosticMetaData ? { diagnosticMetaData, ...rest } : rest;
     return [
       quote(first.summary),
       facts(r, [["Signature", sig]]),
-      details("Crash report", pretty(first.payload, 30000), "json"),
+      details("Crash report", pretty(payload, 30000), "json"),
       ...context(r, r.events ?? []),
     ];
+  }
   return [
     block(clean(first.message)),
     facts(r, [

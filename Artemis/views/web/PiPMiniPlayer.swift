@@ -1506,6 +1506,13 @@ struct PiPGesture {
         return .to(Self.clamp(scaled, anchor: NSPoint(x: scaled.midX, y: scaled.midY), in: screens))
     }
 
+    /// two touching fingers are a pinch once their spread has changed by more than 0.04 of the
+    /// trackpad and by more than their midpoint has moved since they touched
+    static func isPinch(spread: Double, from start: Double, midpointMoved: Double) -> Bool {
+        let change = abs(spread - start)
+        return change > 0.04 && change > midpointMoved
+    }
+
     /// pt/s over the last 0.1s of movement; zero when the fingers or mouse stopped before letting go
     static func velocity(_ samples: [(point: NSPoint, time: TimeInterval)], liftedAt end: TimeInterval) -> CGVector {
         guard let last = samples.last, end - last.time < 0.05,
@@ -1639,14 +1646,65 @@ private final class PiPPanel: NSPanel {
 
     private var pendingDown: NSEvent?
     private var dragStart: NSPoint?
-    /// a pinch over the panel: the fingers' spread as it began and last
-    private var rawPinch: (start: Double, last: Double, began: Bool)?
+    /// a pinch over the panel: the fingers' spread and midpoint as it began, and spread last
+    private var rawPinch: (start: Double, mid: CGPoint, last: Double, began: Bool)?
 
     override init(
         contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool
     ) {
         super.init(contentRect: contentRect, styleMask: style, backing: backing, defer: flag)
-        TrackpadSpread.start { [weak self] in self?.spread($0) }
+        let diag = ProcessInfo.processInfo.environment["ARTEMIS_DIAG"]
+        TrackpadSpread.start { [weak self] in
+            if diag == "pinchrecord" { self?.record($0) }
+            self?.spread($0)
+        }
+        if diag == "pinchdemo" { Task { [weak self] in await self?.replayPinches() } }
+    }
+
+    /// one TrackpadSpread frame, as `pinchrecord` writes and `pinchdemo` replays; `spread` nil = fingers lifted
+    private struct PinchFrame: Codable {
+        var t: Double, spread: Double?, midX: Double, midY: Double, pressed: Bool
+        var caption: String?
+    }
+    private var recorded: [PinchFrame] = []
+    private var recordStart: TimeInterval?
+
+    /// `ARTEMIS_DIAG=pinchrecord`: real frames to `pinch-record.json` in the logs folder, rewritten as fingers lift
+    private func record(_ contacts: (spread: Double, mid: CGPoint)?) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if recordStart == nil { recordStart = now }
+        recorded.append(PinchFrame(t: now - (recordStart ?? now), spread: contacts?.spread, midX: Double(contacts?.mid.x ?? 0),
+            midY: Double(contacts?.mid.y ?? 0), pressed: NSEvent.pressedMouseButtons != 0))
+        if contacts == nil { try? JSONEncoder().encode(recorded).write(to: AppStorageLocation.devFile("pinch-record", "json")) }
+    }
+
+    /// `ARTEMIS_DIAG=pinchdemo`: the frames in `ARTEMIS_PINCH_FILE` (else the bundled pinch-demo.json)
+    /// through `spread` at their own times, 2 s in, with the pointer held over the panel
+    private func replayPinches() async {
+        let path = ProcessInfo.processInfo.environment["ARTEMIS_PINCH_FILE"]
+        guard let url = path.map(URL.init(fileURLWithPath:)) ?? Bundle.main.url(forResource: "pinch-demo", withExtension: "json"),
+            let data = try? Data(contentsOf: url), let frames = try? JSONDecoder().decode([PinchFrame].self, from: data)
+        else { return }
+        let caption = NSTextField(labelWithString: "")
+        caption.font = .systemFont(ofSize: 13, weight: .semibold)
+        caption.textColor = .white
+        caption.drawsBackground = true
+        caption.backgroundColor = .black.withAlphaComponent(0.6)
+        caption.autoresizingMask = [.maxXMargin, .minYMargin]
+        caption.isHidden = true
+        contentView?.addSubview(caption)
+        defer { caption.removeFromSuperview() }
+        let start = ContinuousClock.now + .seconds(2)
+        for f in frames {
+            try? await Task.sleep(until: start + .seconds(f.t), clock: .continuous)
+            if let text = f.caption {
+                caption.stringValue = " \(text) "
+                caption.sizeToFit()
+                caption.setFrameOrigin(NSPoint(x: 8, y: (contentView?.bounds.height ?? 0) - caption.frame.height - 8))
+                caption.isHidden = text.isEmpty
+            }
+            spread(f.spread.map { ($0, CGPoint(x: f.midX, y: f.midY)) }, over: true, pressed: f.pressed)
+        }
     }
 
     override func close() {
@@ -1656,18 +1714,22 @@ private final class PiPPanel: NSPanel {
     }
 
     /// the only pinch source: a magnify event never reaches this panel, active app or not
-    private func spread(_ d: Double?) {
+    /// `over` and `pressed` stand in for the pointer and button state when replayed
+    private func spread(_ contacts: (spread: Double, mid: CGPoint)?, over: Bool? = nil, pressed: Bool? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
-        guard let d, isVisible, rawPinch?.began == true || frame.contains(NSEvent.mouseLocation) else {
+        guard let contacts, isVisible, rawPinch?.began == true || (over ?? frame.contains(NSEvent.mouseLocation)) else {
             if rawPinch?.began == true { pinch(.ended, by: 0, time: now) }
             rawPinch = nil
             return
         }
-        guard var p = rawPinch else { return rawPinch = (d, d, false) }
+        let (d, mid) = contacts
+        // a click-drag with a resting finger spreads them too; the count starts again from its release
+        guard var p = rawPinch, p.began || !(pressed ?? (NSEvent.pressedMouseButtons != 0)) else {
+            return rawPinch = (d, mid, d, false)
+        }
         if p.began {
             pinch(.changed, by: d / max(p.last, 0.01) - 1, time: now)
-        } else if abs(d - p.start) > 0.04 {
-            // the fingers spread or closed rather than moving together: a pinch, not a swipe
+        } else if PiPGesture.isPinch(spread: d, from: p.start, midpointMoved: hypot(mid.x - p.mid.x, mid.y - p.mid.y)) {
             p.began = true
             pinch(.began, by: d / max(p.start, 0.01) - 1, time: now)
         }

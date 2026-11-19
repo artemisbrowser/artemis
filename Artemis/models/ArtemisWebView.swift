@@ -46,24 +46,26 @@ final class ArtemisWebView: WKWebView {
         return PeekActionController()
     }
 
-    /// WebKit SPI: the force click went all the way down. Peek opens after the
-    /// press's mouse-up has reached this page, or the page is left thinking the
-    /// button is still held
+    /// WebKit SPI: the force click went all the way down
     @objc(_completeImmediateActionAnimation)
-    func completeImmediateAction() {
+    func completeImmediateAction() { completeForceClick(held: NSEvent.pressedMouseButtons & 1 != 0) }
+
+    /// Peek opens at once; a press still `held` has its mouse-up handed to this page, which
+    /// would otherwise go to the Peek above it and leave the page with its button down
+    func completeForceClick(held: Bool) {
         dismissLinkHighlight()
         guard let url = forcedLink else { return }
         forcedLink = nil
-        guard NSEvent.pressedMouseButtons & 1 != 0 else {
-            DispatchQueue.main.async { [weak self] in self?.owningTab?.onOpenLink?(url, .peek) }
-            return
+        if held {
+            var monitor: Any?
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                guard let self, event.window === window else { return event }
+                mouseUp(with: event)
+                return nil
+            }
         }
-        var monitor: Any?
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            DispatchQueue.main.async { self?.owningTab?.onOpenLink?(url, .peek) }
-            return event
-        }
+        DispatchQueue.main.async { [weak self] in self?.owningTab?.onOpenLink?(url, .peek) }
     }
 
     private func dismissLinkHighlight() {

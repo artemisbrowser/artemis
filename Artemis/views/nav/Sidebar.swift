@@ -103,9 +103,9 @@ struct Sidebar: View {
     @State private var scrolledSpaces: Set<Space.ID> = []
     /// the Library is built only while open or sliding out
     @State private var isLibraryMounted = false
-    /// trails `isLibraryMounted` by a commit: a list mounted mid-slide starts at its final spot
+    /// the slide's only driver: `isLibraryOpen` one commit late, since a list mounted mid-slide starts at its final spot
     @State private var isLibrarySlidIn = false
-    @State private var libraryUnmountTask: Task<Void, Never>?
+    @State private var librarySlides = 0
     @State private var renameDraft = ""
     /// the name the dialog opened with: confirming it untouched renames nothing
     @State private var renameOrigin = ""
@@ -267,21 +267,10 @@ struct Sidebar: View {
                 // so as the sidebar moves to the Library's width on open the rows never
                 // re-truncate — only the surrounding frame widens, revealing them
                 .offset(x: isLibrarySlidIn ? 0 : -pitch)
-                .animation(Motion.panel, value: isLibrarySlidIn)
             }
             .onChange(of: tabManager.isLibraryOpen, initial: true) { _, open in
-                libraryUnmountTask?.cancel()
-                if open {
-                    isLibraryMounted = true
-                    DispatchQueue.main.async { isLibrarySlidIn = tabManager.isLibraryOpen }
-                } else {
-                    isLibrarySlidIn = false
-                    // held through the slide out, then released
-                    libraryUnmountTask = Task {
-                        try? await Task.sleep(for: .milliseconds(600))
-                        if !Task.isCancelled { isLibraryMounted = false }
-                    }
-                }
+                if open { isLibraryMounted = true }
+                DispatchQueue.main.async(execute: slideLibrary)
             }
             .frame(maxHeight: .infinity)
             // clip so the off-screen panel stays hidden under the sidebar's edge; a pressed
@@ -1826,6 +1815,18 @@ struct Sidebar: View {
             chainBase = nil
             isSettling = false
             pendingTarget = nil
+        }
+    }
+
+    /// the Library unmounts only once the latest slide, a slide out, has run to rest
+    private func slideLibrary() {
+        guard isLibrarySlidIn != tabManager.isLibraryOpen else { return }
+        librarySlides += 1
+        let slide = librarySlides
+        withAnimation(Motion.panel, completionCriteria: .removed) {
+            isLibrarySlidIn = tabManager.isLibraryOpen
+        } completion: {
+            if slide == librarySlides, !isLibrarySlidIn { isLibraryMounted = false }
         }
     }
 

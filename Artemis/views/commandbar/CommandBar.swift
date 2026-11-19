@@ -14,12 +14,18 @@ struct CommandBar: View {
     var grown = false
     @Environment(TabManager.self) private var tabManager
     @Environment(\.colorScheme) private var colorScheme
+    /// the field's text: what was typed, then any host completion, selected
     @State private var query = ""
+    /// what was typed, without the completion
+    @State private var typed = ""
+    /// the text `autofill` last wrote, so its own write isn't read as typing
+    @State private var written: String?
     @State private var selection: TextSelection?
     @State private var selectedIndex = 0
     @State private var items: [CommandItem] = []
+    /// the host completion standing selected in the field
     @State private var fill: CommandAutofill?
-    /// the bang ⇥ would arm, set beside `fill` in `refresh()`
+    /// the bang ⇥ would arm, set in `refresh()`
     @State private var tabBang: Bang?
     /// full-text hits and engine suggestions arrive late; both are held so the
     /// item list can stay a synchronous function of what's typed
@@ -33,6 +39,7 @@ struct CommandBar: View {
     /// in screen space: a list moving under a still pointer reports hover too
     @State private var lastPointer: CGPoint?
     @State private var heldModifiers: EventModifiers = []
+    @State private var flagsMonitor: Any?
     @FocusState private var isFocused: Bool
 
     /// held by the window so the menu's ⌘1–4 can switch it mid-query
@@ -88,6 +95,12 @@ struct CommandBar: View {
         .animation(Motion.pop, value: items.isEmpty)
         .onAppear {
             if address { startOnAddress() }
+            syncModifiers()
+            // a pointer move carries the keys held now, so it unsticks a missed release
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .mouseMoved]) { event in
+                syncModifiers(event.modifierFlags)
+                return event
+            }
             refresh()
             DispatchQueue.main.async { isFocused = true }
         }
@@ -99,9 +112,14 @@ struct CommandBar: View {
         }
         .onChange(of: tabManager.commandBarFocusRequest) {
             if address && !grown { startOnAddress() }
+            syncModifiers()
             isFocused = true
         }
-        .onDisappear { scope = nil }
+        .onDisappear {
+            scope = nil
+            flagsMonitor.map(NSEvent.removeMonitor)
+            flagsMonitor = nil
+        }
         .task {
             guard tabManager.kind == .main, let tab = tabManager.selectedTab,
                 !SpaceLock.shared.isLocked(tabManager.currentSpace)
@@ -113,27 +131,28 @@ struct CommandBar: View {
         }
         // folding re-hosts the field, which drops its focus
         .onChange(of: isFolded) { isFocused = true }
-        .onModifierKeysChanged(mask: [.shift, .command, .option]) { _, now in
-            heldModifiers = now
-        }
-        .onChange(of: query) {
+        .onChange(of: query) { _, new in
+            guard new != written else { return written = nil }
+            written = nil
             enterScopeIfTyped()
+            autofill(new)
             // a suggestion for what you typed a moment ago is still right while
             // you're extending it, and wrong the moment you aren't
-            let typed = query.trimmingCharacters(in: .whitespaces).lowercased()
-            suggestions.removeAll { !$0.lowercased().hasPrefix(typed) }
+            let prefix = typed.trimmingCharacters(in: .whitespaces).lowercased()
+            suggestions.removeAll { !$0.lowercased().hasPrefix(prefix) }
             selectedIndex = 0
             pointerMoved = false
             refresh()
         }
         .onChange(of: scope) {
+            fill = nil
             selectedIndex = 0
             refresh()
         }
         // searching the page-text index is async and off the main thread; the
         // short-query guard keeps a two-letter query from matching half the web
-        .task(id: query) {
-            let trimmed = query.trimmingCharacters(in: .whitespaces)
+        .task(id: typed) {
+            let trimmed = typed.trimmingCharacters(in: .whitespaces)
             guard scope == nil, trimmed.count >= 3,
                 UserDefaults.standard.bool(forKey: FullTextIndex.enabledKey)
             else {
@@ -150,8 +169,8 @@ struct CommandBar: View {
         }
         // engine completions: opt-in, never from incognito, and debounced
         // so a fast typist doesn't fire a request per character
-        .task(id: query) {
-            let trimmed = query.trimmingCharacters(in: .whitespaces)
+        .task(id: typed) {
+            let trimmed = typed.trimmingCharacters(in: .whitespaces)
             guard scope == nil, SearchSuggest.isEnabled, tabManager.kind != .incognito,
                 !trimmed.isEmpty, !URLInput.isPathLike(trimmed), URLInput.directURL(trimmed) == nil,
                 !(Bangs.isEnabled && (Bangs.partial(trimmed) != nil || Bangs.split(trimmed) != nil))
@@ -174,6 +193,11 @@ struct CommandBar: View {
         .onKeyPress(.tab, phases: .down) { press in
             press.modifiers.contains(.shift) ? move(-1) : acceptCompletionOrMove(1)
         }
+        // the field moves the caret past the completion itself
+        .onKeyPress(keys: [.rightArrow, .end], phases: .down) { _ in
+            acceptFill()
+            return .ignored
+        }
         // plain ↵ arrives through the field's own submit; this is only the
         // modified forms, which the field doesn't answer
         .onKeyPress(.return, phases: .down) { press in
@@ -183,7 +207,9 @@ struct CommandBar: View {
             return .handled
         }
         .onKeyPress(.escape) {
-            if address {
+            if fill != nil {
+                query = typed
+            } else if address {
                 close()
             } else if !query.isEmpty {
                 query = ""
@@ -216,10 +242,9 @@ struct CommandBar: View {
     /// to the top, where what you typed always sits
     private func refresh() {
         let held = selectedIndex == 0 ? nil : selected?.id
-        fill = scope == nil ? engine.autofill(for: query) : nil
-        tabBang = scope == nil ? Bangs.tabTarget(query) : nil
+        tabBang = scope == nil ? Bangs.tabTarget(typed) : nil
         items = engine.items(
-            input: query, scope: scope, textHits: textHits, suggestions: suggestions)
+            input: typed, scope: scope, textHits: textHits, suggestions: suggestions, autofill: fill)
         selectedIndex =
             held.flatMap { id in items.firstIndex { $0.id == id } }
             ?? min(selectedIndex, max(items.count - 1, 0))
@@ -238,15 +263,45 @@ struct CommandBar: View {
         return .handled
     }
 
-    /// ⇥ arms the site search a lone word names, else finishes the host the bar is
-    /// offering, else walks the list
+    /// a host is completed only on a single typed character at the end: never on
+    /// a deletion, a paste or text still being composed
+    private func autofill(_ text: String) {
+        let before = typed
+        typed = text
+        fill = nil
+        let editor = BrowserWindows.shared.window(of: tabManager)?.firstResponder as? NSTextView
+        let composing = editor?.hasMarkedText() ?? false
+        guard scope == nil, !composing, text.count == before.count + 1, text.hasPrefix(before),
+            let found = engine.autofill(for: text)
+        else { return }
+        // a vibrant field's selection only blends with the glass once the bar's morph settles
+        if let field = editor?.delegate as? NSTextField,
+            let plain = field.superview?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+            field.appearance = NSAppearance(named: plain)
+        }
+        fill = found
+        query = text + found.completion
+        written = query
+        selection = TextSelection(range: query.index(query.startIndex, offsetBy: text.count)..<query.endIndex)
+    }
+
+    /// the completion becomes typed text
+    private func acceptFill() {
+        guard fill != nil else { return }
+        fill = nil
+        typed = query
+    }
+
+    /// ⇥ arms the site search a lone word names, else accepts the host completion,
+    /// else walks the list
     private func acceptCompletionOrMove(_ delta: Int) -> KeyPress.Result {
         if let tabBang {
             query = "!\(tabBang.trigger) "
             return .handled
         }
-        if let fill, !fill.completion.isEmpty {
-            query = fill.host
+        if fill != nil {
+            acceptFill()
+            selection = TextSelection(insertionPoint: query.endIndex)
             return .handled
         }
         return move(delta)
@@ -282,7 +337,7 @@ struct CommandBar: View {
             query = "!\(trigger) "
             return
         default:
-            engine.run(item, input: query, launch: launch)
+            engine.run(item, input: typed, launch: launch)
             close()
         }
     }
@@ -326,14 +381,18 @@ struct CommandBar: View {
                 .font(.system(size: grown ? Self.addressFontSize : 22))
                 .focused($isFocused)
                 .onSubmit {
-                    // pasted or expanded text can arrive with its ↵ before the rows catch up
+                    // pasted or expanded text can arrive with its ↵ before onChange(of: query) reads it
+                    if query != typed + (fill?.completion ?? "") {
+                        typed = query
+                        fill = nil
+                    }
                     refresh()
                     executeSelected(launch: engine.launch(for: [], address: address))
                 }
 
-            if let completion {
+            if let tabBang {
                 HStack(spacing: 6) {
-                    Text(completion)
+                    Text("Search \(tabBang.name)")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -344,14 +403,6 @@ struct CommandBar: View {
         }
         .padding(.horizontal, Metrics.padding)
         .frame(height: fieldHeight)
-    }
-
-    /// what ⇥ would do, kept apart from the typed text so it never reads as
-    /// where ↵ goes
-    private var completion: String? {
-        if let tabBang { return "Search \(tabBang.name)" }
-        if let fill, !fill.completion.isEmpty { return fill.host }
-        return nil
     }
 
     /// the scope you're in, else the icon of whatever ↵ would do, so the field
@@ -424,7 +475,10 @@ struct CommandBar: View {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         row(item, isSelected: index == selectedIndex)
                             .id(item.id)
-                            .onTapGesture { execute(item, launch: engine.launch(for: heldModifiers, address: address)) }
+                            .onTapGesture {
+                                syncModifiers()
+                                execute(item, launch: engine.launch(for: heldModifiers, address: address))
+                            }
                             .accessibilityAction { execute(item, launch: engine.launch(for: [], address: address)) }
                             .onHover { hovering in
                                 if hovering, pointerMoved { selectedIndex = index }
@@ -604,6 +658,15 @@ struct CommandBar: View {
     }
 
     // MARK: - What ↵ does
+
+    /// ⌘T's own ⌘ can lift before the bar hears it, so the flags are read live, not only on flagsChanged
+    private func syncModifiers(_ flags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        var now: EventModifiers = []
+        if flags.contains(.shift) { now.insert(.shift) }
+        if flags.contains(.command) { now.insert(.command) }
+        if flags.contains(.option) { now.insert(.option) }
+        if heldModifiers != now { heldModifiers = now }
+    }
 
     /// the launch a held modifier would pick, for results it changes
     private func heldLaunch(for item: CommandItem) -> CommandLaunch {

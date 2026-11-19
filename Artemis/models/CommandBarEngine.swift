@@ -136,15 +136,16 @@ struct CommandBarEngine {
     // MARK: - Results
 
     func items(
-        input: String, scope: CommandScope?, textHits: [PageTextHit], suggestions: [String]
+        input: String, scope: CommandScope?, textHits: [PageTextHit], suggestions: [String],
+        autofill: CommandAutofill? = nil
     ) -> [CommandItem] {
         let trimmed = input.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return recents(scope: scope) }
 
         if scope == nil, let modes = scopePicker(trimmed) { return modes }
 
-        // row 0 is always the input read literally: a bang, an address, else a
-        // search. nothing the bar merely matched can take that row
+        // row 0 is the host completed in the field, else the input read literally:
+        // a bang, an address, else a search. nothing merely matched takes that row
         var head: [CommandItem] = []
         if scope == nil {
             if Bangs.isEnabled, let partial = Bangs.partial(trimmed) {
@@ -172,6 +173,7 @@ struct CommandBarEngine {
             } else {
                 head.append(searchItem(trimmed))
             }
+            if let autofill, let url = URLInput.directURL(autofill.host) { head.insert(openItem(url), at: 0) }
             if let answer = Arithmetic.evaluate(trimmed) {
                 let text = answer.formatted(.number.grouping(.never).precision(.fractionLength(0...10)))
                 head.append(

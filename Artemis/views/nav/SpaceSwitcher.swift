@@ -344,6 +344,8 @@ struct SpaceEditor: View {
             }
         }
         .onChange(of: appearance) { _, worn in tabManager.wearTheme(worn, on: space) }
+        // a ⌘Z step changes the space under the editor
+        .onChange(of: space.appearance) { _, worn in if worn != appearance { appearance = worn } }
         .onDisappear {
             commitName()
             tabManager.revertTheme()
