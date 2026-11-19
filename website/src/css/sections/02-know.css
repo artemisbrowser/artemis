@@ -284,6 +284,25 @@
 .cmd-demo li span {
   color: var(--ink-3);
 }
+.panes {
+  width: min(640px, 84%);
+  aspect-ratio: 16 / 10;
+  display: grid;
+  grid-template: 1fr 1fr / 1.3fr 1fr;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 22px;
+  background: light-dark(#e8e8ed, #2c2c2e);
+}
+.panes i {
+  border-radius: 12px;
+  background: light-dark(#fff, #3a3a3c);
+}
+.panes i:first-child {
+  grid-row: span 2;
+  background: light-dark(#2f8f68, #57c89a);
+}
+
 @media (max-width: 1440px) {
   .viewer {
     border-radius: 0;
