@@ -61,6 +61,24 @@
   font-size: 17px;
   font-weight: 600;
 }
+/* the Spaces slide shows the capture in the page's appearance */
+.slide .dark {
+  display: none;
+}
+:root[data-theme="dark"] .slide .light {
+  display: none;
+}
+:root[data-theme="dark"] .slide .dark {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .slide .light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .slide .dark {
+    display: block;
+  }
+}
 .slide img {
   position: absolute;
   left: 50%;
