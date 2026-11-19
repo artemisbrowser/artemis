@@ -73,17 +73,6 @@ function grille() {
   return new THREE.CanvasTexture(c);
 }
 
-function meanColour(img) {
-  const c = Object.assign(document.createElement("canvas"), { width: 16, height: 16 });
-  const x = c.getContext("2d", { willReadFrequently: true });
-  x.drawImage(img, 0, 0, 16, 16);
-  const d = x.getImageData(0, 0, 16, 16).data;
-  let r = 0, g = 0, b = 0;
-  for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
-  const n = d.length / 4;
-  return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
-}
-
 // key widths in units; every row spans 14.5. "arrows" is the inverted T in the last three units
 const ROWS = [
   [[1.5, "esc"], ..."F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12".split(" ").map((l) => [1, l]), [1, "touchid"]],
@@ -149,7 +138,7 @@ function keyboard(material) {
 
 // anodised finishes; metalness 1 so colour is the specular tint, light scales the studio
 const FINISHES = {
-  black: { alloy: 0x2e2f33, roughness: 0.42, light: 0.45 },
+  black: { alloy: 0x2e2f33, roughness: 0.42, light: 0.32 },
   silver: { alloy: 0xc6c7ca, roughness: 0.36, light: 0.7 },
 };
 
@@ -211,7 +200,7 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   laptop.add(padEdge, pad);
 
   // the thumb scoop on the front edge and the side ports, as recessed decals on the flat faces
-  const scoop = new THREE.Mesh(card(5.5, 0.3, 0, 0.15), recess);
+  const scoop = new THREE.Mesh(card(5.5, 0.3, 0, 0.15), new THREE.MeshStandardMaterial({ color: new THREE.Color(alloy).lerp(new THREE.Color(0xffffff), 0.2), metalness: 0.4, roughness: 0.45 }));
   scoop.position.set(0, BASE_H - 0.15, D / 2 + 0.002);
   laptop.add(scoop);
   const portMat = ink(0x060607, 0.7);
@@ -239,7 +228,11 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   const lid = new THREE.Group();
   lid.position.set(0, BASE_H + 0.03, PIVOT_Z);
   laptop.add(lid);
-  const shell = new THREE.Mesh(loft(W, LID_D, R_PLAN, [...topRound(LID_H, 0.2), ...bottomRound(0.05, 3)]), aluminium);
+  // the lid shades from the hinge (dark) to its front edge, like a softbox falling off across it
+  const shellGeo = loft(W, LID_D, R_PLAN, [...topRound(LID_H, 0.2), ...bottomRound(0.05, 3)]);
+  const zs = shellGeo.attributes.position;
+  shellGeo.setAttribute("color", new THREE.Float32BufferAttribute(Array.from({ length: zs.count }, (_, i) => Array(3).fill(lerp(0.55, 1.15, zs.getZ(i) / LID_D + 0.5))).flat(), 3));
+  const shell = new THREE.Mesh(shellGeo, Object.assign(aluminium.clone(), { vertexColors: true }));
   shell.position.z = LID_D / 2;
   lid.add(shell);
 
@@ -250,7 +243,7 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   lid.add(bezel, display);
 
   // the screen as a light, facing out of the display, so it spills onto the keys and deck
-  const glow = new THREE.RectAreaLight(meanColour(tex.image), 3, SCREEN_W, SCREEN_H);
+  const glow = new THREE.RectAreaLight(0xe4e7ec, 3, SCREEN_W, SCREEN_H);
   glow.position.copy(display.position).add(new THREE.Vector3(0, -0.05, 0));
   glow.rotation.x = -Math.PI / 2;
   lid.add(glow);
@@ -269,11 +262,19 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   const key = new THREE.DirectionalLight(0xffffff, 0.45);
   key.position.set(-30, 60, 40);
   scene.add(key);
+  // a high strip behind the laptop for the falloff across the lid top, and a low front fill
+  const sheen = new THREE.RectAreaLight(0xffffff, 0.6, 70, 12);
+  sheen.position.set(0, 30, -55);
+  sheen.lookAt(0, 0, 6);
+  const fill = new THREE.RectAreaLight(0xffffff, 0.8, 90, 8);
+  fill.position.set(0, 4, 90);
+  fill.lookAt(0, 0.5, 0);
+  scene.add(sheen, fill);
 
   // p: scroll progress 0..1, t: seconds; the same (p, t) always gives the same frame
   function render(p, t) {
     const open = shot === "hero" ? smooth(p / 0.75) : smooth((p - 0.15) / 0.7);
-    draw({ lid: lerp(9, 108, open), glow: lerp(2.2, 1.4, open), ...SHOTS[shot](p, open, t) });
+    draw({ lid: lerp(9, 108, open), glow: lerp(0.8, 0.7, open), ...SHOTS[shot](p, open, t) });
   }
 
   // lid in degrees, camera orbit (az, el in radians, dist in cm) around a target at (0, y, z)
