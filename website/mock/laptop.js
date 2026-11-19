@@ -3,7 +3,6 @@
 
 // A procedural laptop: lengths in cm, +y up, the hinge at the back (-z), the viewer in front (+z).
 import * as THREE from "three";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 
@@ -60,37 +59,76 @@ function keyboard(material) {
     [U, [2.3, ...Array(10).fill(1), 2.3]],
     [U, [1, 1, 1, 1.25, 5.2, 1.25, 1, 1, 1, 1]],
   ];
-  const keys = rows.reduce((n, [, r]) => n + r.length, 0);
-  const mesh = new THREE.InstancedMesh(new RoundedBoxGeometry(1, 1, 1, 2, 0.12), material, keys);
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
-  let z = -D / 2 + 1.35, i = 0;
+  // one instanced mesh per key size, so each key keeps an unscaled rounded bevel
+  const sizes = new Map();
+  let z = -D / 2 + 1.35;
   for (const [depth, widths] of rows) {
     const unit = (KW - GAP * (widths.length - 1)) / widths.reduce((a, b) => a + b);
     let x = -KW / 2;
     for (const w of widths) {
-      const kw = w * unit;
-      m.compose(new THREE.Vector3(x + kw / 2, BASE_H + 0.03, z + depth / 2), q, new THREE.Vector3(kw, 0.1, depth));
-      mesh.setMatrixAt(i++, m);
+      const kw = w * unit, id = `${kw.toFixed(3)} ${depth}`;
+      if (!sizes.has(id)) sizes.set(id, { kw, depth, at: [] });
+      sizes.get(id).at.push(new THREE.Vector3(x + kw / 2, BASE_H + 0.075, z + depth / 2));
       x += kw + GAP;
     }
     z += depth + GAP;
   }
-  return mesh;
+  const group = new THREE.Group(), m = new THREE.Matrix4();
+  for (const { kw, depth, at } of sizes.values()) {
+    const mesh = new THREE.InstancedMesh(new RoundedBoxGeometry(kw, 0.14, depth, 3, 0.06), material, at.length);
+    at.forEach((v, i) => mesh.setMatrixAt(i, m.makeTranslation(v)));
+    group.add(mesh);
+  }
+  return group;
+}
+
+// fine streaks along x, as a roughness map for a brushed finish
+function brushed() {
+  const c = Object.assign(document.createElement("canvas"), { width: 512, height: 512 });
+  const x = c.getContext("2d");
+  let seed = 7;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  x.fillStyle = "#d8d8d8"; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2600; i++) {
+    const v = 170 + Math.floor(rand() * 85);
+    x.fillStyle = `rgb(${v},${v},${v})`;
+    x.fillRect(rand() * 512, rand() * 512, 40 + rand() * 200, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(1 / 12, 1 / 12);
+  return t;
+}
+
+// a black studio with softbox strips: crisp highlights along the edges, dark faces
+function studio() {
+  const s = new THREE.Scene(), box = (w, h, v, pos, look) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(v, v, v), side: THREE.DoubleSide }));
+    m.position.set(...pos); m.lookAt(...look); s.add(m);
+  };
+  s.background = new THREE.Color(0x020202);
+  box(70, 30, 2.5, [0, 50, 10], [0, 0, 0]);
+  box(6, 50, 5, [-55, 18, 15], [0, 5, 0]);
+  box(6, 50, 4, [55, 18, -10], [0, 5, 0]);
+  box(70, 4, 3, [0, 10, -60], [0, 5, 0]);
+  box(120, 40, 1.4, [0, 15, 70], [0, 5, 0]);
+  box(80, 6, 4, [0, 45, 55], [0, 0, 0]);
+  return s;
 }
 
 export async function mount(host, { screen, capture }) {
   RectAreaLightUniformsLib.init();
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: capture });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.toneMapping = THREE.AgXToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = 1;
   host.append(renderer.domElement);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environmentIntensity = 0.22;
+  scene.environment = pmrem.fromScene(studio(), 0.02).texture;
+  scene.environmentIntensity = 1.5;
 
   const camera = new THREE.PerspectiveCamera(26, 1, 1, 400);
 
@@ -98,19 +136,19 @@ export async function mount(host, { screen, capture }) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
-  const aluminium = new THREE.MeshPhysicalMaterial({ color: 0x2a2b2e, metalness: 0.9, roughness: 0.38 });
+  const aluminium = new THREE.MeshPhysicalMaterial({ color: 0x5d5e63, metalness: 1, roughness: 0.32, roughnessMap: brushed(), anisotropy: 0.7 });
   const blackGlass = new THREE.MeshStandardMaterial({ color: 0x030304, roughness: 0.35 });
-  const keyMat = new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.5 });
+  const keyMat = new THREE.MeshStandardMaterial({ color: 0x020203, roughness: 0.55 });
 
   const laptop = new THREE.Group();
   scene.add(laptop);
 
   laptop.add(new THREE.Mesh(slab(W, D, BASE_H, 1.1, 0.16), aluminium));
-  const well = new THREE.Mesh(new THREE.PlaneGeometry(27.6, 10.7).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x08080a, roughness: 0.8 }));
+  const well = new THREE.Mesh(new THREE.PlaneGeometry(27.6, 10.7).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x010101, roughness: 0.9 }));
   well.position.set(0, BASE_H + 0.002, -D / 2 + 1.25 + 10.7 / 2 - 0.1);
   laptop.add(well, keyboard(keyMat));
 
-  const pad = new THREE.Mesh(slab(15.2, 9.0, 0.02, 0.6, 0.005), new THREE.MeshPhysicalMaterial({ color: 0x35363a, metalness: 0.85, roughness: 0.26 }));
+  const pad = new THREE.Mesh(slab(15.2, 9.0, 0.02, 0.6, 0.005), new THREE.MeshPhysicalMaterial({ color: 0x3a3b3e, metalness: 0.6, roughness: 0.28, clearcoat: 0.25, clearcoatRoughness: 0.2 }));
   pad.position.set(0, BASE_H, D / 2 - 0.9 - 4.5);
   laptop.add(pad);
 
@@ -167,7 +205,7 @@ export async function mount(host, { screen, capture }) {
   function render(p, t) {
     const open = smooth((p - 0.15) / 0.7);
     lid.rotation.x = -lerp(9, 108, open) * DEG;
-    glow.intensity = lerp(6, 2.5, open);
+    glow.intensity = lerp(5, 1.6, open);
     const az = lerp(0.5, -0.28, smooth(p)) + 0.05 * Math.sin(t * 0.25);
     const el = lerp(0.07, 0.3, smooth(p));
     const dist = lerp(62, 80, smooth(p));
