@@ -1,20 +1,28 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
+/* the headline lines up with the pills inside the card */
 .know {
-  padding-bottom: 0;
+  --pv-pad: clamp(48px, 6.25vw, 90px);
+  --pv-w: min(1440px, 100% - 2 * var(--gutter));
   background: light-dark(#f5f5f7, #1d1d1f);
 }
 .know h2 {
-  margin-bottom: 48px;
+  width: var(--pv-w);
+  margin: 0 auto 48px;
+  padding-inline: var(--pv-pad);
   font-size: var(--t-section);
   line-height: var(--lh-section);
   letter-spacing: var(--tr-section);
 }
+/* Apple's viewer card: 1440 wide at most, 760 tall, radius 28 */
 .viewer {
   position: relative;
+  width: var(--pv-w);
   min-height: clamp(560px, 52.8vw, 760px);
-  overflow: hidden;
+  margin-inline: auto;
+  overflow: clip;
+  border-radius: 28px;
   background: light-dark(#fff, #000);
 }
 .viewer-in {
@@ -23,7 +31,7 @@
   display: flex;
   align-items: center;
   min-height: inherit;
-  padding-block: 40px;
+  padding: 40px var(--pv-pad);
 }
 .pills {
   display: grid;
@@ -126,12 +134,12 @@
 }
 .steps {
   top: 50%;
-  left: calc(var(--gutter) / -2 - 18px);
+  left: calc(var(--pv-pad) / 2 - 18px);
   translate: 0 -50%;
 }
 .shut {
   top: 16px;
-  right: 0;
+  right: 16px;
 }
 .active .steps,
 .active .shut {
@@ -170,7 +178,7 @@
 .stage {
   view-transition-name: know-stage;
   position: absolute;
-  inset: 0 0 0 max(var(--gutter), 50% - 630px + 300px);
+  inset: 0 0 0 calc(var(--pv-pad) + 280px);
   display: grid;
   place-items: center;
 }
@@ -186,11 +194,24 @@
   width: min(100%, 1000px);
   height: auto;
 }
-.stage .big {
-  font-size: clamp(120px, 18vw, 260px);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1;
+.ask-demo {
+  display: grid;
+  gap: 12px;
+  width: min(480px, 80%);
+  font-size: 17px;
+  line-height: 1.4;
+}
+.ask-demo .q {
+  justify-self: end;
+  padding: 10px 16px;
+  border-radius: 20px;
+  background: light-dark(#e8e8ed, #2c2c2e);
+}
+.ask-demo .a {
+  padding: 14px 18px;
+  border-radius: 20px;
+  background: light-dark(#f5f5f7, #1c1c1e);
+  box-shadow: 0 0 0 1px var(--hairline-2);
 }
 .cmd-demo {
   width: min(560px, 80%);
@@ -252,14 +273,16 @@
     display: flex;
     flex-direction: column-reverse;
   }
+  .know {
+    --pv-pad: 24px;
+  }
   .viewer-in {
-    padding-block: 24px 48px;
+    padding-block: 24px 40px;
   }
   .stage {
     position: sticky;
-    top: var(--nav-h);
+    inset: var(--nav-h) auto auto;
     z-index: 2;
-    inset: auto;
     aspect-ratio: 16 / 10;
     background: inherit;
   }

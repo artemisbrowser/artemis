@@ -28,6 +28,7 @@ const SECTIONS = [
   ["01-hero", "top", "Overview"],
   ["02-know", "know", "Get to know"],
   ["03-more", "more", "More"],
+  ["04-values", "values", "Values"],
   ["07-arc", "arc", null],
   ["08-close", "fin", "Get Artemis"],
 ];

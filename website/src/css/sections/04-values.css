@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+.values h2 {
+  font-size: var(--t-section);
+  line-height: var(--lh-section);
+  letter-spacing: var(--tr-section);
+}
+.values-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 48px 80px;
+  margin: 56px 0 0;
+  padding: 56px 0 0;
+  border-top: 1px solid var(--hairline-2);
+  list-style: none;
+}
+.values h3 {
+  margin-bottom: 16px;
+  font-size: var(--t-card);
+  line-height: var(--lh-card);
+  letter-spacing: var(--tr-card);
+}
+.values .link-btn {
+  margin-top: 20px;
+  font-size: 17px;
+}
