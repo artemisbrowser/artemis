@@ -4,7 +4,9 @@
 /* the headline lines up with the pills inside the card */
 .know {
   --pv-pad: clamp(48px, 6.25vw, 90px);
-  --pv-w: min(1440px, 100% - 2 * var(--gutter));
+  --pv-w: min(1440px, 100%);
+  --pv-h: 760px;
+  --pv-scale: 1;
   background: light-dark(#f5f5f7, #1d1d1f);
 }
 .know h2 {
@@ -15,11 +17,11 @@
   line-height: var(--lh-section);
   letter-spacing: var(--tr-section);
 }
-/* Apple's viewer card: 1440 wide at most, 760 tall, radius 28 */
+/* full-bleed up to 1440 wide, then a card with radius 28 */
 .viewer {
   position: relative;
   width: var(--pv-w);
-  min-height: clamp(560px, 52.8vw, 760px);
+  min-height: var(--pv-h);
   margin-inline: auto;
   overflow: clip;
   border-radius: 28px;
@@ -37,7 +39,7 @@
   display: grid;
   justify-items: start;
   gap: 12px;
-  width: min(400px, 100%);
+  width: min(423px, 100%);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -54,7 +56,7 @@
   align-items: center;
   gap: 10px;
   height: 56px;
-  padding: 0 28px 0 16px;
+  padding: 0 32px 0 14px;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.022em;
@@ -125,7 +127,7 @@
 .shut {
   position: absolute;
   display: grid;
-  gap: 12px;
+  gap: 20px;
   opacity: 0;
   visibility: hidden;
   transition:
@@ -134,7 +136,7 @@
 }
 .steps {
   top: 50%;
-  left: calc(var(--pv-pad) / 2 - 18px);
+  left: calc(var(--pv-pad) / 2 - 22px);
   translate: 0 -50%;
 }
 .shut {
@@ -151,8 +153,8 @@
 .shut {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: light-dark(rgb(232 232 237), rgb(42 42 45));
   color: var(--ink);
@@ -174,13 +176,23 @@
   cursor: default;
 }
 
-/* the first child is the closed view, then one per pill */
+/* a fixed 1440x760 canvas centred in the card; pictures sit at x 877, or x 982 beside an open card */
 .stage {
   view-transition-name: know-stage;
   position: absolute;
-  inset: 0 0 0 calc(var(--pv-pad) + 280px);
+  top: 0;
+  left: 50%;
+  width: 1440px;
+  height: 760px;
   display: grid;
   place-items: center;
+  translate: calc(-50% + 157px) 0;
+  scale: var(--pv-scale);
+  transform-origin: 50% 0;
+  transition: translate 500ms var(--ease-in-out);
+}
+.active .stage {
+  translate: calc(-50% + 262px) 0;
 }
 .stage > * {
   grid-area: 1 / 1;
@@ -191,7 +203,7 @@
   opacity: 1;
 }
 .stage img {
-  width: min(100%, 1000px);
+  width: 784px;
   height: auto;
 }
 .ask-demo {
@@ -268,8 +280,20 @@
   background: light-dark(#2f8f68, #57c89a);
 }
 
+@media (max-width: 1440px) {
+  .viewer {
+    border-radius: 0;
+  }
+}
+@media (max-width: 1068px) {
+  .know {
+    --pv-h: 720px;
+    --pv-scale: 0.9474;
+  }
+}
 @media (max-width: 833px) {
   .viewer {
+    min-height: 0;
     display: flex;
     flex-direction: column-reverse;
   }
@@ -279,12 +303,20 @@
   .viewer-in {
     padding-block: 24px 40px;
   }
-  .stage {
+  .stage,
+  .active .stage {
     position: sticky;
     inset: var(--nav-h) auto auto;
     z-index: 2;
+    width: auto;
+    height: auto;
     aspect-ratio: 16 / 10;
+    translate: 0 0;
+    scale: 1;
     background: inherit;
+  }
+  .stage img {
+    width: 100%;
   }
   .steps {
     display: none;
