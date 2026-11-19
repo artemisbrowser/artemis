@@ -11,6 +11,8 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
     var visitCount: Int
     /// times this page was reached by typing it in the command bar
     var typedCount: Int
+    /// spaces this page was visited in; empty when no visit carried one
+    var spaces: Set<UUID>
 
     /// lowercased "title url"; derived, so rebuilt on decode rather than stored
     private(set) var searchKey: String
@@ -25,12 +27,13 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
 
     var id: URL { url }
 
-    init(url: URL, title: String, lastVisited: Date, visitCount: Int, typedCount: Int = 0) {
+    init(url: URL, title: String, lastVisited: Date, visitCount: Int, typedCount: Int = 0, spaces: Set<UUID> = []) {
         self.url = url
         self.title = title
         self.lastVisited = lastVisited
         self.visitCount = visitCount
         self.typedCount = typedCount
+        self.spaces = spaces
         searchKey = ""
         searchHost = ""
         searchTitle = ""
@@ -38,6 +41,9 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
         autofillHost = ""
         reindex()
     }
+
+    /// true while every space the page was visited in is one of `locked`
+    func isHidden(by locked: Set<UUID>) -> Bool { !spaces.isEmpty && spaces.isSubset(of: locked) }
 
     mutating func update(title: String) {
         self.title = title
@@ -61,7 +67,7 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case url, title, lastVisited, visitCount, typedCount
+        case url, title, lastVisited, visitCount, typedCount, spaces
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +77,7 @@ nonisolated struct HistoryEntry: Codable, Identifiable {
         lastVisited = try c.decodeIfPresent(Date.self, forKey: .lastVisited) ?? Date()
         visitCount = try c.decodeIfPresent(Int.self, forKey: .visitCount) ?? 1
         typedCount = try c.decodeIfPresent(Int.self, forKey: .typedCount) ?? 0
+        spaces = try c.decodeIfPresent(Set<UUID>.self, forKey: .spaces) ?? []
         searchKey = ""
         searchHost = ""
         searchTitle = ""
@@ -107,9 +114,14 @@ final class HistoryStore {
         AppStorageLocation.loadDurable([HistoryEntry].self, from: url)
     }
 
+    /// the trail without the pages every visit to which was in a space of `locked`
+    func entries(hiding locked: Set<UUID>) -> [HistoryEntry] {
+        locked.isEmpty ? entries : entries.filter { !$0.isHidden(by: locked) }
+    }
+
     /// record a visit; collapses repeats of the same url into one entry that
     /// floats to the front with a bumped count
-    func record(url: URL, title: String) {
+    func record(url: URL, title: String, space: UUID? = nil) {
         guard url.scheme == "http" || url.scheme == "https" else { return }
 
         if let index = entries.firstIndex(where: { $0.url == url }) {
@@ -117,10 +129,11 @@ final class HistoryStore {
             entry.update(title: title)
             entry.lastVisited = Date()
             entry.visitCount += 1
+            if let space { entry.spaces.insert(space) }
             entries.insert(entry, at: 0)
         } else {
             entries.insert(
-                HistoryEntry(url: url, title: title, lastVisited: Date(), visitCount: 1), at: 0)
+                HistoryEntry(url: url, title: title, lastVisited: Date(), visitCount: 1, spaces: space.map { [$0] } ?? []), at: 0)
             if entries.count > Self.maxEntries {
                 entries.removeLast(entries.count - Self.maxEntries)
             }
@@ -154,13 +167,15 @@ final class HistoryStore {
     }
 
     /// best matches for a query across `stores` — ranked by relevance then recency/frequency
-    static func search(_ query: String, in stores: [HistoryStore], limit: Int = 6) -> [HistoryEntry] {
+    static func search(
+        _ query: String, in stores: [HistoryStore], limit: Int = 6, hiding locked: Set<UUID> = []
+    ) -> [HistoryEntry] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
         // a page whose mask lacks one of the query's letters can't match
         let mask = CommandMatcher.mask(q.utf8)
         let needle = Array(q.utf8)
-        let trails = stores.map(\.entries)
+        let trails = stores.map { $0.entries(hiding: locked) }
         var scored: [(trail: Int, index: Int, score: Int)] = []
         for (trail, entries) in trails.enumerated() {
             for (index, entry) in entries.enumerated()
@@ -186,10 +201,10 @@ final class HistoryStore {
     /// scored matches for the command bar: match quality on one scale, plus a
     /// frecency lift so a page you live in outranks one you saw once
     func rankedMatches(
-        _ needle: [UInt8], mask: UInt64, limit: Int, now: Date = Date()
+        _ needle: [UInt8], mask: UInt64, limit: Int, now: Date = Date(), hiding locked: Set<UUID> = []
     ) -> [HistoryMatch] {
         guard !needle.isEmpty else { return [] }
-        let entries = entries
+        let entries = entries(hiding: locked)
         // rank indices and scores alone; only the `limit` survivors become matches
         var ranked: [(index: Int, score: Int, preferTitle: Bool)] = []
         for (index, entry) in entries.enumerated() where (mask & ~entry.searchMask) == 0 {
@@ -214,10 +229,12 @@ final class HistoryStore {
 
     /// pages whose host starts with what's been typed, with their frecency, best
     /// first — the pool the bar autofills from
-    func autofillCandidates(_ prefix: String, now: Date = Date()) -> [(entry: HistoryEntry, frecency: Double)] {
+    func autofillCandidates(
+        _ prefix: String, now: Date = Date(), hiding locked: Set<UUID> = []
+    ) -> [(entry: HistoryEntry, frecency: Double)] {
         guard !prefix.isEmpty else { return [] }
         return
-            entries
+            entries(hiding: locked)
             .filter { $0.autofillHost.hasPrefix(prefix) }
             .map { ($0, $0.frecency(now: now)) }
             .sorted { $0.frecency > $1.frecency }

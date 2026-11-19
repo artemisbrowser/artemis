@@ -18,15 +18,22 @@ struct PageDialogPanel: View {
     /// VoiceOver's cursor, moved onto the question: an overlay isn't a window it notices opening
     @AccessibilityFocusState private var titleFocused: Bool
 
-    private var site: String { request.host.isEmpty ? "This page" : request.host }
+    /// a long host is cut in the labels before its registrable domain, which stays whole
+    private var site: String {
+        let host = request.host
+        guard !host.isEmpty else { return "This page" }
+        let domain = PasswordStore.registrableDomain(host) ?? host
+        let lead = host.dropLast(domain.count + 1), room = max(6, 38 - domain.count)
+        return host.count > 40 && lead.count > room ? "\(lead.prefix(room))….\(domain)" : host
+    }
 
     private var title: String {
         switch request.kind {
         case .leaveConfirm: "Leave this page?"
-        case .openExternal(let scheme, let appName):
-            appName.map { "Open “\($0)”?" } ?? "Open a “\(scheme):” link?"
+        case .openExternal(_, let appName):
+            "Open \(appName)?"
         case .httpAuth: "Sign in to \(site)"
-        default: request.host.isEmpty ? "This page says" : "\(request.host) says"
+        default: "\(site) says"
         }
     }
 
@@ -34,9 +41,8 @@ struct PageDialogPanel: View {
         switch request.kind {
         // never the page's own text
         case .leaveConfirm: "Changes you made may not be saved."
-        case .openExternal(_, let appName):
-            appName.map { "\(site) wants to open this link in \($0)." }
-                ?? "\(site) wants to open this link in another app. Nothing on this Mac handles it."
+        case .openExternal(let scheme, let appName):
+            "\(site) wants to open \(appName) with a “\(scheme):” link."
         case .httpAuth(let realm):
             // the realm is the server's name for what it protects
             realm.map { "The server says: \($0)" } ?? "This server is asking for a username and password."
@@ -47,20 +53,14 @@ struct PageDialogPanel: View {
     private var checkboxLabel: String {
         switch request.checkbox {
         case .silencePage: "Don't let this page create more dialogs"
-        case .rememberChoice:
-            if case .openExternal(_, let appName) = request.kind, let appName {
-                "Always let \(site) open \(appName)"
-            } else {
-                "Always allow this"
-            }
-        case nil: ""
+        case .rememberChoice, nil: ""
         }
     }
 
     private var confirmLabel: String {
         switch request.kind {
         case .leaveConfirm: "Leave"
-        case .openExternal(_, let appName): appName == nil ? "Try Anyway" : "Open"
+        case .openExternal: "Open"
         case .httpAuth: "Sign In"
         default: "OK"
         }
@@ -110,21 +110,43 @@ struct PageDialogPanel: View {
                         .onSubmit { answer(true) }
                 }
 
-                if request.checkbox != nil {
+                if request.checkbox == .silencePage {
                     Toggle(checkboxLabel, isOn: $checked)
                         .toggleStyle(.checkbox)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
 
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    if let cancelLabel {
-                        Button(cancelLabel) { answer(false) }
-                            .keyboardShortcut(.cancelAction)
+                if case .openExternal(_, let appName) = request.kind {
+                    // Cancel answers Return and Escape: opening an app is never the default
+                    HStack(spacing: 8) {
+                        if request.checkbox == .rememberChoice {
+                            Menu("Trust") {
+                                Button("Trust \(site) to open \(appName)") { answer(true, trustEveryApp: false) }
+                                Button("Trust \(site) to open all apps") { answer(true, trustEveryApp: true) }
+                            }
+                            .fixedSize()
+                        }
+                        Spacer(minLength: 0)
+                        Button(confirmLabel) { answer(true) }
+                        Button("Cancel") { answer(false) }
+                            .keyboardShortcut(.defaultAction)
+                            .background(
+                                Button("") { answer(false) }
+                                    .keyboardShortcut(.cancelAction)
+                                    .opacity(0)
+                                    .accessibilityHidden(true))
                     }
-                    Button(confirmLabel) { answer(true) }
-                        .keyboardShortcut(.defaultAction)
+                } else {
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        if let cancelLabel {
+                            Button(cancelLabel) { answer(false) }
+                                .keyboardShortcut(.cancelAction)
+                        }
+                        Button(confirmLabel) { answer(true) }
+                            .keyboardShortcut(.defaultAction)
+                    }
                 }
             }
             .padding(16)
@@ -151,8 +173,8 @@ struct PageDialogPanel: View {
         .id(request.id)
     }
 
-    private func answer(_ confirmed: Bool) {
-        tab.answerDialog(confirmed, text: text, secondary: secondary, checked: checked)
+    private func answer(_ confirmed: Bool, trustEveryApp: Bool? = nil) {
+        tab.answerDialog(confirmed, text: text, secondary: secondary, checked: checked, trustEveryApp: trustEveryApp)
     }
 }
 

@@ -479,7 +479,7 @@ private struct SpaceChip: View {
 }
 
 /// rows of chips that wrap at the edge
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -608,6 +608,7 @@ struct ClearBrowsingDataSettings: View {
                 toggle("Archived tabs", .archive).settingsAnchor(.clearArchive)
                 toggle("Indexed page text", .pageText).settingsAnchor(.clearPageText)
                 toggle("Saved addresses and cards", .autofill).settingsAnchor(.clearAutofill)
+                toggle("Agent chats", .agentChats).settingsAnchor(.clearAgentChats)
                 if targets.contains(.siteData) {
                     Label("Signs \(profile.name) out of sites.", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -686,7 +687,8 @@ struct ClearBrowsingDataSettings: View {
     private var summary: String {
         let names: [(ClearTargets, String)] = [
             (.history, "history"), (.siteData, "cookies"), (.cache, "caches"), (.archive, "archived tabs"),
-            (.pageText, "page text"), (.autofill, "addresses and cards"), (.downloads, "the downloads list"), (.zoom, "zoom levels"),
+            (.pageText, "page text"), (.autofill, "addresses and cards"), (.agentChats, "agent chats"),
+            (.downloads, "the downloads list"), (.zoom, "zoom levels"),
             (.permissions, "site permissions"),
         ]
         let picked = names.filter { targets.contains($0.0) }.map(\.1)

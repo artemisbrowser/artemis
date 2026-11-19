@@ -62,6 +62,7 @@ struct ArtemisApp: App {
         Bench.mark("ArtemisApp.init")
         // before anything saves a session, which would read as an existing install
         _ = Onboarding.isDue
+        Intelligence.adoptSwitches()
         WindowChrome.clampStoredEdgeInset()
         // before any window exists, or AppKit's window-tab items stay in the menus
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -92,10 +93,11 @@ struct ArtemisApp: App {
             CommandGroup(replacing: .saveItem) {}
 
             CommandGroup(replacing: .appInfo) {
-                Button("About Artemis") { showAboutPanel() }
+                Button("About Artemis") { SettingsView.open(.about) }
                 if Updates.shared.isEnabled {
                     Button("Check for Updates…") { Updates.shared.checkNow() }
                 }
+                Button("\(Gift.title)…") { Gift.open(in: strip ?? browser) }
             }
 
             // replaces `.newItem` so the group's own New Window item isn't shown too
@@ -204,12 +206,16 @@ struct ArtemisApp: App {
                 .keyboardShortcut("f", modifiers: [.command, .option])
                 .disabled(
                     tabManager.unlockedContentTab?.url == nil
-                        || !Intelligence.isOn(Intelligence.askPageKey) || !Intelligence.isReady)
+                        || !Intelligence.canRun(Intelligence.askPageKey))
+
+                Button(tabManager.isAgentPanelVisible ? "Hide Agent" : "Ask Agent…") { strip?.toggleAgent() }
+                    .keyboardShortcut("a", modifiers: [.control, .command])
+                    .disabled(tabManager.kind != .main || SpaceLock.shared.isLocked(tabManager.currentSpace))
 
                 Divider()
 
                 Button("Export Backup…") { BackupIO.export(from: browser) }
-                Button("Restore from Backup…") { restoreBackup() }
+                Button("Restore from Backup…") { BackupIO.chooseAndRestore(into: browser) }
                 Button("Import Bookmarks…") { importBookmarks() }
                 Button("Import from Arc…") { ArcMigration.run(into: browser) }
                     .disabled(browser.importer != nil)
@@ -592,53 +598,6 @@ struct ArtemisApp: App {
         }
     }
 
-    /// AppKit's standard panel; its credits link the site and the third-party notices
-    private func showAboutPanel() {
-        let centred = NSMutableParagraphStyle()
-        centred.alignment = .center
-        let text: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .paragraphStyle: centred,
-        ]
-        let credits = NSMutableAttributedString()
-        let links = [
-            ("artemisbrowser.app", "https://artemisbrowser.app"),
-            ("Acknowledgements", "https://github.com/artemisbrowser/artemis/blob/main/THIRD-PARTY-NOTICES.md"),
-        ]
-        for (title, address) in links {
-            if credits.length > 0 { credits.append(NSAttributedString(string: "  ·  ", attributes: text)) }
-            var link = text
-            link[.link] = URL(string: address)
-            credits.append(NSAttributedString(string: title, attributes: link))
-        }
-        NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: credits,
-            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"):
-                "© \(Calendar.current.component(.year, from: .now)) Fin",
-        ])
-    }
-
-    /// pick a backup file and, once confirmed, restore it over the current spaces
-    private func restoreBackup() {
-        guard let archive = BackupIO.chooseArchive() else { return }
-        let alert = NSAlert()
-        alert.messageText = "Restore this backup?"
-        alert.informativeText = """
-            From \(archive.createdAt.formatted(date: .abbreviated, time: .shortened)) \
-            (Artemis \(archive.appVersion)).
-
-            \(archive.session.spaces.count) spaces will REPLACE your current spaces and tabs. \
-            \(archive.boosts.count) Boosts will be merged in, and saved settings \
-            will be applied.
-            """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Restore")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        BackupIO.restore(archive, options: .init(), into: browser)
-    }
-
     /// another browser's bookmarks, turned into spaces of pinned tabs
     private func importBookmarks() {
         let panel = NSOpenPanel()
@@ -753,6 +712,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// opens a window if neither a browser nor a Scout window was made well after a restore
     /// would have landed: restoration keys off the scene's view type, which a new build can change
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ScoutWindow.watchActivation()
+        _ = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let fKey = event.charactersIgnoringModifiers?.unicodeScalars.first.map { (0xF704...0xF726).contains($0.value) } == true
+            if fKey || !event.modifierFlags.isDisjoint(with: [.command, .control]), let menu = NSApp.mainMenu { Self.refresh(menu) }
+            return event
+        }
+        Lobby.install()
         // ⌘⌥N from any app
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
         AppIconChoice.apply()
@@ -781,6 +747,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openBrowserWindow() { IncognitoWindow.chooseNewWindowItem(.command) }
 
+    /// what opening `menu` does: SwiftUI writes its items' enabled state only then, so a shortcut
+    /// refreshes first or finds an item as it was when its menu was last open
+    static func refresh(_ menu: NSMenu) {
+        menu.delegate?.menuNeedsUpdate?(menu)
+        menu.update()
+        for case let submenu? in menu.items.map(\.submenu) { refresh(submenu) }
+    }
+
     /// a page handed off from another device opens in a tab, not a Scout window
     func application(
         _ application: NSApplication, continue userActivity: NSUserActivity,
@@ -789,15 +763,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
             let url = userActivity.webpageURL
         else { return false }
-        Task { await openInBrowser([url]) }
+        Task {
+            await openInBrowser([url])
+            Lobby.settle()
+        }
         return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         // files get tabs, all in one window; a web link gets a Scout window
         let files = urls.filter(\.isFileURL)
-        if !files.isEmpty { Task { await openInBrowser(files) } }
+        if !files.isEmpty {
+            Task {
+                await openInBrowser(files)
+                Lobby.settle()
+            }
+        }
         for url in urls where url.scheme == "http" || url.scheme == "https" { openScoutWindow(url) }
+        if files.isEmpty { Lobby.settle() }
     }
 
     /// a tab per url in the front browser window, else in one opened for them, else in

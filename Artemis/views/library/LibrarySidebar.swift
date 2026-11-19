@@ -13,6 +13,11 @@ nonisolated struct DownloadFile: Identifiable {
     let date: Date
     let kind: String
     let contentType: UTType?
+    /// lowercased, without the dot
+    let ext: String
+    /// bytes
+    let size: Int
+    fileprivate let group: DownloadKind
 
     var id: URL { url }
 
@@ -52,15 +57,18 @@ nonisolated struct DownloadFile: Identifiable {
     }
 
     private static func described(_ file: (url: URL, date: Date)) -> DownloadFile {
-        let type = (try? file.url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+        let values = try? file.url.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey])
+        let type = values?.contentType, ext = file.url.pathExtension.lowercased()
+        let group = DownloadKind.of(type, ext: ext)
         return DownloadFile(
             url: file.url, name: file.url.lastPathComponent, date: file.date,
-            kind: LibrarySidebar.kindLabel(for: type), contentType: type)
+            kind: LibrarySidebar.kindLabel(for: type, ext: ext, group: group), contentType: type, ext: ext,
+            size: values?.fileSize ?? 0, group: group)
     }
 
     /// everything in `folder`, newest first, scanned off the main thread
     @concurrent static func loadAllOffMain(in folder: URL) async -> [DownloadFile] {
-        ranked(in: folder, also: [.contentTypeKey]).sorted(by: isNewer).map(described)
+        ranked(in: folder, also: [.contentTypeKey, .fileSizeKey]).sorted(by: isNewer).map(described)
     }
 
     /// the last `recent` answer with the folder state it was read from, and how many scans `recent` has made
@@ -92,28 +100,302 @@ nonisolated struct DownloadFile: Identifiable {
     }
 }
 
-/// filter categories for the downloads library
-private enum DownloadFilter: String, CaseIterable, Identifiable {
+/// the downloads filter: a glass circle that grows into its kinds, types and orders, over its neighbours, and shrinks back
+private struct FilterMenu: View {
+    @Binding var filter: DownloadFilter
+    @Binding var sort: DownloadSort
+    @Binding var ascending: Bool
+    let files: [DownloadFile]
+    @Environment(\.chromeInk) private var ink
+    @Namespace private var glass
+    private let metrics = SidebarMetrics.standard
+    @State private var isOpen = false
+    /// the control under the pointer or the arrow keys
+    @State private var lit: Item?
+    /// spans the open panel, so a press is known to land on it or elsewhere
+    @State private var area = NSView()
+    @State private var monitor: Any?
+
+    private enum Item: Hashable {
+        case kind(DownloadKind), type(String), sort(DownloadSort)
+    }
+
+    private static let width: CGFloat = 264
+    private static let inset: CGFloat = 12
+    private static let rowHeight: CGFloat = 28
+    /// how far a sort row's highlight reaches past the chips' edge
+    private static let rowOutset: CGFloat = 5
+    private static let mostTypes = 12
+
+    /// the circle's corners, which the panel keeps
+    private var radius: CGFloat { metrics.rowHeight / 2 }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        // the hidden label is the circle's place in the row, whose other glass the open panel lies over
+        label.hidden()
+            .overlay(alignment: .topTrailing) {
+                GlassEffectContainer {
+                    if isOpen {
+                        panel
+                            .background { MenuAnchor(view: area).allowsHitTesting(false) }
+                            .chromeGlass(in: shape)
+                            .glassEffectID("filter", in: glass)
+                    } else {
+                        Button { set(open: true) } label: { label.contentShape(.capsule) }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Filter downloads")
+                            .accessibilityValue(filter.summary ?? "All")
+                            .tooltip("Filter downloads")
+                            .chromeGlass(in: shape, interactive: true)
+                            .glassEffectID("filter", in: glass)
+                    }
+                }
+                .fixedSize()
+                .modifier(ChromeGlassScheme())
+            }
+            .onDisappear { set(open: false) }
+    }
+
+    private var label: some View {
+        let count = filter.count
+        return Image(systemName: "line.3.horizontal.decrease")
+            .font(.system(size: 13, weight: .medium))
+            .overlay(alignment: .topTrailing) {
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(.black)
+                        .blendMode(.destinationOut)
+                        .padding(.horizontal, 3)
+                        .frame(minWidth: 12, minHeight: 12)
+                        .background(ink, in: .capsule)
+                        .compositingGroup()
+                        .fixedSize()
+                        .offset(x: 6, y: -5)
+                }
+            }
+            .foregroundStyle(ink.opacity(count == 0 ? 0.7 : 0.95))
+            .frame(width: metrics.rowHeight, height: metrics.rowHeight)
+    }
+
+    /// All, the kind in force, and each kind some file is of
+    private var kinds: [DownloadKind] {
+        let present = Set(files.map(\.group))
+        return DownloadKind.allCases.filter { $0 == .all || $0 == filter.kind || present.contains($0) }
+    }
+
+    /// the extensions among the kind's files, most common first, then the picked ones past `mostTypes`
+    private var types: [(ext: String, count: Int)] {
+        let counts = Dictionary(
+            files.filter { filter.kind.holds($0) && !$0.ext.isEmpty }.map { ($0.ext, 1) }, uniquingKeysWith: +)
+        let common = counts.map { (ext: $0.key, count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.ext < $1.ext }
+        return Array(common.prefix(Self.mostTypes)) + common.dropFirst(Self.mostTypes).filter { filter.types.contains($0.ext) }
+    }
+
+    /// every control, in the order the arrow keys walk them
+    private var items: [Item] {
+        kinds.map(Item.kind) + types.map { .type($0.ext) } + DownloadSort.allCases.map(Item.sort)
+    }
+
+    private var panel: some View {
+        let types = types
+        return VStack(alignment: .leading, spacing: 12) {
+            section("Kind") {
+                FlowLayout(spacing: 5) {
+                    ForEach(kinds) { kind in
+                        chip(.kind(kind), kind.rawValue, isOn: kind == filter.kind && (kind != .all || filter.types.isEmpty))
+                    }
+                }
+            }
+            if !types.isEmpty {
+                section("Type") {
+                    FlowLayout(spacing: 5) {
+                        ForEach(types, id: \.ext) { type in
+                            chip(.type(type.ext), ".\(type.ext)", count: type.count, isOn: filter.types.contains(type.ext))
+                        }
+                    }
+                }
+            }
+            section("Sort") {
+                VStack(spacing: 0) { ForEach(DownloadSort.allCases, content: row) }
+                    .padding(.horizontal, -Self.rowOutset)
+            }
+        }
+        .padding(Self.inset)
+        .frame(width: Self.width)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Download filters")
+        .accessibilityAction(.escape) { set(open: false) }
+    }
+
+    private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(ink.opacity(0.55))
+                .padding(.leading, 4)
+                .accessibilityAddTraits(.isHeader)
+            content()
+        }
+    }
+
+    private func chip(_ item: Item, _ title: String, count: Int? = nil, isOn: Bool) -> some View {
+        Button { take(item) } label: {
+            HStack(spacing: 4) {
+                Text(title).font(.system(size: 12, weight: .medium))
+                if let count { Text("\(count)").font(.system(size: 10)).opacity(0.55) }
+            }
+            .foregroundStyle(ink.opacity(isOn ? 1 : 0.85))
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(Capsule().fill(ink.opacity((isOn ? 0.28 : 0.07) + (lit == item ? 0.09 : 0))))
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .onHover { if $0 { lit = item } else if lit == item { lit = nil } }
+        .accessibilityLabel(title)
+        .accessibilityValue(count.map { "\($0)" } ?? "")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+
+    private func row(_ option: DownloadSort) -> some View {
+        let isOn = option == sort, item = Item.sort(option)
+        return Button { take(item) } label: {
+            HStack {
+                Text(option.rawValue).font(.system(size: 13, weight: isOn ? .semibold : .regular))
+                Spacer(minLength: 0)
+                Image(systemName: ascending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .opacity(isOn ? 1 : 0)
+            }
+            .foregroundStyle(ink.opacity(0.95))
+            .padding(.horizontal, 9)
+            .frame(height: Self.rowHeight)
+            .background(
+                RoundedRectangle(cornerRadius: radius - Self.inset + Self.rowOutset, style: .continuous)
+                    .fill(ink.opacity(lit == item ? 0.13 : 0)))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { if $0 { lit = item } else if lit == item { lit = nil } }
+        .accessibilityLabel("Sort by \(option.rawValue)")
+        .accessibilityValue(isOn ? (ascending ? "Ascending" : "Descending") : "")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+
+    /// a kind or an order is taken and the panel closes; types toggle and it stays, for picking several.
+    /// All drops the picked types, and any other kind those none of its files have
+    private func take(_ item: Item) {
+        switch item {
+        case .kind(let kind):
+            filter.kind = kind
+            filter.types = kind == .all ? [] : filter.types.intersection(files.filter(kind.holds).map(\.ext))
+        case .type(let ext): return filter.types.formSymmetricDifference([ext])
+        case .sort(let option):
+            ascending = option == sort ? !ascending : option.startsAscending
+            sort = option
+        }
+        set(open: false)
+    }
+
+    /// while open, a press off the glass or Escape closes it, the arrows move through the controls and Return takes one
+    private func set(open: Bool) {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        guard open != isOpen else { return }
+        withAnimation(Motion.menu) { isOpen = open }
+        lit = open ? .kind(filter.kind) : nil
+        guard open else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { event in
+            guard event.window === area.window else {
+                if event.type != .keyDown { set(open: false) }
+                return event
+            }
+            guard event.type == .keyDown else {
+                if area.bounds.contains(area.convert(event.locationInWindow, from: nil)) { return event }
+                set(open: false)
+                return nil
+            }
+            switch event.keyCode {
+            case 53: set(open: false)
+            case 123...126:
+                let all = items, step = event.keyCode == 124 || event.keyCode == 125 ? 1 : -1
+                let at = lit.flatMap(all.firstIndex(of:)).map { $0 + step } ?? (step > 0 ? 0 : all.count - 1)
+                lit = all[min(max(at, 0), all.count - 1)]
+            case 36, 49, 76:
+                if let lit { take(lit) } else { set(open: false) }
+            default: return event
+            }
+            return nil
+        }
+    }
+}
+
+/// the groups downloads sort into; every file is of exactly one besides `all`
+private nonisolated enum DownloadKind: String, CaseIterable, Identifiable {
     case all = "All"
     case images = "Images"
     case movies = "Movies"
+    case audio = "Audio"
+    case documents = "Documents"
     case archives = "Archives"
+    case fonts = "Fonts"
     case other = "Other"
 
     var id: Self { self }
 
-    func matches(_ file: DownloadFile) -> Bool {
-        guard let type = file.contentType else { return self == .other || self == .all }
-        switch self {
-        case .all: return true
-        case .images: return type.conforms(to: .image)
-        case .movies: return type.conforms(to: .audiovisualContent)
-        case .archives: return type.conforms(to: .archive)
-        case .other:
-            return !type.conforms(to: .image) && !type.conforms(to: .audiovisualContent)
-                && !type.conforms(to: .archive)
-        }
+    func holds(_ file: DownloadFile) -> Bool { self == .all || file.group == self }
+
+    /// never `all`; web fonts and rar have types that conform to nothing, so they go by extension
+    static func of(_ type: UTType?, ext: String) -> Self {
+        if ["woff", "woff2", "eot"].contains(ext) { return .fonts }
+        if ext == "rar" { return .archives }
+        guard let type else { return .other }
+        // svg is text too, and audio is audiovisual too
+        if type.conforms(to: .image) { return .images }
+        if type.conforms(to: .audio) { return .audio }
+        if type.conforms(to: .audiovisualContent) { return .movies }
+        if type.conforms(to: .font) { return .fonts }
+        if type.conforms(to: .archive) { return .archives }
+        if type.conforms(to: .text) || type.conforms(to: .compositeContent) { return .documents }
+        return .other
     }
+}
+
+/// which downloads the list keeps
+private struct DownloadFilter {
+    var kind = DownloadKind.all
+    /// extensions as `DownloadFile.ext` has them; none keeps every type of the kind
+    var types: Set<String> = []
+
+    func keeps(_ file: DownloadFile) -> Bool { kind.holds(file) && (types.isEmpty || types.contains(file.ext)) }
+
+    /// a kind other than All counts one, and so does each picked type
+    var count: Int { (kind == .all ? 0 : 1) + types.count }
+
+    /// what is filtered for, in words for accessibility; nil while nothing is
+    var summary: String? {
+        let parts = (kind == .all ? [] : [kind.rawValue]) + types.sorted().map { ".\($0)" }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+}
+
+/// the orders the downloads list can take
+private enum DownloadSort: String, CaseIterable, Identifiable {
+    case date = "Date Added"
+    case name = "Name"
+    case size = "Size"
+    case type = "Type"
+
+    static let storageKey = "libraryDownloadSort"
+    static let ascendingKey = "libraryDownloadSortAscending"
+
+    var id: Self { self }
+
+    /// the direction a first press sorts in
+    var startsAscending: Bool { self == .name || self == .type }
 }
 
 /// the Library's lists; a raw value is both the rail's label and what `storageKey` holds
@@ -146,7 +428,9 @@ struct LibrarySidebar: View {
     @AppStorage(LibraryMode.storageKey) private var mode: LibraryMode = .archive
     @AppStorage(DownloadManager.folderKey) private var downloadsFolder = ""
     @State private var query = ""
-    @State private var filter: DownloadFilter = .all
+    @State private var filter = DownloadFilter()
+    @AppStorage(DownloadSort.storageKey) private var sort = DownloadSort.date
+    @AppStorage(DownloadSort.ascendingKey) private var ascending = false
     /// nil until ~/Downloads has been read
     @State private var files: [DownloadFile]?
 
@@ -158,9 +442,11 @@ struct LibrarySidebar: View {
                 HStack(spacing: 8) {
                     searchField
                     if mode == .downloads {
-                        filterButton
+                        FilterMenu(filter: $filter, sort: $sort, ascending: $ascending, files: files ?? [])
                     }
                 }
+                // the open filter lies over the list
+                .zIndex(1)
 
                 switch mode {
                 case .archive: archiveList
@@ -213,45 +499,42 @@ struct LibrarySidebar: View {
         .chromeGlass(in: .capsule)
     }
 
-    private var filterButton: some View {
-        Menu {
-            Picker("Filter", selection: $filter) {
-                ForEach(DownloadFilter.allCases) { option in
-                    Text(option.rawValue).tag(option)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                    .font(.system(size: 12))
-                Text(filter == .all ? "Filter" : filter.rawValue)
-                    .font(.system(size: 12))
-            }
-            .foregroundStyle(ink.opacity(filter == .all ? 0.7 : 0.95))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .accessibilityLabel("Filter downloads")
-        .accessibilityValue(filter.rawValue)
-        // hug the content, then pad inside the pill and force the height to
-        // match the search box (padding the label directly gets eaten by the menu)
-        .fixedSize()
-        .padding(.horizontal, 12)
-        .frame(height: metrics.rowHeight)
-        .chromeGlass(in: .capsule)
-    }
-
     // MARK: - List
 
     private var finishedDownloads: [URL] {
         DownloadManager.shared.items.compactMap { $0.state == .finished ? $0.destination : nil }
     }
 
+    /// the files the filter and the search keep, in the chosen order; `files` holds them newest first
     private var visibleFiles: [DownloadFile] {
-        (files ?? []).filter { file in
-            filter.matches(file)
-                && (query.isEmpty || file.name.localizedCaseInsensitiveContains(query))
+        let kept = (files ?? []).filter { file in
+            filter.keeps(file)
+                && (query.isEmpty
+                    || [file.name, file.kind, file.group.rawValue].contains { $0.localizedCaseInsensitiveContains(query) })
+        }
+        func byName(_ a: DownloadFile, _ b: DownloadFile) -> Bool {
+            a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        let rising: [DownloadFile] =
+            switch sort {
+            case .date: kept.reversed()
+            case .name: kept.sorted(by: byName)
+            case .size: kept.sorted { $0.size != $1.size ? $0.size < $1.size : byName($0, $1) }
+            case .type: kept.sorted { $0.ext != $1.ext ? $0.ext < $1.ext : byName($0, $1) }
+            }
+        return ascending ? rising : rising.reversed()
+    }
+
+    /// headed runs of `visible`: by age under the date order, by extension under the type order, else one run with no heading
+    private func sections(_ visible: [DownloadFile]) -> [(String, [DownloadFile])] {
+        switch sort {
+        case .date: Self.grouped(visible, by: \.date)
+        case .name, .size: [("", visible)]
+        case .type:
+            visible.reduce(into: []) { runs, file in
+                let label = file.ext.isEmpty ? "No Extension" : ".\(file.ext)"
+                if runs.last?.0 == label { runs[runs.count - 1].1.append(file) } else { runs.append((label, [file])) }
+            }
         }
     }
 
@@ -276,10 +559,11 @@ struct LibrarySidebar: View {
     /// newest first, matched the way the command bar matches history
     private var visibleHistory: [HistoryEntry] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return tabManager.history.entries }
+        let entries = tabManager.history.entries(hiding: SpaceLock.shared.lockedIDs)
+        guard !q.isEmpty else { return entries }
         let mask = CommandMatcher.mask(q.utf8)
         let needle = Array(q.utf8)
-        return tabManager.history.entries.filter {
+        return entries.filter {
             (mask & ~$0.searchMask) == 0 && CommandMatcher.contains(needle, $0.searchKey)
         }
     }
@@ -287,7 +571,7 @@ struct LibrarySidebar: View {
     @ViewBuilder
     private var historyList: some View {
         let visible = visibleHistory
-        if tabManager.history.entries.isEmpty {
+        if tabManager.history.entries(hiding: SpaceLock.shared.lockedIDs).isEmpty {
             emptyState(
                 "No history yet",
                 detail: "Pages you visit will show up here.")
@@ -324,7 +608,7 @@ struct LibrarySidebar: View {
         if tabManager.archive.entries.isEmpty {
             emptyState(
                 "Nothing archived yet",
-                detail: "Tabs you leave open are tidied away here after a while — pin the ones you want to keep.")
+                detail: "Tabs you leave open are tidied away here after a while. Pin the ones you want to keep.")
         } else if visible.isEmpty {
             emptyState("No archived tabs match", detail: "Try a different search.")
         } else {
@@ -372,13 +656,15 @@ struct LibrarySidebar: View {
     private func filledList(_ visible: [DownloadFile]) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(Self.grouped(visible, by: \.date), id: \.0) { label, sectionFiles in
-                    Text(label)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ink.opacity(0.55))
-                        .padding(.horizontal, 9)
-                        .padding(.top, 10)
-                        .padding(.bottom, 4)
+                ForEach(sections(visible), id: \.0) { label, sectionFiles in
+                    if !label.isEmpty {
+                        Text(label)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(ink.opacity(0.55))
+                            .padding(.horizontal, 9)
+                            .padding(.top, 10)
+                            .padding(.bottom, 4)
+                    }
 
                     ForEach(sectionFiles) { file in
                         DownloadFileRow(file: file)
@@ -410,13 +696,20 @@ struct LibrarySidebar: View {
         return ordered
     }
 
-    fileprivate nonisolated static func kindLabel(for type: UTType?) -> String {
-        guard let type else { return "Download" }
-        if type.conforms(to: .image) { return "Image" }
-        if type.conforms(to: .audiovisualContent) { return "Movie" }
-        if type.conforms(to: .pdf) { return "PDF Document" }
-        guard let name = type.localizedDescription else { return "Download" }
-        return name.prefix(1).uppercased() + name.dropFirst()
+    /// what a row calls its file: the type's own name, else one from the group or the extension
+    fileprivate nonisolated static func kindLabel(for type: UTType?, ext: String, group: DownloadKind) -> String {
+        if let type {
+            if type.conforms(to: .image) { return "Image" }
+            if type.conforms(to: .audio) { return "Audio" }
+            if type.conforms(to: .audiovisualContent) { return "Movie" }
+            if type.conforms(to: .pdf) { return "PDF Document" }
+            if let name = type.localizedDescription { return name.prefix(1).uppercased() + name.dropFirst() }
+        }
+        switch group {
+        case .fonts: return "Font"
+        case .archives: return "Archive"
+        default: return ext.isEmpty ? "Download" : "\(ext.uppercased()) file"
+        }
     }
 
     private static func ageLabel(for date: Date) -> String {
@@ -526,7 +819,10 @@ private struct DownloadFileRow: View {
     let file: DownloadFile
 
     var body: some View {
-        LibraryRow(title: file.name, detail: file.kind, open: { NSWorkspace.shared.open(file.url) }, iconSide: 30) {
+        let size = ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)
+        LibraryRow(
+            title: file.name, detail: "\(size) · \(file.kind)", open: { NSWorkspace.shared.open(file.url) }, iconSide: 30
+        ) {
             Image(nsImage: file.icon).resizable().scaledToFit()
         }
         .onDrag { file.dragItem }

@@ -202,7 +202,8 @@ extension BrowserTab {
         get { (url ?? pendingURL ?? lastAttemptedURL)?.absoluteString ?? "" }
         set {
             // JavaScript reaches a page only through `execute`, which the setting guards
-            guard !newValue.lowercased().hasPrefix("javascript:"), let target = URLInput.resolve(newValue)
+            let text = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.lowercased().hasPrefix("javascript:"), let target = URLInput.resolve(text)
             else { return }
             load(target)
         }

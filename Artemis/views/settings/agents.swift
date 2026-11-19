@@ -4,8 +4,8 @@
 import AppKit
 import SwiftUI
 
-/// Agents: which coding agents may drive Artemis over MCP, and where.
-struct AgentSettings: View {
+/// the Intelligence pane's sections for coding agents: which may drive Artemis over MCP, and where
+struct AgentSections: View {
     private var bridge = AgentBridge.shared
     @State private var copied: String?
 
@@ -21,8 +21,8 @@ struct AgentSettings: View {
 
     var body: some View {
         @Bindable var bridge = bridge
-        return Form {
-            Section {
+        return Group {
+            Section("Coding Agents") {
                 Toggle(isOn: $bridge.isEnabled) {
                     InfoLabel(
                         "Allow coding agents to use Artemis",
@@ -36,82 +36,83 @@ struct AgentSettings: View {
                 }
             }
 
-            Section("Setup") {
-                ForEach(Self.setups, id: \.name) { setup in
-                    HStack(alignment: .top) {
-                        Text(setup.command)
-                            .font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Button(copied == setup.name ? "Copied" : "Copy \(setup.name)") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(setup.command, forType: .string)
-                            copied = setup.name
-                        }
-                        .controlSize(.small)
-                    }
-                    .settingsAnchor(setup.name == Self.setups.first?.name ? .agentSetup : nil)
-                }
-            }
-
-            Section {
-                ForEach(BrowserCore.shared.spaces) { space in
-                    Toggle(
-                        space.name,
-                        isOn: Binding(
-                            get: { bridge.allowedSpaceIDs.contains(space.id) },
-                            set: { allowed in
-                                if allowed { bridge.allowedSpaceIDs.insert(space.id) } else {
-                                    bridge.allowedSpaceIDs.remove(space.id)
-                                }
-                            }))
-                    .settingsAnchor(space.id == BrowserCore.shared.spaces.first?.id ? .agentSpaces : nil)
-                }
-                Toggle(isOn: $bridge.allowsScripts) {
-                    InfoLabel(
-                        "Let agents run scripts in pages",
-                        info: "Scripts run with the page's full access, including your signed-in session.")
-                }
-                .settingsAnchor(.agentScripts)
-            } header: {
-                InfoLabel("Spaces Agents Can Reach", info: "Incognito windows are never shared.")
-            }
-
-            Section("Approved Agents") {
-                if bridge.approved.isEmpty {
-                    Text("None yet.").foregroundStyle(.secondary).settingsAnchor(.approvedAgents)
-                }
-                ForEach(bridge.approved, id: \.self) { identity in
-                    HStack {
-                        Text(identity).lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        Button("Forget") { bridge.forget(identity) }
-                            .controlSize(.small)
-                    }
-                    .settingsAnchor(identity == bridge.approved.first ? .approvedAgents : nil)
-                }
-            }
-
-            Section("Connected") {
-                if bridge.sessions.isEmpty {
-                    Text("No agents connected.").foregroundStyle(.secondary).settingsAnchor(.connectedAgents)
-                }
-                ForEach(bridge.sessions) { session in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text([session.name, session.version].filter { !$0.isEmpty }.joined(separator: " "))
-                            if !session.parentPath.isEmpty {
-                                Text(session.parentPath).font(.caption).foregroundStyle(.secondary)
+            if bridge.isEnabled {
+                Section("Agent Setup") {
+                    ForEach(Self.setups, id: \.name) { setup in
+                        HStack(alignment: .top) {
+                            Text(setup.command)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button(copied == setup.name ? "Copied" : "Copy \(setup.name)") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(setup.command, forType: .string)
+                                copied = setup.name
                             }
-                        }
-                        Spacer()
-                        Button("Disconnect") { session.close() }
                             .controlSize(.small)
+                        }
+                        .settingsAnchor(setup.name == Self.setups.first?.name ? .agentSetup : nil)
                     }
-                    .settingsAnchor(session.id == bridge.sessions.first?.id ? .connectedAgents : nil)
+                }
+
+                Section {
+                    ForEach(BrowserCore.shared.spaces) { space in
+                        Toggle(
+                            space.name,
+                            isOn: Binding(
+                                get: { bridge.allowedSpaceIDs.contains(space.id) },
+                                set: { allowed in
+                                    if allowed { bridge.allowedSpaceIDs.insert(space.id) } else {
+                                        bridge.allowedSpaceIDs.remove(space.id)
+                                    }
+                                }))
+                        .settingsAnchor(space.id == BrowserCore.shared.spaces.first?.id ? .agentSpaces : nil)
+                    }
+                    Toggle(isOn: $bridge.allowsScripts) {
+                        InfoLabel(
+                            "Let agents run scripts in pages",
+                            info: "Scripts run with the page's full access, including your signed-in session.")
+                    }
+                    .settingsAnchor(.agentScripts)
+                } header: {
+                    InfoLabel("Spaces Agents Can Reach", info: "Incognito windows are never shared.")
+                }
+
+                Section("Approved Agents") {
+                    if bridge.approved.isEmpty {
+                        Text("None yet.").foregroundStyle(.secondary).settingsAnchor(.approvedAgents)
+                    }
+                    ForEach(bridge.approved, id: \.self) { identity in
+                        HStack {
+                            Text(identity).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button("Forget") { bridge.forget(identity) }
+                                .controlSize(.small)
+                        }
+                        .settingsAnchor(identity == bridge.approved.first ? .approvedAgents : nil)
+                    }
+                }
+
+                Section("Connected Agents") {
+                    if bridge.sessions.isEmpty {
+                        Text("No agents connected.").foregroundStyle(.secondary).settingsAnchor(.connectedAgents)
+                    }
+                    ForEach(bridge.sessions) { session in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text([session.name, session.version].filter { !$0.isEmpty }.joined(separator: " "))
+                                if !session.parentPath.isEmpty {
+                                    Text(session.parentPath).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Disconnect") { session.close() }
+                                .controlSize(.small)
+                        }
+                        .settingsAnchor(session.id == bridge.sessions.first?.id ? .connectedAgents : nil)
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }

@@ -30,8 +30,6 @@ struct ExtensionsSettings: View {
                 }
             }
 
-            BoostsSection()
-
             Section("Installed") {
                 if extensions.installed.isEmpty {
                     Text("No extensions installed yet.")
@@ -151,125 +149,6 @@ struct ExtensionsSettings: View {
             }
             isAdding = false
         }
-    }
-}
-
-/// per-site Boosts: a site's own CSS and JS, each editable in a sheet after it is added
-private struct BoostsSection: View {
-    @State private var store = BoostStore.shared
-    @State private var editing: Boost?
-    @State private var newHost = ""
-
-    var body: some View {
-        Section {
-            if store.boosts.isEmpty {
-                Text("No Boosts yet. Add a site below to restyle it with your own CSS or JS.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            ForEach(store.boosts) { boost in
-                HStack(spacing: 8) {
-                    Toggle(
-                        boost.host,
-                        isOn: Binding(
-                            // the live value: `boost` is the copy this row was drawn from
-                            get: { store.boosts.first { $0.id == boost.id }?.isEnabled ?? false },
-                            set: { store.setEnabled(boost, $0) }
-                        ).undoable("Boost")
-                    )
-                    .labelsHidden()
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(boost.host).font(.system(size: 13, weight: .medium))
-                        Text(summary(for: boost))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Edit") { editing = boost }
-                        .controlSize(.small)
-                        .accessibilityLabel("Edit \(boost.host)")
-                    Button("Remove", role: .destructive) { store.remove(boost) }
-                        .controlSize(.small)
-                        .accessibilityLabel("Remove \(boost.host)")
-                }
-            }
-
-            HStack {
-                TextField("Add a site (e.g. example.com)", text: $newHost)
-                    .onSubmit(createBoost)
-                Button("Add Boost", action: createBoost)
-                    .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            .settingsAnchor(.boosts)
-        } header: {
-            InfoLabel(
-                "Boosts",
-                info: "Applies your own CSS and JavaScript to a site and its subdomains every time it loads."
-            )
-        }
-        .sheet(item: $editing) { boost in
-            BoostEditor(boost: boost) { edited in
-                store.update(edited)
-                editing = nil
-            } onCancel: {
-                editing = nil
-            }
-        }
-    }
-
-    private func summary(for boost: Boost) -> String {
-        var parts: [String] = []
-        if !boost.css.isEmpty { parts.append("\(boost.css.count) chars of CSS") }
-        if !boost.js.isEmpty { parts.append("\(boost.js.count) chars of JS") }
-        return parts.isEmpty ? "empty" : parts.joined(separator: " · ")
-    }
-
-    private func createBoost() {
-        guard let created = store.create(host: newHost) else { return }
-        newHost = ""
-        editing = created
-    }
-}
-
-/// the CSS/JS editor sheet for one Boost
-private struct BoostEditor: View {
-    @State var boost: Boost
-    let onSave: (Boost) -> Void
-    let onCancel: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Boost")
-                .font(.headline)
-            TextField("Host", text: $boost.host)
-                .textFieldStyle(.roundedBorder)
-
-            Text("CSS").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $boost.css)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 140)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6).stroke(.separator))
-
-            InfoLabel("JavaScript", info: "Runs in the page itself once it finishes loading.")
-                .font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $boost.js)
-                .font(.system(.caption, design: .monospaced))
-                .frame(height: 100)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6).stroke(.separator))
-
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-                Button("Save") { onSave(boost) }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(boost.host.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 480)
     }
 }
 

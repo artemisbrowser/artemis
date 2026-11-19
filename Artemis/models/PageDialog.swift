@@ -14,9 +14,8 @@ final class PageDialogRequest: Identifiable {
         case prompt(defaultText: String)
         /// `beforeunload`; the page's own message is never shown
         case leaveConfirm
-        /// a link in a scheme WebKit doesn't render; `appName` is whichever app
-        /// macOS says would handle it, nil when nothing is installed
-        case openExternal(scheme: String, appName: String?)
+        /// a link in a scheme WebKit doesn't render; `appName` is the app macOS says handles it
+        case openExternal(scheme: String, appName: String)
         /// basic, digest or NTLM sign-in; `realm` is the server's own text, shown as-is
         case httpAuth(realm: String?)
     }
@@ -25,7 +24,7 @@ final class PageDialogRequest: Identifiable {
     enum Checkbox: Equatable {
         /// "Don't let this page create more dialogs"
         case silencePage
-        /// "Always allow this site to open <app>"
+        /// the site may be trusted with this app, or with every app: a menu, not a checkbox
         case rememberChoice
     }
 

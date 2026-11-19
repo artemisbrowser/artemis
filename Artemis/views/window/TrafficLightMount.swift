@@ -4,12 +4,11 @@
 import AppKit
 import SwiftUI
 
-/// the window's real traffic lights, re-parented into the sidebar so they move on its exact
-/// frames. `MountView.layout()` holds 9pt gaps against AppKit's stock frames; fullscreen hands
-/// them back
+/// AppKit's own traffic lights, made for this window and mounted in the sidebar so they move on its
+/// exact frames; the window's set stays hidden in its titlebar except in fullscreen
 struct TrafficLightMount: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MountView, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
     }
 
@@ -31,20 +30,15 @@ struct TrafficLightMount: NSViewRepresentable {
         return NSRect(x: mirrored ? width - x - buttonSize : x, y: 9, width: buttonSize, height: buttonSize)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context: Context) -> MountView {
         let view = MountView()
         view.mirrored = context.environment.layoutDirection == .rightToLeft
-        DispatchQueue.main.async {
-            context.coordinator.attach(view)
-        }
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    func updateNSView(_ mount: MountView, context: Context) {
         let mirrored = context.environment.layoutDirection == .rightToLeft
-        guard let mount = nsView as? MountView, mount.mirrored != mirrored else { return }
+        guard mount.mirrored != mirrored else { return }
         mount.mirrored = mirrored
         mount.needsLayout = true
     }
@@ -53,24 +47,61 @@ struct TrafficLightMount: NSViewRepresentable {
     /// AppKit's private group-hover question so the glyphs show on hover, as
     /// outside the titlebar there's no theme frame to answer it
     final class MountView: NSView {
+        private static let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        /// close, minimise, zoom
+        private(set) var buttons: [NSButton] = []
+        /// the window's own set, hidden in its titlebar; held because once it's hidden,
+        /// `standardWindowButton` answers with a visible copy
+        private(set) var windowButtons: [NSButton] = []
         private var tracking: NSTrackingArea?
         private var mouseInside = false
-        private var frameObservers: [NSObjectProtocol] = []
+        private var fullScreenObservers: [NSObjectProtocol] = []
         var mirrored = false
-        /// asks the coordinator to adopt if it hasn't: a mount is laid out before
-        /// its window exists, and a second window's is built while the first is
-        /// key, so adoption is re-checked rather than awaited
-        var recheckAdoption: (() -> Void)?
-        /// the only place a new window is taken: an update can run inside a window's dealloc
-        var enteredWindow: (() -> Void)?
+
+        deinit {
+            fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            enteredWindow?()
+            buttons.forEach { $0.removeFromSuperview() }
+            fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+            guard let window else {
+                buttons = []
+                windowButtons = []
+                fullScreenObservers = []
+                return
+            }
+            windowButtons =
+                (window.standardWindowButton(.closeButton)?.superview as? MountView)?.windowButtons
+                ?? Self.types.compactMap(window.standardWindowButton)
+            buttons = Self.types.compactMap { NSWindow.standardWindowButton($0, for: window.styleMask) }
+            for button in buttons {
+                button.target = window
+                addSubview(button)
+            }
+            window.setAccessibilityCloseButton(buttons.first)
+            window.setAccessibilityMinimizeButton(buttons.dropFirst().first)
+            window.setAccessibilityZoomButton(buttons.last)
+            window.setAccessibilityFullScreenButton(buttons.last)
+            showWindowButtons(window.styleMask.contains(.fullScreen))
+            // fullscreen's auto-reveal titlebar shows the window's own set, from entry until the exit begins
+            let center = NotificationCenter.default
+            fullScreenObservers = [
+                (NSWindow.willEnterFullScreenNotification, true), (NSWindow.willExitFullScreenNotification, false),
+            ].map { name, shown in
+                center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.showWindowButtons(shown) }
+                }
+            }
+            needsLayout = true
+            updateTrackingAreas()
         }
 
-        deinit {
-            frameObservers.forEach(NotificationCenter.default.removeObserver)
+        /// fullscreen can't minimise, so the sidebar's minimise button is off while the window's own set shows
+        private func showWindowButtons(_ shown: Bool) {
+            for button in windowButtons { button.isHidden = !shown }
+            if buttons.count == 3 { buttons[1].isEnabled = !shown }
         }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
@@ -78,55 +109,11 @@ struct TrafficLightMount: NSViewRepresentable {
             return view === self ? nil : view
         }
 
-        /// AppKit re-asserts its stock frames (20pt pitch) on the buttons wherever
-        /// they live; each frame change lands back here and this re-applies ours,
-        /// writing only a frame that is wrong so it stays loop-free
         override func layout() {
             super.layout()
-            recheckAdoption?()
-            applyButtonFrames()
-        }
-
-        fileprivate func applyButtonFrames() {
-            for (index, button) in orderedButtons.enumerated() {
+            for (index, button) in buttons.enumerated() {
                 let frame = TrafficLightMount.buttonFrame(index, mirrored: mirrored)
                 if button.frame != frame { button.frame = frame }
-            }
-        }
-
-        /// close, minimise, zoom — in their canonical order regardless of the
-        /// order they were adopted in
-        private var orderedButtons: [NSButton] {
-            subviews.compactMap { $0 as? NSButton }.sorted { $0.tag < $1.tag }
-        }
-
-        /// watch the adopted buttons so a system re-assert is corrected; one AppKit
-        /// moved back to its titlebar gets a stock frame there, and returns here
-        fileprivate func watchButtonFrames() {
-            frameObservers.forEach(NotificationCenter.default.removeObserver)
-            frameObservers = subviews.compactMap { view in
-                guard view is NSButton else { return nil }
-                view.postsFrameChangedNotifications = true
-                return NotificationCenter.default.addObserver(
-                    forName: NSView.frameDidChangeNotification, object: view, queue: .main
-                ) { [weak self] note in
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        if (note.object as? NSView)?.superview === self {
-                            self.correctIfNeeded()
-                        } else {
-                            DispatchQueue.main.async { self.recheckAdoption?() }
-                        }
-                    }
-                }
-            }
-        }
-
-        private func correctIfNeeded() {
-            for (index, button) in orderedButtons.enumerated()
-            where button.frame != TrafficLightMount.buttonFrame(index, mirrored: mirrored) {
-                needsLayout = true
-                return
             }
         }
 
@@ -158,7 +145,7 @@ struct TrafficLightMount: NSViewRepresentable {
             guard mouseInside != inside else { return }
             mouseInside = inside
             let recompute = Selector(("mouseEnteredOrExited"))
-            for case let button as NSButton in subviews {
+            for button in buttons {
                 if button.responds(to: recompute) {
                     button.perform(recompute)
                 }
@@ -169,144 +156,6 @@ struct TrafficLightMount: NSViewRepresentable {
         /// AppKit's group-hover question, which the buttons ask their ancestors
         @objc func _mouseInGroup(_ button: NSButton) -> Bool {
             mouseInside
-        }
-    }
-
-    @MainActor
-    final class Coordinator {
-        private weak var mount: MountView?
-        private weak var window: NSWindow?
-        private weak var originalSuperview: NSView?
-        private var originalFrames: [NSWindow.ButtonType: NSRect] = [:]
-        private var observers: [NSObjectProtocol] = []
-        /// fullscreen holds the buttons until it exits
-        private var handedBack = false
-
-        private static let buttonTypes: [NSWindow.ButtonType] = [
-            .closeButton, .miniaturizeButton, .zoomButton,
-        ]
-
-        deinit {
-            observers.forEach(NotificationCenter.default.removeObserver)
-        }
-
-        func attach(_ view: MountView?) {
-            if let view, view !== mount {
-                mount = view
-                view.recheckAdoption = { [weak self] in self?.adoptIfNeeded() }
-                view.enteredWindow = { [weak self] in self?.attach(nil) }
-            }
-            guard let mount, let window = mount.window else { return }
-            if window !== self.window {
-                self.window = window
-                installObservers(window)
-            }
-            adoptIfNeeded()
-        }
-
-        private func installObservers(_ window: NSWindow) {
-            observers.forEach(NotificationCenter.default.removeObserver)
-            let center = NotificationCenter.default
-            observers = [
-                // fullscreen owns the lights (auto-reveal titlebar); hand back
-                center.addObserver(
-                    forName: NSWindow.willEnterFullScreenNotification,
-                    object: window, queue: .main
-                ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.returnButtonsToSystem() }
-                },
-                // AppKit keeps the real set in its titlebar through the exit: hidden there, the
-                // copies stand in until it ends
-                center.addObserver(
-                    forName: NSWindow.willExitFullScreenNotification,
-                    object: window, queue: .main
-                ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.setRealButtonsAlpha(0) }
-                },
-                center.addObserver(
-                    forName: NSWindow.didExitFullScreenNotification,
-                    object: window, queue: .main
-                ) { [weak self] _ in
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        self.handedBack = false
-                        self.mount?.subviews.filter { $0 is NSButton }.forEach { $0.removeFromSuperview() }
-                        self.adoptIfNeeded()
-                        self.setRealButtonsAlpha(1)
-                    }
-                },
-                // the reliable "window is fully set up" beat for first adoption
-                center.addObserver(
-                    forName: NSWindow.didBecomeKeyNotification,
-                    object: window, queue: .main
-                ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.adoptIfNeeded() }
-                },
-            ]
-        }
-
-        private func setRealButtonsAlpha(_ alpha: CGFloat) {
-            for type in Self.buttonTypes { window?.standardWindowButton(type)?.alphaValue = alpha }
-        }
-
-        private func adoptIfNeeded() {
-            guard !handedBack, let mount, let window = mount.window,
-                !window.styleMask.contains(.fullScreen)
-            else { return }
-
-            let buttons = Self.buttonTypes.compactMap(window.standardWindowButton)
-            guard buttons.count == 3 else { return }
-            // already ours and still attached — nothing to do
-            guard buttons[0].superview !== mount else { return }
-
-            // remember the system's own placement for the fullscreen handback
-            if originalSuperview == nil, let titlebar = buttons[0].superview {
-                originalSuperview = titlebar
-                for (type, button) in zip(Self.buttonTypes, buttons) {
-                    originalFrames[type] = button.frame
-                }
-            }
-
-            for (index, button) in buttons.enumerated() {
-                // canonical ordering handle for the mount's own layout
-                button.tag = index
-                mount.addSubview(button)
-            }
-            mount.applyButtonFrames()
-            mount.watchButtonFrames()
-            mount.updateTrackingAreas()
-        }
-
-        private func returnButtonsToSystem() {
-            guard let originalSuperview else { return }
-            handedBack = true
-            setRealButtonsAlpha(1)
-            for type in Self.buttonTypes {
-                guard let button = window?.standardWindowButton(type) else { continue }
-                originalSuperview.addSubview(button)
-                if let frame = originalFrames[type] { button.frame = frame }
-            }
-            mountStandIns()
-        }
-
-        /// fullscreen's titlebar holds the real buttons, so the sidebar gets working copies
-        private func mountStandIns() {
-            guard let mount, let window else { return }
-            let actions = [
-                #selector(NSWindow.performClose(_:)), #selector(NSWindow.performMiniaturize(_:)),
-                #selector(NSWindow.toggleFullScreen(_:)),
-            ]
-            for (index, (type, action)) in zip(Self.buttonTypes, actions).enumerated() {
-                guard let button = NSWindow.standardWindowButton(type, for: window.styleMask) else { continue }
-                button.tag = index
-                button.target = window
-                button.action = action
-                // fullscreen can't minimise
-                button.isEnabled = type != .miniaturizeButton
-                mount.addSubview(button)
-            }
-            mount.applyButtonFrames()
-            mount.watchButtonFrames()
         }
     }
 }

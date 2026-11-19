@@ -129,6 +129,14 @@ final class InstalledExtension: Identifiable {
         return lines.isEmpty ? ["Run with no special permissions"] : lines
     }
 
+    /// the consent's closing line: only a package Artemis downloaded from a store itself is verified
+    var consentCaution: String {
+        source == .disk
+            ? "Artemis could not verify this extension, so it may not be what it says it is. "
+                + "Only install it if you trust where it came from."
+            : "Only install extensions you trust."
+    }
+
     /// plain-language gloss for the common WebExtension permissions
     private static func consentLabel(_ permission: String) -> String {
         switch permission {

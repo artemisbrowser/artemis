@@ -92,16 +92,21 @@ nonisolated enum ExtensionData {
 
     // MARK: - User scripts
 
+    /// each profile has its own user-script files and registry, the default profile's at the folder's top
+    static func userScriptFolder(
+        of context: WKWebExtensionContext, in profile: UUID
+    ) -> (relative: String, folder: URL)? {
+        guard let root = ExtensionInstaller.resourceURL(forStoredID: context.uniqueIdentifier) else { return nil }
+        let relative = "__artemis/user" + (profile == Profile.defaultID ? "" : "/" + profile.uuidString)
+        return (relative, root.appendingPathComponent(relative, isDirectory: true))
+    }
+
     /// user-script code lives as files in the extension's own package, where
-    /// scripting.registerContentScripts can name it; nothing outside that folder. each profile has
-    /// its own files and registry, the default profile's at the folder's top
+    /// scripting.registerContentScripts can name it; nothing outside that folder
     static func userScriptFiles(
         _ type: String, _ message: [String: Any], for context: WKWebExtensionContext, in profile: UUID
     ) -> [String: Any] {
-        guard let root = ExtensionInstaller.resourceURL(forStoredID: context.uniqueIdentifier)
-        else { return ["ok": false] }
-        let relative = "__artemis/user" + (profile == Profile.defaultID ? "" : "/" + profile.uuidString)
-        let folder = root.appendingPathComponent(relative, isDirectory: true)
+        guard let (relative, folder) = userScriptFolder(of: context, in: profile) else { return ["ok": false] }
         let fm = FileManager.default
         try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let safe = { (name: String) in

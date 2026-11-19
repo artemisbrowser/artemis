@@ -72,7 +72,7 @@ enum Bench {
 
     /// counts display-link callbacks and how many arrived late
     @MainActor
-    private final class FrameCounter: NSObject {
+    final class FrameCounter: NSObject {
         private var link: CADisplayLink?
         private var last: CFTimeInterval = 0
         private(set) var frames = 0
@@ -522,6 +522,8 @@ enum Bench {
                     case "idle": break
                     case "sidebar":
                         manager.isSidebarCollapsed = !i.isMultiple(of: 2)
+                    case "agent":
+                        manager.isAgentPanelVisible = !i.isMultiple(of: 2)
                     case "library":
                         withAnimation(Motion.panel) { manager.isLibraryOpen = !manager.isLibraryOpen }
                     // the Library held open, flipping between its three lists

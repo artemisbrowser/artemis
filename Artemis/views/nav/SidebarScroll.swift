@@ -23,18 +23,23 @@ final class SidebarScroll {
     var track: CGRect = .zero
 
     @ObservationIgnored private weak var scrollView: NSScrollView?
+    /// the probe the list was last attached for; only it can detach the list
+    @ObservationIgnored private weak var probe: NSView?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var fade: Task<Void, Never>?
     @ObservationIgnored private var speed: CGFloat = 0
     @ObservationIgnored private var ticker: Task<Void, Never>?
+    @ObservationIgnored private var isRelaying = false
 
     /// how far in from each end of the list a held drag scrolls it
     static let edgeZone: CGFloat = 56
     /// points per second with the pointer at the edge
     static let topSpeed: CGFloat = 720
 
-    func attach(_ view: NSScrollView) {
+    func attach(_ view: NSScrollView, for probe: NSView) {
+        self.probe = probe
         guard view !== scrollView else { return }
+        rest()
         observers.forEach(NotificationCenter.default.removeObserver)
         scrollView = view
         view.contentView.postsBoundsChangedNotifications = true
@@ -51,8 +56,8 @@ final class SidebarScroll {
         measure(scrolled: false)
     }
 
-    func detach(_ view: NSScrollView) {
-        guard view === scrollView else { return }
+    func detach(_ view: NSScrollView, for probe: NSView) {
+        guard view === scrollView, probe === self.probe else { return }
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
         scrollView = nil
@@ -66,8 +71,9 @@ final class SidebarScroll {
         let content = document.frame.height
         let measured = Metrics(
             offset: document.isFlipped ? clip.minY : content - clip.maxY, content: content, visible: clip.height)
+        let moved = measured.offset != metrics.offset
         if measured != metrics { metrics = measured }
-        guard scrolled else { return }
+        guard scrolled, moved else { return }
         if !isActive { isActive = true }
         fade?.cancel()
         fade = Task { [weak self] in
@@ -77,6 +83,15 @@ final class SidebarScroll {
         }
     }
 
+    /// a space switch began or another list went live: the thumb goes unanimated, until the list next scrolls
+    func rest() {
+        fade?.cancel()
+        guard isActive else { return }
+        var plain = Transaction()
+        plain.disablesAnimations = true
+        withTransaction(plain) { isActive = false }
+    }
+
     func scroll(toOffset target: CGFloat) {
         guard let view = scrollView, let document = view.documentView else { return }
         let offset = min(max(0, target), metrics.maxOffset)
@@ -84,6 +99,18 @@ final class SidebarScroll {
         let y = document.isFlipped ? offset : metrics.content - metrics.visible - offset
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
         view.reflectScrolledClipView(clip)
+    }
+
+    /// a scroll no view of the sidebar took: beside the list's rows, as in its gutter, it scrolls the list
+    func wheel(_ event: NSEvent) {
+        guard !isRelaying, let view = scrollView, event.window === view.window else { return }
+        // the list overhangs its rows by the glass bleed, where other views take the pointer
+        let point = view.convert(event.locationInWindow, from: nil), rows = view.bounds.insetBy(dx: RowHighlight.glassBleed, dy: 0)
+        guard point.y >= rows.minY, point.y <= rows.maxY, point.x <= rows.minX || point.x >= rows.maxX else { return }
+        // the list hands back what it cannot use
+        isRelaying = true
+        defer { isRelaying = false }
+        view.scrollWheel(with: event)
     }
 
     /// a drag held at `point` (nil once it ends) scrolls the list at `speed(at:in:)`; `tick` runs
@@ -147,22 +174,25 @@ struct ScrollViewProbe: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if window != nil, let view = enclosingScrollView {
                 attached = view
-                scroll.attach(view)
+                scroll.attach(view, for: self)
             } else if let attached {
-                scroll.detach(attached)
+                scroll.detach(attached, for: self)
             }
         }
     }
 }
 
-/// the list's scroller, a thin thumb centred in the gutter between the tab column and the
-/// sidebar's edge; it shows while the list scrolls or the pointer is on it, and drags
+/// the list's scroller, a thumb centred in the gutter between the tab column and the sidebar's
+/// edge; it drags, and shows while the list scrolls or the pointer is on it, or always when
+/// the system keeps scroll bars shown
 struct GutterScroller: View {
     let scroll: SidebarScroll
     let gutter: CGFloat
     /// the gutter lies left of the track, as when the sidebar sits on the right
     var onLeft = false
     @Environment(\.chromeInk) private var ink
+    @Environment(SidebarDragState.self) private var drag: SidebarDragState?
+    @Environment(TabManager.self) private var tabManager: TabManager?
     @State private var hovering = false
     @State private var grabbed: CGFloat?
 
@@ -171,15 +201,22 @@ struct GutterScroller: View {
         let track = scroll.track
         let thumb = m.content > 0 ? max(28, track.height * m.visible / m.content) : 0
         let travel = track.height - thumb
-        if m.maxOffset > 1, travel > 0 {
+        let page = tabManager?.spacePagePosition ?? 0
+        // the track rides the pager, so there is no thumb while it sits between spaces
+        if m.maxOffset > 1, travel > 0, page == page.rounded() {
             let wide = hovering || grabbed != nil
             Capsule()
-                .fill(ink.opacity(wide ? 0.42 : 0.26))
-                .frame(width: wide ? 5 : 3, height: thumb)
-                .opacity(scroll.isActive || wide ? 1 : 0)
+                .fill(ink.opacity(wide ? 0.5 : 0.3))
+                .frame(width: wide ? 8 : 6, height: thumb)
+                .opacity(scroll.isActive || wide || NSScroller.preferredScrollerStyle == .legacy ? 1 : 0)
                 .frame(width: gutter, height: thumb)
                 // outside the opacity, so the hidden thumb still takes the pointer
                 .contentShape(Rectangle())
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { drag?.scrollerThumb = $0 }
+                .onDisappear {
+                    drag?.scrollerThumb = .zero
+                    hovering = false
+                }
                 .onHover { hovering = $0 }
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -194,6 +231,7 @@ struct GutterScroller: View {
                 .animation(Motion.hover, value: wide)
                 .animation(Motion.fade, value: scroll.isActive)
                 .accessibilityHidden(true)
+                .transition(.identity)
         }
     }
 }

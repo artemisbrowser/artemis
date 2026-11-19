@@ -67,7 +67,7 @@ final class ExtensionWindow: NSObject, WKWebExtensionWindow {
     }
 
     func windowState(for context: WKWebExtensionContext) -> WKWebExtension.WindowState {
-        guard let window = NSApp.keyWindow else { return .normal }
+        guard let window = Lobby.keyWindow else { return .normal }
         if window.styleMask.contains(.fullScreen) { return .fullscreen }
         return window.isMiniaturized ? .minimized : .normal
     }
@@ -75,17 +75,17 @@ final class ExtensionWindow: NSObject, WKWebExtensionWindow {
     func isPrivate(for context: WKWebExtensionContext) -> Bool { parent != nil }
 
     func frame(for context: WKWebExtensionContext) -> CGRect {
-        NSApp.keyWindow?.frame ?? .zero
+        Lobby.keyWindow?.frame ?? .zero
     }
 
     func screenFrame(for context: WKWebExtensionContext) -> CGRect {
-        NSApp.keyWindow?.screen?.frame ?? NSScreen.main?.frame ?? .zero
+        Lobby.keyWindow?.screen?.frame ?? NSScreen.main?.frame ?? .zero
     }
 
     func focus(for context: WKWebExtensionContext) async throws {
         await MainActor.run {
             let own = parent == nil ? nil : tabManager.flatMap(BrowserWindows.shared.window(of:))
-            (own ?? NSApp.keyWindow)?.makeKeyAndOrderFront(nil)
+            (own ?? Lobby.keyWindow)?.makeKeyAndOrderFront(nil)
         }
     }
 }

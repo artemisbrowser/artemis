@@ -191,6 +191,7 @@ private struct SplitPane: View {
             if tab.loadError != nil {
                 ErrorPage(tab: tab)
             }
+            SavedCopyLabel(tab: tab)
         }
         .pageDialog(for: tab)
         .translateSelection(for: tab)

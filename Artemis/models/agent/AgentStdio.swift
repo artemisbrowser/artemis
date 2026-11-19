@@ -15,6 +15,9 @@ enum AgentStdio {
     private static var pending: [Int: Any] = [:]
     private static var nextCallID = 0
     private static var clientInfo: [String: Any] = [:]
+    /// names the built-in task whose CLI launched this server
+    static let taskVariable = "ARTEMIS_AGENT_TASK"
+    private static let task = ProcessInfo.processInfo.environment[taskVariable]
 
     static func run() -> Never {
         signal(SIGPIPE, SIG_IGN)
@@ -69,38 +72,45 @@ enum AgentStdio {
         case "ping":
             reply(id, [String: Any]())
         case "tools/list":
-            reply(id, ["tools": tools])
+            let hidden = task == nil ? ["fill_saved"] : ["list_spaces", "evaluate_script"]
+            reply(id, ["tools": tools.filter { !hidden.contains($0["name"] as? String ?? "") }])
         case "tools/call":
             guard let name = params["name"] as? String else {
                 send(["jsonrpc": "2.0", "id": id, "error": ["code": -32602, "message": "Missing tool name"]])
                 return
             }
-            forward(id, name, params["arguments"] as? [String: Any] ?? [:])
+            let use = (params["_meta"] as? [String: Any])?["claudecode/toolUseId"] as? String
+            forward(id, name, params["arguments"] as? [String: Any] ?? [:], use: use)
         default:
             send(["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found: \(method)"]])
         }
     }
 
-    private static func forward(_ id: Any, _ name: String, _ arguments: [String: Any]) {
+    /// `use` is the tool use Claude Code names the call by, which its permission asks name too
+    private static func forward(_ id: Any, _ name: String, _ arguments: [String: Any], use: String?) {
         if socket < 0 {
             guard let fd = AgentSocket.connect() else {
                 reply(id, failure(
-                    "Artemis isn't reachable. Open Artemis, then turn on Settings › Agents › “Allow coding agents to use Artemis”."))
+                    "Artemis isn't reachable. Open Artemis, then turn on Settings › Intelligence › “Allow coding agents to use Artemis”."))
                 return
             }
             socket = fd
-            AgentSocket.writeAll(fd, AgentSocket.line(["attach": [
+            var attach: [String: Any] = [
                 "version": 1,
                 "client": [
                     "name": clientInfo["name"] as? String ?? "Coding agent",
                     "version": clientInfo["version"] as? String ?? "",
                     "parentPath": parentPath() ?? "",
                 ],
-            ]]))
+            ]
+            attach["task"] = task
+            AgentSocket.writeAll(fd, AgentSocket.line(["attach": attach]))
         }
         nextCallID += 1
         pending[nextCallID] = id
-        AgentSocket.writeAll(socket, AgentSocket.line(["call": ["id": nextCallID, "name": name, "arguments": arguments]]))
+        var call: [String: Any] = ["id": nextCallID, "name": name, "arguments": arguments]
+        call["use"] = use
+        AgentSocket.writeAll(socket, AgentSocket.line(["call": call]))
     }
 
     private static func relayReply(_ line: Data) {
@@ -143,7 +153,7 @@ enum AgentStdio {
         Artemis is the user's own browser: its tabs are real and signed in. Work in tabs \
         you open with open_tab where you can, and leave the user's tabs as they are unless asked. \
         Call take_snapshot before click/fill/hover; uids come from the latest snapshot. Input is \
-        synthesized DOM events, so a few sites may ignore it. Passwords are never typed by agents.
+        synthesized DOM events, so a few sites may ignore it. Passwords, card details and one-time codes are never typed by agents.
         """
 
     private static let tab: [String: Any] = ["type": "string", "description": "Tab id from list_tabs or open_tab."]
@@ -172,7 +182,13 @@ enum AgentStdio {
             "open_tab", "Open an http(s) URL in a new tab. Opens in the background unless show is true.",
             ["space": string("Space id or name from list_spaces."), "url": string("http or https URL."),
              "show": ["type": "boolean", "description": "Bring the new tab to the front."]],
-            required: ["space", "url"]),
+            required: task == nil ? ["space", "url"] : ["url"]),
+        tool(
+            "search",
+            "Search the web with the search engine the user chose, in a new tab. Use this to look anything up; open no other search engine unless the user names one.",
+            ["space": string("Space id or name from list_spaces."), "query": string("What to search for."),
+             "show": ["type": "boolean", "description": "Bring the new tab to the front."]],
+            required: task == nil ? ["space", "query"] : ["query"]),
         tool(
             "navigate", "Load a URL in a tab, or go back, forward or reload. Pass url or action.",
             ["tab": tab, "url": string("http or https URL."),
@@ -188,16 +204,16 @@ enum AgentStdio {
         tool("hover", "Move the pointer over an element.", ["tab": tab, "uid": uid], required: ["tab", "uid"]),
         tool(
             "fill",
-            "Set a text field or textarea, pick a select option (value or label), or set a checkbox with \"true\"/\"false\". Refuses password fields.",
+            "Set a text field or textarea, pick a select option (value or label), or set a checkbox with \"true\"/\"false\". Refuses password, card and one-time-code fields.",
             ["tab": tab, "uid": uid, "value": string("The value to set.")], required: ["tab", "uid", "value"]),
         tool(
-            "type_text", "Type text key by key into the focused element. Refuses password fields.",
+            "type_text", "Type text key by key into the focused text field. Refuses password, card and one-time-code fields.",
             ["tab": tab, "text": string("Text to type.")], required: ["tab", "text"]),
         tool(
             "press_key",
-            "Press a key on the focused element, named as KeyboardEvent.key (Enter, Tab, Escape, ArrowDown, a…). Enter in a form field submits its form.",
+            "Press Enter, Tab, Escape, Backspace, an arrow, Home, End, PageUp or PageDown on the focused element, or a character in a focused text field. Enter in a form field submits its form.",
             ["tab": tab, "key": string("KeyboardEvent.key value."),
-             "modifiers": ["type": "array", "items": ["type": "string", "enum": ["Shift", "Control", "Alt", "Meta"]]]],
+             "modifiers": ["type": "array", "items": ["type": "string", "enum": ["Shift"]]]],
             required: ["tab", "key"]),
         tool(
             "scroll",
@@ -210,6 +226,11 @@ enum AgentStdio {
             ["tab": tab, "text": string("Text to wait for."),
              "timeout_ms": ["type": "integer", "description": "Default 10000, at most 60000."]],
             required: ["tab"]),
+        tool(
+            "fill_saved",
+            "Have Artemis fill the user's saved login, one-time code or card into the page's form. The user approves each fill and picks which one when several fit; you never see what was filled. Refused when the user has this off.",
+            ["tab": tab, "kind": ["type": "string", "enum": ["login", "code", "card"]]],
+            required: ["tab", "kind"]),
         tool(
             "evaluate_script",
             "Run a JavaScript function such as `() => document.title` in the page and return its JSON result. Only works when the user has allowed scripts.",

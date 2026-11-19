@@ -57,6 +57,10 @@ final class ExtensionAPIBridge {
         case "offscreen.close":
             return ["ok": offscreenDocuments.removeValue(forKey: id) != nil]
 
+        case "background.wake":
+            await withCheckedContinuation { done in context.loadBackgroundContent { _ in done.resume() } }
+            return ["ok": true]
+
         case "runtime.installedNow":
             return ["fresh": !PerfFlags.on("install-filter")
                 || ExtensionManager.shared.installedThisSession.contains(id)]
@@ -135,8 +139,7 @@ final class ExtensionAPIBridge {
             return await download(message, for: context)
 
         case "downloads.showFolder":
-            NSWorkspace.shared.open(
-                FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0])
+            NSWorkspace.shared.open(DownloadManager.defaultFolder)
             return ["ok": true]
 
         case "search.query":
@@ -178,7 +181,7 @@ final class ExtensionAPIBridge {
             if message["silent"] as? Bool != true { content.sound = .default }
             liveNotifications[id, default: []].insert(note)
             let center = UNUserNotificationCenter.current()
-            guard !ExtensionLab.isRequested else { return ["ok": true] }
+            guard !AppStorageLocation.isTestRun else { return ["ok": true] }
             _ = try? await center.requestAuthorization(options: [.alert, .sound])
             let request = UNNotificationRequest(
                 identifier: Self.notificationPrefix + id + "/" + note, content: content, trigger: nil)
@@ -252,8 +255,13 @@ final class ExtensionAPIBridge {
     func connect(_ port: WKWebExtension.MessagePort, for context: WKWebExtensionContext) {
         let id = Self.key(of: context)
         pushPorts[id, default: []].append(port)
+        port.messageHandler = { [weak port] message, _ in
+            guard let port, (message as? [String: Any])?["event"] as? String == "userScripts.listening" else { return }
+            UserScriptWorld.listen(on: port, for: id)
+        }
         port.disconnectHandler = { [weak self, weak port] _ in
             self?.pushPorts[id]?.removeAll { $0 === port }
+            if let port { UserScriptWorld.stopped(port, for: id) }
         }
     }
 
@@ -282,6 +290,7 @@ final class ExtensionAPIBridge {
         offscreenDocuments[id] = nil
         sidePanels[id]?.close()
         pushPorts[id] = nil
+        UserScriptWorld.stop(id)
         if let profile = context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:)) {
             ExtensionProxyBridge.shared.release(owner: context.uniqueIdentifier, in: profile)
         }
@@ -327,7 +336,7 @@ final class ExtensionAPIBridge {
         // never the key window: from a popup's button that is the popover's own
         guard let configuration = context.webViewConfiguration,
             let parent = BrowserWindows.shared.browserScope.flatMap(BrowserWindows.shared.window(of:))
-                ?? NSApp.mainWindow
+                ?? NSApp.mainWindow.flatMap({ Lobby.isLobby($0) ? nil : $0 })
         else { return false }
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -379,7 +388,7 @@ final class ExtensionAPIBridge {
     private func download(_ message: [String: Any], for context: WKWebExtensionContext) async -> [String: Any] {
         let name = (message["filename"] as? String)
             .map { URL(fileURLWithPath: $0).lastPathComponent }
-            .flatMap { $0.isEmpty || $0 == "/" ? nil : $0 }
+            .flatMap { ["", "/", ".", ".."].contains($0) ? nil : $0 }
         guard let encoded = message["bytesBase64"] as? String else {
             guard let url = (message["url"] as? String).flatMap(URL.init(string:)),
                 url.scheme == "https" || url.scheme == "http"
@@ -409,11 +418,7 @@ final class ExtensionAPIBridge {
             }
             destination = url
         } else {
-            // ~/Downloads raises a Downloads folder prompt for a lab copy
-            let folder = SelfTest.isRequested
-                ? FileManager.default.temporaryDirectory
-                : FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-            destination = DownloadItem.uniqueURL(for: folder.appendingPathComponent(name ?? "download"))
+            destination = DownloadItem.uniqueURL(for: DownloadManager.defaultFolder.appendingPathComponent(name ?? "download"))
         }
         guard (try? data.write(to: destination)) != nil else { return ["error": "Download failed."] }
         DownloadItem.quarantine(destination, from: nil)
@@ -493,7 +498,7 @@ private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private func show() {
         guard window == nil else { return }
         let size = NSSize(width: 520, height: 680)
-        let anchor = NSApp.keyWindow?.frame ?? NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: size)
+        let anchor = Lobby.keyWindow?.frame ?? NSScreen.main?.visibleFrame ?? NSRect(origin: .zero, size: size)
         let window = NSWindow(
             contentRect: NSRect(
                 x: anchor.midX - size.width / 2, y: anchor.midY - size.height / 2,

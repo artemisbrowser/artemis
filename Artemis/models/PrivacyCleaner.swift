@@ -3,7 +3,7 @@
 
 import WebKit
 
-/// what a clear touches. history, site data, cache, archive, page text and autofill are
+/// what a clear touches. history, site data, cache, archive, page text, autofill and agent chats are
 /// the chosen profile's; the downloads list, zoom and permissions are shared by all.
 struct ClearTargets: OptionSet {
     let rawValue: Int
@@ -18,6 +18,7 @@ struct ClearTargets: OptionSet {
     static let pageText = ClearTargets(rawValue: 1 << 7)
     /// saved addresses and cards, card numbers included
     static let autofill = ClearTargets(rawValue: 1 << 8)
+    static let agentChats = ClearTargets(rawValue: 1 << 9)
 
     /// what belongs to every profile at once
     static let shared: ClearTargets = [.downloads, .zoom, .permissions]
@@ -115,6 +116,7 @@ enum PrivacyCleaner {
         }
         if targets.contains(.pageText) { await profile.pageIndex.clear(since: since) }
         if targets.contains(.autofill) { AutofillStore.shared.deleteAll(in: profile.id, since: since) }
+        if targets.contains(.agentChats) { AgentChats.shared.delete(since: since, in: profile) }
 
         var types: Set<String> = []
         if targets.contains(.siteData) { types.formUnion(storageTypes) }

@@ -86,10 +86,11 @@ enum OwnerUnlock {
         return unlockedAt.map { Date().timeIntervalSince($0) < window } ?? false
     }
 
-    /// true once the owner has passed a check `kind`'s policy still accepts, asking for one when it doesn't
-    static func authenticate(_ kind: Kind, _ reason: String) async -> Bool {
+    /// true once the owner has passed a check `kind`'s policy still accepts, asking for one when it doesn't.
+    /// `everyTime` asks whatever window is open; only a policy of Never still asks nothing
+    static func authenticate(_ kind: Kind, _ reason: String, everyTime: Bool = false) async -> Bool {
         _ = forgetting
-        if !isUnlocked(kind) {
+        if kind.policy.window != nil, everyTime || !isUnlocked(kind) {
             guard await check(reason) else { return false }
             unlockedAt = Date()
             scheduleLock()

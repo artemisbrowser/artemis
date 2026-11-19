@@ -239,7 +239,9 @@ struct CommandBarEngine {
         case .actions: actions.map { actionItem($0, score: 0, ranges: []) }
         case .spaces: spaces.map { spaceItem($0, score: 0, ranges: []) }
         case .history:
-            manager.history.entries.prefix(20).map { historyItem($0, score: 0, ranges: []) }
+            manager.history.entries(hiding: SpaceLock.shared.lockedIDs).lazy
+                .filter { !ContentBlocker.shared.isAdult($0.url) }.prefix(20)
+                .map { historyItem($0, score: 0, ranges: []) }
         case .tabs:
             manager.switchableTabs
                 .sorted { $0.lastAccessed > $1.lastAccessed }
@@ -268,6 +270,7 @@ struct CommandBarEngine {
         let mask = CommandMatcher.mask(needle)
         let boosts = habits?.boosts(for: query) ?? [:]
         let now = Date()
+        let locked = SpaceLock.shared.lockedIDs
         var out: [CommandItem] = []
 
         var openURLs: Set<String> = []
@@ -328,8 +331,9 @@ struct CommandBarEngine {
             let depth = scope == .history ? 30 : 12
             // pages that differ only by query or fragment read as the same row
             var seen: Set<String> = []
-            for match in manager.history.rankedMatches(needle, mask: mask, limit: depth, now: now)
+            for match in manager.history.rankedMatches(needle, mask: mask, limit: depth, now: now, hiding: locked)
             where !covered.contains(match.entry.url.absoluteString)
+                && !ContentBlocker.shared.isAdult(match.entry.url)
                 && seen.insert(match.entry.title + Self.address(match.entry.url)).inserted {
                 let boost = boosts[match.entry.url.absoluteString] ?? 0
                 out.append(
@@ -358,7 +362,9 @@ struct CommandBarEngine {
 
         if scope == nil {
             let covered = Set(out.compactMap { $0.url?.absoluteString })
-            for hit in textHits where !covered.contains(hit.url.absoluteString) {
+            // the index carries no space, so a page's text follows its history entry while one exists
+            let hidden = locked.isEmpty ? [] : Set(manager.history.entries.lazy.filter { $0.isHidden(by: locked) }.map(\.url))
+            for hit in textHits where !covered.contains(hit.url.absoluteString) && !hidden.contains(hit.url) {
                 out.append(
                     CommandItem(
                         id: "text-" + hit.id, kind: .pageText(hit), title: hit.title,
@@ -401,7 +407,8 @@ struct CommandBarEngine {
             }
         }
 
-        for (entry, frecency) in manager.history.autofillCandidates(typed, now: now).prefix(24) {
+        for (entry, frecency) in manager.history.autofillCandidates(typed, now: now, hiding: SpaceLock.shared.lockedIDs).prefix(24)
+        where !ContentBlocker.shared.isAdult(entry.url) {
             offer(entry.autofillHost, frecency)
         }
         for tab in manager.switchableTabs {
@@ -456,6 +463,11 @@ struct CommandBarEngine {
         case .openURL(var url):
             // a missing file is a search
             if url.isFileURL, let resolved = URLInput.resolve(input) { url = resolved }
+            // an app link the owner entered is the owner's own ask
+            if ExternalSchemes.canOffer(url) {
+                if ExternalSchemes.handlerName(for: url) != nil { ExternalSchemes.open(url) }
+                break
+            }
             if manager.kind != .incognito { manager.history.markTyped(url) }
             open(url, launch)
         case .bang(let bang, let trigger, let query):
@@ -621,6 +633,9 @@ struct CommandBarEngine {
                         FeedbackDraft.open(in: manager)
                     }
                 }),
+            CommandAction(
+                id: "gift", title: "\(Gift.title)…", symbol: "gift",
+                keywords: ["share", "recommend", "invite", "tell", "ticket"], run: { Gift.open(in: manager) }),
             CommandAction(
                 id: "import", title: "Import from Browser…", symbol: "square.and.arrow.down",
                 keywords: ["bookmarks", "history", "passwords", "move", "migrate", "chrome", "safari", "firefox", "zen"],

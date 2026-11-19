@@ -574,7 +574,7 @@ private func suggestIcons(for name: String, _ deliver: ([String]) -> Void) async
     try? await Task.sleep(for: .milliseconds(250))
     guard !Task.isCancelled else { return }
     deliver(await IconSearch.shared.suggestions(for: name))
-    guard Intelligence.isEnabled, let ideas = await Intelligence.shared.iconIdeas(for: name),
+    guard Intelligence.canRun(Intelligence.iconIdeasKey), let ideas = await Intelligence.shared.iconIdeas(for: name),
         !Task.isCancelled
     else { return }
     deliver(await IconSearch.shared.suggestions(for: name, ideas: ideas))
@@ -755,7 +755,7 @@ struct IconPicker: View {
     private func search(_ query: String, emoji: Bool) async {
         guard !query.isEmpty else { return }
         results = await IconSearch.shared.search(query, emoji: emoji)
-        guard Intelligence.isEnabled, query.contains(" ") || results.count < 8 else { return }
+        guard Intelligence.canRun(Intelligence.iconIdeasKey), query.contains(" ") || results.count < 8 else { return }
         try? await Task.sleep(for: .milliseconds(400))
         guard !Task.isCancelled else { return }
         askingModel = true

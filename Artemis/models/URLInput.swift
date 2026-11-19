@@ -66,7 +66,7 @@ enum URLInput {
         if let url = URL(string: trimmed), let scheme = url.scheme,
             trimmed.dropFirst(scheme.count).hasPrefix("://")
         {
-            return url
+            return scheme.lowercased() == "javascript" ? nil : url
         }
 
         // a path that doesn't exist is neither a file nor a host

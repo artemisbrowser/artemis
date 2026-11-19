@@ -17,13 +17,13 @@ struct ErrorPage: View {
         + "Try again later or on another network."
 
     var body: some View {
-        let crashed = tab.loadError == BrowserTab.crashLoopError
+        let crashed = tab.loadError == BrowserTab.crashLoopError, archive = WebArchiveReader.refusals.contains(tab.loadError ?? "")
         VStack(spacing: 12) {
-            Image(systemName: crashed ? "exclamationmark.triangle" : "wifi.exclamationmark")
+            Image(systemName: crashed ? "exclamationmark.triangle" : archive ? "doc" : "wifi.exclamationmark")
                 .font(.system(size: 40))
                 .foregroundStyle(ink.opacity(0.6))
 
-            Text(crashed ? "This page keeps crashing" : "Couldn't load page")
+            Text(crashed ? "This page keeps crashing" : archive ? "Can't open this web archive" : "Couldn't load page")
                 .font(.title2)
                 .fontWeight(.semibold)
                 .foregroundStyle(ink)
@@ -46,11 +46,13 @@ struct ErrorPage: View {
             }
 
             HStack(spacing: 10) {
-                Button(crashed ? "Reload" : "Try Again") {
-                    tab.retry()
+                if !archive {
+                    Button(crashed ? "Reload" : "Try Again") {
+                        tab.retry()
+                    }
+                    .controlSize(.large)
+                    .tooltip("Reload this page")
                 }
-                .controlSize(.large)
-                .tooltip("Reload this page")
 
                 if tab.certificateFailure != nil {
                     Button("Show Certificate") {

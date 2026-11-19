@@ -35,7 +35,8 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         let pick: CheckedContinuation<SavedPasskey?, Never>
     }
     private var waiting: [BrowserTab.ID: Waiting] = [:]
-    /// UV is claimed only while the passwords policy asks the owner at all; the gesture is always UP
+    /// UV is claimed only for a ceremony that made its own owner check, which every policy but Never
+    /// does; the gesture is always UP
     private static var verifies: Bool { OwnerUnlock.Kind.passwords.policy != .never }
 
     static func install(into controller: WKUserContentController) {
@@ -134,7 +135,8 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         confirm.addButton(withTitle: "Continue").keyEquivalent = ""
         confirm.addButton(withTitle: "Cancel")
         guard await confirm.beginSheetModal(for: window) == .alertFirstButtonReturn,
-            await OwnerUnlock.authenticate(.passwords, "create a passkey for \(rpID) as \u{201C}\(name)\u{201D}")
+            await OwnerUnlock.authenticate(
+                .passwords, "create a passkey for \(rpID) as \u{201C}\(name)\u{201D}", everyTime: true)
         else { return .refused(prompted: true) }
         let store = PasswordStore.shared
         let excluded = Set(body["exclude"] as? [String] ?? [])
@@ -180,7 +182,8 @@ final class PasskeyBridge: NSObject, WKScriptMessageHandlerWithReply {
         let authData = Passkeys.authenticatorData(rpID: rpID, verified: Self.verifies)
         guard
             await OwnerUnlock.authenticate(
-                .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}"),
+                .passwords, "sign in to \(rpID) as \u{201C}\(PasskeyPage.clean(passkey.userName))\u{201D}",
+                everyTime: true),
             let blob = PasswordStore.shared.passkeyKey(passkey),
             let signature = try? Passkeys.sign(
                 authData: authData, clientData: clientData, blob: blob, enclave: passkey.enclave)

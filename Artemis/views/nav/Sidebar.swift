@@ -95,7 +95,7 @@ struct Sidebar: View {
     /// they move on every frame of a swipe; their readers redraw on drag or peek
     /// changes
     @State private var measured = SidebarGeometry()
-    @State private var scroll = SidebarScroll()
+    private var scroll: SidebarScroll { tabManager.sidebarScroll }
     /// the pointer's last spot in the tab area, where a context-menu folder lands.
     /// an unobserved box: written on every mouse move, read only by the menu
     @State private var menuPoint = LastPoint()
@@ -220,7 +220,7 @@ struct Sidebar: View {
             // top row sits on the traffic lights' line:
             // sidebar toggle right of the lights, nav buttons right-aligned
             HStack(spacing: 0) {
-                // the real traffic lights, laid out here so they move with the
+                // the traffic lights, laid out here so they move with the
                 // sidebar (see TrafficLightMount); they sit 9pt into the mount,
                 // so −9 lands the close button at window x=12
                 TrafficLightMount()
@@ -284,8 +284,11 @@ struct Sidebar: View {
                 }
             }
             .frame(maxHeight: .infinity)
-            // clip so the off-screen panel stays hidden under the sidebar's edge
+            // clip so the off-screen panel stays hidden under the sidebar's edge; a pressed
+            // glass control on the Library's first row swells past its frame, hence the room above
+            .padding(.top, RowHighlight.glassBleed)
             .clippedPastSides()
+            .padding(.top, -RowHighlight.glassBleed)
             .overlay { folderPeekOverlay.environment(\.layoutDirection, .leftToRight) }
             .onChange(of: drag.dropTick) { _, _ in commitDrop() }
             .background {
@@ -1705,6 +1708,7 @@ struct Sidebar: View {
     /// settle finishes undisturbed
     private func beginInteractiveSwipe() {
         isSwiping = true
+        scroll.rest()
         settleToken += 1  // invalidate any in-flight settle's completion
         if isSettling, let pending = pendingTarget {
             chainBase = pending
@@ -1831,8 +1835,7 @@ struct Sidebar: View {
             UpdatePill()
             bottomRow
         }
-        .animation(Motion.pop, value: Updates.shared.readyVersion ?? Updates.shared.availableVersion)
-        .animation(Motion.pop, value: DownloadManager.shared.shelf.map(\.id))
+        .modifier(PillMotion())
     }
 
     private var bottomRow: some View {
@@ -1845,6 +1848,9 @@ struct Sidebar: View {
                     tabManager.isLibraryOpen = false
                 }
                 .tooltip("Back to Spaces")
+                HoverIconButton("gift", size: 14, weight: .semibold, standalone: true) { Gift.open(in: tabManager) }
+                    .tooltip(Gift.title)
+                    .accessibilityLabel(Gift.title)
                 Spacer(minLength: 0)
             } else {
                 LibraryButton {
@@ -2651,7 +2657,13 @@ struct TabRow: View {
     @ViewBuilder
     private func accessory(visible: Bool) -> some View {
         HStack(spacing: 2) {
-            if let agent = tab.agentName {
+            if AgentDriving.shared.driven.contains(tab.id) {
+                AgentMarkFace()
+                    .frame(width: 14, height: 14)
+                    .frame(height: 16)
+                    .tooltip("\(tab.agentName ?? "An agent") is working here")
+                    .transition(Motion.grow(from: 0.4))
+            } else if let agent = tab.agentName {
                 Image(systemName: "sparkles")
                     .font(.system(size: 10))
                     .foregroundStyle(ink.opacity(0.6))
@@ -2927,6 +2939,16 @@ private struct LivePanelOnly<Content: View>: View {
 
     var body: some View {
         if live { content }
+    }
+}
+
+/// springs the bottom bar's pills in and out. reads the update flow and the shelf in a body of
+/// its own, so a download's progress never rebuilds the sidebar
+private struct PillMotion: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .animation(Motion.pop, value: Updates.shared.flow.showsPill)
+            .animation(Motion.pop, value: DownloadManager.shared.shelf.map(\.id))
     }
 }
 

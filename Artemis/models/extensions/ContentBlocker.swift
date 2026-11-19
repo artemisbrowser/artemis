@@ -11,15 +11,13 @@ struct Blocklist: Identifiable, Hashable {
     let name: String
     let detail: String
     let url: URL
-    let onByDefault: Bool
-    /// how long a downloaded copy stays current, from the lists' `Expires:` header
-    var maxAge: TimeInterval = 4 * 86_400
+    /// a plain host list, compiled as one rule that blocks pages on those hosts
+    var blocksPages = false
 
     fileprivate var enabledKey: String { "blocklist.\(id).enabled" }
-
-    var isEnabled: Bool {
-        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? onByDefault
-    }
+    /// the cached copy's ETag, and the seconds its `! Expires:` line gave it
+    fileprivate var tagKey: String { "blocklist.\(id).etag" }
+    fileprivate var expiryKey: String { "blocklist.\(id).expires" }
 }
 
 /// native content blocking via `WKContentRuleListStore`, from EasyList-format lists converted by
@@ -30,31 +28,39 @@ struct Blocklist: Identifiable, Hashable {
 final class ContentBlocker {
     static let shared = ContentBlocker()
 
-    static let catalog: [Blocklist] = [
+    /// the lists behind `isEnabled`
+    private static let adLists: [Blocklist] = [
         Blocklist(
-            id: "easylist", name: "EasyList",
-            detail: "The primary ad-blocking list.",
-            url: URL(string: "https://easylist.to/easylist/easylist.txt")!,
-            onByDefault: true),
+            id: "easylist", name: "EasyList", detail: "",
+            url: URL(string: "https://easylist.to/easylist/easylist.txt")!),
         Blocklist(
-            id: "easyprivacy", name: "EasyPrivacy",
-            detail: "Trackers, analytics and beacons.",
-            url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!,
-            onByDefault: true),
+            id: "easyprivacy", name: "EasyPrivacy", detail: "",
+            url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!),
         Blocklist(
-            id: "annoyances", name: "Cookie Notices",
-            detail: "Cookie banners and consent walls.",
-            url: URL(string: "https://easylist.to/easylist/fanboy-annoyance.txt")!,
-            onByDefault: false),
-        Blocklist(
-            id: "social", name: "Social Widgets",
-            detail: "Embedded share buttons and social trackers.",
-            url: URL(string: "https://easylist.to/easylist/fanboy-social.txt")!,
-            onByDefault: false),
+            id: "popupads", name: "HaGeZi Pop-Up Ads", detail: "",
+            url: URL(string: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/popupads.txt")!,
+            blocksPages: true),
     ]
 
+    /// the lists with a switch of their own. `annoyances` holds everything `cookies` does
+    static let catalog: [Blocklist] = [
+        Blocklist(
+            id: "cookies", name: "Hide Cookie Banners",
+            detail: "Hides cookie banners and consent walls. Your cookie choices stay unanswered.",
+            url: URL(string: "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt")!),
+        Blocklist(
+            id: "annoyances", name: "Hide Page Clutter",
+            detail: "Hides newsletter pop-ups, share buttons and notification prompts. Includes cookie banners.",
+            url: URL(string: "https://easylist.to/easylist/fanboy-annoyance.txt")!),
+    ]
+
+    /// never blocked: `isAdult` reads it to keep these hosts out of history
+    private static let adultList = Blocklist(
+        id: "nsfw", name: "HaGeZi NSFW", detail: "",
+        url: URL(string: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/nsfw.txt")!)
+    static let adultKey = "adultSitesOutOfHistory"
+
     static let enabledKey = "contentBlockingEnabledV1"
-    private static let lastUpdateKey = "contentBlockingLastUpdate"
     /// identifiers of the compiled lists in WebKit's store, and their rule counts, which launch
     /// installs without converting the lists again
     private static let compiledIdentifiersKey = "contentBlockingCompiledIDs"
@@ -72,18 +78,33 @@ final class ContentBlocker {
     /// bump when the output changes without a converter version: a vendored patch, a dependency
     /// pin or `FilterConverter` itself
     private static let converterRevision = 2
-    /// how often a running app looks for lists past their `maxAge`
-    private static let refreshCheck: Duration = .seconds(3600)
+    /// how often a running app looks for lists past their expiry, in seconds; no list is asked for sooner
+    private static let refreshPeriod: TimeInterval = 3 * 3600
+    /// how long a copy stays current when its list states no expiry
+    private static let defaultAge: TimeInterval = 4 * 86_400
 
     var isEnabled: Bool {
         didSet {
             guard oldValue != isEnabled else { return }
             UserDefaults.standard.set(isEnabled, forKey: Self.enabledKey)
-            if isEnabled { Task { await apply() } } else { uninstall() }
+            resubscribe()
         }
     }
 
-    /// live status for Settings: rule count, when the lists were fetched, and
+    var keepsAdultSitesOutOfHistory: Bool {
+        didSet {
+            UserDefaults.standard.set(keepsAdultSitesOutOfHistory, forKey: Self.adultKey)
+            Task { await serialized { await self.loadAdultHosts() } }
+        }
+    }
+
+    /// ids of the `catalog` lists switched on
+    private(set) var switchedOn: Set<String>
+    func isOn(_ list: Blocklist) -> Bool { switchedOn.contains(list.id) }
+
+    var isActive: Bool { !enabledLists.isEmpty }
+
+    /// live status for Settings: rule count, when a host last answered for a list in use, and
     /// how many filters the converter couldn't express or left out at WebKit's ceiling
     private(set) var ruleCount = 0
     private(set) var droppedCount = 0
@@ -101,38 +122,56 @@ final class ContentBlocker {
         .appendingPathComponent("blocklists", isDirectory: true)
 
     private init() {
-        isEnabled = UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true
-        lastUpdated = UserDefaults.standard.object(forKey: Self.lastUpdateKey) as? Date
+        let defaults = UserDefaults.standard
+        isEnabled = defaults.object(forKey: Self.enabledKey) as? Bool ?? true
+        keepsAdultSitesOutOfHistory = defaults.bool(forKey: Self.adultKey)
+        // the social list had a switch of its own; `annoyances` holds all of it
+        if defaults.bool(forKey: "blocklist.social.enabled") {
+            defaults.set(true, forKey: "blocklist.annoyances.enabled")
+            defaults.removeObject(forKey: "blocklist.social.enabled")
+        }
+        switchedOn = Set(Self.catalog.filter { defaults.bool(forKey: $0.enabledKey) }.map(\.id))
         try? FileManager.default.createDirectory(
             at: cacheDirectory, withIntermediateDirectories: true)
+        lastUpdated = enabledLists.compactMap(checked).max()
         // a profile's controller made after the lists went in gets the live ones
         SharedWebContent.everywhere { [weak self] ucc in
-            guard let self, self.isEnabled else { return }
+            guard let self, self.isActive else { return }
             for list in self.installed { ucc.add(list) }
         }
     }
 
     /// one-line summary under the Settings toggle
     var statusLine: String {
+        guard isActive else { return "Blocking is off. Pages load with their ads and trackers." }
         if let lastError { return "Couldn't update: \(lastError)" }
-        guard isEnabled else { return "Blocking is off — pages load with their ads and trackers." }
-        guard !enabledLists.isEmpty else { return "No lists selected." }
         guard ruleCount > 0 else { return "Preparing blocklists…" }
         let updated = lastUpdated.map {
-            $0.formatted(date: .abbreviated, time: .omitted)
+            $0.formatted(date: .abbreviated, time: .shortened)
         } ?? "never"
         let dropped = droppedCount > 0 ? ", \(droppedCount.formatted()) unsupported filters skipped" : ""
         let over = overCeilingCount > 0 ? ", \(overCeilingCount.formatted()) rules over WebKit's limit left out" : ""
-        return "\(ruleCount.formatted()) rules active — updated \(updated)\(dropped)\(over)."
+        return "\(ruleCount.formatted()) rules active, updated \(updated)\(dropped)\(over)."
     }
 
-    private var enabledLists: [Blocklist] { Self.catalog.filter(\.isEnabled) }
+    private var enabledLists: [Blocklist] {
+        let extras = Self.catalog.filter(isOn)
+        return (isEnabled ? Self.adLists : [])
+            + (extras.count > 1 ? extras.filter { $0.id == "annoyances" } : extras)
+    }
 
     func setList(_ list: Blocklist, enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: list.enabledKey)
-        // the compiled set no longer matches the subscription, so launch must not reuse it
+        if enabled { switchedOn.insert(list.id) } else { switchedOn.remove(list.id) }
+        resubscribe()
+    }
+
+    /// a switch changed: the compiled set no longer matches, so neither launch nor an
+    /// unchanged download may reuse it
+    private func resubscribe() {
         UserDefaults.standard.removeObject(forKey: Self.compiledIdentifiersKey)
-        Task { await updateLists(force: true) }
+        if !isActive { uninstall() }
+        Task { await updateLists(force: false) }
     }
 
     // MARK: - Applying
@@ -163,14 +202,29 @@ final class ContentBlocker {
 
     /// does the privacy list recognise this request's host, or a parent of it?
     /// `requestDomains` semantics: a rule for example.com also covers a.example.com
-    func isTracker(_ url: URL) -> Bool {
-        guard !trackerHosts.isEmpty, var host = url.host()?.lowercased() else { return false }
+    func isTracker(_ url: URL) -> Bool { Self.lists(url, in: trackerHosts) }
+
+    /// is this page on the adult list, while the switch that keeps those out of history is on?
+    func isAdult(_ url: URL) -> Bool { keepsAdultSitesOutOfHistory && Self.lists(url, in: adultHosts) }
+
+    @ObservationIgnored private var adultHosts: Set<String> = []
+
+    private static func lists(_ url: URL, in hosts: Set<String>) -> Bool {
+        guard !hosts.isEmpty, var host = url.host()?.lowercased() else { return false }
         while host.contains(".") {
-            if trackerHosts.contains(host) { return true }
+            if hosts.contains(host) { return true }
             guard let dot = host.firstIndex(of: ".") else { return false }
             host = String(host[host.index(after: dot)...])
         }
         return false
+    }
+
+    /// empty while the switch is off; otherwise from the cache, or the network once that is stale
+    private func loadAdultHosts() async {
+        guard keepsAdultSitesOutOfHistory else { return adultHosts = [] }
+        guard adultHosts.isEmpty || !isFresh(Self.adultList) else { return }
+        guard let (text, isNew) = await fetch(Self.adultList, force: false), isNew || adultHosts.isEmpty else { return }
+        adultHosts = await Task.detached { FilterConverter.blockedHosts(in: text) }.value
     }
 
     private func rememberTrackerHosts(from source: String) async {
@@ -217,7 +271,19 @@ final class ContentBlocker {
     }
 
     private func applyLocked() async {
-        guard isEnabled else { return uninstall() }
+        if refresher == nil, !AppStorageLocation.isTestRun {
+            refresher = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(Self.refreshPeriod))
+                    await serialized {
+                        await self.loadAdultHosts()
+                        if self.isActive { await self.refreshIfStaleLocked(reloadTabs: false) }
+                    }
+                }
+            }
+        }
+        await loadAdultHosts()
+        guard isActive else { return uninstall() }
         let hadCache = enabledLists.contains {
             (try? cacheURL($0).checkResourceIsReachable()) == true
         }
@@ -226,36 +292,43 @@ final class ContentBlocker {
         } else {
             for ucc in SharedWebContent.all { for list in installed { ucc.add(list) } }
         }
+        // a self-test or lab launch asks no host: a record that needs the lists fetches them
+        guard !AppStorageLocation.isTestRun else { return }
         // with cached rules already in, a newer download reaches pages as they
         // next load; with only the starter list in, open pages run again
         await refreshIfStaleLocked(reloadTabs: !hadCache)
-        refresher = refresher ?? Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: Self.refreshCheck)
-                guard isEnabled else { continue }
-                await serialized { await self.refreshIfStaleLocked(reloadTabs: false) }
-            }
-        }
     }
 
-    /// fetch fresh copies of lists past their `maxAge`, inside the serialized section
+    /// ask the hosts about the lists past their expiry, inside the serialized section
     private func refreshIfStaleLocked(reloadTabs: Bool) async {
         guard enabledLists.contains(where: { !isFresh($0) }) else { return }
         await updateListsLocked(force: false, reloadTabs: reloadTabs)
     }
 
-    private func cacheURL(_ list: Blocklist) -> URL {
+    func cacheURL(_ list: Blocklist) -> URL {
         cacheDirectory.appendingPathComponent("\(list.id).txt")
     }
 
-    private func isFresh(_ list: Blocklist) -> Bool {
-        let modified = try? cacheURL(list).resourceValues(forKeys: [.contentModificationDateKey])
-            .contentModificationDate
-        return modified.map { Date().timeIntervalSince($0) < list.maxAge } ?? false
+    /// when its host last answered for `list`: the cached copy's modification date
+    private func checked(_ list: Blocklist) -> Date? {
+        try? cacheURL(list).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    /// download every enabled list, convert, compile and install.
-    /// `force` re-downloads even when the cache is fresh (the Settings button)
+    private func isFresh(_ list: Blocklist) -> Bool {
+        let stated = UserDefaults.standard.double(forKey: list.expiryKey)
+        return checked(list).map { Date().timeIntervalSince($0) < (stated > 0 ? stated : Self.defaultAge) } ?? false
+    }
+
+    /// a list's `! Expires:` line in seconds, never under the refresh period
+    static func expiry(in text: String) -> TimeInterval? {
+        guard let stated = text.prefix(4096).firstMatch(of: #/(?m)^! Expires: (\d+) (day|hour)/#),
+            let count = TimeInterval(stated.1)
+        else { return nil }
+        return max(count * (stated.2 == "day" ? 86_400 : 3600), refreshPeriod)
+    }
+
+    /// bring every enabled list up to date, then convert, compile and install what changed.
+    /// `force` asks the hosts even while the copies are current (the Settings button)
     func updateLists(force: Bool) async {
         await serialized { await self.updateListsLocked(force: force, reloadTabs: true) }
     }
@@ -268,39 +341,49 @@ final class ContentBlocker {
         guard !enabledLists.isEmpty else { return await removeLists(reloadTabs: reloadTabs) }
 
         var sources: [String] = []
+        var pages: String?
         var changed = false
         for list in enabledLists {
             if let (text, isNew) = await fetch(list, force: force) {
-                sources.append(text)
+                if list.blocksPages { pages = text } else { sources.append(text) }
                 changed = changed || isNew
                 if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
             }
         }
         guard !sources.isEmpty else {
             lastError = lastError ?? "no lists available offline"
-            await install(sources: [Self.starterList], stamp: false, reloadTabs: reloadTabs)
+            await install(sources: [Self.starterList], pages: pages, reloadTabs: reloadTabs)
             return
         }
-        guard force || changed || installed.isEmpty else { return }
-        await install(sources: sources, stamp: true, reloadTabs: reloadTabs)
+        lastUpdated = enabledLists.compactMap(checked).max()
+        let resubscribed = UserDefaults.standard.object(forKey: Self.compiledIdentifiersKey) == nil
+        guard changed || installed.isEmpty || resubscribed else { return }
+        await install(sources: sources, pages: pages, reloadTabs: reloadTabs)
     }
 
-    /// download one list, falling back to (and refreshing) the on-disk cache.
-    /// `isNew` when the text differs from what was cached
-    private func fetch(_ list: Blocklist, force: Bool) async -> (text: String, isNew: Bool)? {
+    /// one list from its host, or from the cached copy while that is current or the host fails. the host is
+    /// asked with the copy's ETag; a 304 keeps the copy and restarts its clock. `isNew` when the text changed
+    func fetch(_ list: Blocklist, force: Bool) async -> (text: String, isNew: Bool)? {
         let cached = cacheURL(list)
-        let previous = try? String(contentsOf: cached, encoding: .utf8)
-        if !force, isFresh(list), let previous, !previous.isEmpty {
-            return (previous, false)
-        }
+        let previous = (try? String(contentsOf: cached, encoding: .utf8)).flatMap { $0.isEmpty ? nil : $0 }
+        if !force, isFresh(list), let previous { return (previous, false) }
         do {
-            var request = URLRequest(url: list.url)
-            request.timeoutInterval = 20
+            var request = URLRequest(url: list.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+            if previous != nil {
+                request.setValue(UserDefaults.standard.string(forKey: list.tagKey), forHTTPHeaderField: "If-None-Match")
+            }
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                let text = String(data: data, encoding: .utf8), !text.isEmpty
+            let http = response as? HTTPURLResponse
+            if http?.statusCode == 304, let previous {
+                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: cached.path)
+                return (previous, false)
+            }
+            guard http?.statusCode == 200, let text = String(data: data, encoding: .utf8), !text.isEmpty
             else { throw URLError(.badServerResponse) }
-            try? text.write(to: cached, atomically: true, encoding: .utf8)
+            // the tag must describe the copy on disk, or a later 304 would keep the wrong text
+            let isSaved = (try? text.write(to: cached, atomically: true, encoding: .utf8)) != nil
+            UserDefaults.standard.set(isSaved ? http?.value(forHTTPHeaderField: "ETag") : nil, forKey: list.tagKey)
+            UserDefaults.standard.set(Self.expiry(in: text), forKey: list.expiryKey)
             return (text, text != previous)
         } catch {
             debugLog("blocklist \(list.id) fetch failed: \(error.localizedDescription)")
@@ -309,37 +392,21 @@ final class ContentBlocker {
         }
     }
 
-    /// convert, compile and install, converting off the main actor
-    private func install(sources: [String], stamp: Bool, reloadTabs: Bool) async {
+    /// convert, compile and install, converting off the main actor. `pages` is the host list
+    /// whose pages are blocked whole, in a rule list of its own
+    private func install(sources: [String], pages: String?, reloadTabs: Bool) async {
         let fixes = Self.siteFixes
-        let converted = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
-            FilterConverter.convert(sources, extraExceptions: fixes)
+        let (converted, pageRule) = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
+            (FilterConverter.convert(sources, extraExceptions: fixes), pages.flatMap(FilterConverter.pageBlock))
         }.value
 
         var compiled: [WKContentRuleList] = []
-        let store = WKContentRuleListStore.default()
-        let identifier = "artemis-block-\(Self.digest(converted.json))"
-        if let existing = try? await store?.contentRuleList(forIdentifier: identifier) {
-            compiled.append(existing)
-        } else {
-            do {
-                if let list = try await store?.compileContentRuleList(
-                    forIdentifier: identifier, encodedContentRuleList: converted.json) {
-                    compiled.append(list)
-                }
-            } catch {
-                // WebKit puts the parser's own message in the help anchor; the
-                // localized description is only "compile failed"
-                let detail = (error as NSError).userInfo[NSHelpAnchorErrorKey] as? String
-                let failure = "rules failed to compile: \(detail ?? error.localizedDescription)"
-                debugLog("blocklist \(failure)")
-                lastError = failure
-                Diagnostics.record(area: "blocker", message: failure)
-            }
+        for json in [converted.json, pageRule].compactMap(\.self) {
+            if let list = await compile(json) { compiled.append(list) }
         }
         guard !compiled.isEmpty else {
             if installed.isEmpty, sources != [Self.starterList] {
-                await install(sources: [Self.starterList], stamp: false, reloadTabs: reloadTabs)
+                await install(sources: [Self.starterList], pages: nil, reloadTabs: reloadTabs)
             }
             return
         }
@@ -347,7 +414,7 @@ final class ContentBlocker {
         // the same list already in: nothing to swap, and no open page has to run again
         if compiled.map(\.identifier) != installed.map(\.identifier) {
             replaceInstalled(with: compiled)
-            if reloadTabs, isEnabled { Self.reloadLoadedTabs() }
+            if reloadTabs, isActive { Self.reloadLoadedTabs() }
         }
         ruleCount = converted.ruleCount
         droppedCount = converted.droppedCount
@@ -356,12 +423,26 @@ final class ContentBlocker {
         UserDefaults.standard.set(Self.fixesFingerprint, forKey: Self.compiledFixesKey)
         UserDefaults.standard.set(
             [converted.ruleCount, converted.droppedCount, converted.overCeilingCount], forKey: Self.compiledStatsKey)
-        if stamp, lastError == nil {
-            lastUpdated = Date()
-            UserDefaults.standard.set(lastUpdated, forKey: Self.lastUpdateKey)
-        }
         await pruneStaleCompiledLists(keeping: Set(compiled.map(\.identifier)))
         debugLog("blocklists installed: \(converted.ruleCount) rules")
+    }
+
+    private func compile(_ json: String) async -> WKContentRuleList? {
+        let store = WKContentRuleListStore.default()
+        let identifier = "artemis-block-\(Self.digest(json))"
+        if let existing = try? await store?.contentRuleList(forIdentifier: identifier) { return existing }
+        do {
+            return try await store?.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json)
+        } catch {
+            // WebKit puts the parser's own message in the help anchor; the
+            // localized description is only "compile failed"
+            let detail = (error as NSError).userInfo[NSHelpAnchorErrorKey] as? String
+            let failure = "rules failed to compile: \(detail ?? error.localizedDescription)"
+            debugLog("blocklist \(failure)")
+            lastError = failure
+            Diagnostics.record(area: "blocker", message: failure)
+            return nil
+        }
     }
 
     /// build from the cached lists without the network, reusing the last build's bytecode
@@ -371,14 +452,15 @@ final class ContentBlocker {
         if await installPreviouslyCompiled() { return }
 
         var sources: [String] = []
+        var pages: String?
         for list in enabledLists {
             if let text = try? String(contentsOf: cacheURL(list), encoding: .utf8), !text.isEmpty {
-                sources.append(text)
+                if list.blocksPages { pages = text } else { sources.append(text) }
                 if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
             }
         }
         await install(
-            sources: sources.isEmpty ? [Self.starterList] : sources, stamp: false, reloadTabs: true)
+            sources: sources.isEmpty ? [Self.starterList] : sources, pages: pages, reloadTabs: true)
     }
 
     /// look the last build's lists up by identifier and install them as-is.
@@ -413,7 +495,7 @@ final class ContentBlocker {
     private func removeLists(reloadTabs: Bool) async {
         let hadLists = !installed.isEmpty
         replaceInstalled(with: [])
-        if hadLists, reloadTabs, isEnabled { Self.reloadLoadedTabs() }
+        if hadLists, reloadTabs { Self.reloadLoadedTabs() }
         ruleCount = 0
         droppedCount = 0
         overCeilingCount = 0
@@ -425,7 +507,7 @@ final class ContentBlocker {
     private func replaceInstalled(with lists: [WKContentRuleList]) {
         for ucc in SharedWebContent.all {
             for list in installed { ucc.remove(list) }
-            if isEnabled { for list in lists { ucc.add(list) } }
+            if isActive { for list in lists { ucc.add(list) } }
         }
         installed = lists
     }

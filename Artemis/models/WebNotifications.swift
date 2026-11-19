@@ -34,7 +34,7 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
     var recent: [BrowserTab.ID: [Posted]] = [:]
 
     private lazy var authorization = Task {
-        guard !ExtensionLab.isRequested else { return }
+        guard !AppStorageLocation.isTestRun else { return }
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 

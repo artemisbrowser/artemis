@@ -271,8 +271,8 @@ final class ExtensionProxyBridge {
         Self.saveCredentials(slot?.ownersCredentials, profile)
     }
 
-    private static func saveCredentials(_ credentials: (username: String, password: String)?, _ profile: UUID) {
-        guard !AppStorageLocation.isExtensionLab else { return }
+    static func saveCredentials(_ credentials: (username: String, password: String)?, _ profile: UUID) {
+        guard !AppStorageLocation.isTestRun else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService(profile),
@@ -288,7 +288,7 @@ final class ExtensionProxyBridge {
     }
 
     private static func loadCredentials(_ profile: UUID) -> (username: String, password: String)? {
-        guard !AppStorageLocation.isExtensionLab else { return nil }
+        guard !AppStorageLocation.isTestRun else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService(profile),

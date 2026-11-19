@@ -7,6 +7,7 @@ import SwiftUI
 nonisolated enum SettingsPane: String, CaseIterable, Identifiable {
     var id: Self { self }
     case general = "General"
+    case about = "About"
     case appearance = "Appearance"
     case profiles = "Profiles"
     case privacy = "Privacy & Security"
@@ -14,15 +15,15 @@ nonisolated enum SettingsPane: String, CaseIterable, Identifiable {
     case tabs = "Tabs"
     case links = "Links"
     case search = "Search"
+    case media = "Media"
     case extensions = "Extensions"
     case intelligence = "Intelligence"
-    case agents = "Agents"
 
     fileprivate static let groups: [[SettingsPane]] = {
         var groups: [[SettingsPane]] = [
-            [.general, .appearance, .profiles, .privacy],
-            [.sidebar, .tabs, .links, .search],
-            [.extensions, .intelligence, .agents],
+            [.general, .about, .appearance, .profiles, .privacy],
+            [.sidebar, .tabs, .links, .search, .media],
+            [.extensions, .intelligence],
         ]
         return groups
     }()
@@ -30,6 +31,7 @@ nonisolated enum SettingsPane: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape.fill"
+        case .about: "info.circle.fill"
         case .appearance: "paintbrush.fill"
         case .profiles: "person.2.fill"
         case .privacy: "hand.raised.fill"
@@ -37,9 +39,9 @@ nonisolated enum SettingsPane: String, CaseIterable, Identifiable {
         case .tabs: "square.on.square.fill"
         case .links: "arrow.triangle.branch"
         case .search: "magnifyingglass"
+        case .media: "play.rectangle.fill"
         case .extensions: "puzzlepiece.extension.fill"
         case .intelligence: "sparkles"
-        case .agents: "terminal.fill"
         }
     }
 }
@@ -57,6 +59,8 @@ struct SettingsView: View {
     @State private var hits: [SettingID] = []
     /// the on-device model is reading the query
     @State private var asking = false
+    /// an update is on offer. `UpdateOfferWatch` keeps it, so this body reads no flow while one downloads
+    @State private var offering = false
 
     /// SwiftUI's own opener, handed over by a browser window; the legacy selector is
     /// the fallback when no window is open, and does nothing from a floating panel
@@ -103,10 +107,24 @@ struct SettingsView: View {
                         .disabled(forward.isEmpty)
                         .accessibilityLabel("Forward")
                 }
+                if Updates.shared.isEnabled {
+                    if offering, let offer = Updates.shared.flow.offer {
+                        ToolbarItem(placement: .navigation) {
+                            Button { Updates.shared.act() } label: {
+                                Image(systemName: offer.symbol).contentTransition(.symbolEffect(.replace))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.circle)
+                            .tooltip(offer.title)
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) { UpdateStatus() }
+                }
             }
     }
         .frame(width: 900, height: 700)
         .background(UnifiedToolbar())
+        .background { UpdateOfferWatch(offering: $offering) }
         // every change of pane is history, a link inside a page or an `open` from outside included
         .onChange(of: selectedPane) { old, new in
             if new == stepTarget {
@@ -144,7 +162,7 @@ struct SettingsView: View {
         hits = found
         // a question, or words nothing matched, goes to the model once typing pauses
         let words = query.split(separator: " ").count
-        guard Intelligence.isEnabled, words >= 3 || found.isEmpty else { return }
+        guard Intelligence.canRun(Intelligence.settingsSearchKey), words >= 3 || found.isEmpty else { return }
         try? await Task.sleep(for: .milliseconds(400))
         guard !Task.isCancelled else { return }
         asking = true
@@ -167,7 +185,8 @@ struct SettingsView: View {
         }
         // the new page's rows exist only after its first layout
         try? await Task.sleep(for: .milliseconds(120))
-        withAnimation(Motion.panel) { proxy.scrollTo(id, anchor: .center) }
+        // unanimated: SwiftUI drops any scroll asked for while an animated one is still settling
+        proxy.scrollTo(id, anchor: .center)
         spotlight.lit = id
         try? await Task.sleep(for: .seconds(1.8))
         if spotlight.lit == id { spotlight.lit = nil }
@@ -196,17 +215,27 @@ struct SettingsView: View {
     private func page(_ pane: SettingsPane) -> some View {
         switch pane {
         case .general: GeneralSettings()
+        case .about: AboutSettings()
         case .appearance: AppearanceSettings()
         case .profiles: ProfilesSettings()
         case .privacy: PrivacySettings()
         case .extensions: ExtensionsSettings()
         case .search: SearchSettings()
+        case .media: MediaSettings()
         case .sidebar: SidebarSettings()
         case .tabs: TabsSettings()
         case .links: LinksSettings()
         case .intelligence: IntelligenceSettings()
-        case .agents: AgentSettings()
         }
+    }
+}
+
+/// follows the update flow in a body of its own, so a download's progress never rebuilds the settings page
+private struct UpdateOfferWatch: View {
+    @Binding var offering: Bool
+
+    var body: some View {
+        Color.clear.onChange(of: Updates.shared.flow.offer != nil, initial: true) { offering = $1 }
     }
 }
 
@@ -346,14 +375,6 @@ private struct SettingHitRow: View {
 private struct AppCard: View {
     let icon: AppIconChoice
 
-    private var version: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "dev"
-        let build = info?["CFBundleVersion"] as? String ?? "0"
-        let channel = Updates.buildChannel.flatMap { $0 == "release" ? nil : " \($0.capitalized)" } ?? ""
-        return "Version \(short)\(channel) (\(build))"
-    }
-
     var body: some View {
         HStack(spacing: 12) {
             Image(nsImage: icon.image(dark: AppIconChoice.iconsAreDark) ?? NSApp.applicationIconImage)
@@ -361,7 +382,7 @@ private struct AppCard: View {
                 .frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Artemis").font(.title3.weight(.semibold))
-                Text(version).font(.callout).foregroundStyle(.secondary)
+                Text(AboutSettings.version).font(.callout).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 4)

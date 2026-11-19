@@ -92,6 +92,23 @@ nonisolated enum AgentSocket {
         return SecCodeCheckValidity(guest, [], requirement) == errSecSuccess
     }
 
+    static func peerProcess(_ fd: Int32) -> pid_t? {
+        var pid = pid_t(), length = socklen_t(MemoryLayout<pid_t>.size)
+        return getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0 ? pid : nil
+    }
+
+    /// whether `process` is `ancestor`, or one of its descendants 8 levels down at most
+    static func runs(_ process: pid_t, under ancestor: pid_t) -> Bool {
+        var pid = process
+        for _ in 0..<8 where pid > 1 {
+            if pid == ancestor { return true }
+            var info = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) > 0 else { return false }
+            pid = pid_t(info.pbi_ppid)
+        }
+        return false
+    }
+
     static func writeAll(_ fd: Int32, _ data: Data) {
         data.withUnsafeBytes { buffer in
             var offset = 0

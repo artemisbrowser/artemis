@@ -164,9 +164,11 @@ extension DownloadItem: WKDownloadDelegate {
     static func chooseDestination(
         for name: String, in window: NSWindow?, _ chosen: @escaping (URL?, _ picked: Bool) -> Void
     ) {
-        // WebKit writing to ~/Downloads raises a Downloads folder prompt for a lab copy,
-        // and the download waits on its answer
-        let folder = SelfTest.isRequested ? FileManager.default.temporaryDirectory : DownloadManager.folder
+        // bidi controls can show `gpj.command` as `dnammoc.jpg`
+        let shown = String(String.UnicodeScalarView(name.unicodeScalars.filter { !$0.properties.isBidiControl }))
+        let name = shown.isEmpty ? "Download" : shown
+        // a test run's downloads never land in a folder the user picked
+        let folder = AppStorageLocation.isTestRun ? DownloadManager.defaultFolder : DownloadManager.folder
         guard DownloadManager.asksEachTime, !SelfTest.isRequested else {
             return chosen(uniqueURL(for: folder.appendingPathComponent(name)), false)
         }
@@ -238,17 +240,25 @@ extension DownloadItem: WKDownloadDelegate {
 @Observable
 final class DownloadManager {
     static let shared = DownloadManager()
-    /// a folder path the user picked; absent means ~/Downloads
+    /// a folder path the user picked; absent means `defaultFolder`
     static let folderKey = "downloadsFolder"
     static let asksEachTimeKey = "downloadsAskEachTime"
 
-    /// the picked folder while it is a writable directory, else ~/Downloads
+    /// ~/Downloads; a test run's sits in its data folder, as touching ~/Downloads can ask on the user's screen
+    static let defaultFolder: URL = {
+        guard AppStorageLocation.isTestRun else { return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0] }
+        let folder = AppStorageLocation.file("Downloads")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }()
+
+    /// the picked folder while it is a writable directory, else `defaultFolder`
     static var folder: URL {
         var isDirectory: ObjCBool = false
         guard let path = UserDefaults.standard.string(forKey: folderKey), !path.isEmpty,
             FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue,
             FileManager.default.isWritableFile(atPath: path)
-        else { return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0] }
+        else { return defaultFolder }
         return URL(fileURLWithPath: path, isDirectory: true)
     }
     static var asksEachTime: Bool { UserDefaults.standard.bool(forKey: asksEachTimeKey) }

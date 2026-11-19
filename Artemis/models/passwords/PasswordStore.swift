@@ -3,6 +3,7 @@
 
 import Foundation
 import Security
+import os
 import UniformTypeIdentifiers
 
 /// a saved login; its password is a Keychain item of its own, read on demand
@@ -73,24 +74,13 @@ nonisolated enum Keychain {
             kSecAttrService as String: service,
         ]
         if let account { q[kSecAttrAccount as String] = account }
-        if let labKeychain { q[kSecMatchSearchList as String] = [labKeychain] }
         return q
     }
 
-    /// a lab copy signs differently, so a login-keychain item would prompt on the user's screen:
-    /// its items live in a keychain file of its own, which no search reaches but its own
-    nonisolated(unsafe) private static let labKeychain: SecKeychain? = {
-        guard AppStorageLocation.isExtensionLab else { return nil }
-        let path = AppStorageLocation.file("lab.keychain-db").path
-        var keychain: SecKeychain?
-        var status: SecKeychainStatus = 0
-        if SecKeychainOpen(path, &keychain) != errSecSuccess || SecKeychainGetStatus(keychain, &status) != errSecSuccess {
-            guard SecKeychainCreate(path, 3, "lab", false, nil, &keychain) == errSecSuccess else { return nil }
-        }
-        return SecKeychainUnlock(keychain, 3, "lab", true) == errSecSuccess ? keychain : nil
-    }()
-    /// a lab copy without its own keychain file gets none
-    static let isFenced = AppStorageLocation.isExtensionLab && labKeychain == nil
+    private static let isInMemory = AppStorageLocation.isTestRun
+    /// a Mac test run's items, by service then account: there no call may reach the system
+    /// Keychain, which can ask on the user's screen
+    private static let memory = isInMemory ? OSAllocatedUnfairLock(initialState: [String: [String: Data]]()) : nil
 
     /// added to every item `put` writes; an app sets them once at launch
     nonisolated(unsafe) static var itemAttributes: [String: Any] = [:]
@@ -98,19 +88,24 @@ nonisolated enum Keychain {
     /// delete then add, so the item carries Artemis' own access list whatever was there before
     @discardableResult
     static func put(_ service: String, _ account: String, _ data: Data) -> OSStatus {
-        guard !isFenced else { return errSecNotAvailable }
+        if let memory {
+            memory.withLock { $0[service, default: [:]][account] = data }
+            return errSecSuccess
+        }
         SecItemDelete(query(service, account) as CFDictionary)
-        var item = query(service, account).merging([
+        let item = query(service, account).merging([
             kSecValueData as String: data, kSecAttrLabel as String: service,
         ]) { $1 }.merging(itemAttributes) { $1 }
-        if let labKeychain { item[kSecUseKeychain as String] = labKeychain }
         return SecItemAdd(item as CFDictionary, nil)
     }
 
     static func secret(_ service: String, _ account: String) -> Data? { read(service, account).data }
 
     static func read(_ service: String, _ account: String) -> (data: Data?, status: OSStatus) {
-        guard !isFenced else { return (nil, errSecItemNotFound) }
+        if let memory {
+            let data = memory.withLock { $0[service]?[account] }
+            return (data, data == nil ? errSecItemNotFound : errSecSuccess)
+        }
         var q = query(service, account)
         q[kSecReturnData as String] = true
         var out: CFTypeRef?
@@ -119,12 +114,12 @@ nonisolated enum Keychain {
     }
 
     static func delete(_ service: String, _ account: String) {
-        guard !isFenced else { return }
+        if let memory { return memory.withLock { $0[service]?[account] = nil } }
         SecItemDelete(query(service, account) as CFDictionary)
     }
 
     static func accounts(_ service: String) -> [String] {
-        guard !isFenced else { return [] }
+        if let memory { return memory.withLock { $0[service].map { Array($0.keys) } ?? [] } }
         var q = query(service)
         q[kSecMatchLimit as String] = kSecMatchLimitAll
         q[kSecReturnAttributes as String] = true
@@ -136,7 +131,7 @@ nonisolated enum Keychain {
 
     /// items still carrying their metadata in `kSecAttrGeneric`, to be migrated
     static func legacy(_ service: String) -> [(account: String, meta: Data)] {
-        guard !isFenced else { return [] }
+        guard memory == nil else { return [] }
         var q = query(service)
         q[kSecMatchLimit as String] = kSecMatchLimitAll
         q[kSecReturnAttributes as String] = true

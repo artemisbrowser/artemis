@@ -27,16 +27,9 @@ enum DefaultBrowser {
 
 struct GeneralSettings: View {
     @Environment(TabManager.self) private var tabManager
-    @AppStorage(TabManager.autoPictureInPictureKey) private var autoPictureInPicture = false
-    @AppStorage(TabManager.hibernateAfterMinutesKey) private var hibernateAfterMinutes =
-        TabManager.defaultHibernateAfterMinutes
-    @AppStorage(MiniPlayer.cornerRadiusKey) private var pipCornerRadius = MiniPlayer.defaultCornerRadius
-    @AppStorage(MiniPlayer.skipSecondsKey) private var pipSkipSeconds = MiniPlayer.defaultSkipSeconds
-    @AppStorage(Updates.channelKey) private var updateChannel = "release"
     @AppStorage(DownloadManager.folderKey) private var downloadsFolder = ""
     @AppStorage(DownloadManager.asksEachTimeKey) private var downloadsAsk = false
     @AppStorage(TabManager.swipeNavigationKey) private var swipeNavigation = true
-    private static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
     /// bumped after the default-browser prompt, so the section reads the new answer
     @State private var defaultBrowserCheck = 0
 
@@ -93,42 +86,6 @@ struct GeneralSettings: View {
                         info: "Brings bookmarks, history, spaces and passwords into the profile you choose.")
                 }
                 .settingsAnchor(.importBrowser)
-                LabeledContent {
-                    Button("Show") {
-                        Onboarding.replay.target = tabManager
-                        BrowserWindows.shared.window(of: tabManager)?.makeKeyAndOrderFront(nil)
-                    }
-                } label: {
-                    InfoLabel("Show onboarding", info: "Plays the intro and the setup cards again.")
-                }
-                .settingsAnchor(.showOnboarding)
-            }
-
-            if Updates.shared.isEnabled {
-                Section("Updates") {
-                    Picker(selection: Binding(
-                        get: { updateChannel },
-                        set: { updateChannel = $0; Updates.shared.channelChanged() }
-                    ).undoable("Update Channel")) {
-                        Text("Release").tag("release")
-                        Text("Beta").tag("beta")
-                        Text("Nightly").tag("nightly")
-                    } label: {
-                        InfoLabel(
-                            "Channel",
-                            info: "Beta gets new features first and Nightly gets every change as it lands. Both may have bugs, and leaving takes effect at the next update.")
-                    }
-                    .settingsAnchor(.updateChannel)
-                    Toggle("Check for updates automatically", isOn: Binding(
-                        get: { Updates.shared.checksAutomatically },
-                        set: { Updates.shared.checksAutomatically = $0 }
-                    ).undoable("Automatic Updates"))
-                    .settingsAnchor(.autoUpdate)
-                    LabeledContent("Artemis \(Self.version)") {
-                        Button("Check Now") { Updates.shared.checkNow() }
-                    }
-                    .settingsAnchor(.checkForUpdates)
-                }
             }
 
             Section("Navigation") {
@@ -162,127 +119,7 @@ struct GeneralSettings: View {
                 }
                 .settingsAnchor(.downloadsAsk)
             }
-
-            Section("Memory") {
-                Picker(selection: $hibernateAfterMinutes.undoable("Tab Sleep")) {
-                    ForEach([0.0, 5, 15, 30, 60, 180], id: \.self) { minutes in
-                        Text(sleepLabel(for: minutes)).tag(minutes)
-                    }
-                } label: {
-                    InfoLabel(
-                        "Sleep background tabs after",
-                        info: "A sleeping tab frees its memory and comes back as you left it. Tabs on screen or playing media never sleep.")
-                }
-                .settingsAnchor(.tabSleep)
-            }
-
-            Section("Picture in Picture") {
-                Toggle(isOn: $autoPictureInPicture.undoable("Auto Picture in Picture")) {
-                    InfoLabel(
-                        "Auto-enter when another app covers the window",
-                        info: "A playing video moves to a mini-player when another app hides it, and returns when you come back. ⌘⇧P toggles it any time.")
-                }
-                .settingsAnchor(.autoPictureInPicture)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        InfoLabel(
-                            "Corner rounding",
-                            info: "How rounded the mini-player's corners are, from 0 for square up to 28.")
-                        Spacer()
-                        Text("\(Int(pipCornerRadius)) pt")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                    Slider(value: $pipCornerRadius.undoable("Mini-Player Corners"), in: 0...28, step: 1)
-                        .accessibilityLabel("Corner rounding")
-                }
-                .settingsAnchor(.miniPlayerCorners)
-
-                HStack {
-                    InfoLabel("Skip buttons jump", info: "How far the skip buttons either side of play jump.")
-                    Spacer()
-                    TextField("", value: $pipSkipSeconds, format: .number)
-                        .accessibilityLabel("Skip buttons jump")
-                        .frame(width: 56)
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.roundedBorder)
-                    Text("seconds")
-                        .foregroundStyle(.secondary)
-                }
-                .settingsAnchor(.miniPlayerSkip)
-            }
-
-            Section {
-                PiPSiteButtonsList()
-            } header: {
-                InfoLabel(
-                    "Mini-Player Site Buttons",
-                    info: "Artemis lists the buttons a site shows while the mini-player is open. Tick one to add it to the mini-player as a pill.")
-            }
         }
         .formStyle(.grouped)
-    }
-
-    private func sleepLabel(for minutes: Double) -> String {
-        switch minutes {
-        case 0: return "Never"
-        case ..<60: return "\(Int(minutes)) minutes"
-        case 60: return "1 hour"
-        default: return "\(Int(minutes / 60)) hours"
-        }
-    }
-}
-
-/// the per-site checklist of page buttons the mini-player may proxy as pills; the
-/// player re-reads the allowlist every poll tick, so toggles apply live
-private struct PiPSiteButtonsList: View {
-    @State private var catalog: [String: [String: Bool]] = [:]
-
-    var body: some View {
-        Group {
-            if catalog.isEmpty {
-                Text("Nothing yet — open the mini-player on a site and its buttons will show up here.")
-                    .foregroundStyle(.secondary)
-                    .settingsAnchor(.miniPlayerSiteButtons)
-            } else {
-                ForEach(catalog.keys.sorted(), id: \.self) { host in
-                    DisclosureGroup {
-                        ForEach((catalog[host] ?? [:]).keys.sorted(), id: \.self) { label in
-                            Toggle(label, isOn: binding(host: host, label: label))
-                        }
-                        Button("Forget This Site", role: .destructive) {
-                            PiPSiteButtons.forget(host: host)
-                            catalog = PiPSiteButtons.all()
-                        }
-                    } label: {
-                        HStack {
-                            Text(host)
-                            Spacer()
-                            Text("\((catalog[host] ?? [:]).values.filter { $0 }.count) allowed")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-                    }
-                    .settingsAnchor(host == catalog.keys.min() ? .miniPlayerSiteButtons : nil)
-                }
-            }
-        }
-        .onAppear { catalog = PiPSiteButtons.all() }
-        // the mini-player catalogs buttons while Settings is open
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            let fresh = PiPSiteButtons.all()
-            if fresh != catalog { catalog = fresh }
-        }
-    }
-
-    private func binding(host: String, label: String) -> Binding<Bool> {
-        Binding(
-            get: { catalog[host]?[label] ?? false },
-            set: { on in
-                PiPSiteButtons.setAllowed(on, host: host, label: label)
-                catalog[host]?[label] = on
-            }
-        ).undoable("Mini-Player Buttons")
     }
 }

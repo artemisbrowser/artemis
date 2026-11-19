@@ -25,9 +25,8 @@ struct SidebarMetrics {
     let rowLeadingPadding: CGFloat
     /// trailing inset of a row, sized to frame the ✕ box symmetrically
     let rowTrailingPadding: CGFloat
-    /// minimum width of a favourite tile, sized so exactly two tiles fit inline
-    /// at the narrowest sidebar (160pt − 14 inset = 146 inner; padded half).
-    /// rows grow tiles past this to fill the width
+    /// minimum width of a favourite tile: four fit a row at the default 250pt sidebar,
+    /// two at the narrowest (160pt); rows grow tiles past this to fill the width
     let essentialTileMin: CGFloat
     /// height of a favourite tile in the essentials grid
     let essentialTileHeight: CGFloat
@@ -43,7 +42,7 @@ struct SidebarMetrics {
         rowHeight: 36, tabSpacing: 5, urlToTabsGap: 8, headerToTabsGap: 0,
         pinnedDividerGap: 15, closeBoxSize: 24, fontSize: 14,
         rowLeadingPadding: 11, rowTrailingPadding: 7,
-        essentialTileMin: 70, essentialTileHeight: 48, essentialFaviconSize: 20)
+        essentialTileMin: 52, essentialTileHeight: 48, essentialFaviconSize: 20)
     /// diameter of a standalone glass button: as tall as the url bar
     static let glassSide = standard.rowHeight
 }

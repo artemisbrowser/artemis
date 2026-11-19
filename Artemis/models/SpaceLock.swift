@@ -45,6 +45,9 @@ final class SpaceLock {
 
     func isLocked(_ space: Space) -> Bool { space.requiresUnlock && !unlocked.contains(space.id) }
 
+    /// the spaces locked right now, whose visits history leaves out until they open
+    var lockedIDs: Set<UUID> { Set(BrowserCore.shared.spaces.lazy.filter(isLocked).map(\.id)) }
+
     /// `tab`, or nil while it is locked `space`'s own page
     func unlocked(_ tab: BrowserTab?, in space: Space?) -> BrowserTab? {
         tab.flatMap { $0.isEssential || space.map(isLocked) != true ? $0 : nil }

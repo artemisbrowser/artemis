@@ -7,9 +7,6 @@ import SwiftUI
 struct AppearanceSettings: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     @AppStorage(AppIconChoice.storageKey) private var appIconRaw = AppIconChoice.bundled.rawValue
-    @AppStorage(NowPlayingCard.enabledKey) private var showsNowPlaying = true
-    @AppStorage(FolderPeekDetail.storageKey) private var folderPeekDetailRaw = FolderPeekDetail.none.rawValue
-    @AppStorage(FolderTabCount.storageKey) private var folderTabCountRaw = FolderTabCount.count.rawValue
 
     var body: some View {
         Form {
@@ -31,39 +28,6 @@ struct AppearanceSettings: View {
                     .accessibilityLabel("Edge thickness")
                 }
                 .settingsAnchor(.edgeThickness)
-            }
-
-            Section("Sidebar") {
-                Toggle(isOn: $showsNowPlaying.undoable("Now Playing")) {
-                    InfoLabel(
-                        "Show Now Playing",
-                        info: "Shows media controls above the spaces when a background tab plays audio or video.")
-                }
-                .settingsAnchor(.nowPlaying)
-            }
-
-            Section("Folders") {
-                Picker(selection: $folderPeekDetailRaw.undoable("Folder Second Line")) {
-                    ForEach(FolderPeekDetail.allCases) { detail in
-                        Text(detail.label).tag(detail.rawValue)
-                    }
-                } label: {
-                    InfoLabel(
-                        "Second line",
-                        info: "What each tab shows under its title when you hover a closed folder.")
-                }
-                .settingsAnchor(.folderSecondLine)
-
-                Picker(selection: $folderTabCountRaw.undoable("Folder Tab Count")) {
-                    ForEach(FolderTabCount.allCases) { style in
-                        Text(style.label).tag(style.rawValue)
-                    }
-                } label: {
-                    InfoLabel(
-                        "Tab count",
-                        info: "How a folder shows the number of tabs it holds at the end of its header row.")
-                }
-                .settingsAnchor(.folderTabCount)
             }
 
             Section {
@@ -164,6 +128,8 @@ struct SidebarSettings: View {
     @AppStorage("sidebarRevealDuration") private var sidebarRevealDuration = 0.2
     @AppStorage("spaceTransitionDuration") private var spaceTransitionDuration = 0.2
     @AppStorage(WindowChrome.sidebarOnRightKey) private var sidebarOnRight = false
+    @AppStorage(FolderPeekDetail.storageKey) private var folderPeekDetailRaw = FolderPeekDetail.none.rawValue
+    @AppStorage(FolderTabCount.storageKey) private var folderTabCountRaw = FolderTabCount.count.rawValue
 
     var body: some View {
         Form {
@@ -239,6 +205,30 @@ struct SidebarSettings: View {
                 }
                 .settingsAnchor(.spaceSwitchSpeed)
             }
+
+            Section("Folders") {
+                Picker(selection: $folderPeekDetailRaw.undoable("Folder Second Line")) {
+                    ForEach(FolderPeekDetail.allCases) { detail in
+                        Text(detail.label).tag(detail.rawValue)
+                    }
+                } label: {
+                    InfoLabel(
+                        "Second line",
+                        info: "What each tab shows under its title when you hover a closed folder.")
+                }
+                .settingsAnchor(.folderSecondLine)
+
+                Picker(selection: $folderTabCountRaw.undoable("Folder Tab Count")) {
+                    ForEach(FolderTabCount.allCases) { style in
+                        Text(style.label).tag(style.rawValue)
+                    }
+                } label: {
+                    InfoLabel(
+                        "Tab count",
+                        info: "How a folder shows the number of tabs it holds at the end of its header row.")
+                }
+                .settingsAnchor(.folderTabCount)
+            }
         }
         .formStyle(.grouped)
     }
@@ -254,6 +244,8 @@ struct TabsSettings: View {
     @AppStorage("defaultSplitLinked") private var defaultSplitLinked = false
     @AppStorage("showSplitDropGuides") private var showSplitDropGuides = true
     @AppStorage(TabPreviewCard.enabledKey) private var showsPreviews = true
+    @AppStorage(TabManager.hibernateAfterMinutesKey) private var hibernateAfterMinutes =
+        TabManager.defaultHibernateAfterMinutes
 
     var body: some View {
         Form {
@@ -335,8 +327,30 @@ struct TabsSettings: View {
                 }
                 .settingsAnchor(.dropGuides)
             }
+
+            Section("Memory") {
+                Picker(selection: $hibernateAfterMinutes.undoable("Tab Sleep")) {
+                    ForEach([0.0, 5, 15, 30, 60, 180], id: \.self) { minutes in
+                        Text(sleepLabel(for: minutes)).tag(minutes)
+                    }
+                } label: {
+                    InfoLabel(
+                        "Sleep background tabs after",
+                        info: "A sleeping tab frees its memory and comes back as you left it. Tabs on screen or playing media never sleep.")
+                }
+                .settingsAnchor(.tabSleep)
+            }
         }
         .formStyle(.grouped)
+    }
+
+    private func sleepLabel(for minutes: Double) -> String {
+        switch minutes {
+        case 0: return "Never"
+        case ..<60: return "\(Int(minutes)) minutes"
+        case 60: return "1 hour"
+        default: return "\(Int(minutes / 60)) hours"
+        }
     }
 }
 

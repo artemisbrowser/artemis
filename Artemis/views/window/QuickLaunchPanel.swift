@@ -138,8 +138,8 @@ private struct QuickLaunchView: View {
         .onChange(of: input, initial: true) { _, text in
             selection = 0
             matches = text.isEmpty
-                ? Array(history.entries.prefix(Self.limit))
-                : HistoryStore.search(text, in: [history], limit: Self.limit)
+                ? Array(history.entries(hiding: SpaceLock.shared.lockedIDs).prefix(Self.limit))
+                : HistoryStore.search(text, in: [history], limit: Self.limit, hiding: SpaceLock.shared.lockedIDs)
         }
         .onExitCommand(perform: onClose)
     }

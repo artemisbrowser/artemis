@@ -12,8 +12,7 @@ struct OnboardingCards: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppIconChoice.storageKey) private var icon = AppIconChoice.bundled
     @AppStorage(BrowserToolbar.shownKey) private var showsToolbar = false
-    @AppStorage(Intelligence.enabledKey) private var thinks = false
-    @AppStorage(Intelligence.tidyTitlesKey) private var tidiesNames = true
+    @AppStorage(Intelligence.tidyTitlesKey) private var tidiesNames = false
     @State private var step = Step.bringAlong
     @State private var isForward = true
     @State private var browsers: [ImportedBrowser]?
@@ -304,22 +303,18 @@ struct OnboardingCards: View {
                 .fixedSize()
             }
             switchRow(
-                "Block ads and trackers", "Built in, with no extension to install.",
+                "Block Ads & Trackers", "Built in, with no extension to install.",
                 isOn: Binding(get: { blocker.isEnabled }, set: { blocker.isEnabled = $0 }))
+            ForEach(ContentBlocker.catalog) { list in
+                switchRow(
+                    list.name,
+                    list.id == "cookies" ? "Cookie banners and consent walls." : "Newsletter pop-ups and share buttons.",
+                    isOn: Binding(get: { blocker.isOn(list) }, set: { blocker.setList(list, enabled: $0) }))
+            }
             if canTidy {
                 switchRow(
                     "Tidy tab names", "Shortens long titles with the model on this Mac.",
-                    isOn: Binding(
-                        get: { thinks && tidiesNames },
-                        set: { on in
-                            tidiesNames = on
-                            guard on, !thinks else { return }
-                            // Ask about this page stays off unless it was set before
-                            if UserDefaults.standard.object(forKey: Intelligence.askPageKey) == nil {
-                                UserDefaults.standard.set(false, forKey: Intelligence.askPageKey)
-                            }
-                            thinks = true
-                        }))
+                    isOn: $tidiesNames)
             }
             HStack {
                 setting("Default browser", "Links from other apps open here.")
@@ -407,7 +402,7 @@ struct OnboardingCards: View {
 
     /// the eight sites offered as favourites: the ones they visit most, topped up with popular ones
     private func suggestSites() async {
-        let profile = self.profile, entries = profile.history.entries
+        let profile = self.profile, entries = profile.history.entries(hiding: SpaceLock.shared.lockedIDs)
         let skipped = Set(
             profile.essentials.compactMap { ($0.pinnedURL ?? $0.url)?.host() }.map(Self.bare)
                 + SearchEngine.allCases.map { Self.bare(Self.host(of: $0)) })

@@ -80,6 +80,10 @@ enum ExtensionLab {
             await persist(key: key)
             return NSApp.terminate(nil)
         }
+        if ProcessInfo.processInfo.environment["ARTEMIS_EXTLAB_DRIVE"] != nil {
+            await drive(manager: manager)
+            return NSApp.terminate(nil)
+        }
         for ext in em.installed { em.remove(ext) }
         // a proxy left by a package that crashed the last run would stall every page after it
         ExtensionProxyBridge.shared.releaseAll()
@@ -280,7 +284,8 @@ enum ExtensionLab {
     }
 
     /// `ARTEMIS_EXTLAB_PAGES=key` (empty: no package) with `ARTEMIS_EXTLAB_URLS=a,b,…`: each page's
-    /// title, text, `ARTEMIS_EXTLAB_PROBE` (a JS expression) and snapshot with the package in place.
+    /// title, text, `ARTEMIS_EXTLAB_PROBE` (a JS expression) and snapshot with the package in place;
+    /// a tab the package opened beside the page is read in its stead.
     /// `ARTEMIS_EXTLAB_NATIVE=off` runs without Artemis's own blocker
     private static func pages(key: String, manager: TabManager) async {
         let env = ProcessInfo.processInfo.environment
@@ -300,6 +305,7 @@ enum ExtensionLab {
             + " text: document.body ? document.body.innerText.slice(0, 2500) : '' }); })()"
         for (index, raw) in (env["ARTEMIS_EXTLAB_URLS"] ?? "").split(separator: ",").enumerated() {
             guard let url = URL(string: String(raw)) else { continue }
+            let before = Set(manager.allTabs.map(\.id))
             let tab = manager.newTab(url: url)
             await settle(tab, timeout: 20)
             try? await Task.sleep(for: .seconds(8))
@@ -308,19 +314,154 @@ enum ExtensionLab {
                 _ = await bounded(5) { try? await tab.webView.evaluateJavaScript(setup, contentWorld: .page) }
                 try? await Task.sleep(for: .seconds(12))
             }
+            let shown = manager.allTabs.first { !before.contains($0.id) && $0 !== tab } ?? tab
             let state = await bounded(8) {
-                try? await tab.webView.evaluateJavaScript(read, contentWorld: .page) as? String
+                try? await shown.webView.evaluateJavaScript(read, contentWorld: .page) as? String
             } ?? nil
             append([
                 "key": key, "url": url.absoluteString, "at": Date().timeIntervalSince1970,
                 "native": ContentBlocker.shared.isEnabled,
                 "state": state.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } ?? "evaluate failed",
-                "shot": await snapshot(tab.webView, name: "page\(index)", part: key.isEmpty ? "none" : "ext") ?? "",
+                "shot": await snapshot(shown.webView, name: "page\(index)", part: key.isEmpty ? "none" : "ext") ?? "",
                 "console": ext.map { (reports.removeValue(forKey: $0.context.uniqueIdentifier) ?? []).map(\.text) } ?? [],
             ], to: output.appendingPathComponent("results.jsonl"))
             discard(tab, from: manager)
+            if shown !== tab { discard(shown, from: manager) }
         }
         if let ext { em.remove(ext) }
+    }
+
+    // MARK: - Driven by hand
+
+    /// `ARTEMIS_EXTLAB_DRIVE=1`: one command per drive/in/*.json, taken in name order, answered in
+    /// drive/out/ under the same name. a tab is named by its id; `popup` is the open action popup
+    private static func drive(manager: TabManager) async {
+        let fm = FileManager.default
+        let inbox = root.appending(path: "drive/in"), outbox = root.appending(path: "drive/out")
+        for dir in [inbox, outbox] { try? fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        for ext in ExtensionManager.shared.installed { ExtensionManager.shared.remove(ext) }
+        for tab in manager.allTabs where !tab.isEssential { discard(tab, from: manager) }
+        while true {
+            let names = ((try? fm.contentsOfDirectory(atPath: inbox.path())) ?? []).filter { $0.hasSuffix(".json") }.sorted()
+            if names.isEmpty { try? await Task.sleep(for: .milliseconds(200)) }
+            for name in names {
+                let file = inbox.appending(path: name)
+                let command = (try? Data(contentsOf: file))
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+                try? fm.removeItem(at: file)
+                if command["op"] as? String == "quit" { popup?.close(); return }
+                let reply = await bounded(Double(command["timeout"] as? Int ?? 60)) {
+                    await perform(command, manager: manager)
+                } ?? ["error": "timed out"]
+                append(reply, to: outbox.appending(path: name))
+            }
+        }
+    }
+
+    private static var popup: (webView: WKWebView, close: () -> Void)?
+
+    private static func perform(_ command: [String: Any], manager: TabManager) async -> [String: Any] {
+        let em = ExtensionManager.shared
+        let tab = (command["tab"] as? String).flatMap { id in manager.allTabs.first { $0.id.uuidString == id } }
+        let webView = command["tab"] as? String == "popup" ? popup?.webView : tab?.webView
+        let ext = em.installed.first { $0.id == command["ext"] as? String } ?? em.installed.last
+        let url = (command["url"] as? String).flatMap(URL.init(string:))
+        switch command["op"] as? String {
+        case "install":
+            guard let path = command["path"] as? String else { break }
+            do {
+                let installed = try await em.installFromDisk(root.appending(path: path))
+                em.setEnabled(installed, true)
+                return ["ext": installed.id, "base": installed.context.baseURL.absoluteString]
+            } catch { return ["error": describe(error)] }
+        case "open":
+            guard let url else { break }
+            let opened = manager.newTab(
+                url: url, configuration: command["extension"] as? Bool == true ? ext?.context.webViewConfiguration : nil)
+            await settle(opened, timeout: 20)
+            return ["tab": opened.id.uuidString, "url": opened.url?.absoluteString ?? ""]
+        case "tabs":
+            return ["tabs": manager.allTabs.map {
+                ["tab": $0.id.uuidString, "url": $0.url?.absoluteString ?? "", "title": $0.title,
+                 "selected": $0 === manager.selectedTab]
+            }]
+        case "select":
+            guard let tab else { break }
+            manager.selectedTabID = tab.id
+            return ["ok": true]
+        case "load":
+            guard let tab, let url else { break }
+            tab.webView.load(URLRequest(url: url))
+            await settle(tab, timeout: 20)
+            return ["url": tab.url?.absoluteString ?? ""]
+        case "reload":
+            guard let tab else { break }
+            tab.webView.reload()
+            await settle(tab, timeout: 20)
+            return ["url": tab.url?.absoluteString ?? ""]
+        case "close":
+            guard let tab else { break }
+            discard(tab, from: manager)
+            return ["ok": true]
+        case "eval":
+            // `js` is a function body: `return await …` works. world: page, client, or user (the extension's user-script world)
+            guard let webView, let js = command["js"] as? String else { break }
+            let world: WKContentWorld = switch command["world"] as? String {
+            case "client": .defaultClient
+            case "user": .world(name: "Artemis.UserScripts." + (ext?.context.uniqueIdentifier ?? ""))
+            default: .page
+            }
+            do {
+                let value = try await webView.callAsyncJavaScript(js, contentWorld: world)
+                return ["value": value.flatMap { JSONSerialization.isValidJSONObject([$0]) ? $0 : "\($0)" } ?? NSNull()]
+            } catch { return ["error": describe(error)] }
+        case "menu", "menuclick":
+            guard let tab else { break }
+            let items = em.enabledExtensions(in: manager).filter { $0.context.isLoaded }.flatMap { $0.context.menuItems(for: tab) }
+            func titles(_ items: [NSMenuItem]) -> [Any] {
+                items.map { item in item.submenu.map { [item.title: titles($0.items)] as Any } ?? item.title }
+            }
+            guard command["op"] as? String == "menuclick", let path = command["path"] as? [String] else {
+                return ["items": titles(items)]
+            }
+            var level = items, found: NSMenuItem?
+            for title in path {
+                found = level.first { $0.title == title }
+                level = found?.submenu?.items ?? []
+            }
+            guard let found, let action = found.action else { return ["error": "no item \(path)"] }
+            NSApp.sendAction(action, to: found.target, from: found)
+            return ["ok": true]
+        case "popup":
+            guard let ext, let action = em.action(for: ext), action.presentsPopup else { return ["error": "no popup"] }
+            popup?.close()
+            em.performAction(for: ext)
+            var shown: WKWebView?
+            for _ in 0..<20 where shown == nil {
+                shown = action.popupWebView
+                if shown == nil { try? await Task.sleep(for: .milliseconds(150)) }
+            }
+            guard let shown else { return ["error": "popupWebView nil"] }
+            for _ in 0..<10 where shown.window == nil { try? await Task.sleep(for: .milliseconds(150)) }
+            let host = shown.window == nil ? backgroundWindow(hosting: shown, size: CGSize(width: 400, height: 600)) : nil
+            popup = (shown, { action.closePopup(); em.pendingPopup = nil; host?.orderOut(nil) })
+            try? await Task.sleep(for: .seconds(2))
+            return ["url": shown.url?.absoluteString ?? ""]
+        case "popupclose":
+            popup?.close()
+            popup = nil
+            return ["ok": true]
+        case "shot":
+            guard let webView else { break }
+            return ["shot": await snapshot(webView, name: "drive", part: command["name"] as? String ?? "shot") ?? ""]
+        case "log":
+            guard let ext else { break }
+            return ["log": (reports.removeValue(forKey: ext.context.uniqueIdentifier) ?? []).map { "[\($0.level)] \($0.text)" },
+                    "errors": ext.context.errors.map(describe)]
+        default:
+            break
+        }
+        return ["error": "bad command \(command)"]
     }
 
     private static func append(_ object: [String: Any], to url: URL) {

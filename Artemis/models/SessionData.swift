@@ -685,8 +685,7 @@ nonisolated extension SpaceAppearance {
         (0.46, 0.84, RGBA(0.09, 0.06, 0.16)))
 }
 
-/// one per-site Boost: custom CSS (and optionally JS) applied to a host, the
-/// install-nothing cousin of an extension
+/// one per-site Boost: custom CSS (and optionally JS) for a host. The Mac keeps and carries them but never applies them
 nonisolated struct Boost: Codable, Identifiable {
     var id = UUID()
     var host: String

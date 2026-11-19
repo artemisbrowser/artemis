@@ -11,7 +11,7 @@
 # EXTLAB_ENV="ARTEMIS_EXTLAB_RUN=name" sends its verdicts to runs/name
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 ID="${LAB_ID:-Lab}"
 LAB=".build/$ID/Artemis $ID.app"

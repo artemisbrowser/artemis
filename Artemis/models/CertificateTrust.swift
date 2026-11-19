@@ -92,7 +92,7 @@ enum CertificateTrust {
 
     /// the system certificate sheet for `trust`'s chain, over the key window
     static func showViewer(trust: SecTrust?) {
-        guard let trust, let window = NSApp.keyWindow,
+        guard let trust, let window = Lobby.keyWindow,
             let certificates = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
             !certificates.isEmpty
         else { return }

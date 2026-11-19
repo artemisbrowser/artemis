@@ -152,6 +152,61 @@ final class TabManager {
     }
 
     var isFindBarVisible = false
+    var isAgentPanelVisible = false {
+        didSet {
+            guard oldValue, !isAgentPanelVisible, isAgentFieldFocused else { return }
+            // the keyboard the panel's field held goes back to the page
+            DispatchQueue.main.async { [weak self] in self?.selectedTab?.webHost?.focusHostedWebView() }
+        }
+    }
+    /// the built-in agent conversation this window's panel shows
+    private(set) var agentTask: AgentTask?
+
+    /// the panel's instruction field holds the keyboard
+    @ObservationIgnored var isAgentFieldFocused = false
+    /// goes up each time the instruction field is asked to take the keyboard
+    var agentFocusRequest = 0
+
+    /// shows the agent panel, on a new chat when `fresh` or when none is open; with the
+    /// agent off there is none, and the panel offers to turn it on
+    func showAgent(fresh: Bool = false, throwaway: Bool = false) {
+        if fresh || agentTask == nil {
+            agentTask?.close()
+            agentTask = AgentTask(in: self, throwaway: throwaway)
+        }
+        isAgentPanelVisible = agentTask != nil || !AgentTask.isEnabled
+        agentFocusRequest += 1
+    }
+
+    /// File › Ask Agent: shows the panel with its field focused, never over a locked space; pressed in that field, hides it
+    func toggleAgent() {
+        if isAgentPanelVisible, isAgentFieldFocused || agentTask == nil {
+            isAgentPanelVisible = false
+        } else if !SpaceLock.shared.isLocked(currentSpace) {
+            showAgent()
+        }
+    }
+
+    /// a running task is stopped and kept: one task runs per window
+    func openAgentChat(_ chat: AgentChat) {
+        guard agentTask?.chatID != chat.id, let task = AgentTask(in: self, reopening: chat) else { return }
+        agentTask?.close()
+        agentTask = task
+        isAgentPanelVisible = true
+        agentFocusRequest += 1
+    }
+
+    /// ends the open chat; the panel, if up, moves on to a new one
+    func closeAgentChat() {
+        agentTask?.close()
+        agentTask = isAgentPanelVisible ? AgentTask(in: self) : nil
+    }
+
+    func endAgent() {
+        agentTask?.close()
+        agentTask = nil
+        isAgentPanelVisible = false
+    }
     /// the next find bar opens in question mode (⌥⌘F)
     @ObservationIgnored var opensFindBarAsking = false
     var isCommandBarVisible = false {
@@ -190,6 +245,8 @@ final class TabManager {
     var feedback: FeedbackDraft?
     /// the New Live Folder sheet, or nil when it isn't up
     var liveFolderDraft: LiveFolderDraft?
+    /// the gift card is up
+    var isGiftVisible = false
     /// the ⇧-click Peek preview, belonging to no space; nil when closed
     var peekTab: BrowserTab?
     /// the link under the pointer, for the status capsule
@@ -236,6 +293,8 @@ final class TabManager {
     var editSpaceRequest = 0
     /// bumped to peek a collapsed sidebar, as a dwell on the window edge does
     var sidebarPeekRequest = 0
+    /// bumped to peek a collapsed sidebar for a moment, long enough to see a tab arrive
+    var sidebarGlanceRequest = 0
     /// true while a sidebar-spawned popover (e.g. the space editor) is open,
     /// so the floating overlay sidebar won't dismiss out from under it
     var isSidebarPopoverOpen = false
@@ -243,6 +302,8 @@ final class TabManager {
     var isSidebarSettled = true
     /// a folder's peek panel hangs off the sidebar's trailing edge, over the page
     var isFolderPeekOpen = false
+    /// the live tab list's scrolling, for the sidebar and for what sits beside it
+    let sidebarScroll = SidebarScroll()
 
     /// the space wearing this window's editor's uncommitted theme
     @ObservationIgnored private weak var themeEditSpace: Space?
@@ -439,9 +500,13 @@ final class TabManager {
 
     /// the window is going away: let go of anything only it was holding
     func windowWillClose() {
+        agentTask?.close()
         closePeek()
         endContentSwitch()
         revertTheme()
+        // the manager outlives its window, and ⌘T in the next one toggles the bar
+        addressBarOrigin = nil
+        isCommandBarVisible = false
         if kind != .main {
             discardPrivateSpace()
             undo.removeAllActions()
@@ -456,7 +521,7 @@ final class TabManager {
         isCommandBarVisible = false
         NSApp.activate(ignoringOtherApps: true)
         let window = BrowserWindows.shared.window(of: self)
-            ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain }
+            ?? NSApp.windows.first { $0.isVisible && $0.canBecomeMain && !Lobby.isLobby($0) }
         window?.makeKeyAndOrderFront(nil)
     }
 
@@ -1016,7 +1081,7 @@ final class TabManager {
     /// ask the on-device model for a short name for a pinned tab or favourite
     /// whose title is a mouthful; never touches a tab you named yourself
     private func tidyTitle(for tab: BrowserTab, url: URL, title: String) {
-        guard Intelligence.isOn(Intelligence.tidyTitlesKey), Intelligence.isReady else {
+        guard Intelligence.canRun(Intelligence.tidyTitlesKey, inPrivate: tab.isPrivate) else {
             tidyBreadcrumb("skip (switch/readiness) \(url.host() ?? "?")")
             return
         }
@@ -1504,6 +1569,11 @@ final class TabManager {
         let isEphemeral = tab?.isPrivate ?? false
         if let decision = Self.remembered(permissions, origin: origin, ephemeral: isEphemeral) {
             return decide(decision)
+        }
+        if let tab, let task = AgentBridge.shared.task(of: tab.id) {
+            let what = permissions.map(\.request).formatted(.list(type: .and))
+            Task { decide(await task.permit(what, from: origin) ? .allow : .deny) }
+            return
         }
         if let waiting = permissionQueue.first(where: {
             $0.tabID == tab?.id && $0.origin == origin && $0.permissions == permissions
@@ -2135,8 +2205,10 @@ final class TabManager {
             // history; a lab copy's self-test does, into data of its own
             let diagnostic = !SelfTest.isRequested && ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] != nil
             owner.scheduleSave()
-            if !diagnostic, let profile = owner.core.profile(tab.profileID) {
-                profile.history.record(url: url, title: title)
+            if !diagnostic, !ContentBlocker.shared.isAdult(url), let profile = owner.core.profile(tab.profileID) {
+                // a Peek has no space of its own; it counts as the one it was opened over
+                let space = owner.space(of: tab) ?? (tab.isEssential ? nil : owner.currentSpace)
+                profile.history.record(url: url, title: title, space: space?.id)
                 owner.indexPageText(tab, into: profile.pageIndex, url: url, title: title)
             }
             if tab.id == owner.selectedTabID { owner.offerHandoff() }

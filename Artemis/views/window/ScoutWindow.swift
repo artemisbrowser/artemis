@@ -18,9 +18,15 @@ enum ScoutWindow {
     /// a link, opened for a look; from a page, in its `opener` space's profile
     @discardableResult
     static func open(_ url: URL, like opener: Space? = nil) -> NSWindow {
+        // a link from another app lands after the activation it came with
+        let from =
+            NSApp.isActive && NSAppleEventManager.shared().currentAppleEvent?.eventID == AEEventID(kAEGetURL)
+            ? takeActivation() : nil
         let manager = TabManager(kind: .scout)
         manager.openScoutSpace(on: url, like: opener)
-        return present(manager, size: glanceSize(), centred: true, activates: true)
+        let window = present(manager, size: glanceSize(), centred: true, activates: true)
+        returnTo[ObjectIdentifier(window)] = from
+        return window
     }
 
     /// `window.open`: the web view must come back synchronously and already belong
@@ -99,8 +105,59 @@ enum ScoutWindow {
                 pendingFront = nil
                 guard let window, window.isVisible else { return }
                 window.makeKeyAndOrderFront(nil)
+                returnTo[ObjectIdentifier(window)] = takeActivation()
             }
         }
+    }
+
+    /// set as Artemis is brought forward: the app that was in front
+    private static var activation: (at: CFTimeInterval, from: NSRunningApplication?)?
+    /// Scout windows a link brought forward, and the app each came from; given up once
+    /// anything else of Artemis takes the focus
+    private static var returnTo: [ObjectIdentifier: NSRunningApplication] = [:]
+
+    /// once at launch: notes the app in front each time Artemis is brought forward
+    static func watchActivation() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: NSApplication.willBecomeActiveNotification, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated {
+                let windows = normalWindows()
+                let own = ProcessInfo.processInfo.processIdentifier
+                let front = windows.first { $0.pid != own }.flatMap { NSRunningApplication(processIdentifier: $0.pid) }
+                activation = (CACurrentMediaTime(), front)
+            }
+        }
+        center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { returnTo = [:] }
+        }
+        center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: nil) { note in
+            MainActor.assumeIsolated {
+                if let window = note.object as? NSWindow, returnTo[ObjectIdentifier(window)] == nil { returnTo = [:] }
+            }
+        }
+    }
+
+    /// the app in front as Artemis was just brought forward, at most once
+    private static func takeActivation() -> NSRunningApplication? {
+        defer { activation = nil }
+        guard let activation, CACurrentMediaTime() - activation.at < 2 else { return nil }
+        return activation.from
+    }
+
+    /// every app's on-screen normal-level window numbers, front to back; numbers only, as
+    /// names would need Screen Recording
+    static func normalStack() -> [Int] { normalWindows().map(\.number) }
+
+    private static func normalWindows() -> [(number: Int, pid: pid_t)] {
+        (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? [])
+            .filter { $0[kCGWindowLayer as String] as? Int == 0 }
+            .compactMap { info in
+                guard let number = info[kCGWindowNumber as String] as? Int,
+                    let pid = info[kCGWindowOwnerPID as String] as? pid_t
+                else { return nil }
+                return (number, pid)
+            }
     }
 
     private static let exit = Exit()
@@ -114,8 +171,13 @@ enum ScoutWindow {
             ScoutWindow.open.removeAll { $0 === notification.object as? NSWindow }
         }
 
+        /// a Scout a link brought forward hands the focus back to the link's app first, so
+        /// AppKit never promotes a browser window in its place
         func windowShouldClose(_ window: NSWindow) -> Bool {
             guard leaving.insert(ObjectIdentifier(window)).inserted else { return false }
+            if let app = ScoutWindow.returnTo.removeValue(forKey: ObjectIdentifier(window)), !app.isTerminated {
+                app.activate(from: .current, options: [])
+            }
             if let layer = window.contentView?.layer, !Motion.reduceMotion {
                 let b = layer.bounds
                 var to = CATransform3DMakeTranslation(b.midX, b.midY, 0)
@@ -165,7 +227,7 @@ enum ScoutWindow {
     /// centred over the window that opened it, so a popup lands where you were
     /// looking rather than over a corner of the desktop
     private static func offsetFromFrontmost(size: NSSize) -> NSPoint {
-        let anchor = NSApp.keyWindow?.frame ?? screenFrame
+        let anchor = Lobby.keyWindow?.frame ?? screenFrame
         return NSPoint(
             x: anchor.midX - size.width / 2,
             y: anchor.midY - size.height / 2)

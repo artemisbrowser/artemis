@@ -157,7 +157,7 @@ struct LinksSettings: View {
         declined = nil
         let names = tabManager.spaces.map(\.name)
         Intelligence.refreshReadiness()
-        guard Intelligence.isOn(Intelligence.enabledKey), Intelligence.isReady else {
+        guard Intelligence.canRun(Intelligence.routingRulesKey) else {
             propose(RoutingRule.suggest(from: request, spaces: names))
             return
         }

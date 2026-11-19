@@ -189,13 +189,20 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
         return PasswordStore.shared.matches(for: target.origin, in: tab.loginProfile)
     }
 
-    /// refused unless `login` is one this target's origin is offered
+    /// refused unless `login` is one this target's origin is offered. An agent's fill takes a device-owner
+    /// check of its own, whatever window is open, and nothing is read or filled unless `stillWanted` after it
     @discardableResult
-    func fill(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
+    func fill(
+        _ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab, forAgent: Bool = false,
+        stillWanted: () -> Bool = { true }
+    ) async -> Bool {
         let store = PasswordStore.shared
         guard tab.offersCredentials(to: target.origin),
             store.matches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
-            await OwnerUnlock.authenticate(.passwords, "fill your password for \(login.host)"),
+            await forAgent
+                ? OwnerUnlock.check("let the agent fill your password for \(login.username) on \(login.host)")
+                : OwnerUnlock.authenticate(.passwords, "fill your password for \(login.host)"),
+            stillWanted(),
             let password = store.password(for: login),
             await fill(username: login.username, password: password, into: target, in: tab)
         else { return false }
@@ -226,11 +233,18 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
 
     /// the current code of a login this target's website is offered, into the focused code field
     @discardableResult
-    func fillCode(_ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab) async -> Bool {
+    func fillCode(
+        _ login: SavedLogin, into target: LoginTarget, in tab: BrowserTab, forAgent: Bool = false,
+        stillWanted: () -> Bool = { true }
+    ) async -> Bool {
         let store = PasswordStore.shared
         guard tab.offersCredentials(to: target.origin),
             store.codeMatches(for: target.origin, in: tab.loginProfile).contains(where: { $0.id == login.id }),
-            await OwnerUnlock.authenticate(.passwords, "fill your verification code for \(login.host)"),
+            await forAgent
+                ? OwnerUnlock.check(
+                    "let the agent fill your \(login.host) verification code for \(login.username) on \(URL(string: target.origin)?.host() ?? target.origin)")
+                : OwnerUnlock.authenticate(.passwords, "fill your verification code for \(login.host)"),
+            stillWanted(),
             let code = store.oneTimeCode(for: login)?.code()
         else { return false }
         if let frame = target.frame, !frame.isMainFrame, await !frameIsShown(target.origin, in: tab) {
@@ -335,9 +349,11 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
                         }
                     }
                 },
-                generate: { candidates in
+                generate: { candidates, derived in
                     self.closeSuggestions()
                     Task {
+                        // a recipe's password is the site's real one, so it takes a saved login's check
+                        if derived, await !OwnerUnlock.authenticate(.passwords, "fill your password for \(host)") { return }
                         let fits = await self.fitting(candidates, rules, in: target, of: tab)
                         await self.generate(candidates[fits.firstIndex(of: true) ?? 0], into: target, in: tab)
                     }
@@ -509,8 +525,8 @@ struct LoginSuggestions: View {
     let recipes: [PasswordRecipe]
     let rules: PasswordRules
     let pick: (SavedLogin) -> Void
-    /// fills the first candidate the field's `pattern` accepts, else the first
-    let generate: ([String]) -> Void
+    /// fills the first candidate the field's `pattern` accepts, else the first; `true` for a recipe's
+    let generate: ([String], Bool) -> Void
     let manage: () -> Void
     /// what the page's waiting conditional passkey request would take
     var passkeys: [SavedPasskey] = []
@@ -541,7 +557,7 @@ struct LoginSuggestions: View {
                 Row(
                     icon: "key.horizontal.fill", title: recipe.name,
                     detail: rules.problem(with: password) ?? recipe.masked(for: host)
-                ) { generate([password]) }
+                ) { generate([password], true) }
             }
         }
         guard offersStrongPassword else { return saved + suggested }
@@ -549,10 +565,10 @@ struct LoginSuggestions: View {
         let strong = Row(icon: "wand.and.sparkles", title: "Use Strong Password", detail: nil) {
             generate(
                 (0..<8).map { _ in PasswordPage.strongPassword(rules) }
-                    + (0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
+                    + (0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) }, false)
         }
         let plain = Row(icon: "textformat.abc", title: "Strong Password Without Symbols", detail: nil) {
-            generate((0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) })
+            generate((0..<8).map { _ in PasswordPage.strongPassword(rules, symbols: false) }, false)
         }
         return (rules.namesCharacters ? [strong] : [strong, plain]) + saved + suggested
     }

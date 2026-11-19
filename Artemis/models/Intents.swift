@@ -235,7 +235,7 @@ struct SearchHistoryIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult & ReturnsValue<[HistoryEntryEntity]> {
         let profiles = BrowserCore.shared.profiles.filter { profile == nil || $0.id == profile?.id }
-        let found = HistoryStore.search(text, in: profiles.map(\.history), limit: max(limit, 0))
+        let found = HistoryStore.search(text, in: profiles.map(\.history), limit: max(limit, 0), hiding: SpaceLock.shared.lockedIDs)
         return .result(value: found.map(HistoryEntryEntity.init))
     }
 }

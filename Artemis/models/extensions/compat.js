@@ -209,6 +209,31 @@
     globalThis.cancelIdleCallback = (id) => clearTimeout(id);
   }
 
+  // Chrome takes a callback after the alarm info; WebKit reads a third argument as a bad info
+  if (api.alarms && typeof api.alarms.create === "function") {
+    const create = api.alarms.create;
+    api.alarms.create = (...args) => {
+      const cb = typeof args[args.length - 1] === "function" ? args.pop() : null;
+      const created = create.apply(api.alarms, args);
+      if (!cb) return created;
+      Promise.resolve(created).then(() => cb(), () => cb());
+    };
+  }
+
+  // WebKit delivers nothing, and reports no error, to a target naming both a documentId and a frameId
+  if (api.tabs) for (const [name, at] of [["sendMessage", 1], ["connect", 0]]) {
+    const original = api.tabs[name];
+    if (typeof original !== "function") continue;
+    api.tabs[name] = (tabId, ...rest) => {
+      const options = rest[at];
+      if (options && typeof options === "object" && options.documentId !== undefined && "frameId" in options) {
+        const { frameId, ...byDocument } = options;
+        rest[at] = byDocument;
+      }
+      return original.call(api.tabs, tabId, ...rest);
+    };
+  }
+
   // Chrome answers an empty message name with ""; WebKit throws
   if (api.i18n && typeof api.i18n.getMessage === "function") {
     const getMessage = api.i18n.getMessage;
@@ -683,6 +708,64 @@
     }));
   }
 
+  // === service worker ↔ extension pages ====================================
+  // WebKit's extension worker lists no page among its clients and pages see no
+  // controller: both ends meet on a BroadcastChannel, which only this origin shares
+  const workerScript = manifest.background && manifest.background.service_worker;
+  if (workerScript && typeof BroadcastChannel === "function") {
+    const channel = keep(new BroadcastChannel("__artemis_sw"));
+    const Message = globalThis.ExtendableMessageEvent || MessageEvent;
+    const sourced = (target, data, source) => {
+      const event = new Message("message", { data });
+      Object.defineProperty(event, "source", { value: source });
+      target.dispatchEvent(event);
+    };
+    if (typeof ServiceWorkerGlobalScope === "function" && globalThis instanceof ServiceWorkerGlobalScope) {
+      const pages = new Map();
+      channel.onmessage = ({ data: m }) => {
+        if (!m || typeof m.from !== "string") return;
+        const page = pages.get(m.from) || { id: m.from, url: m.url, type: "window",
+          frameType: "top-level", focused: false, visibilityState: "visible",
+          postMessage: (data) => channel.postMessage({ to: m.from, data }) };
+        page.seen = Date.now();
+        pages.set(m.from, page);
+        if ("data" in m) sourced(globalThis, m.data, page);
+      };
+      const clients = globalThis.clients;
+      const matchAll = clients.matchAll.bind(clients), get = clients.get.bind(clients);
+      // a census: each open page answers within 50 ms, a closed one never
+      clients.matchAll = async (options) => {
+        const found = await matchAll(options);
+        if (options && options.type && options.type !== "window" && options.type !== "all") return found;
+        const since = Date.now();
+        channel.postMessage({ who: true });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return found.concat([...pages.values()].filter((page) => page.seen >= since));
+      };
+      clients.get = async (id) => pages.get(id) || get(id);
+    } else if (navigator && navigator.serviceWorker && !navigator.serviceWorker.controller) {
+      const container = navigator.serviceWorker;
+      const id = crypto.randomUUID();
+      const send = (extra) => channel.postMessage(Object.assign({ from: id, url: location.href }, extra));
+      // an idle worker is unloaded and hears no channel until something loads it
+      let woken = Promise.resolve();
+      const worker = Object.assign(new EventTarget(), {
+        scriptURL: api.runtime.getURL(workerScript), state: "activated",
+        postMessage: (data) => {
+          const copy = structuredClone(data);
+          woken = woken.then(() => call("background.wake")).catch(() => {}).then(() => send({ data: copy }));
+        },
+      });
+      channel.onmessage = ({ data: m }) => {
+        if (m && m.who) send();
+        else if (m && m.to === id) sourced(container, m.data, worker);
+      };
+      const registration = { active: worker, installing: null, waiting: null, scope: api.runtime.getURL("") };
+      Object.defineProperty(container, "controller", { get: () => worker, configurable: true });
+      Object.defineProperty(container, "ready", { value: Promise.resolve(registration), configurable: true });
+    }
+  }
+
   // === 9. identity — OAuth through a sign-in window =====================
   // the redirect host is the one the store registered for this package;
   // native stops the flow at that host and hands back the URL
@@ -1005,6 +1088,91 @@
       const match = /rule at index (\d+)/.exec(message);
       return match ? Number(match[1]) : -1;
     };
+    // WebKit's rule regex has no alternation and no \d \w \s. a regexFilter using them is spelt
+    // out, one rule per branch: the first under the rule's own id, the rest under ids the
+    // extension never sees
+    const splitBase = 1e9, lastBase = 15e8, splitMost = 16;
+    const sets = { d: "0-9", w: "A-Za-z0-9_", s: " \\t\\n\\r\\f" }, capture = "\u0001";
+    const spelledOut = (source) => {
+      let at = 0;
+      const branches = (nested) => {
+        const done = [];
+        let open = [""];
+        const add = (parts) => { open = open.flatMap((head) => parts.map((part) => head + part)); };
+        while (at < source.length) {
+          const c = source[at];
+          if (c === ")") { if (!nested) throw 0; break; }
+          if (c === "|") { done.push(...open); open = [""]; at++; }
+          else if (c === "\\") {
+            const name = source[at + 1] || "", set = sets[name.toLowerCase()];
+            add([set ? (name in sets ? "[" : "[^") + set + "]" : c + name]); at += 2;
+          } else if (c === "[") {
+            const set = /^\[\^?\]?(?:\\.|[^\]\\])*\]/.exec(source.slice(at));
+            if (!set) throw 0;
+            add([set[0].replace(/\\(.)/g, (whole, name) => sets[name] || whole)]); at += set[0].length;
+          } else if (c === "(") {
+            const head = /^\((\?:)?/.exec(source.slice(at))[0];
+            at += head.length;
+            if (source[at] === "?") throw 0;
+            const inner = branches(true);
+            if (source[at++] !== ")") throw 0;
+            const count = /^(?:[*+?]|\{\d+(?:,\d*)?\})?\??/.exec(source.slice(at))[0];
+            at += count.length;
+            // a repeated choice has no finite list of branches; an optional one does
+            if (inner.length > 1 && count && count[0] !== "?") throw 0;
+            add(inner.map((body) => head === "(" || count
+              ? (head === "(" ? capture : head) + body + ")" + count : body));
+          } else { add([c]); at++; }
+          if (done.length + open.length > splitMost) throw 0;
+        }
+        // a group captured inside one branch would change number once the branches part
+        if (done.length && done.concat(open).some((branch) => branch.includes(capture))) throw 0;
+        return done.concat(open);
+      };
+      try {
+        const all = branches(false);
+        return at === source.length ? all.map((branch) => branch.split(capture).join("(")) : null;
+      } catch (e) { return null; }
+    };
+    const splittable = (id) => Number.isInteger(id) && id > 0 && id < (lastBase - splitBase) / splitMost;
+    const split = (options) => {
+      if (!options || typeof options !== "object") return options;
+      const addRules = (options.addRules || []).flatMap((rule) => {
+        if (!rule || !rule.condition) return [rule];
+        const condition = Object.assign({}, rule.condition);
+        const excludes = (condition.excludedRequestDomains || []).length > 0;
+        // WebKit compiles no list holding a rule with both of these and no excludedRequestMethods;
+        // given the same methods there, its stop on the excluded domains covers just those
+        if (excludes && condition.requestMethods && !condition.excludedRequestMethods) {
+          condition.excludedRequestMethods = condition.requestMethods;
+        }
+        const filter = condition.regexFilter;
+        const spelt = typeof filter === "string" && /[|]|\\[dwsDWS]/.test(filter) ? spelledOut(filter) : null;
+        const parts = spelt && (spelt.length === 1 || splittable(rule.id)) ? spelt : null;
+        // on the domains it excludes WebKit stops at such a rule, and rules of one priority run
+        // in id order: held wholly above every other id, it stops no rule but its like
+        const base = excludes && splittable(rule.id) ? lastBase : splitBase;
+        return (parts || [filter]).map((part, n) => Object.assign({}, rule, {
+          id: n || base === lastBase ? base + rule.id * splitMost + n : rule.id,
+          condition: parts ? Object.assign({}, condition, { regexFilter: part }) : condition,
+        }));
+      });
+      const removeRuleIds = (options.removeRuleIds || []).flatMap((id) => splittable(id)
+        ? [id].concat([splitBase, lastBase].flatMap((base) =>
+          Array.from({ length: splitMost }, (_, n) => base + id * splitMost + n))) : [id]);
+      return Object.assign({}, options, options.addRules && { addRules }, options.removeRuleIds && { removeRuleIds });
+    };
+    for (const name of ["getDynamicRules", "getSessionRules"]) {
+      const original = dnr[name];
+      if (typeof original !== "function") continue;
+      dnr[name] = (...args) => {
+        const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
+        return settle(callback, Promise.resolve(original.apply(dnr, args))
+          .then((rules) => (rules || []).flatMap((rule) => rule.id < splitBase ? [rule]
+            : rule.id < lastBase || rule.id % splitMost ? []
+              : [Object.assign({}, rule, { id: (rule.id - lastBase) / splitMost })])));
+      };
+    }
     for (const name of ["updateEnabledRulesets", "updateDynamicRules", "updateSessionRules"]) {
       const original = dnr[name];
       if (typeof original !== "function") continue;
@@ -1018,7 +1186,10 @@
         const attempt = (options, dropped) => {
           let pending;
           try { pending = original.apply(dnr, [options]); } catch (e) { pending = Promise.reject(e); }
-          return Promise.resolve(pending).then(finish, (error) => {
+          return Promise.resolve(pending).then((value) => {
+            if (dropped) report("dnr", name + " dropped " + dropped + " rules WebKit cannot hold");
+            return finish(value);
+          }, (error) => {
             const index = badRuleIndex(error);
             const rules = options && options.addRules;
             if (index >= 0 && dropped < 50 && Array.isArray(rules) && index < rules.length) {
@@ -1033,7 +1204,7 @@
             return finish(undefined);
           });
         };
-        return attempt(args[0], 0);
+        return attempt(name === "updateEnabledRulesets" ? args[0] : split(args[0]), 0);
       };
     }
     // WebKit answers getMatchedRules without the `rule` a caller buckets on,
@@ -1440,30 +1611,23 @@
     };
   }
 
-  // === userScripts — package files run through scripting ==================
-  // each script's code is written into the package and registered as a content
-  // script, globs checked in the file. a USER_SCRIPT-world script shares the content
-  // world: its `chrome` is the user-script runtime, but `globalThis.chrome` is not
+  // === userScripts — a content world of the extension's own ===============
+  // a USER_SCRIPT-world script's code is written into the package and run natively in a
+  // world where `chrome` is only the messaging configureWorld allows; a MAIN-world one
+  // is registered as a content script. globs are checked in the file
   if (!api.userScripts && declared.includes("userScripts") && api.scripting
     && typeof api.scripting.registerContentScripts === "function") {
-    const PREFIX = "artemis-user:", TAG = "__artemisUserScript";
+    const PREFIX = "artemis-user:", VERSION = 2;
     let registry = null;  // { scripts: id -> script with its files, world: { messaging } }
-    const load = async () => {
-      if (!registry) {
-        const stored = ((await call("userScripts.registry")) || {}).registry || {};
-        registry = { scripts: stored.scripts || {}, world: stored.world || {} };
-      }
-      return registry;
+    // Chrome applies each call whole, in call order; here one spans many awaits
+    let turn = Promise.resolve();
+    const serial = (work) => {
+      const run = turn.then(work);
+      turn = run.catch(() => {});
+      return run;
     };
-    const save = () => call("userScripts.registry", { set: registry });
     const globSource = (pattern) => "^" + String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&")
       .replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
-    const userWorld = "(() => { const real = globalThis.chrome; return { runtime: {"
-      + " id: real.runtime.id, getURL: (path) => real.runtime.getURL(path),"
-      + " sendMessage: (...args) => { const cb = typeof args[args.length - 1] === 'function' ? args.pop() : null;"
-      + " const sent = real.runtime.sendMessage({ " + TAG + ": args.length > 1 && typeof args[0] === 'string' ? args[1] : args[0] });"
-      + " if (!cb) return sent; sent.then(cb, () => cb()); },"
-      + " connect: (info) => real.runtime.connect({ name: '" + TAG + ":' + ((info && info.name) || '') }) } }; })()";
     const wrap = (script, code) => {
       const include = (script.includeGlobs || []).map(globSource);
       const exclude = (script.excludeGlobs || []).map(globSource);
@@ -1474,148 +1638,237 @@
       if (exclude.length) {
         lines.push("if (" + JSON.stringify(exclude) + ".some((g) => new RegExp(g).test(location.href))) break artemisUserScript;");
       }
-      if (script.world !== "MAIN") lines.push("const chrome = " + userWorld + ", browser = chrome;");
       lines.push(code, "}");
       return lines.join("\n");
     };
-    const write = async (name, script, sources) => {
+    const source = async (entry) => (entry.code !== undefined ? String(entry.code)
+      : (await fetch(api.runtime.getURL(entry.file))).text());
+    // WebKit keeps serving a content-script path's first contents: changed code needs a new name
+    const digest = (text) => {
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+      return (hash >>> 0).toString(36);
+    };
+    const write = async (script) => {
       const paths = [];
-      for (const [index, entry] of (sources || []).entries()) {
-        const code = entry.code !== undefined ? String(entry.code)
-          : await (await fetch(api.runtime.getURL(entry.file))).text();
-        const reply = await call("userScripts.write", { name: name + "-" + index, code: wrap(script, code) });
-        expect(reply, "Couldn't store user script " + name + ".");
+      for (const [index, entry] of (script.js || []).entries()) {
+        const code = wrap(script, await source(entry));
+        const reply = await call("userScripts.write", { name: script.id + "-" + index + "-" + digest(code), code });
+        expect(reply, "Couldn't store user script " + script.id + ".");
         paths.push(reply.path);
       }
       return paths;
     };
+    // native rebuilds the world from every registry it is handed
+    const save = () => call("userScripts.registry",
+      { set: Object.assign({ version: VERSION, order: Object.keys(registry.scripts) }, registry) });
+    const load = async () => {
+      if (!registry) {
+        const stored = ((await call("userScripts.registry")) || {}).registry || {};
+        registry = { scripts: stored.scripts || {}, world: stored.world || {} };
+        if (stored.version !== VERSION && Object.keys(registry.scripts).length) {
+          for (const script of Object.values(registry.scripts)) script.files = await write(script);
+          await save();
+        }
+      }
+      return registry;
+    };
     const fileNames = (paths) => paths.map((path) => path.split("/").pop().replace(/\.js$/, ""));
-    const asContentScript = (script, paths) => ({
+    const asContentScript = (script) => ({
       id: PREFIX + script.id, matches: script.matches || [], excludeMatches: script.excludeMatches,
-      js: paths, allFrames: !!script.allFrames, runAt: script.runAt || "document_idle",
-      world: script.world === "MAIN" ? "MAIN" : "ISOLATED", persistAcrossSessions: true,
+      js: script.files, allFrames: !!script.allFrames, runAt: script.runAt || "document_idle",
+      world: "MAIN", persistAcrossSessions: true,
     });
+    const registered = async () => (await api.scripting.getRegisteredContentScripts())
+      .map((script) => script.id).filter((id) => id.startsWith(PREFIX));
+    // only a MAIN-world script is a content script; whatever WebKit holds under its id goes first
+    const place = async (scripts) => {
+      const ids = scripts.map((script) => PREFIX + script.id);
+      const stale = (await registered()).filter((id) => ids.includes(id));
+      if (stale.length) await api.scripting.unregisterContentScripts({ ids: stale });
+      const main = scripts.filter((script) => script.world === "MAIN");
+      if (main.length) await api.scripting.registerContentScripts(main.map(asContentScript));
+    };
     const visible = ({ files, ...script }) => script;
+    // names a document the same in every world of its frame; native reads this same expression
+    const frameKey = () => [performance.timeOrigin, (performance.getEntriesByType("navigation")[0] || {}).name, document.referrer].join("|");
     api.userScripts = {
-      register: (scripts, cb) => settle(cb, (async () => {
+      register: (scripts, cb) => settle(cb, serial(async () => {
         const known = (await load()).scripts;
         for (const script of scripts) {
           if (known[script.id]) throw new Error("Duplicate script ID '" + script.id + "'");
         }
-        const entries = [];
+        const added = [];
         for (const script of scripts) {
-          const files = await write(script.id, script, script.js);
-          known[script.id] = Object.assign({}, script, { files });
-          entries.push(asContentScript(script, files));
+          added.push(known[script.id] = Object.assign({}, script, { files: await write(script) }));
         }
-        // WebKit may hold a registration this profile's registry lacks; registering over it throws
-        const ids = entries.map((entry) => entry.id);
-        const stale = (await api.scripting.getRegisteredContentScripts({ ids }))
-          .map((registered) => registered.id).filter((id) => ids.includes(id));
-        if (stale.length) await api.scripting.unregisterContentScripts({ ids: stale });
-        await api.scripting.registerContentScripts(entries);
+        await place(added);
         await save();
-      })()),
-      update: (scripts, cb) => settle(cb, (async () => {
+      })),
+      update: (scripts, cb) => settle(cb, serial(async () => {
         const known = (await load()).scripts;
+        const changed = [], replaced = [];
         for (const update of scripts) {
           if (!known[update.id]) throw new Error("Script with ID '" + update.id + "' does not exist.");
           const script = Object.assign({}, known[update.id], update);
-          const files = await write(script.id, script, script.js);
-          await api.scripting.updateContentScripts([asContentScript(script, files)]);
-          known[script.id] = Object.assign(script, { files });
+          replaced.push(...(known[update.id].files || []));
+          changed.push(known[script.id] = Object.assign(script, { files: await write(script) }));
         }
+        await place(changed);
         await save();
-      })()),
-      unregister: (filter, cb) => settle(typeof filter === "function" ? filter : cb, (async () => {
+        const kept = changed.flatMap((script) => script.files);
+        await call("userScripts.delete", { names: fileNames(replaced.filter((file) => !kept.includes(file))) });
+      })),
+      unregister: (filter, cb) => settle(typeof filter === "function" ? filter : cb, serial(async () => {
         const known = (await load()).scripts;
         const wanted = filter && typeof filter === "object" && filter.ids;
         const ids = Object.keys(known).filter((id) => !wanted || wanted.includes(id));
         if (!ids.length) return;
-        await api.scripting.unregisterContentScripts({ ids: ids.map((id) => PREFIX + id) }).catch(() => {});
+        await place(ids.map((id) => ({ id })));
         await call("userScripts.delete", { names: ids.flatMap((id) => fileNames(known[id].files || [])) });
         ids.forEach((id) => delete known[id]);
         await save();
-      })()),
-      getScripts: (filter, cb) => settle(typeof filter === "function" ? filter : cb, load().then(
+      })),
+      getScripts: (filter, cb) => settle(typeof filter === "function" ? filter : cb, serial(() => load()).then(
         (state) => Object.values(state.scripts).map(visible)
           .filter((script) => !(filter && filter.ids) || filter.ids.includes(script.id)))),
       execute: (injection, cb) => settle(cb, (async () => {
         const o = injection || {};
-        const name = "execute-" + Date.now();
-        const files = await write(name, { world: o.world }, o.js);
-        try {
-          return await api.scripting.executeScript({ target: o.target, files,
-            world: o.world === "MAIN" ? "MAIN" : "ISOLATED", injectImmediately: !!o.injectImmediately });
-        } finally {
-          call("userScripts.delete", { names: fileNames(files) }).catch(() => {});
-        }
-      })()),
-      configureWorld: (properties, cb) => settle(cb, load().then((state) => {
-        state.world = { messaging: !!(properties && properties.messaging) };
-        return save();
-      }).then(() => {})),
-      getWorldConfigurations: (cb) => settle(cb, load().then((state) => [state.world])),
-      resetWorldConfiguration: (worldId, cb) => settle(typeof worldId === "function" ? worldId : cb,
-        load().then((state) => { state.world = {}; return save(); }).then(() => {})),
-    };
-
-    // tagged traffic belongs to onUserScriptMessage/Connect: routed here on the
-    // untouched events, then hidden from every listener the extension adds
-    const userMessage = makeEvent(), userConnect = makeEvent();
-    api.runtime.onUserScriptMessage = userMessage;
-    api.runtime.onUserScriptConnect = userConnect;
-    const tagged = (message) => message !== null && typeof message === "object" && TAG in message;
-    const userPort = (port) => typeof port.name === "string" && port.name.startsWith(TAG + ":");
-    api.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (!tagged(message)) return;
-      load().then((state) => {
-        let waits = false, answered = false;
-        const respond = (value) => { if (!answered) { answered = true; sendResponse(value); } };
-        if (state.world.messaging) {
-          for (const fn of userMessage._listeners) {
-            try {
-              const result = fn(message[TAG], sender, respond);
-              if (result === true) waits = true;
-              else if (result && typeof result.then === "function") { waits = true; result.then(respond); }
-            } catch (e) {}
+        if (o.world === "MAIN") {
+          const files = await write({ id: "execute-" + Date.now(), js: o.js });
+          try {
+            return await api.scripting.executeScript({ target: o.target, files, world: "MAIN",
+              injectImmediately: !!o.injectImmediately });
+          } finally {
+            call("userScripts.delete", { names: fileNames(files) }).catch(() => {});
           }
         }
-        if (!waits) respond(undefined);
-      });
-      return true;
+        const code = [];
+        for (const entry of o.js || []) code.push(await source(entry));
+        // the world is reached natively, which finds the tab by its main document
+        const frames = await api.scripting.executeScript({ target: { tabId: o.target.tabId }, func: frameKey });
+        const reply = await call("userScripts.execute", { keys: frames.map((frame) => frame.result), code });
+        expect(reply, "Couldn't run the script in that tab.");
+        return [{ frameId: 0, result: reply.result }];
+      })()),
+      configureWorld: (properties, cb) => settle(cb, serial(() => load().then((state) => {
+        state.world = { messaging: !!(properties && properties.messaging) };
+        return save();
+      })).then(() => {})),
+      getWorldConfigurations: (cb) => settle(cb, serial(() => load()).then((state) => [state.world])),
+      resetWorldConfiguration: (worldId, cb) => settle(typeof worldId === "function" ? worldId : cb,
+        serial(() => load().then((state) => { state.world = {}; return save(); })).then(() => {})),
+    };
+
+    // the world's messages arrive on the push port, and only once this page has said it listens.
+    // WebKit hands a message posted before the port connected back to the page: it is sent again
+    const announce = () => {
+      openPushPort();
+      if (pushPort) pushPort.postMessage({ event: "userScripts.listening" });
+    };
+    pushHandlers.set("userScripts.listening", announce);
+    const listened = () => {
+      const event = makeEvent();
+      const add = event.addListener;
+      event.addListener = (fn) => { add(fn); announce(); };
+      return event;
+    };
+    const userMessage = api.runtime.onUserScriptMessage = listened();
+    const userConnect = api.runtime.onUserScriptConnect = listened();
+    const text = (message) => JSON.stringify(message === undefined ? null : message);
+    const senders = new Map();  // frame key -> { tab, frameId }, empty when no tab shows it
+    const senderOf = async (frame) => {
+      if (!senders.has(frame.key)) {
+        if (senders.size > 500) senders.clear();
+        let found = {};
+        const tabs = await api.tabs.query({});
+        tabs.sort((a, b) => (b.url === frame.page) - (a.url === frame.page));
+        for (const tab of tabs) {
+          const hit = (await api.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: frameKey })
+            .catch(() => [])).find((result) => result.result === frame.key);
+          if (hit) { found = { tab, frameId: hit.frameId }; break; }
+        }
+        senders.set(frame.key, found);
+      }
+      return Object.assign({ id: api.runtime.id, url: frame.url, origin: new URL(frame.url).origin },
+        senders.get(frame.key));
+    };
+    // one at a time, so a port's messages keep the order its page sent them in
+    let arriving = Promise.resolve();
+    const arrive = (name, handle) => pushHandlers.set(name, (message) => {
+      arriving = arriving.then(() => handle(message)).catch(() => {});
     });
-    api.runtime.onConnect.addListener((port) => {
-      if (!userPort(port)) return;
-      userConnect._fire({ name: port.name.slice(TAG.length + 1), sender: port.sender,
-        postMessage: (message) => port.postMessage(message), disconnect: () => port.disconnect(),
-        onMessage: port.onMessage, onDisconnect: port.onDisconnect });
-    });
-    for (const [event, skip] of [[api.runtime.onMessage, tagged], [api.runtime.onConnect, userPort]]) {
-      const { addListener, removeListener, hasListener } = event;
-      const guards = new WeakMap();
-      const guard = (fn) => {
-        if (!guards.has(fn)) guards.set(fn, function (first, ...rest) {
-          return skip(first) ? undefined : fn.call(this, first, ...rest);
-        });
-        return guards.get(fn);
+    const ports = new Map();
+    arrive("userScripts.message", async (pushed) => {
+      const sender = await senderOf(pushed.frame);
+      let waits = false, answered = false;
+      const respond = (value) => {
+        if (answered) return;
+        answered = true;
+        call("userScripts.reply", value === undefined ? { id: pushed.id } : { id: pushed.id, message: text(value) });
       };
-      Object.assign(event, {
-        addListener: (fn, ...rest) => addListener(guard(fn), ...rest),
-        removeListener: (fn) => removeListener(guards.get(fn) || fn),
-        hasListener: (fn) => hasListener(guards.get(fn) || fn),
-      });
+      for (const fn of userMessage._listeners) {
+        try {
+          const result = fn(JSON.parse(pushed.message), sender, respond);
+          if (result === true) waits = true;
+          else if (result && typeof result.then === "function") { waits = true; result.then(respond, () => respond()); }
+        } catch (e) {}
+      }
+      if (!waits) respond();
+    });
+    arrive("userScripts.connect", async (pushed) => {
+      const id = pushed.port;
+      const port = { name: pushed.name, sender: await senderOf(pushed.frame),
+        onMessage: makeEvent(), onDisconnect: makeEvent(),
+        postMessage: (message) => { call("userScripts.port", { port: id, message: text(message) }); },
+        disconnect: () => { if (ports.delete(id)) call("userScripts.port", { port: id, closed: true }); } };
+      ports.set(id, port);
+      userConnect._fire(port);
+    });
+    arrive("userScripts.port", (pushed) => {
+      const port = ports.get(pushed.port);
+      if (!port) return;
+      if (!pushed.closed) return port.onMessage._fire(JSON.parse(pushed.message), port);
+      ports.delete(pushed.port);
+      port.onDisconnect._fire(port);
+    });
+
+    // a tab's user scripts hear tabs.sendMessage beside its content scripts, as in Chrome: the
+    // first answer from either wins, and the call fails only when neither side listens
+    if (api.tabs && typeof api.tabs.sendMessage === "function") {
+      const toContent = api.tabs.sendMessage;
+      api.tabs.sendMessage = (tabId, message, ...rest) => {
+        const callback = typeof rest[rest.length - 1] === "function" ? rest.pop() : null;
+        const frameId = (rest[0] || {}).frameId;
+        const target = frameId === undefined ? { tabId, allFrames: true } : { tabId, frameIds: [frameId] };
+        const toWorld = call("userScripts.tabMessage", {}).then((any) => (any && any.heard
+          ? api.scripting.executeScript({ target, func: frameKey }).then((frames) => call("userScripts.tabMessage",
+            { keys: frames.map((frame) => frame.result), message: text(message) }))
+          : {})).catch(() => ({}));
+        return settle(callback, new Promise((resolve, reject) => {
+          let left = 2, heard = false, error;
+          const done = (listened, answered, value, failure) => {
+            if (answered) return resolve(value);
+            heard = heard || listened;
+            error = error || failure;
+            if (--left === 0) { if (heard) resolve(); else reject(error); }
+          };
+          Promise.resolve().then(() => toContent.call(api.tabs, tabId, message, ...rest))
+            .then((value) => done(true, value !== undefined, value), (failure) => done(false, false, undefined, failure));
+          toWorld.then((reply) => done(!!(reply && reply.heard), !!reply && typeof reply.reply === "string",
+            reply && typeof reply.reply === "string" ? JSON.parse(reply.reply) : undefined));
+        }));
+      };
     }
 
-    // a registration WebKit didn't keep across a relaunch is put back, and one this profile's
-    // registry doesn't list is taken off
+    // a MAIN-world registration WebKit didn't keep across a relaunch is put back, and any
+    // other under the prefix is taken off
     load().then(async (state) => {
-      const live = new Set((await api.scripting.getRegisteredContentScripts()).map((script) => script.id));
-      const missing = Object.values(state.scripts).filter((script) => !live.has(PREFIX + script.id));
-      if (missing.length) {
-        await api.scripting.registerContentScripts(missing.map((script) => asContentScript(script, script.files)));
-      }
-      const stray = [...live].filter((id) => id.startsWith(PREFIX) && !state.scripts[id.slice(PREFIX.length)]);
+      const live = await registered();
+      const main = Object.values(state.scripts).filter((script) => script.world === "MAIN");
+      const missing = main.filter((script) => !live.includes(PREFIX + script.id));
+      if (missing.length) await api.scripting.registerContentScripts(missing.map(asContentScript));
+      const stray = live.filter((id) => !main.some((script) => PREFIX + script.id === id));
       if (stray.length) await api.scripting.unregisterContentScripts({ ids: stray });
     }).catch(() => {});
   }

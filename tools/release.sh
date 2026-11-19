@@ -34,7 +34,7 @@ if [[ ${!#} == --dry-run ]]; then DRY=1; set -- "${@:1:$#-1}"; fi
 [[ -z ${ARTEMIS_PUBLIC_REMOTE:-} || -n ${ARTEMIS_RELEASE_DIR:-} ]] ||
   die "ARTEMIS_PUBLIC_REMOTE needs its own ARTEMIS_RELEASE_DIR, away from the real candidates and published.log"
 
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 export ARTEMIS_RELEASE_DIR=${ARTEMIS_RELEASE_DIR:-"$HOME/Library/Application Support/ArtemisRelease"}
 R=$ARTEMIS_RELEASE_DIR
 REMOTE=${ARTEMIS_PUBLIC_REMOTE:-https://github.com/artemisbrowser/artemis.git}

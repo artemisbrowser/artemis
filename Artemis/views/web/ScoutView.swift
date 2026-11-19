@@ -195,6 +195,7 @@ struct ScoutView: View {
                     .pageDialog(for: tab)
                     .translateSelection(for: tab)
                 if tab.loadError != nil { ErrorPage(tab: tab) }
+                SavedCopyLabel(tab: tab)
             }
         }
         // find in page, and the permission prompts a real page can raise

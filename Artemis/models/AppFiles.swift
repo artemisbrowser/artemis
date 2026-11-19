@@ -29,9 +29,11 @@ nonisolated enum AppStorageLocation {
     }()
 
     /// the extension compatibility lab (`ARTEMIS_DIAG=extlab` or `perf`) runs signed differently, so
-    /// anything that could prompt on the user's screen stays fenced off. ExtensionLab.isRequested and
-    /// the Keychain fence both read this one switch
+    /// anything that could prompt on the user's screen stays fenced off
     static let isExtensionLab = ["extlab", "perf"].contains(ProcessInfo.processInfo.environment["ARTEMIS_DIAG"])
+    /// a lab copy or a self-test run: nobody is there to answer a macOS prompt, so the Keychain is
+    /// a dictionary and the downloads folder sits in the data folder
+    static let isTestRun = isExtensionLab || ProcessInfo.processInfo.environment["ARTEMIS_SELFTEST"] != nil
     /// `ARTEMIS_DIAG=ext`: the extension runtime traces its compat calls
     static let isExtensionsDiag = ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "ext"
 

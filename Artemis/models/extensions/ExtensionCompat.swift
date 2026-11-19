@@ -34,14 +34,15 @@ nonisolated enum ExtensionCompat {
     static let redirectHostKey = "artemis_redirect_host"
     /// manifest key naming the permissions the patch added, which the consent leaves out
     static let addedPermissionsKey = "artemis_added_permissions"
-    /// what the patch can add: the bridge channel, and the registry userScripts runs on. a package
-    /// can ship `addedPermissionsKey` itself, so the consent hides no other name
-    static let patchPermissions: Set<String> = ["nativeMessaging", "scripting"]
+    /// what the patch can add: the bridge channel, the registry userScripts runs on, and the name
+    /// WebKit wants before a rule may redirect. a package can ship `addedPermissionsKey` itself,
+    /// so the consent hides no other name
+    static let patchPermissions: Set<String> = ["nativeMessaging", "scripting", "declarativeNetRequestWithHostAccess"]
     /// manifest key mapping the worker's literal importScripts targets that run no code
     /// to whether they exist (an empty file) or not (a failed fetch)
     private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    static let shimVersion = 54
+    static let shimVersion = 61
 
     // MARK: - Entry point
 
@@ -128,12 +129,8 @@ nonisolated enum ExtensionCompat {
     /// URL when it is built, before the stored id is assigned
     @MainActor static func baseURL(storedID id: String) -> URL? {
         guard PerfFlags.on("ext-scheme") else { return nil }
-        let origin = try? String(
-            contentsOf: ExtensionInstaller.storageRoot.appendingPathComponent(id, isDirectory: true)
-                .appendingPathComponent(ExtensionInstaller.packageOriginFile),
-            encoding: .utf8)
-        let scheme = switch origin {
-        case "xpi": "moz-extension"
+        let scheme = switch ExtensionInstaller.packageOrigin(forStoredID: id) {
+        case "xpi", ExtensionInstaller.unverifiedXPI: "moz-extension"
         case .some: "chrome-extension"
         case nil: "webkit-extension"
         }
@@ -237,6 +234,8 @@ nonisolated enum ExtensionCompat {
         var added = Set((manifest[addedPermissionsKey] as? [String]) ?? [])
         var needed = ["nativeMessaging"]
         if permissions.contains("userScripts") { needed.append("scripting") }
+        // WebKit lets a rule redirect on granted hosts only under this name; Chrome needs no second name
+        if permissions.contains("declarativeNetRequest") { needed.append("declarativeNetRequestWithHostAccess") }
         for permission in needed where !permissions.contains(permission) {
             permissions.append(permission)
             added.insert(permission)
@@ -267,21 +266,18 @@ nonisolated enum ExtensionCompat {
         return true
     }
 
-    /// the OAuth redirect host the store registered: `<id>.chromiumapp.org` for
-    /// a Web Store id, `<sha1 hex of the add-on id>.extensions.allizom.org` for an
-    /// xpi, else the stored id, which no provider has registered
+    /// the OAuth redirect host the store registered: `<id>.chromiumapp.org` for a proven CRX id,
+    /// `<sha1 hex of the add-on id>.extensions.allizom.org` for a store xpi, else the stored id,
+    /// which no provider has registered
     static func redirectHost(storedID: String, manifest: [String: Any]) -> String {
-        let sidecar = ExtensionInstaller.storageRoot
-            .appendingPathComponent(storedID, isDirectory: true)
-            .appendingPathComponent(ExtensionInstaller.packageOriginFile)
-        let origin = try? String(contentsOf: sidecar, encoding: .utf8)
+        let origin = ExtensionInstaller.packageOrigin(forStoredID: storedID)
         let gecko = (manifest["browser_specific_settings"] ?? manifest["applications"])
             .flatMap { ($0 as? [String: Any])?["gecko"] as? [String: Any] }
         if origin == "xpi", let addonID = gecko?["id"] as? String {
             let digest = Insecure.SHA1.hash(data: Data(addonID.utf8))
             return digest.map { String(format: "%02x", $0) }.joined() + ".extensions.allizom.org"
         }
-        let id = origin.flatMap { $0 == "xpi" ? nil : $0 } ?? storedID.lowercased()
+        let id = origin.flatMap { $0.hasPrefix("xpi") ? nil : $0 } ?? storedID.lowercased()
         return id + ".chromiumapp.org"
     }
 
@@ -495,7 +491,7 @@ nonisolated enum ExtensionCompat {
         }
         var inert: [String: Bool] = [:]
         for path in paths {
-            guard let data = try? Data(contentsOf: packageRoot.appendingPathComponent(path)) else {
+            guard let file = packageFile(path, in: packageRoot), let data = try? Data(contentsOf: file) else {
                 inert[path] = false
                 continue
             }

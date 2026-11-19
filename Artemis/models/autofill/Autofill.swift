@@ -200,9 +200,12 @@ final class Autofill: NSObject, WKScriptMessageHandler {
 
     /// Fills `choice` into the section it was picked from; a card also fills other frames on that frame's origin
     /// that show through every iframe up to the top. Nothing crosses origins. A card needs a secure frame and page.
-    /// Either kind asks the device owner as its unlock policy says. False when nothing filled.
+    /// The owner is asked as the kind's unlock policy says, every time for an agent; a card fills only if `stillWanted` after.
     @discardableResult
-    func fill(_ choice: AutofillChoice, into target: AutofillTarget, in tab: BrowserTab) async -> Bool {
+    func fill(
+        _ choice: AutofillChoice, into target: AutofillTarget, in tab: BrowserTab, forAgent: Bool = false,
+        stillWanted: () -> Bool = { true }
+    ) async -> Bool {
         let store = AutofillStore.shared
         let values: [String: Any]
         switch choice {
@@ -219,8 +222,12 @@ final class Autofill: NSObject, WKScriptMessageHandler {
             guard store.cards(in: tab.loginProfile).contains(where: { $0.id == card.id }),
                 takesCards(target.origin, in: tab)
             else { return false }
-            guard await OwnerUnlock.authenticate(.cards, "fill your \(card.label)") else { return false }
-            guard let number = store.number(for: card) else { return false }
+            let place = URL(string: target.origin)?.host() ?? target.origin, page = tab.url?.host() ?? place
+            guard await forAgent
+                ? OwnerUnlock.check("let the agent fill your \(card.label) on \(place)" + (page == place ? "" : ", inside a page of \(page)"))
+                : OwnerUnlock.authenticate(.cards, "fill your \(card.label)")
+            else { return false }
+            guard stillWanted(), let number = store.number(for: card) else { return false }
             values = [
                 "name": card.holder, "number": number, "month": card.expiryMonth, "year": card.expiryYear,
                 "brand": card.brand.name,
@@ -245,7 +252,7 @@ final class Autofill: NSObject, WKScriptMessageHandler {
 
     /// whether the top document shows `frame` through each iframe between them; the frame names itself to the top
     /// by a trusted postMessage, so no other frame on its origin can stand in for it
-    private func isShown(_ frame: WKFrameInfo, in tab: BrowserTab) async -> Bool {
+    func isShown(_ frame: WKFrameInfo, in tab: BrowserTab) async -> Bool {
         let nonce = UUID().uuidString
         _ = try? await tab.webView.callAsyncJavaScript(
             "top.postMessage('artemis-frame:' + nonce, '*')", arguments: ["nonce": nonce], in: frame,

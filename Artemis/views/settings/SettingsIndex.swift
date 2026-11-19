@@ -8,9 +8,27 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case defaultBrowser
     case importBrowser
     case showOnboarding
+    case whatsNew
+    case showWhatsNew
+    case changelog
     case updateChannel
     case autoUpdate
+    case autoInstall
     case checkForUpdates
+    case exportLogs
+    case discord
+    case socialX
+    case bluesky
+    case reddit
+    case sourceCode
+    case usageAnalytics
+    case errorReportsState
+    case exportBackup
+    case restoreBackup
+    case hardReset
+    case licence
+    case acknowledgements
+    case website
     case swipeNavigation
     case downloadsFolder
     case downloadsAsk
@@ -55,12 +73,15 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case clearArchive
     case clearPageText
     case clearAutofill
+    case clearAgentChats
     case clearDownloads
     case clearZoom
     case clearPermissions
     case clearNow
     case blockAds
-    case filterLists
+    case hideCookies
+    case hideAnnoyances
+    case adultHistory
     case updateBlocklists
     case incognitoTouchID
     case fingerprintDefence
@@ -94,7 +115,6 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case indexPageText
     case eraseIndex
     case extensionsEnabled
-    case boosts
     case installedExtensions
     case extensionStore
     case suggestedExtensions
@@ -102,6 +122,12 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case onDeviceModel
     case tidyTabNames
     case askAboutPage
+    case iconIdeas
+    case askSettings
+    case rulesFromWords
+    case addEngine
+    case builtInAgent
+    case agentFillsSaved
     case agentsEnabled
     case agentSetup
     case agentSpaces
@@ -133,19 +159,81 @@ nonisolated extension SettingID {
                 pane: .general, title: "Import from another browser",
                 keywords: ["arc", "chrome", "safari", "bookmarks", "migrate"])
         case .showOnboarding:
-            SettingsEntry(pane: .general, title: "Show onboarding", keywords: ["intro", "welcome", "setup", "first run", "tour"])
+            SettingsEntry(pane: .about, title: "Show onboarding", keywords: ["intro", "welcome", "setup", "first run", "tour"])
+        case .whatsNew:
+            SettingsEntry(pane: .about, title: "What's new", keywords: ["release notes", "changes", "highlights", "changelog"])
+        case .showWhatsNew:
+            SettingsEntry(
+                pane: .about, title: "Show what's new after an update",
+                keywords: ["release notes", "highlights", "after updating", "animation"])
+        case .changelog:
+            SettingsEntry(pane: .about, title: "Changelog", keywords: ["release notes", "history", "versions", "what changed"])
         case .updateChannel:
             SettingsEntry(
-                pane: .general, title: "Channel", section: "Updates",
+                pane: .about, title: "Channel", section: "Updates",
                 keywords: ["beta", "release channel", "prerelease", "nightly"])
         case .autoUpdate:
             SettingsEntry(
-                pane: .general, title: "Check for updates automatically", section: "Updates",
+                pane: .about, title: "Check for updates automatically", section: "Updates",
                 keywords: ["auto update", "software update", "sparkle"])
+        case .autoInstall:
+            SettingsEntry(
+                pane: .about, title: "Install updates automatically", section: "Updates",
+                keywords: ["auto update", "download updates", "background", "silent"])
         case .checkForUpdates:
             SettingsEntry(
-                pane: .general, title: "Check Now", section: "Updates",
+                pane: .about, title: "Check Now", section: "Updates",
                 keywords: ["update", "version", "upgrade"])
+        case .exportLogs:
+            SettingsEntry(
+                pane: .about, title: "Export Logs", section: "Feedback & Community",
+                keywords: ["diagnostics", "crash", "errors", "debug", "bug report", "support"])
+        case .discord:
+            SettingsEntry(
+                pane: .about, title: "Discord", section: "Feedback & Community",
+                keywords: ["chat", "server", "help", "support", "community"])
+        case .socialX:
+            SettingsEntry(pane: .about, title: "X", section: "Feedback & Community", keywords: ["twitter", "social", "follow", "news"])
+        case .bluesky:
+            SettingsEntry(pane: .about, title: "Bluesky", section: "Feedback & Community", keywords: ["social", "follow", "news"])
+        case .reddit:
+            SettingsEntry(pane: .about, title: "Reddit", section: "Feedback & Community", keywords: ["social", "follow", "community"])
+        case .sourceCode:
+            SettingsEntry(
+                pane: .about, title: "Source code", section: "Feedback & Community",
+                keywords: ["github", "open source", "repository", "contribute"])
+        case .usageAnalytics:
+            SettingsEntry(
+                pane: .about, title: "Usage analytics", section: "Privacy",
+                keywords: ["tracking", "telemetry", "statistics", "metrics"])
+        case .errorReportsState:
+            SettingsEntry(
+                pane: .about, title: "Error reports", section: "Privacy",
+                keywords: ["crash reports", "diagnostics"])
+        case .exportBackup:
+            SettingsEntry(
+                pane: .about, title: "Export Backup…", section: "Backup",
+                keywords: ["save settings", "transfer", "archive", "move to another mac"])
+        case .restoreBackup:
+            SettingsEntry(
+                pane: .about, title: "Restore from Backup…", section: "Backup",
+                keywords: ["import settings", "transfer", "recover"])
+        case .hardReset:
+            SettingsEntry(
+                pane: .about, title: "Hard Reset…", section: "Reset",
+                keywords: ["erase", "factory reset", "start over", "delete everything", "wipe", "fresh install"])
+        case .licence:
+            SettingsEntry(
+                pane: .about, title: "Licence", section: "Credits",
+                keywords: ["license", "gpl", "legal", "terms"])
+        case .acknowledgements:
+            SettingsEntry(
+                pane: .about, title: "Acknowledgements", section: "Credits",
+                keywords: ["third party", "open source libraries", "notices", "attribution"])
+        case .website:
+            SettingsEntry(
+                pane: .about, title: "Website", section: "Credits",
+                keywords: ["artemisbrowser.app", "homepage", "download"])
         case .swipeNavigation:
             SettingsEntry(
                 pane: .general, title: "Swipe between pages", section: "Navigation",
@@ -160,23 +248,23 @@ nonisolated extension SettingID {
                 keywords: ["save as", "download prompt", "choose location"])
         case .tabSleep:
             SettingsEntry(
-                pane: .general, title: "Sleep background tabs after", section: "Memory",
+                pane: .tabs, title: "Sleep background tabs after", section: "Memory",
                 keywords: ["hibernate", "memory saver", "discard tabs", "tab suspender", "ram"])
         case .autoPictureInPicture:
             SettingsEntry(
-                pane: .general, title: "Auto-enter when another app covers the window", section: "Picture in Picture",
-                keywords: ["pip", "mini-player", "floating video", "auto pip"])
+                pane: .media, title: "Auto-enter when another app covers the window", section: "Mini-Player",
+                keywords: ["pip", "picture in picture", "floating video", "auto pip"])
         case .miniPlayerCorners:
             SettingsEntry(
-                pane: .general, title: "Corner rounding", section: "Picture in Picture",
-                keywords: ["mini-player", "pip", "corner radius"])
+                pane: .media, title: "Corner rounding", section: "Mini-Player",
+                keywords: ["picture in picture", "pip", "corner radius"])
         case .miniPlayerSkip:
             SettingsEntry(
-                pane: .general, title: "Skip buttons jump", section: "Picture in Picture",
-                keywords: ["mini-player", "seek", "skip seconds", "rewind"])
+                pane: .media, title: "Skip buttons jump", section: "Mini-Player",
+                keywords: ["picture in picture", "seek", "skip seconds", "rewind"])
         case .miniPlayerSiteButtons:
             SettingsEntry(
-                pane: .general, title: "Mini-Player Site Buttons", section: "Mini-Player Site Buttons",
+                pane: .media, title: "Mini-Player Site Buttons", section: "Mini-Player Site Buttons",
                 keywords: ["pip buttons", "pills", "media controls"])
         case .edgeThickness:
             SettingsEntry(
@@ -188,15 +276,15 @@ nonisolated extension SettingID {
                 keywords: ["sidebar on the right", "right side", "left side", "flip", "swap"])
         case .nowPlaying:
             SettingsEntry(
-                pane: .appearance, title: "Show Now Playing", section: "Sidebar",
+                pane: .media, title: "Show Now Playing", section: "Sidebar",
                 keywords: ["media controls", "music", "audio", "playback"])
         case .folderSecondLine:
             SettingsEntry(
-                pane: .appearance, title: "Second line", section: "Folders",
+                pane: .sidebar, title: "Second line", section: "Folders",
                 keywords: ["folder preview", "hover", "subtitle"])
         case .folderTabCount:
             SettingsEntry(
-                pane: .appearance, title: "Tab count", section: "Folders",
+                pane: .sidebar, title: "Tab count", section: "Folders",
                 keywords: ["folder badge", "number of tabs"])
         case .appIcon:
             SettingsEntry(
@@ -322,6 +410,10 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .profiles, page: .clearData, title: "Saved addresses and cards",
                 keywords: ["autofill", "credit cards", "form data"])
+        case .clearAgentChats:
+            SettingsEntry(
+                pane: .profiles, page: .clearData, title: "Agent chats",
+                keywords: ["agent", "claude", "conversations", "chat history"])
         case .clearDownloads:
             SettingsEntry(
                 pane: .profiles, page: .clearData, title: "Downloads list", section: "Every Profile",
@@ -340,12 +432,20 @@ nonisolated extension SettingID {
                 keywords: ["clear browsing data", "delete data", "wipe", "erase history"])
         case .blockAds:
             SettingsEntry(
-                pane: .privacy, title: "Block ads and trackers", section: "Content Blocking",
-                keywords: ["adblock", "ublock", "advertising", "tracking", "filter lists"])
-        case .filterLists:
+                pane: .privacy, title: "Block Ads & Trackers", section: "Content Blocking",
+                keywords: ["adblock", "ublock", "advertising", "tracking sites", "filter lists"])
+        case .hideCookies:
             SettingsEntry(
-                pane: .privacy, title: "EasyList", section: "Content Blocking",
-                keywords: ["blocklists", "easyprivacy", "cookie notices", "cookie banners", "social widgets"])
+                pane: .privacy, title: "Hide Cookie Banners", section: "Content Blocking",
+                keywords: ["cookie notices", "cookie pop-ups", "consent", "gdpr"])
+        case .hideAnnoyances:
+            SettingsEntry(
+                pane: .privacy, title: "Hide Page Clutter", section: "Content Blocking",
+                keywords: ["annoyances", "newsletter", "social widgets", "share buttons", "notification prompts", "fanboy"])
+        case .adultHistory:
+            SettingsEntry(
+                pane: .privacy, title: "Keep Adult Sites Out of History", section: "Incognito and Your Data",
+                keywords: ["nsfw", "porn", "private history", "suggestions"])
         case .updateBlocklists:
             SettingsEntry(
                 pane: .privacy, title: "Update Blocklists", section: "Content Blocking",
@@ -384,12 +484,12 @@ nonisolated extension SettingID {
                 keywords: ["crash reports", "diagnostics", "telemetry", "analytics"])
         case .sendFeedback:
             SettingsEntry(
-                pane: .privacy, title: "Send Feedback…", section: "Reports",
+                pane: .about, title: "Send Feedback…", section: "Feedback & Community",
                 keywords: ["bug report", "contact", "feature request", "support"])
         case .dataFolder:
             SettingsEntry(
-                pane: .privacy, title: "Show Data Folder in Finder", section: "On-Device Data",
-                keywords: ["storage location", "json files", "profile folder", "local data"])
+                pane: .about, title: "Browsing data", section: "Privacy",
+                keywords: ["show data folder in finder", "storage location", "json files", "profile folder", "stored locally"])
         case .revealDelay:
             SettingsEntry(
                 pane: .sidebar, title: "Reveal delay", section: "Reveal",
@@ -478,10 +578,6 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .extensions, title: "Enable extensions",
                 keywords: ["add-ons", "plugins", "webextensions", "disable all"])
-        case .boosts:
-            SettingsEntry(
-                pane: .extensions, title: "Add Boost", section: "Boosts",
-                keywords: ["custom css", "user styles", "userscripts", "site styles", "javascript"])
         case .installedExtensions:
             SettingsEntry(
                 pane: .extensions, title: "Installed", section: "Installed",
@@ -500,8 +596,12 @@ nonisolated extension SettingID {
                 keywords: ["sideload", "unpacked", "crx", "xpi", "zip"])
         case .onDeviceModel:
             SettingsEntry(
-                pane: .intelligence, title: "Use the on-device model", section: "On-Device Intelligence",
+                pane: .intelligence, title: "Apple on-device model", section: "Engines",
                 keywords: ["ai", "apple intelligence", "llm", "foundation models"])
+        case .addEngine:
+            SettingsEntry(
+                pane: .intelligence, title: "Add Engine…", section: "Engines",
+                keywords: ["ai", "ollama", "lm studio", "openai", "openrouter", "api key", "local model", "llm"])
         case .tidyTabNames:
             SettingsEntry(
                 pane: .intelligence, title: "Tidy tab names", section: "Features",
@@ -510,29 +610,49 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .intelligence, title: "Ask about this page (⌘F)", section: "Features",
                 keywords: ["ai", "chat with page", "summarise", "question"])
+        case .iconIdeas:
+            SettingsEntry(
+                pane: .intelligence, title: "Icon ideas", section: "Features",
+                keywords: ["ai", "space icon", "emoji", "symbol suggestions"])
+        case .askSettings:
+            SettingsEntry(
+                pane: .intelligence, title: "Ask in Settings search", section: "Features",
+                keywords: ["ai", "find a setting", "question"])
+        case .rulesFromWords:
+            SettingsEntry(
+                pane: .intelligence, title: "Link rules from a sentence", section: "Features",
+                keywords: ["ai", "routing", "air traffic control", "open links in a space"])
+        case .builtInAgent:
+            SettingsEntry(
+                pane: .intelligence, title: "Built-in agent", section: "Built-in Agent",
+                keywords: ["ai agent", "ask agent", "claude code", "claude", "turn off", "disable"])
+        case .agentFillsSaved:
+            SettingsEntry(
+                pane: .intelligence, title: "Let the agent fill saved passwords and cards", section: "Built-in Agent",
+                keywords: ["ai agent", "autofill", "touch id", "credit card", "login", "one-time code"])
         case .agentsEnabled:
             SettingsEntry(
-                pane: .agents, title: "Allow coding agents to use Artemis",
+                pane: .intelligence, title: "Allow coding agents to use Artemis", section: "Coding Agents",
                 keywords: ["mcp", "claude code", "codex", "ai agents", "automation"])
         case .agentSetup:
             SettingsEntry(
-                pane: .agents, title: "Setup", section: "Setup",
+                pane: .intelligence, title: "Agent Setup", section: "Agent Setup",
                 keywords: ["mcp command", "claude code", "codex", "json config", "install mcp"])
         case .agentSpaces:
             SettingsEntry(
-                pane: .agents, title: "Spaces Agents Can Reach", section: "Spaces Agents Can Reach",
+                pane: .intelligence, title: "Spaces Agents Can Reach", section: "Spaces Agents Can Reach",
                 keywords: ["agent access", "allowed spaces", "mcp spaces"])
         case .agentScripts:
             SettingsEntry(
-                pane: .agents, title: "Let agents run scripts in pages", section: "Spaces Agents Can Reach",
+                pane: .intelligence, title: "Let agents run scripts in pages", section: "Spaces Agents Can Reach",
                 keywords: ["javascript", "execute script", "mcp"])
         case .approvedAgents:
             SettingsEntry(
-                pane: .agents, title: "Approved Agents", section: "Approved Agents",
+                pane: .intelligence, title: "Approved Agents", section: "Approved Agents",
                 keywords: ["trusted agents", "forget agent", "mcp clients"])
         case .connectedAgents:
             SettingsEntry(
-                pane: .agents, title: "Connected", section: "Connected",
+                pane: .intelligence, title: "Connected Agents", section: "Connected Agents",
                 keywords: ["active sessions", "disconnect", "mcp sessions"])
         }
     }
@@ -540,16 +660,19 @@ nonisolated extension SettingID {
     /// false while the row's feature is switched off or not built in
     @MainActor var isAvailable: Bool {
         switch self {
-        case .updateChannel, .autoUpdate, .checkForUpdates: Updates.shared.isEnabled
+        case .updateChannel, .autoUpdate, .autoInstall, .checkForUpdates: Updates.shared.isEnabled
+        case .whatsNew: WhatsNew.note != nil
         case .translationRules:
             !ProfilesNavigator.shared.profile.translationRules.languages.isEmpty
                 || !ProfilesNavigator.shared.profile.translationRules.sites.isEmpty
         case .deleteProfile: !ProfilesNavigator.shared.profile.isDefault
         case .neverSaved: !PasswordStore.shared.neverSave.isEmpty
-        case .filterLists, .updateBlocklists: ContentBlocker.shared.isEnabled
+        case .updateBlocklists: ContentBlocker.shared.isActive
         case .forgetAllSites: !SitePermissionStore.shared.sorted.isEmpty
         case .previewSites: TabPreviewCard.isEnabled
-        case .tidyTabNames, .askAboutPage: Intelligence.isEnabled && Intelligence.isReady
+        case .agentSetup, .agentSpaces, .agentScripts, .approvedAgents, .connectedAgents: AgentBridge.shared.isEnabled
+        case .tidyTabNames, .askAboutPage, .iconIdeas, .askSettings, .rulesFromWords:
+            Intelligence.isReady || !IntelligenceEngine.all.isEmpty
         default: true
         }
     }

@@ -60,8 +60,9 @@ enum Motion {
     /// overshoot would blend in a third space's colour
     static var spaceColorSettle: Animation { .easeOut(duration: reduceMotion ? 0.2 : 0.42) }
 
-    /// small accents that should pop: selection, chevrons, inline reveals
-    static var pop: Animation { moving(0.30, 0.34) }
+    /// small accents that should pop: selection, chevrons, inline reveals. a `Spring` so a layer can pop with the same physics
+    static let popSpring = Spring(duration: 0.30, bounce: 0.34)
+    static var pop: Animation { moving(popSpring.duration, popSpring.bounce) }
 
     /// the drag ghost reshaping between a tab row and a favourite tile
     static var morph: Animation { moving(0.5, 0.36) }
@@ -69,8 +70,17 @@ enum Motion {
     /// the url pill's glass growing into the address bar and shrinking back
     static var address: Animation { moving(0.25, 0.18) }
 
+    /// a glass control swelling into its menu and settling back
+    static var menu: Animation { moving(0.42, 0.32) }
+
     /// hovers and quick toggles
     static var hover: Animation { moving(0.22, 0.10) }
+
+    /// the agent's mark travelling to where it will act
+    static var sprite: Animation { moving(0.3, 0.12) }
+
+    /// a surface trailing the pointer: no bounce, and slow enough to glide between the pointer's samples
+    static var follow: Animation { moving(0.55, 0) }
 
     /// a window leaving: a short accelerating fade with a slight shrink
     static var exitDuration: Double { reduceMotion ? 0.1 : 0.15 }

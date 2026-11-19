@@ -4,6 +4,7 @@
 import AppKit
 import MachO
 import MetricKit
+import UniformTypeIdentifiers
 import os
 
 /// Reports to the feedback server: what the user writes in Send Feedback, and,
@@ -134,6 +135,35 @@ nonisolated enum Reports {
             "reduceMotion": workspace.accessibilityDisplayShouldReduceMotion,
             "dark": NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua,
         ]
+    }
+
+    // MARK: - Export
+
+    /// what a report would carry, as a file the user saves; nothing is sent
+    @MainActor static func exportLogs(from manager: TabManager) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Artemis Logs \(Date().formatted(date: .numeric, time: .omitted)).json"
+        panel.allowedContentTypes = [.json]
+        panel.message = "Recent errors and crash reports, with your Mac model and versions. Never your pages or browsing."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let diagnostics = snapshot(of: manager)
+        Task {
+            guard await !saveLogs(to: url, diagnostics: diagnostics) else { return }
+            let alert = NSAlert()
+            alert.messageText = "The logs couldn't be saved."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    @concurrent static func saveLogs(to url: URL, diagnostics: [String: any Sendable]) async -> Bool {
+        let crashes = queued(in: pendingCrashes).compactMap { try? Data(contentsOf: $0) }
+        let events = Diagnostics.events(after: .distantPast)
+        guard let body = body(kind: "export", diagnostics: diagnostics, events: events, crashes: crashes),
+            let report = try? JSONSerialization.jsonObject(with: body),
+            let pretty = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        else { return false }
+        return (try? pretty.write(to: url, options: .atomic)) != nil
     }
 
     // MARK: - Sending

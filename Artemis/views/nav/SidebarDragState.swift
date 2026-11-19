@@ -45,6 +45,9 @@ final class SidebarDragState {
     /// the overlay sidebar floats above the web card, so geometry alone isn't enough
     @ObservationIgnored var sidebarFrame: CGRect = .zero
 
+    /// the gutter scroller's thumb in window space, zero when there is none; the resize grip gives way to it
+    var scrollerThumb: CGRect = .zero
+
     /// frames of the space icons at the sidebar's foot, in `contentSpace`, while
     /// the switcher is on screen, so a tab dropped on one moves into that space
     @ObservationIgnored var spaceDropFrames: [UUID: CGRect] = [:]

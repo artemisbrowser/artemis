@@ -7,8 +7,8 @@ import SwiftUI
 /// The window's sidebar and web card as AppKit views, each in its own hosting
 /// view and placed by frame. Sliding the sidebar moves its view without laying
 /// it out, and only the card's host resizes, so no animation frame re-lays out
-/// the whole window.
-struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
+/// the whole window. The agent panel is a third host on the trailing edge, moved the same way.
+struct BrowserShell<Sidebar: View, Content: View, Panel: View>: NSViewRepresentable {
     /// fills what it's offered, sparing SwiftUI an Auto Layout measurement of its subtree
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSViewType, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
@@ -21,9 +21,13 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
         /// hover-only strips at the sidebar host's edges; clicks pass through them
         var sidebarPassLeading: CGFloat
         var sidebarPassTrailing: CGFloat
-        /// where the card's host starts; it runs to the window's trailing edge.
+        /// where the card's host starts; it runs to `contentTrailing` short of the window's trailing edge.
         /// every x is from the leading edge: right to left, the window's right
         var contentX: CGFloat
+        var contentTrailing: CGFloat = 0
+        /// how far the panel's host is in from the trailing edge, and its width
+        var panelInset: CGFloat = 0
+        var panelWidth: CGFloat = 0
     }
 
     /// the state whose changes pick the motion: pinning, peeking, and the Library's rail
@@ -31,25 +35,30 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
         var collapsed: Bool
         var overlayVisible: Bool
         var libraryOpen: Bool
+        var panelOpen: Bool
     }
 
     let sidebar: Sidebar
     let content: Content
+    let panel: Panel
     let placement: Placement
     let cause: Cause
     let revealDuration: Double
+    let sidebarScroll: SidebarScroll
 
     func makeCoordinator() -> Coordinator { Coordinator(cause: cause) }
 
-    func makeNSView(context: Context) -> ShellView<Sidebar, Content> {
-        let view = ShellView(sidebar: sidebar, content: content)
+    func makeNSView(context: Context) -> ShellView<Sidebar, Content, Panel> {
+        let view = ShellView(sidebar: sidebar, content: content, panel: panel)
+        view.sidebarHost.scroll = sidebarScroll
         view.move(to: placement, mirrored: context.environment.layoutDirection == .rightToLeft, spring: nil)
         return view
     }
 
-    func updateNSView(_ view: ShellView<Sidebar, Content>, context: Context) {
+    func updateNSView(_ view: ShellView<Sidebar, Content, Panel>, context: Context) {
         view.sidebarHost.rootView = sidebar
         view.contentHost.rootView = content
+        view.panelHost.rootView = panel
         let last = context.coordinator.cause
         context.coordinator.cause = cause
         var spring: Spring?
@@ -60,6 +69,8 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
             spring = cause.collapsed ? Motion.sidebarRevealSpring(duration: revealDuration) : nil
         } else if cause.libraryOpen != last.libraryOpen {
             spring = Motion.panelSpring
+        } else if cause.panelOpen != last.panelOpen {
+            spring = Motion.sidebarSpring
         }
         if context.transaction.disablesAnimations { spring = nil }
         view.move(to: placement, mirrored: context.environment.layoutDirection == .rightToLeft, spring: spring)
@@ -71,19 +82,24 @@ struct BrowserShell<Sidebar: View, Content: View>: NSViewRepresentable {
     }
 }
 
-final class ShellView<Sidebar: View, Content: View>: NSView {
+final class ShellView<Sidebar: View, Content: View, Panel: View>: NSView {
     let sidebarHost: PassthroughHostingView<Sidebar>
     let contentHost: NSHostingView<Content>
+    let panelHost: NSHostingView<Panel>
 
     private var mirrored = false
     private var sidebarX = Glide()
     private var sidebarWidth = Glide()
     private var contentX = Glide()
+    private var contentTrailing = Glide()
+    private var panelInset = Glide()
+    private var panelWidth: CGFloat = 0
     private var link: CADisplayLink?
 
-    init(sidebar: Sidebar, content: Content) {
+    init(sidebar: Sidebar, content: Content, panel: Panel) {
         sidebarHost = PassthroughHostingView(rootView: sidebar)
         contentHost = NSHostingView(rootView: content)
+        panelHost = NSHostingView(rootView: panel)
         super.init(frame: .zero)
         // frames are set here, so the hosts publish no sizing constraints, and
         // the window's hidden titlebar is no safe area to them
@@ -91,7 +107,10 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
         contentHost.safeAreaRegions = []
         sidebarHost.sizingOptions = []
         sidebarHost.safeAreaRegions = []
+        panelHost.sizingOptions = []
+        panelHost.safeAreaRegions = []
         addSubview(contentHost)
+        addSubview(panelHost)
         addSubview(sidebarHost)
     }
 
@@ -100,7 +119,7 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
 
     override var isFlipped: Bool { true }
 
-    func move(to placement: BrowserShell<Sidebar, Content>.Placement, mirrored: Bool, spring: Spring?) {
+    func move(to placement: BrowserShell<Sidebar, Content, Panel>.Placement, mirrored: Bool, spring: Spring?) {
         let now = CACurrentMediaTime()
         // a sidebar leaving the window drops the keyboard its own fields hold,
         // and nothing else's. deferred: resigning a SwiftUI field writes its state
@@ -117,6 +136,9 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
         // its width would re-lay out the whole sidebar every frame
         sidebarWidth.set(placement.sidebarWidth, spring: nil, at: now)
         contentX.set(placement.contentX, spring: spring, at: now)
+        contentTrailing.set(placement.contentTrailing, spring: spring, at: now)
+        panelInset.set(placement.panelInset, spring: spring, at: now)
+        panelWidth = placement.panelWidth
         self.mirrored = mirrored
         sidebarHost.passLeading = mirrored ? placement.sidebarPassTrailing : placement.sidebarPassLeading
         sidebarHost.passTrailing = mirrored ? placement.sidebarPassLeading : placement.sidebarPassTrailing
@@ -153,6 +175,7 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
 
     private func isSettled(at now: CFTimeInterval) -> Bool {
         sidebarX.isSettled(at: now) && sidebarWidth.isSettled(at: now) && contentX.isSettled(at: now)
+            && contentTrailing.isSettled(at: now) && panelInset.isSettled(at: now)
     }
 
     /// frames land on the pixel grid: an off-grid host renders the page soft
@@ -165,9 +188,11 @@ final class ShellView<Sidebar: View, Content: View>: NSView {
         }
         let sidebar = rect(x: sidebarX.value(at: now), width: sidebarWidth.value(at: now))
         let x = contentX.value(at: now)
-        let content = rect(x: x, width: max(bounds.width - x, 0))
+        let content = rect(x: x, width: max(bounds.width - x - contentTrailing.value(at: now), 0))
+        let panel = rect(x: bounds.width - panelInset.value(at: now), width: panelWidth)
         if sidebarHost.frame != sidebar { sidebarHost.frame = sidebar }
         if contentHost.frame != content { contentHost.frame = content }
+        if panelHost.frame != panel { panelHost.frame = panel }
     }
 }
 
@@ -181,6 +206,11 @@ final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
         guard x >= passLeading, x <= bounds.width - passTrailing else { return nil }
         return super.hitTest(point)
     }
+
+    /// takes the scrolls no view in here took, so none goes on to the page beneath
+    weak var scroll: SidebarScroll?
+
+    override func scrollWheel(with event: NSEvent) { scroll?.wheel(event) }
 }
 
 /// One value moving toward its target on a spring, sampled by time. A retarget

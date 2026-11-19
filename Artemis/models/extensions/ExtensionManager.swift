@@ -32,6 +32,31 @@ enum WebExtensionRuntime {
         store?.identifier ?? Profile.defaultID
     }
 
+    /// Chrome's rule for a web page sending a tab to an extension's page: the extension runs in the tab's
+    /// profile (in incognito, only once allowed there) and its manifest lists the page as web accessible,
+    /// in manifest v3 to `origin`
+    @MainActor
+    static func opens(_ page: URL, to origin: URL?, in profile: UUID, isPrivate: Bool) -> Bool {
+        guard let context = controllers[profile]?.extensionContext(for: page),
+            let ext = ExtensionManager.shared.owner(of: context), !isPrivate || ext.allowsIncognito
+        else { return false }
+        let path = String(page.path().drop { $0 == "/" })
+        let lists = { (resources: Any?) in
+            (resources as? [String] ?? []).contains { resource in
+                let pattern = resource.drop { $0 == "/" }.split(separator: "*", omittingEmptySubsequences: false)
+                    .map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: ".*")
+                return path.range(of: "^\(pattern)$", options: .regularExpression) != nil
+            }
+        }
+        let manifest = ext.webExtension.manifest
+        if manifest["manifest_version"] as? Int == 2 { return lists(manifest["web_accessible_resources"]) }
+        return (manifest["web_accessible_resources"] as? [[String: Any]] ?? []).contains { entry in
+            lists(entry["resources"]) && (entry["matches"] as? [String] ?? []).contains {
+                (try? WKWebExtension.MatchPattern(string: $0))?.matches(origin) == true
+            }
+        }
+    }
+
     static func profile(of controller: WKWebExtensionController) -> UUID? {
         controllers.first { $0.value === controller }?.key
     }
@@ -150,7 +175,10 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     func setAllowsIncognito(_ ext: InstalledExtension, _ allowed: Bool) {
         ext.allowsIncognito = allowed && !ext.refusesIncognito
-        for profile in ext.contexts.keys { gatePageNamespace(in: profile) }
+        for (profile, context) in ext.contexts {
+            gatePageNamespace(in: profile)
+            UserScriptWorld.sync(context, in: profile)
+        }
         persist()
     }
 
@@ -168,7 +196,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     func installFromStore(pageURL: URL) async throws -> InstalledExtension {
         let (tempFile, source) = try await ExtensionStores.download(from: pageURL)
         defer { try? FileManager.default.removeItem(at: tempFile) }
-        return try await register(id: ExtensionInstaller.install(from: tempFile), source: source)
+        return try await register(id: ExtensionInstaller.install(from: tempFile, fromStore: true), source: source)
     }
 
     /// add freshly stored resources as an extension in no profile; a failure removes them
@@ -231,6 +259,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         for tab in openTabs(in: profile) { context.didOpenTab(tab) }
         try? controller.load(context)
         gatePageNamespace(in: profile)
+        UserScriptWorld.sync(context, in: profile)
     }
 
     /// the profile's pages keep `browser` only where an extension running there is externally connectable

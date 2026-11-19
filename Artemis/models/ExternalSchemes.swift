@@ -5,7 +5,7 @@ import AppKit
 
 /// links in schemes WebKit doesn't render (`mailto:`, `zoommtg:`…) and which sites
 /// may hand them to another app. a consent boundary, not a security one: each
-/// site-and-scheme asks first, and is remembered only when the user says so
+/// site-and-scheme asks first, and is trusted only when the user says so, per profile
 @MainActor
 enum ExternalSchemes {
     /// schemes WebKit renders, redirects, or resolves internally
@@ -32,6 +32,9 @@ enum ExternalSchemes {
         return !internallyHandled.contains(scheme) && !blocked.contains(scheme)
     }
 
+    /// hands a link to its app; the self-test swaps it, so no app opens
+    static var open: (URL) -> Void = { NSWorkspace.shared.open($0) }
+
     /// display name of the app macOS would open this with; nil when nothing claims it
     static func handlerName(for url: URL) -> String? {
         guard let app = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
@@ -43,19 +46,34 @@ enum ExternalSchemes {
 
     private static var allowed: Set<String> = load()
     private static let file = "external-schemes.json"
+    /// in place of a scheme: the site may open whichever app a link of its resolves to
+    static let everyApp = "*"
 
-    private static func key(site: String, scheme: String) -> String {
-        "\(site.lowercased())|\(scheme.lowercased())"
+    private static func key(_ profile: UUID, _ site: String, _ scheme: String) -> String {
+        "\(profile.uuidString)|\(site.lowercased())|\(scheme.lowercased())"
     }
 
     /// an empty site, a page whose asker is unknown, is never allowed
-    static func isAllowed(site: String, scheme: String) -> Bool {
-        !site.isEmpty && allowed.contains(key(site: site, scheme: scheme))
+    static func isAllowed(site: String, scheme: String, in profile: UUID) -> Bool {
+        !site.isEmpty && !allowed.isDisjoint(with: [key(profile, site, scheme), key(profile, site, everyApp)])
     }
 
-    static func allow(site: String, scheme: String) {
+    static func allow(site: String, scheme: String, in profile: UUID) {
         guard !site.isEmpty else { return }
-        allowed.insert(key(site: site, scheme: scheme))
+        allowed.insert(key(profile, site, scheme))
+        save()
+    }
+
+    /// the schemes `site` is trusted with in `profile`, `everyApp` among them when it has that
+    static func grants(site: String, in profile: UUID) -> [String] {
+        let prefix = key(profile, site, "")
+        return allowed.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }.sorted()
+    }
+
+    /// drops one grant of `site`'s in `profile`, or all of them when `scheme` is nil
+    static func forget(site: String, scheme: String? = nil, in profile: UUID) {
+        let prefix = key(profile, site, scheme ?? "")
+        allowed = allowed.filter { scheme == nil ? !$0.hasPrefix(prefix) : $0 != prefix }
         save()
     }
 
@@ -68,7 +86,10 @@ enum ExternalSchemes {
 
     private static func load() -> Set<String> {
         let url = AppStorageLocation.file(file)
-        return Set((AppStorageLocation.loadDurable([String].self, from: url) ?? []).filter { !$0.hasPrefix("|") })
+        // profile|site|scheme, each present
+        return Set((AppStorageLocation.loadDurable([String].self, from: url) ?? []).filter {
+            $0.split(separator: "|").count == 3
+        })
     }
 
     private static func save(keepsBackup: Bool = true) {

@@ -26,7 +26,7 @@ struct FindBar: View {
     @State private var answerTask: Task<Void, Never>?
 
     private var canAsk: Bool {
-        Intelligence.isOn(Intelligence.askPageKey) && Intelligence.isReady
+        Intelligence.canRun(Intelligence.askPageKey, inPrivate: tab.isPrivate)
     }
 
     var body: some View {
@@ -249,6 +249,7 @@ struct FindBar: View {
     }
 
     private func recall() {
+        guard canAsk else { return }
         answerTask?.cancel()
         reply = nil
         isRecalling = true

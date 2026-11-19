@@ -15,9 +15,11 @@ enum PasswordManagerBridge {
     /// `BiometricsStatus.PlatformUnsupported` in bitwarden/clients, which hides the biometrics option
     private static let biometricsPlatformUnsupported = 5
 
-    /// nil, the host missing, for a sender without both clipboard permissions, which Bitwarden declares
+    /// nil, the host missing, for a sender without both clipboard permissions, which Bitwarden declares,
+    /// and for an unverified package
     static func handle(_ message: [String: Any], from context: WKWebExtensionContext) -> Any? {
-        guard ExtensionData.declares("clipboardRead", context), context.hasPermission(.clipboardWrite)
+        guard ExtensionData.declares("clipboardRead", context), context.hasPermission(.clipboardWrite),
+            ExtensionInstaller.packageOrigin(forStoredID: context.uniqueIdentifier) != ExtensionInstaller.unverifiedXPI
         else { return nil }
         guard let command = message["command"] as? String else { return [:] }
         switch command {

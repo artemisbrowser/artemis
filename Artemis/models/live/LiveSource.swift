@@ -218,7 +218,7 @@ extension LiveSource {
     /// pages on `host` or a subdomain, `www.` aside, newest first; the site's front page is left out
     private static func history(on host: String, in space: Space) -> LiveOutcome {
         let site = host.lowercased().hasPrefix("www.") ? String(host.lowercased().dropFirst(4)) : host.lowercased()
-        let rows = BrowserCore.shared.profile(of: space).history.entries
+        let rows = BrowserCore.shared.profile(of: space).history.entries(hiding: SpaceLock.shared.lockedIDs)
             .filter { $0.autofillHost == site || $0.autofillHost.hasSuffix("." + site) }
             .filter { $0.url.path().count > 1 }
             .sorted { $0.lastVisited > $1.lastVisited }

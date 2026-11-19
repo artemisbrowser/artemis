@@ -28,7 +28,7 @@ nonisolated enum BrowserKeychain {
     /// ends the lookup. Only when every candidate is missing are item attributes
     /// (no prompt) searched for a `… Safe Storage`/`… Storage Key` naming `browser`.
     static func key(for candidates: [KeychainItem], browser: String) throws -> Data {
-        guard !ExtensionLab.isRequested else { throw Failure.noKey }
+        guard !AppStorageLocation.isTestRun else { throw Failure.noKey }
         for candidate in candidates {
             switch passphrase(candidate) {
             case .success(let secret): return try derive(from: secret)

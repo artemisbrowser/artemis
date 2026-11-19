@@ -63,11 +63,19 @@ final class BoostStore {
         return boost
     }
 
-    /// merge in Boosts from a backup, skipping hosts already covered
+    /// merge in Boosts from a backup, skipping hosts already covered and any `inject` would
+    /// match across sites: an empty host, or a public suffix
     @discardableResult
     func merge(_ incoming: [Boost]) -> Int {
         let hosts = Set(boosts.map(\.host))
-        let fresh = incoming.filter { !hosts.contains($0.host) }
+        let fresh = incoming.compactMap { boost -> Boost? in
+            var boost = boost
+            boost.host = Self.host(of: boost.host)
+            let refused =
+                boost.host.isEmpty || hosts.contains(boost.host)
+                || PasswordStore.isPublicSuffix?(boost.host as CFString).boolValue == true
+            return refused ? nil : boost
+        }
         guard !fresh.isEmpty else { return 0 }
         boosts.append(contentsOf: fresh)
         persist()

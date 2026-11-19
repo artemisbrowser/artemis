@@ -79,6 +79,17 @@ nonisolated enum FilterConverter {
             overCeilingCount: converted.discardedSafariRules)
     }
 
+    /// one rule blocking every load on a page whose own host is in `source`, or nil when it
+    /// names none. WebKit has no disjunction, so only the page's domain can be matched as a set
+    static func pageBlock(_ source: String) -> String? {
+        let hosts = blockedHosts(in: source).sorted().map { "*" + $0 }
+        let rule = ContentRule(trigger: .init(urlFilter: ".*", ifDomain: hosts), action: .init(type: "block"))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard !hosts.isEmpty, let data = try? encoder.encode([rule]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// the hosts a list blocks outright (`||host^`, no path, no `domain=`), for attributing
     /// a blocked request to the list that recognised it
     static func blockedHosts(in source: String) -> Set<String> {

@@ -98,13 +98,19 @@ final class BrowserTab: NSObject, Identifiable {
     @ObservationIgnored private var openerPress: Date?
     /// the press that last let a download through; each press lets through one
     @ObservationIgnored private var spentDownloadGesture = Date.distantPast
+    @ObservationIgnored private var spentLaunchGesture = Date.distantPast
+    /// true from a load the app started, or the press that opened this page, until an app launch spends it
+    @ObservationIgnored private var launchOwed = false
     /// frames (`_WKFrameHandle`) whose latest navigation WebKit counts as the user's
     @ObservationIgnored private var userInitiatedFrames: Set<NSObject> = []
-    /// seconds a press in this tab's page stays good for one download
-    private static let downloadGestureWindow: TimeInterval = 10
+    /// seconds a press in this tab's page stays good for one download and one app launch
+    private static let gestureWindow: TimeInterval = 10
     /// human-readable load failure, nil when fine; drives the error page
     private(set) var loadError: String?
     static let crashLoopError = "Artemis stopped reloading it after it crashed twice in a minute."
+    static let webArchiveError = "Web archives open only from a file on this Mac. Download it, then open the file."
+    /// set while the tab shows a local web archive, in a web view of the reader's own
+    private(set) var reader: WebArchiveReader?
     private(set) var canGoBack = false
     private(set) var canGoForward = false
 
@@ -138,6 +144,9 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// the connected coding agent that has driven this tab; nil once it disconnects
     var agentName: String?
+    /// an agent task's say over each navigation here, with the time of the user's own press when one
+    /// started it; false cancels it
+    var agentGate: ((WKNavigationAction, Date?) -> Bool)?
 
     /// set through `navigator.setAppBadge`, and dropped once the tab leaves `appBadgeOrigin`
     private(set) var appBadge: AppBadge?
@@ -717,6 +726,7 @@ final class BrowserTab: NSObject, Identifiable {
         abandonDialog()
         BrowserCore.shared.miniPlayer.exitIfActive(for: self)
         pageUnderExtension = nil
+        reader = nil
         observations.forEach { $0.invalidate() }
         observations = []
         webView = ArtemisWebView(frame: .zero, configuration: configuration)
@@ -879,9 +889,10 @@ final class BrowserTab: NSObject, Identifiable {
     }
 
     /// the blob worth writing down: the live page's, or the one held while
-    /// asleep or not yet restored (an unloaded web view's state is empty)
+    /// asleep or not yet restored (an unloaded web view's state is empty). none for a saved copy,
+    /// whose pages only its reader can load
     var persistableInteractionState: Any? {
-        isHibernated || pendingURL != nil ? savedInteractionState : webView.interactionState
+        isHibernated || pendingURL != nil ? savedInteractionState : reader == nil ? webView.interactionState : nil
     }
 
     /// set by navigation; a debounced save writes only tabs that have it
@@ -1029,17 +1040,21 @@ final class BrowserTab: NSObject, Identifiable {
     // MARK: - Navigation
 
     func load(_ url: URL) {
+        // WebKit runs a loaded `javascript:` URL in the current document's origin
+        guard url.scheme?.lowercased() != "javascript" else { return }
         debugLog("tab load: \(url.absoluteString)")
+        launchOwed = true
         lastAttemptedURL = url
         requestedURL = url
         loadError = nil
         lastAccessed = Date()
         addressText = url.absoluteString
+        if url.isFileURL, url.pathExtension.lowercased() == "webarchive" { return openArchive(url) }
         let underneath = pageUnderExtension ?? webView.url
         if let configuration = extensionPageConfiguration(for: url) {
             replaceWebView(with: configuration)
             pageUnderExtension = underneath
-        } else if pageUnderExtension != nil, url.scheme?.hasSuffix("-extension") != true {
+        } else if reader != nil || pageUnderExtension != nil && url.scheme?.hasSuffix("-extension") != true {
             replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore))
         }
         // a local page reads the home folder it sits in, or else its own folder, so its
@@ -1050,6 +1065,18 @@ final class BrowserTab: NSObject, Identifiable {
             ? webView.loadFileURL(
                 url, allowingReadAccessTo: url.path.hasPrefix(home.path + "/") ? home : url.deletingLastPathComponent())
             : webView.load(URLRequest(url: url))
+    }
+
+    private func openArchive(_ file: URL) {
+        do {
+            let reader = try WebArchiveReader(file: file)
+            replaceWebView(with: reader.configuration())
+            self.reader = reader
+            requestedNavigation = webView.load(URLRequest(url: reader.page))
+        } catch {
+            if reader != nil { replaceWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore)) }
+            loadError = (error as? WebArchiveReader.Failure ?? .unreadable).message
+        }
     }
 
     /// an extension's page loads only in a web view built from its context's configuration
@@ -1099,8 +1126,7 @@ final class BrowserTab: NSObject, Identifiable {
             case .webArchive: "webarchive"
             case .fullPageImage: "png"
             }
-        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        let file = DownloadItem.uniqueURL(for: folder.appendingPathComponent("\(name.isEmpty ? "Page" : name).\(ext)"))
+        let file = DownloadItem.uniqueURL(for: DownloadManager.defaultFolder.appendingPathComponent("\(name.isEmpty ? "Page" : name).\(ext)"))
         // claimed before the awaits below, so an export started meanwhile picks another name
         FileManager.default.createFile(atPath: file.path, contents: nil)
         do {
@@ -1228,7 +1254,7 @@ final class BrowserTab: NSObject, Identifiable {
     }
 
     private func adoptCommittedURL() {
-        let committed = committedURL
+        let committed = reader.map(\.file) ?? committedURL
         guard committed != url else { return }
         url = committed
         if let committed { addressText = committed.absoluteString }
@@ -1412,6 +1438,7 @@ extension BrowserTab: WKNavigationDelegate {
             openerOrigin = nil
         }
         serverTrusts = [:]
+        guard reader == nil else { return }
         webView.setValue(true, forKey: "drawsBackground")
         webView.underPageBackgroundColor = nil
         if let exceptionHost, webView.url?.host() != exceptionHost { self.exceptionHost = nil }
@@ -1426,10 +1453,10 @@ extension BrowserTab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         debugLog("didFinish url=\(webView.url?.absoluteString ?? "nil")")
         loadError = nil
+        guard reader == nil else { return }
         fetchFavicon()
         probeReaderAvailability()
         PasswordAutofill.shared.pageDidFinish(in: self)
-        BoostStore.shared.inject(into: webView, url: webView.url)
         Task { await translateIfRuled() }
         if let url = webView.url, url.scheme == "http" || url.scheme == "https" {
             onDidNavigate?(url, webView.title?.isEmpty == false ? webView.title! : (url.host() ?? url.absoluteString))
@@ -1466,11 +1493,26 @@ extension BrowserTab: WKNavigationDelegate {
         handleLoadError(error)
     }
 
+    /// WebKit calls this in place of the public method. `reason` is a `_WKProcessTerminationReason`:
+    /// 0 memory limit, 1 CPU limit, 2 asked for, 3 crash, 4 shared-process crash limit; 3 and 4 are reported
+    @objc(_webView:webContentProcessDidTerminateWithReason:)
+    func webView(_ webView: WKWebView, processEndedWithReason reason: Int) {
+        if reason == 3 || reason == 4 {
+            let kind = isEssential ? "favourite" : isPinned ? "pinned tab" : "tab"
+            let isShown = BrowserWindows.shared.allManagers.contains { $0.onScreenTabIDs.contains(id) }
+            Diagnostics.record(
+                area: "webcontent",
+                message: "web content process \(reason == 4 ? "hit the crash limit" : "crashed"): \(kind), "
+                    + (isShown ? "on screen" : "in the background"),
+                inPrivate: isPrivate)
+        }
+        webViewWebContentProcessDidTerminate(webView)
+    }
+
     /// a page on screen reloads at once; one off screen reloads when next shown.
     /// a second crash within a minute stops the loop at the error page
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         debugLog("web content process terminated: \(url?.absoluteString ?? "-")")
-        Diagnostics.record(area: "webcontent", message: "web content process ended", inPrivate: isPrivate)
         abandonDialog()
         resetFrameState()
         let now = Date()
@@ -1534,6 +1576,7 @@ extension BrowserTab: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         preferences: WKWebpagePreferences
     ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        if let reader { return (decide(navigationAction, in: reader), preferences) }
         let source = Self.sourceFrame(of: navigationAction)
         let userInitiated =
             navigationAction.responds(to: Selector(("_isUserInitiated")))
@@ -1546,6 +1589,11 @@ extension BrowserTab: WKNavigationDelegate {
             && navigationAction.value(forKey: "_isRedirect") as? Bool == true
         if mainFrame, !redirect { userAgentDecisions += 1 }
         let decision = userAgentDecisions
+        // a script Artemis runs in the page carries a user gesture too; only a press in the view is the user's
+        let pressed = userInitiated ? UserGesture.recent(in: webView, within: 2) : nil
+        if let agentGate, navigationAction.request.url != requestedURL, !agentGate(navigationAction, pressed) {
+            return (.cancel, preferences)
+        }
         // a link that asks to be downloaded is, whatever is held
         if navigationAction.shouldPerformDownload {
             let allowed = await mayDownload(
@@ -1579,7 +1627,19 @@ extension BrowserTab: WKNavigationDelegate {
             // the asking frame's host; a new window's first load may name none, so its opener's
             let asker = source?.securityOrigin.host ?? ""
             let site = asker.isEmpty ? openerOrigin.flatMap { URL(string: $0)?.host() } ?? "" : asker
-            if fromMainFrame, ExternalSchemes.canOffer(url) { offerExternal(url, site: site) }
+            if fromMainFrame, ExternalSchemes.canOffer(url), spendLaunch() { offerExternal(url, site: site) }
+            return (.cancel, preferences)
+        }
+        // an extension's page a web page may open loads in a view of the extension's, a new one: nothing of
+        // the page left comes along. the page is the tab's own when its main frame asks; a tab that has
+        // shown nothing has its opener, else the address it was sent to
+        if mainFrame, source?.isMainFrame != false, pageUnderExtension == nil, let url = navigationAction.request.url,
+            url != lastAttemptedURL, url.scheme?.hasSuffix("-extension") == true,
+            WebExtensionRuntime.opens(
+                url, to: committedURL ?? openerOrigin.flatMap { URL(string: $0) } ?? lastAttemptedURL,
+                in: ProfileStore.proxyProfile(of: dataStore), isPrivate: isPrivate)
+        {
+            DispatchQueue.main.async { [weak self] in self?.load(url) }
             return (.cancel, preferences)
         }
         // a site an extension's page goes to loads in a browser web view, not the extension's
@@ -1611,6 +1671,21 @@ extension BrowserTab: WKNavigationDelegate {
         return (.allow, preferences)
     }
 
+    /// the saved copy loads only what the archive holds; a link the person clicks opens the live page in a tab
+    private func decide(_ action: WKNavigationAction, in reader: WebArchiveReader) -> WKNavigationActionPolicy {
+        guard let url = action.request.url else { return .cancel }
+        if reader.serves(url), action.navigationType != .linkActivated || action.targetFrame?.isMainFrame == false {
+            return .allow
+        }
+        let inPage = url.fragment != nil && url.absoluteString.prefix { $0 != "#" } == reader.page.absoluteString
+        if inPage { return .allow }
+        if action.navigationType == .linkActivated, url.scheme == "https" || url.scheme == "http" {
+            let middle = action.buttonNumber == 1 << 2
+            onOpenLink?(url, LinkClick.route(action.modifierFlags, middle: middle) ?? .foregroundTab)
+        }
+        return .cancel
+    }
+
     /// sets the UA for `disguised`, or else for the committed page
     private func matchUserAgent(_ disguised: Bool? = nil) {
         let on = disguised ?? committedDisguised
@@ -1636,6 +1711,20 @@ extension BrowserTab: WKNavigationDelegate {
             CertificateTrust.noteStrictTransport(header, host: host, ephemeral: isPrivate)
         }
 
+        if reader != nil { return navigationResponse.canShowMIMEType ? .allow : .cancel }
+        // a web archive's page would run as the site the file names: only a local one opens, in the reader
+        if response.mimeType?.lowercased() == "application/x-webarchive" {
+            if navigationResponse.isForMainFrame, let url = response.url {
+                lastAttemptedURL = url
+                if url.isFileURL {
+                    DispatchQueue.main.async { [weak self] in self?.openArchive(url) }
+                } else {
+                    loadError = Self.webArchiveError
+                }
+            }
+            return .cancel
+        }
+
         // an attachment downloads even when its mime type is displayable
         let attachment =
             http?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased().contains("attachment") == true
@@ -1659,13 +1748,14 @@ extension BrowserTab: WKNavigationDelegate {
             navigationResponse.responds(to: Selector(("_frame")))
             ? Self.handle(of: navigationResponse.value(forKey: "_frame") as? WKFrameInfo) : nil
         let userInitiated = frame.flatMap { userInitiatedFrames.remove($0) } != nil
-        let started = navigationResponse.isForMainFrame && requestedURL != nil
+        // a load an agent may have started is asked about like the page's own
+        let started = navigationResponse.isForMainFrame && requestedURL != nil && agentName == nil
         let file = response.suggestedFilename ?? response.url?.lastPathComponent ?? ""
         return await mayDownload(file, from: initiator, userInitiated: userInitiated, appStarted: started)
             ? .download : .cancel
     }
 
-    /// a download goes ahead for a load the app started, on the site's allow, or on a press in this
+    /// a download goes ahead for a load the app started, on the site's allow where no agent drives the tab, or on a press in this
     /// tab's page, or the opener's press that opened it, that no other download spent. a frame from another
     /// origin is never asked about, and its press counts only on a navigation WebKit saw the user start
     private func mayDownload(
@@ -1673,8 +1763,8 @@ extension BrowserTab: WKNavigationDelegate {
     ) async -> Bool {
         let site = SitePermissionStore.originString(committedURL) ?? openerOrigin
         let decision = site.flatMap { SitePermissionStore.shared.decision(for: $0, .downloads, ephemeral: isPrivate) }
-        let press = (UserGesture.recent(in: webView, within: Self.downloadGestureWindow) ?? openerPress).flatMap {
-            $0 > spentDownloadGesture && Date().timeIntervalSince($0) < Self.downloadGestureWindow ? $0 : nil
+        let press = (UserGesture.recent(in: webView, within: Self.gestureWindow) ?? openerPress).flatMap {
+            $0 > spentDownloadGesture && Date().timeIntervalSince($0) < Self.gestureWindow ? $0 : nil
         }
         guard decision != .deny else {
             // a file the person asked for shows as blocked; a page's own attempts stay silent
@@ -1689,7 +1779,7 @@ extension BrowserTab: WKNavigationDelegate {
             return true
         }
         guard !crossOrigin else { return false }
-        if decision == .allow { return true }
+        if decision == .allow, agentName == nil { return true }
         guard let site, let manager else { return false }
         return await withCheckedContinuation { asked in
             manager.requestPermission([.downloads], origin: site, tab: self) { asked.resume(returning: $0 == .allow) }
@@ -1769,12 +1859,17 @@ extension BrowserTab: WKUIDelegate {
         let opened = onRequestNewTab?(configuration, windowFeatures)
         if let tab = opened?.navigationDelegate as? BrowserTab {
             tab.openerOrigin = Self.sourceFrame(of: navigationAction).map { SitePermissionStore.originString($0.securityOrigin) }
+            tab.agentGate = agentGate
             // a link's press moves to the page it opens and still lets through one file; a script's stays here
             if navigationAction.navigationType == .linkActivated,
-                let press = UserGesture.recent(in: webView, within: Self.downloadGestureWindow), press > spentDownloadGesture
+                let press = UserGesture.recent(in: webView, within: Self.gestureWindow), press > spentDownloadGesture
             {
                 tab.openerPress = press
                 spentDownloadGesture = press
+            }
+            if let press = UserGesture.recent(in: webView, within: Self.gestureWindow), press > spentLaunchGesture {
+                tab.launchOwed = true
+                spentLaunchGesture = press
             }
         }
         return opened
@@ -1913,42 +2008,51 @@ extension BrowserTab: WKUIDelegate {
         }
     }
 
+    /// one app launch for the owner's acts so far: a load the app started, the press that opened
+    /// this page, a press in it within the window. a launch spends them all
+    private func spendLaunch() -> Bool {
+        let press = UserGesture.recent(in: webView, within: Self.gestureWindow)
+        guard launchOwed || press.map({ $0 > spentLaunchGesture }) == true else { return false }
+        launchOwed = false
+        if let press { spentLaunchGesture = press }
+        return true
+    }
+
     /// hand a link in a scheme WebKit can't render to its app, once the user agrees. `site` is the
     /// host of the frame that asked, empty when none is known
     @MainActor
     private func offerExternal(_ url: URL, site: String) {
         let scheme = url.scheme?.lowercased() ?? ""
-        guard !ExternalSchemes.isAllowed(site: site, scheme: scheme) else {
-            NSWorkspace.shared.open(url)
-            return
-        }
+        // a link nothing installed opens is dropped unasked
+        guard let appName = ExternalSchemes.handlerName(for: url) else { return }
+        let trusted = !isPrivate
+            && ExternalSchemes.isAllowed(site: site, scheme: scheme, in: ProfileStore.proxyProfile(of: dataStore))
+        guard !trusted else { return ExternalSchemes.open(url) }
         guard pendingDialog == nil else { return }
-        let appName = ExternalSchemes.handlerName(for: url)
         pendingDialog = PageDialogRequest(
             kind: .openExternal(scheme: scheme, appName: appName), message: "",
             host: site,
-            // nothing is offered to remember when nothing would open, from incognito, or for no site
-            checkbox: appName == nil || isPrivate || site.isEmpty ? nil : .rememberChoice
+            // incognito and a page with no site ask every time
+            checkbox: isPrivate || site.isEmpty ? nil : .rememberChoice
         ) { [weak self] answer in
             self?.pendingDialog = nil
             guard answer.confirmed else { return }
-            NSWorkspace.shared.open(url)
+            ExternalSchemes.open(url)
         }
     }
 
-    /// answer from the panel. `silence` is the "stop showing these" checkbox
+    /// answer from the panel. `checked` is the "stop showing these" checkbox; `trustEveryApp` is the
+    /// trust picked for an app link: false for this app, true for every app, nil for this once
     @MainActor
     func answerDialog(
-        _ confirmed: Bool, text: String = "", secondary: String = "", checked: Bool = false
+        _ confirmed: Bool, text: String = "", secondary: String = "", checked: Bool = false, trustEveryApp: Bool? = nil
     ) {
         guard let dialog = pendingDialog else { return }
-        switch (dialog.checkbox, checked) {
-        case (.silencePage, true): suppressesDialogs = true
-        case (.rememberChoice, true):
-            if case .openExternal(let scheme, _) = dialog.kind, confirmed {
-                ExternalSchemes.allow(site: dialog.host, scheme: scheme)
-            }
-        default: break
+        if dialog.checkbox == .silencePage, checked { suppressesDialogs = true }
+        if dialog.checkbox == .rememberChoice, confirmed, let trustEveryApp, case .openExternal(let scheme, _) = dialog.kind {
+            ExternalSchemes.allow(
+                site: dialog.host, scheme: trustEveryApp ? ExternalSchemes.everyApp : scheme,
+                in: ProfileStore.proxyProfile(of: dataStore))
         }
         pendingDialog = nil
         dialog.answer(confirmed, text: text, secondary: secondary)

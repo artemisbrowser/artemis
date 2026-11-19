@@ -8,8 +8,12 @@ struct MainView: View {
     @Environment(TooltipState.self) private var tooltipState
     @Environment(\.openSettings) private var openSettings
     @AppStorage("sidebarWidth") private var sidebarWidth = 250.0
+    @AppStorage("agentPanelWidth") private var agentPanelWidth = 360.0
 
     private static let sidebarWidthRange = 160.0...450.0
+    private static let agentPanelWidthRange = 300.0...560.0
+    /// a page narrower than this beside the agent panel keeps its width, and the panel floats over it
+    private static let narrowestPageBesidePanel: CGFloat = 500
     /// how far the overlay's hover region hangs off its leading edge, so the
     /// peek's bounce past the window edge still counts as over the sidebar
     private static let overlayOvershootSlack: CGFloat = 12
@@ -66,15 +70,16 @@ struct MainView: View {
         let _ = Bench.tick("MainView")
         let _ = Bench.markOnce("MainView: first body")
         // the sidebar floats over the card; both are AppKit-placed hosts. the
-        // real traffic lights live inside the sidebar, so they move with its view
+        // traffic lights live inside the sidebar, so they move with its view
         BrowserShell(
             sidebar: hosted(sidebarRig),
             content: hosted(cardArea),
+            panel: hosted(agentPanel),
             placement: shellPlacement,
             cause: .init(
                 collapsed: isSidebarCollapsed, overlayVisible: isSidebarOverlayVisible,
-                libraryOpen: tabManager.isLibraryOpen),
-            revealDuration: sidebarRevealDuration)
+                libraryOpen: tabManager.isLibraryOpen, panelOpen: tabManager.isAgentPanelVisible),
+            revealDuration: sidebarRevealDuration, sidebarScroll: tabManager.sidebarScroll)
         .onChange(of: drag.isDragging) { _, dragging in
             if dragging { startContentDragMonitor() } else { stopContentDragMonitor() }
         }
@@ -105,6 +110,17 @@ struct MainView: View {
             }
         }
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
+        // the panel's edge, gripped as the sidebar's is: the whole rim when it is wide enough, else astride the seam
+        .overlay(alignment: .trailing) {
+            if tabManager.isAgentPanelVisible {
+                let inRim = isAgentPanelDocked && rim >= WindowChrome.minGrabWidth
+                SidebarResizeHandle(width: $agentPanelWidth, range: Self.agentPanelWidthRange)
+                    // a drag away from the window's edge widens the panel
+                    .environment(\.layoutDirection, direction == .leftToRight ? .rightToLeft : .leftToRight)
+                    .frame(width: inRim ? rim : Self.seamGrabWidth)
+                    .padding(.trailing, agentPanelWidth - (inRim ? 0 : Self.seamGrabWidth / 2))
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             // the sidebar's download pill is off-screen with it, so downloads show over the page's corner
             if isSidebarCollapsed, !isSidebarOverlayVisible {
@@ -178,6 +194,17 @@ struct MainView: View {
         .onChange(of: tabManager.sidebarPeekRequest) {
             if isSidebarCollapsed { isSidebarOverlayVisible = true }
         }
+        .onChange(of: tabManager.sidebarGlanceRequest) {
+            guard isSidebarCollapsed else { return }
+            isSidebarOverlayVisible = true
+            collapseDismissTask?.cancel()
+            collapseDismissTask = Task {
+                try? await Task.sleep(for: .seconds(2))
+                if !Task.isCancelled, !overlayHeld, !isMenuOpen, !tabManager.isSidebarPopoverOpen {
+                    isSidebarOverlayVisible = false
+                }
+            }
+        }
         .onChange(of: tabManager.isSidebarPopoverOpen) { _, open in
             if !open { releaseOverlayHold() }
         }
@@ -202,6 +229,7 @@ struct MainView: View {
         // each overlay animates only its own subtree: a root-level animation
         // would also animate whatever else changes in the same transaction
         .overlay { OnboardingOverlay() }
+        .overlay { WhatsNewOverlay() }
         .overlay { CommandBarOverlay() }
         // ⌘L, a new blank tab, first launch
         .onChange(of: tabManager.urlFieldFocusRequest) { tabManager.editAddress() }
@@ -229,6 +257,10 @@ struct MainView: View {
         .overlay {
             liveFolderOverlay
                 .animation(Motion.fade, value: tabManager.liveFolderDraft == nil)
+        }
+        .overlay {
+            giftOverlay
+                .animation(Motion.pop, value: tabManager.isGiftVisible)
         }
         .background {
             WindowBackdrop(sidebarPinned: !isSidebarCollapsed)
@@ -388,6 +420,21 @@ struct MainView: View {
         }
     }
 
+    /// Gift Artemis to a Friend; the scrim closes it
+    private var giftOverlay: some View {
+        ZStack {
+            if tabManager.isGiftVisible {
+                Color.black.opacity(0.25)
+                    .contentShape(Rectangle())
+                    .onTapGesture { tabManager.isGiftVisible = false }
+                    .transition(.opacity)
+                GiftCard(manager: tabManager)
+                    .offset(y: -20)
+                    .transition(Motion.grow(from: 0.9))
+            }
+        }
+    }
+
     /// a menu or popover that held the overlay open has let go: dismiss it if the
     /// cursor wandered off meanwhile. the delay lets a follow-on popover claim it
     private func releaseOverlayHold() {
@@ -533,7 +580,7 @@ struct MainView: View {
     /// where the shell puts the sidebar and the card. the sidebar host is as wide
     /// as the rig ever gets, so pinning or opening the Library never resizes it;
     /// past the grip it passes clicks through unless a folder's peek hangs there
-    private var shellPlacement: BrowserShell<AnyView, AnyView>.Placement {
+    private var shellPlacement: BrowserShell<AnyView, AnyView, AnyView>.Placement {
         let slack = Self.overlayOvershootSlack
         let rig = shownSidebarWidth
         let peek = tabManager.isFolderPeekOpen ? FolderPeek.width + 10 : 0
@@ -545,14 +592,42 @@ struct MainView: View {
             sidebarWidth: hostWidth,
             sidebarPassLeading: slack,
             sidebarPassTrailing: peek > 0 ? 0 : hostWidth - (slack + rig + rigGripWidth),
-            contentX: isSidebarCollapsed ? (isEdgeToEdge ? 0 : edgeInset) : pinnedFootprint)
+            contentX: contentX,
+            contentTrailing: isAgentPanelDocked ? agentPanelWidth : 0,
+            panelInset: tabManager.isAgentPanelVisible ? agentPanelWidth : 0,
+            panelWidth: agentPanelWidth)
+    }
+
+    private var contentX: CGFloat { isSidebarCollapsed ? (isEdgeToEdge ? 0 : edgeInset) : pinnedFootprint }
+
+    /// the panel takes its width from the page rather than floating over it
+    private var isAgentPanelDocked: Bool {
+        tabManager.isAgentPanelVisible && !isAgentPanelFloating
+    }
+
+    private var isAgentPanelFloating: Bool {
+        windowSize.width - contentX - agentPanelWidth - rim < Self.narrowestPageBesidePanel
+    }
+
+    /// on the window edge opposite the sidebar: docked on the backdrop, or floating with the overlay sidebar's glass
+    private var agentPanel: some View {
+        AgentPanel()
+            .background {
+                if isAgentPanelFloating {
+                    OverlayPanelBackground(width: agentPanelWidth, windowWidth: windowSize.width)
+                        .environment(\.layoutDirection, sidebarOnRight ? .leftToRight : .rightToLeft)
+                }
+            }
+            .environment(\.chromeInk, tabManager.blendedInk)
+            .environment(\.colorScheme, RGBA(tabManager.blendedInk).brightness < 0.5 ? .light : .dark)
+            .environment(\.layoutDirection, .leftToRight)
     }
 
     /// a modal over the window takes the pointer from everything under it
     private var isModalOverlayUp: Bool {
         tabManager.peekTab != nil || tabManager.isSpaceCreatorVisible
             || tabManager.importer != nil
-            || tabManager.feedback != nil || tabManager.liveFolderDraft != nil
+            || tabManager.feedback != nil || tabManager.liveFolderDraft != nil || tabManager.isGiftVisible
     }
 
     /// a hosted region gets none of the window root's environment on its own
@@ -607,6 +682,8 @@ struct MainView: View {
         SidebarResizeHandle(
             width: $sidebarWidth,
             range: Self.sidebarWidthRange,
+            scrollerThumb: { [drag] in drag.scrollerThumb },
+            scroll: tabManager.sidebarScroll,
             onDraggingChanged: { dragging in
                 isResizingSidebar = dragging
                 if !dragging, !overlayHeld {
@@ -624,9 +701,10 @@ struct MainView: View {
     private var cardShape: UnevenRoundedRectangle {
         let radius = isEdgeToEdge ? 0 : WindowChrome.cardRadius(inset: edgeInset)
         let near = radius == 0 && !isSidebarCollapsed ? WindowChrome.outerWindowRadius : radius
+        let far = radius == 0 && isAgentPanelDocked ? WindowChrome.outerWindowRadius : radius
         return UnevenRoundedRectangle(
             topLeadingRadius: near, bottomLeadingRadius: near,
-            bottomTrailingRadius: radius, topTrailingRadius: radius, style: .continuous)
+            bottomTrailingRadius: far, topTrailingRadius: far, style: .continuous)
     }
 
     @ViewBuilder
@@ -951,6 +1029,8 @@ private struct CardStack: View {
                 MiniPlayerAway()
             } else if let tab = shown, tab.loadError != nil {
                 ErrorPage(tab: tab)
+            } else if let tab = shown, tab.reader != nil {
+                SavedCopyLabel(tab: tab)
             } else if shown?.url == nil {
                 // an empty space reveals the window's backdrop, with the mark's glass in the backdrop's scheme
                 if isEmptySpace {

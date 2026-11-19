@@ -68,7 +68,7 @@ enum BackupIO {
         panel.nameFieldStringValue = "Artemis \(Date().formatted(date: .numeric, time: .omitted)).\(fileExtension)"
         panel.allowedContentTypes = [.json]
         panel.allowsOtherFileTypes = true
-        panel.message = "Everything: spaces, tabs, favourites, Boosts and settings."
+        panel.message = "Everything: spaces, tabs, favourites and settings."
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let archive = BackupArchive.make(from: manager)
@@ -104,6 +104,31 @@ enum BackupIO {
         return nil
     }
 
+    /// pick a backup file and, once confirmed, restore it over the current spaces
+    static func chooseAndRestore(into manager: TabManager) {
+        guard let archive = chooseArchive() else { return }
+        guard restoreAlert(for: archive).runModal() == .alertFirstButtonReturn else { return }
+        restore(archive, options: .init(), into: manager)
+    }
+
+    /// the confirmation: its first button restores
+    static func restoreAlert(for archive: BackupArchive) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Restore this backup?"
+        let spaces = archive.session.spaces.count
+        alert.informativeText = """
+            From \(archive.createdAt.formatted(date: .abbreviated, time: .shortened)) \
+            (Artemis \(archive.appVersion)).
+
+            \(spaces) \(spaces == 1 ? "space" : "spaces") will REPLACE your current spaces and tabs, \
+            and saved settings will be applied.
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
     private static func alert(_ message: String, _ error: Error?) {
         let alert = NSAlert()
         alert.messageText = message
@@ -112,7 +137,7 @@ enum BackupIO {
         alert.runModal()
     }
 
-    /// apply a backup: spaces are replaced, profiles and Boosts merged
+    /// apply a backup: spaces are replaced, profiles and Boosts merged; nothing applies a Boost
     static func restore(
         _ archive: BackupArchive, options: RestoreOptions, into manager: TabManager
     ) {

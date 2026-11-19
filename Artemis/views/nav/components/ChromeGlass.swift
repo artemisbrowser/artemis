@@ -90,13 +90,22 @@ private struct ChromeGlass<S: Shape>: ViewModifier {
     let lit: Bool
 
     func body(content: Content) -> some View {
-        let c = ink.resolve(in: EnvironmentValues())
-        let inkIsDark = 0.299 * c.red + 0.587 * c.green + 0.114 * c.blue < 0.5
         // only the glass takes the backdrop's scheme; the content (and any
         // popover it presents) keeps the window's
         content
             .environment(\.colorScheme, scheme)
             .glassEffect(.regular.tint(lit ? ink.opacity(0.12) : nil).interactive(interactive), in: shape)
-            .environment(\.colorScheme, inkIsDark ? .light : .dark)
+            .modifier(ChromeGlassScheme())
+    }
+}
+
+/// the scheme glass takes over the sidebar's backdrop; a GlassEffectContainer draws its glass in
+/// its own scheme, so it wears this too
+struct ChromeGlassScheme: ViewModifier {
+    @Environment(\.chromeInk) private var ink
+
+    func body(content: Content) -> some View {
+        let c = ink.resolve(in: EnvironmentValues())
+        content.environment(\.colorScheme, 0.299 * c.red + 0.587 * c.green + 0.114 * c.blue < 0.5 ? .light : .dark)
     }
 }

@@ -639,6 +639,10 @@ private struct SiteSettingsPanel: View {
                 SitePermissionRows(origin: origin, ephemeral: tab.isPrivate)
             }
 
+            if let tab, !tab.isPrivate, let host = tab.url?.host() {
+                TrustedAppRows(site: host, profile: ProfileStore.proxyProfile(of: tab.dataStore))
+            }
+
             if let tab, let url = tab.url, url.scheme == "https" || url.scheme == "http",
                 let host = url.host()
             {
@@ -720,6 +724,9 @@ private struct SiteSettingsPanel: View {
                     PopoverActionRow(title: "Clear All Data for This Site", icon: "trash") {
                         showActions = false
                         if let tab {
+                            if let host = tab.url?.host(), !tab.isPrivate {
+                                ExternalSchemes.forget(site: host, in: ProfileStore.proxyProfile(of: tab.dataStore))
+                            }
                             Task { await SiteSettingsPanel.clear(WKWebsiteDataStore.allWebsiteDataTypes(), of: tab) }
                         }
                     }
@@ -781,6 +788,38 @@ private struct SitePermissionRows: View {
                 store.forget(origin, permission, ephemeral: ephemeral)
             }
         }
+    }
+}
+
+/// the apps this site was trusted to open without asking, each removable
+private struct TrustedAppRows: View {
+    let site: String
+    let profile: UUID
+    @State private var grants: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(grants, id: \.self) { scheme in
+                HStack {
+                    Label(Self.label(scheme), systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Remove") {
+                        ExternalSchemes.forget(site: site, scheme: scheme, in: profile)
+                        grants = ExternalSchemes.grants(site: site, in: profile)
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .onAppear { grants = ExternalSchemes.grants(site: site, in: profile) }
+    }
+
+    private static func label(_ scheme: String) -> String {
+        if scheme == ExternalSchemes.everyApp { return "Opens all apps" }
+        let app = URL(string: "\(scheme):").flatMap(ExternalSchemes.handlerName)
+        return "Opens \(app ?? "“\(scheme):” links")"
     }
 }
 

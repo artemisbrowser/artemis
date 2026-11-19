@@ -20,42 +20,54 @@ struct PrivacySettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Block ads and trackers", isOn: blockingBinding.undoable("Content Blocking"))
-                    .settingsAnchor(.blockAds)
-                Text(blocker.statusLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle(isOn: blockingBinding.undoable("Block Ads & Trackers")) {
+                    InfoLabel(
+                        "Block Ads & Trackers",
+                        info: "Stops ads, trackers and pop-up ad pages before they load. A blocked request never leaves your Mac.")
+                }
+                .disabled(blocker.isUpdating)
+                .settingsAnchor(.blockAds)
 
                 ForEach(ContentBlocker.catalog) { list in
                     Toggle(
                         isOn: Binding(
-                            get: { list.isEnabled },
+                            get: { blocker.isOn(list) },
                             set: { blocker.setList(list, enabled: $0) }
                         ).undoable(list.name)
                     ) {
                         InfoLabel(list.name, info: list.detail)
                     }
-                    .disabled(!blocker.isEnabled || blocker.isUpdating)
-                    .settingsAnchor(list.id == ContentBlocker.catalog.first?.id ? .filterLists : nil)
+                    .disabled(blocker.isUpdating)
+                    .settingsAnchor(list.id == "cookies" ? .hideCookies : .hideAnnoyances)
                 }
 
                 HStack {
-                    Button("Update Blocklists") {
-                        Task { await blocker.updateLists(force: true) }
-                    }
-                    .disabled(blocker.isUpdating || !blocker.isEnabled)
+                    Text(blocker.statusLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
                     if blocker.isUpdating {
                         ProgressView().controlSize(.small)
-                        Text("Downloading and compiling…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            Task { await blocker.updateLists(force: true) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!blocker.isActive)
+                        .accessibilityLabel("Update Blocklists")
+                        .tooltip("Update blocklists now")
                     }
                 }
                 .settingsAnchor(.updateBlocklists)
+                Text(
+                    "Lists by [EasyList](https://easylist.to) (GPL-3.0, CC BY-SA 3.0), [Fanboy](https://fanboy.co.nz) (CC BY 3.0) and [HaGeZi](https://github.com/hagezi/dns-blocklists) (GPL-3.0)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } header: {
-                InfoLabel(
-                    "Content Blocking",
-                    info: "A blocked request never leaves your Mac. Lists update themselves every few days.")
+                InfoLabel("Content Blocking", info: "Each switch works on its own. Lists update themselves, as often as each list allows.")
             }
 
             Section {
@@ -69,6 +81,17 @@ struct PrivacySettings: View {
                         info: "Incognito windows lock whenever Artemis isn't the active app. Your password works too.")
                 }
                 .settingsAnchor(.incognitoTouchID)
+                Toggle(
+                    isOn: Binding(
+                        get: { blocker.keepsAdultSitesOutOfHistory },
+                        set: { blocker.keepsAdultSitesOutOfHistory = $0 }
+                    ).undoable("Keep Adult Sites Out of History")
+                ) {
+                    InfoLabel(
+                        "Keep Adult Sites Out of History",
+                        info: "Adult sites are left out of history and suggestions. The check happens on your Mac, and nothing is blocked.")
+                }
+                .settingsAnchor(.adultHistory)
                 Button("Clear Browsing Data…") {
                     ProfilesNavigator.show(.clearData, for: tabManager.currentProfile.id)
                 }
@@ -162,19 +185,6 @@ struct PrivacySettings: View {
                     InfoLabel("Send error reports", info: Reports.disclosure)
                 }
                 .settingsAnchor(.errorReports)
-                Button("Send Feedback…") { FeedbackDraft.open(in: tabManager) }
-                    .settingsAnchor(.sendFeedback)
-            }
-
-            Section {
-                Button("Show Data Folder in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([AppStorageLocation.directory])
-                }
-                .settingsAnchor(.dataFolder)
-            } header: {
-                InfoLabel(
-                    "On-Device Data",
-                    info: "Your browsing data is stored as plain JSON files on this Mac. None of it is ever uploaded.")
             }
         }
         .formStyle(.grouped)

@@ -11,7 +11,7 @@
 # PERF_CONFIG=Debug builds Debug instead, for iterating on a lab test
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 
 ID="${PERF_ID:-Perf}"
 CONFIG="${PERF_CONFIG:-Release}"

@@ -425,7 +425,7 @@ private enum ExtensionConsent {
         alert.messageText = "Install “\(ext.name)”?"
 
         var lines = ["This extension will be able to:"] + ext.consentLines.map { "• \($0)" }
-        lines.append("\nOnly install extensions you trust.")
+        lines.append("\n" + ext.consentCaution)
         alert.informativeText = lines.joined(separator: "\n")
 
         if let icon = ext.icon(size: 64) { alert.icon = icon }

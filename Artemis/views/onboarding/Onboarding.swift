@@ -66,7 +66,7 @@ struct OnboardingOverlay: View {
 
 /// the intro's clock and progress, shared by the browser window and the full-screen cover it opens in
 @Observable
-private final class IntroShow {
+final class IntroShow {
     enum Phase { case intro, cards, leaving }
 
     var phase = Phase.intro
@@ -266,16 +266,18 @@ private struct OnboardingView: View {
 }
 
 /// the night sky, and over it the A's glass, the comet and the title while the intro plays
-private struct IntroStage: View {
+struct IntroStage: View {
     let show: IntroShow
     /// the browser window under the cover, whose sky holds still
     let isCovered: Bool
+    /// the colour it plays in, in place of the chosen icon's
+    var accent: AppIconChoice?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppIconChoice.storageKey) private var icon = AppIconChoice.bundled
 
     var body: some View {
         GeometryReader { geometry in
-            let stage = Stage(geometry.size), intro = show.phase == .intro, tint = icon.glyph
+            let stage = Stage(geometry.size), intro = show.phase == .intro, tint = (accent ?? icon).glyph
             TimelineView(
                 .animation(
                     minimumInterval: intro || show.cover != nil && !isCovered ? nil : 1.0 / 30,
