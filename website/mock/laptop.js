@@ -116,7 +116,13 @@ function studio() {
   return s;
 }
 
-export async function mount(host, { screen, capture }) {
+// camera paths over scroll progress p, given the lid's openness o; t drifts the orbit
+const SHOTS = {
+  orbit: (p, o, t) => ({ az: lerp(0.5, -0.28, smooth(p)) + 0.05 * Math.sin(t * 0.25), el: lerp(0.07, 0.3, smooth(p)), dist: lerp(62, 80, smooth(p)), y: lerp(1.2, 8.5, o), z: lerp(1, -2, o) }),
+  hero: (p, o) => ({ az: 0, el: lerp(0.42, 0.06, smooth(p)), dist: lerp(95, 58, smooth(p)), y: lerp(0, 10, o), z: lerp(4, -1, o) }),
+};
+
+export async function mount(host, { screen, capture, shot = "orbit" }) {
   RectAreaLightUniformsLib.init();
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: capture });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -203,13 +209,11 @@ export async function mount(host, { screen, capture }) {
 
   // p: scroll progress 0..1, t: seconds; the same (p, t) always gives the same frame
   function render(p, t) {
-    const open = smooth((p - 0.15) / 0.7);
+    const open = shot === "hero" ? smooth(p / 0.75) : smooth((p - 0.15) / 0.7);
     lid.rotation.x = -lerp(9, 108, open) * DEG;
-    glow.intensity = lerp(5, 1.6, open);
-    const az = lerp(0.5, -0.28, smooth(p)) + 0.05 * Math.sin(t * 0.25);
-    const el = lerp(0.07, 0.3, smooth(p));
-    const dist = lerp(62, 80, smooth(p));
-    const target = new THREE.Vector3(0, lerp(1.2, 8.5, open), lerp(1, -2, open));
+    glow.intensity = lerp(3.5, 1.6, open);
+    const { az, el, dist, y, z } = SHOTS[shot](p, open, t);
+    const target = new THREE.Vector3(0, y, z);
     camera.position.set(target.x + dist * Math.cos(el) * Math.sin(az), target.y + dist * Math.sin(el), target.z + dist * Math.cos(el) * Math.cos(az));
     camera.lookAt(target);
     renderer.render(scene, camera);

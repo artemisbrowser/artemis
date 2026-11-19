@@ -41,7 +41,7 @@
     new IntersectionObserver(async ([e], io) => {
       if (!e.isIntersecting) return;
       io.disconnect();
-      (await import("./laptop.js")).mount(pin, { screen: q.get("screen") || "spaces", capture });
+      (await import("./laptop.js")).mount(pin, { screen: q.get("screen") || "spaces", capture, shot: q.get("shot") || "orbit" });
     }).observe(pin);
   }
 </script>
