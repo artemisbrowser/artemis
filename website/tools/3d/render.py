@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
-#   [--shots side,closed,glow,three-quarter,seq] [--samples 128] [--height 1080] [--frames 120]
+#   [--shots side,closed,glow,three-quarter,seq,seq@N] [--samples 128] [--height 1080] [--frames 120]
 #   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
@@ -133,8 +133,9 @@ ft.links.new(fmix.outputs[0], ft.nodes["Material Output"].inputs[0])
 sweep.data.materials.append(floor)
 
 
-def panel(name, size, at, aim, radiance, fade=0.0):
-    """a one-sided softbox of size (w, h) cm at `at` facing `aim`, unseen by the camera; fade darkens it towards its bottom edge"""
+def panel(name, size, at, aim, radiance, fade=0.0, soft=0.0):
+    """a one-sided softbox of size (w, h) cm at `at` facing `aim`, unseen by the camera; fade darkens it towards its bottom
+    edge, soft ramps its outer `soft` fraction to black on every side"""
     bm = bmesh.new()
     vs = [bm.verts.new((x * size[0] / 2, y * size[1] / 2, 0)) for x, y in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
     f = bm.faces.new(vs)
@@ -157,6 +158,25 @@ def panel(name, size, at, aim, radiance, fade=0.0):
     mul.operation = "MULTIPLY"
     t.links.new(front.outputs[0], mul.inputs[0])
     t.links.new(grad.outputs[0], mul.inputs[1])
+    if soft:
+        for axis in "XY":
+            # min(1, u(1-u) / (soft(1-soft))): 1 inside the margin, ramping to 0 at the edge
+            inv, edge, win = (t.nodes.new("ShaderNodeMath") for _ in range(3))
+            inv.operation, edge.operation, win.operation = "SUBTRACT", "MULTIPLY", "MINIMUM"
+            inv.inputs[0].default_value = 1
+            t.links.new(sep.outputs[axis], inv.inputs[1])
+            t.links.new(sep.outputs[axis], edge.inputs[0])
+            t.links.new(inv.outputs[0], edge.inputs[1])
+            scale = t.nodes.new("ShaderNodeMath")
+            scale.operation = "DIVIDE"
+            t.links.new(edge.outputs[0], scale.inputs[0])
+            scale.inputs[1].default_value = soft * (1 - soft)
+            t.links.new(scale.outputs[0], win.inputs[0])
+            win.inputs[1].default_value = 1
+            prev, mul = mul, t.nodes.new("ShaderNodeMath")
+            mul.operation = "MULTIPLY"
+            t.links.new(prev.outputs[0], mul.inputs[0])
+            t.links.new(win.outputs[0], mul.inputs[1])
     t.links.new(mul.outputs[0], em.inputs["Strength"])
     t.links.new(em.outputs[0], out.inputs[0])
     me.materials.append(m)
@@ -170,9 +190,9 @@ def panel(name, size, at, aim, radiance, fade=0.0):
 
 panel("top", (70, 30), (0, 10, 75), (0, 0, 0), 1.2)
 panel("back", (100, 40), (0, 70, 40), (0, 0, 2), 1.5, fade=1.0)
-panel("key", (14, 70), (-70, -45, 35), (0, 0, 0), 1.0)
-panel("rim", (14, 70), (75, 30, 30), (0, 0, 0), 0.8)
-panel("front", (120, 16), (0, -20, 0.3), (0, -20, 10), 0.5)
+panel("key", (14, 70), (-70, -45, 35), (0, 0, 0), 1.0, soft=0.3)
+panel("rim", (14, 70), (75, 30, 30), (0, 0, 0), 0.8, soft=0.3)
+panel("front", (44, 16), (0, -20, 0.3), (0, -20, 10), 0.5, soft=0.15)
 
 before = set(bpy.data.objects)
 bpy.ops.import_scene.gltf(filepath=args.glb)
@@ -340,7 +360,11 @@ def shoot(path, aspect):
 
 os.makedirs(args.out, exist_ok=True)
 for name in filter(None, args.shots.split(",")):
-    if name == "seq":
+    if name.startswith("seq@"):
+        f = int(name[4:])
+        pose("black", **hero(f / (args.frames - 1)))
+        shoot(os.path.join(args.out, f"f{f:04d}.png"), 16 / 9)
+    elif name == "seq":
         os.makedirs(os.path.join(args.out, "seq"), exist_ok=True)
         for f in range(args.frames):
             pose("black", **hero(f / (args.frames - 1)))
