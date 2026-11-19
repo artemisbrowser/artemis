@@ -5,6 +5,16 @@
     <!-- items -->
     <item>
       <title>Artemis 1.1.0</title>
+      <pubDate>Thu, 19 Nov 2026 17:53:11 +0000</pubDate>
+      <sparkle:version>1010002.26111917</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}h2{font-size:15px;margin:14px 0 6px}h3{font-size:13px;margin:10px 0 4px}</style><p>New since <a href="https://github.com/artemisbrowser/artemis/releases/tag/v1.1.0-nightly.26111908">Artemis 1.1.0-nightly.26111908</a>.</p><h2>New</h2><ul><li>Links finish themselves as you type in the command bar: type part of a site you visit often and ↵ opens it (<a href="https://discord.com/channels/1567657796055470090/1571577704237760692">report</a>)</li><li>⌘Z steps back through the theme editor one change at a time while it's open (<a href="https://discord.com/channels/1567657796055470090/1568031319827681371">report</a>)</li></ul><h2>Refined</h2><ul><li>Peek opens on a firm press, straight away, with no dimming zoom (<a href="https://discord.com/channels/1567657796055470090/1572007502156013629">report</a>)</li><li>Closing a tab goes back to the tab you were on before (<a href="https://discord.com/channels/1567657796055470090/1568031319827681371">report</a>)</li><li>The mini-player only resizes when your fingers spread, not on a swipe or click-drag (<a href="https://discord.com/channels/1567657796055470090/1571653686659125258">report</a>)</li><li>Settings shows a small update button on every pane, and Update &amp; Restart on About</li><li>Imported bookmarks land in one folder in your first space, and importing again doesn't duplicate them</li><li>On a fresh install, imported spaces replace the empty starter space</li><li>Pinned tabs and favourites stay awake, and a memory warning no longer puts tabs to sleep</li><li>Crash reports say why the app crashed</li></ul><h2>Fixed</h2><ul><li>↵ right after a paste opens what you pasted</li><li>The command bar's hint no longer gets stuck on "⌘↵ Open in Split"</li><li>The command bar's autofill highlight keeps one colour as you type</li><li>Switching downloads in the Library no longer glitches (<a href="https://discord.com/channels/1567657796055470090/1572172071444942858">report</a>)</li><li>The update bar no longer swells as it finishes</li><li>Stopping the agent no longer shows "Claude Code reported an error."</li></ul>]]></description>
+      <sparkle:channel>nightly</sparkle:channel>
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-nightly.26111917/Artemis-1.1.0-nightly.26111917.dmg" type="application/octet-stream" sparkle:edSignature="bOrDuEoh6Z2/1U/Ed9G4PmXvKcGwFZO0kuoIV3KwtrzVVLwAWCnhb2QNSqHVLi0cP6hlcwzyNeRemi9FAu8SDw==" length="29959158" />
+    </item>
+    <item>
+      <title>Artemis 1.1.0</title>
       <pubDate>Thu, 19 Nov 2026 08:36:59 +0000</pubDate>
       <sparkle:version>1010002.26111908</sparkle:version>
       <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
