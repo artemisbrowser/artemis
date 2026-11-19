@@ -2,51 +2,60 @@
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
 <section class="sec know" id="know" data-name="Get to know" aria-labelledby="know-h">
   <h2 class="wrap" id="know-h">Get to know Artemis.</h2>
-  <div class="gallery know-gallery" data-gallery>
-    <ul class="gallery-track" aria-label="Features">
-      <li class="kcard k-spaces">
-        <h3>Room for everything.</h3>
-        <img src="/assets/img/know-spaces.webp" width="744" height="1100" alt="The sidebar with a Work space’s pinned sites and tabs" loading="lazy" decoding="async" />
-        <button class="plus" type="button" data-peek="spaces" aria-label="More about spaces"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-      <li class="kcard k-cmd dark">
-        <h3>One field. Every&nbsp;page.</h3>
-        <div class="cmd-demo" aria-hidden="true">
-          <p class="cmd-field">git<span class="auto">hub.com</span></p>
-          <ul>
-            <li class="on">github.com</li>
-            <li>WebKit<span>Tab</span></li>
-            <li>git rebase<span>Search</span></li>
-          </ul>
-        </div>
-        <button class="plus" type="button" data-peek="command" aria-label="More about the command bar"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-      <li class="kcard k-split">
-        <h3>Four pages. One window.</h3>
-        <div class="panes" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-        <button class="plus" type="button" data-peek="split" aria-label="More about split view"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-      <li class="kcard k-private dark">
-        <h3>Private by default.</h3>
-        <p class="big" aria-hidden="true">0</p>
-        <p class="big-cap">accounts, ads or trackers</p>
-        <button class="plus" type="button" data-peek="mac" aria-label="More about privacy"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-      <li class="kcard k-themes">
-        <h3>Wear your colours.</h3>
-        <img src="/assets/img/know-themes.webp" width="744" height="1100" alt="The theme editor with a colour wheel" loading="lazy" decoding="async" />
-        <button class="plus" type="button" data-peek="themes" aria-label="More about themes"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-      <li class="kcard k-source dark">
-        <h3>Read every line.</h3>
-        <p class="big" aria-hidden="true">GPL</p>
-        <p class="big-cap">open source on GitHub</p>
-        <button class="plus" type="button" data-peek="licence" aria-label="More about the licence"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg></button>
-      </li>
-    </ul>
-    <div class="gallery-ctl end">
-      <button class="paddle" type="button" data-step="-1" aria-label="Previous"><svg class="ico" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
-      <button class="paddle" type="button" data-step="1" aria-label="Next"><svg class="ico flip" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
+  <div class="viewer" data-viewer>
+    <div class="wrap viewer-in">
+      <div class="steps" aria-label="Features">
+        <button class="step" type="button" data-step="-1" aria-label="Previous feature"><svg class="ico up" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
+        <button class="step" type="button" data-step="1" aria-label="Next feature"><svg class="ico down" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
+      </div>
+      <ul class="pills">
+        <li class="a-oxygen">
+          <button type="button" aria-expanded="false" aria-controls="k-spaces"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Spaces</button>
+          <p id="k-spaces" tabindex="-1" hidden><b>Spaces.</b> Each space keeps its own pinned sites, folders and tabs. Swipe with two fingers to move between them.</p>
+        </li>
+        <li class="a-rigel">
+          <button type="button" aria-expanded="false" aria-controls="k-cmd"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Command bar</button>
+          <p id="k-cmd" tabindex="-1" hidden><b>Command bar.</b> Press ⌘T and type a few letters. Artemis fills in the site you meant and lists the tabs you already have open.</p>
+        </li>
+        <li class="a-aurora">
+          <button type="button" aria-expanded="false" aria-controls="k-split"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Split view</button>
+          <p id="k-split" tabindex="-1" hidden><b>Split view.</b> ⌥-click a link and it opens beside the page you’re on. Up to four pages, tiled your way.</p>
+        </li>
+        <li class="a-io">
+          <button type="button" aria-expanded="false" aria-controls="k-tabs"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Recent tabs</button>
+          <p id="k-tabs" tabindex="-1" hidden><b>Recent tabs.</b> Hold ⌃⇥ and your last tabs fan out as previews. Let go on the one you want.</p>
+        </li>
+        <li class="a-betel">
+          <button type="button" aria-expanded="false" aria-controls="k-themes"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Themes</button>
+          <p id="k-themes" tabindex="-1" hidden><b>Themes.</b> Give every space a solid colour, a gradient or glass, and an emoji or symbol of its own.</p>
+        </li>
+        <li class="a-halpha">
+          <button type="button" aria-expanded="false" aria-controls="k-private"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Privacy</button>
+          <p id="k-private" tabindex="-1" hidden><b>Privacy.</b> No account and no telemetry. Your history and tabs stay on your Mac. <button class="link-btn" type="button" data-peek="mac">How it works</button></p>
+        </li>
+        <li class="a-mars">
+          <button type="button" aria-expanded="false" aria-controls="k-source"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>Open source</button>
+          <p id="k-source" tabindex="-1" hidden><b>Open source.</b> Every line is on GitHub under the GPL, free to read, build and change. <button class="link-btn" type="button" data-peek="licence">The licence</button></p>
+        </li>
+      </ul>
+      <button class="shut" type="button" aria-label="Close"><svg class="ico" aria-hidden="true"><use href="#i-xmark" /></svg></button>
+    </div>
+    <div class="stage" aria-hidden="true">
+      <img class="on" src="/assets/img/framed/spaces.webp" width="2000" height="1208" alt="" loading="lazy" decoding="async" />
+      <img src="/assets/img/framed/spaces.webp" width="2000" height="1208" alt="" loading="lazy" decoding="async" />
+      <div class="cmd-demo">
+        <p class="cmd-field">git<span class="auto">hub.com</span></p>
+        <ul>
+          <li class="on">github.com</li>
+          <li>WebKit<span>Tab</span></li>
+          <li>git rebase<span>Search</span></li>
+        </ul>
+      </div>
+      <div class="panes"><i></i><i></i><i></i><i></i></div>
+      <img src="/assets/img/framed/recent.webp" width="2000" height="1208" alt="" loading="lazy" decoding="async" />
+      <img src="/assets/img/framed/themes.webp" width="2000" height="1208" alt="" loading="lazy" decoding="async" />
+      <p class="big">0</p>
+      <p class="big">GPL</p>
     </div>
   </div>
 </section>

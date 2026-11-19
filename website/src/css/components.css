@@ -750,29 +750,27 @@ button.ctl:active {
   }
 }
 
-/* ---------- page: night scenes, gradient type, reveals ---------- */
-.night {
-  color-scheme: dark;
-  background: #000;
-  color: var(--ink);
-}
+/* ---------- page: accents, gradient type, reveals ---------- */
+/* accents are the app icon colours: light mode takes the deep shade, dark mode the tint */
+.a-oxygen { --accent: light-dark(#1f8f99, #40ccd8); }
+.a-rigel { --accent: light-dark(#4a8fd8, #9ac0e9); }
+.a-io { --accent: light-dark(#b8921f, #e2bf55); }
+.a-halpha { --accent: light-dark(#c2385a, #da8097); }
+.a-betel { --accent: light-dark(#d9702a, #e8a77c); }
+.a-aurora { --accent: light-dark(#2f8f68, #57c89a); }
+.a-mars { --accent: light-dark(#b5562e, #d98b6b); }
 .grad {
-  background: linear-gradient(
-    100deg,
-    light-dark(#1f63ad, #7cc4ff),
-    light-dark(#0f7f73, #52d6c2) 55%,
-    light-dark(#3a8a4f, #a6e3a1)
-  );
+  background: linear-gradient(100deg, light-dark(#d9702a, #e8a77c), light-dark(#c2385a, #da8097));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 .lead {
-  max-width: 680px;
+  max-width: 840px;
   font-size: clamp(17px, 1.6vw, 21px);
-  line-height: 1.4;
+  line-height: 1.2;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.011em;
   color: var(--ink-3);
 }
 .lead b {
@@ -915,12 +913,8 @@ html:not(.js) .localnav .pill.sm {
   justify-content: center;
   gap: 14px;
 }
-.gallery-ctl.end {
-  justify-content: flex-end;
-}
 .dotnav,
-.playpause,
-.paddle {
+.playpause {
   height: 56px;
   border-radius: 28px;
   background: light-dark(rgb(232 232 237 / 0.72), rgb(66 66 69 / 0.72));
@@ -975,28 +969,11 @@ html:not(.js) .localnav .pill.sm {
     scale: 0 1;
   }
 }
-.playpause,
-.paddle {
+.playpause {
   width: 56px;
   display: grid;
   place-items: center;
   color: var(--ink);
-}
-.paddle {
-  width: 36px;
-  height: 36px;
-}
-.paddle:disabled {
-  opacity: 0.36;
-  cursor: default;
-}
-.paddle .ico {
-  width: 18px;
-  height: 18px;
-  stroke-width: 2.4;
-}
-.ico.flip {
-  scale: -1 1;
 }
 
 /* ---------- Peek as a sheet: the + cards' mini pages ---------- */

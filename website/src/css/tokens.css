@@ -82,7 +82,7 @@
   --surface-1: light-dark(#ffffff, #1c1c1c);
   --ink: light-dark(#161616, #ebebeb);
   --ink-2: light-dark(#555555, #a1a1a1);
-  --ink-3: light-dark(#6e6e6e, #8e8e8e);
+  --ink-3: light-dark(#6e6e73, #86868b);
   --hairline: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.09));
   --hairline-2: light-dark(rgb(0 0 0 / 0.14), rgb(255 255 255 / 0.16));
   --chip: light-dark(#f0f0f0, #1c1c1c);

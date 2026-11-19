@@ -4,6 +4,7 @@
 import { root, params, mq } from "./core.js";
 import { openPeek } from "./peek.js";
 import "./gallery.js";
+import "./know.js";
 
 const cls = root.classList;
 const modes = () => ["fine", "coarse"].forEach((k) => cls.toggle(k, mq[k].matches));

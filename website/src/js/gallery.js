@@ -9,7 +9,6 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   const items = [...track.children];
   const dots = g.querySelector(".dots");
   const play = g.querySelector(".playpause");
-  const [prev, next] = g.querySelectorAll(".paddle");
   let cur = -1;
   let playing = !!play && !mq.reduce.matches;
   let seen = false;
@@ -42,10 +41,6 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
       b.setAttribute("aria-selected", j === i);
       b.tabIndex = j === i ? 0 : -1;
     });
-    if (prev) {
-      prev.disabled = i === 0;
-      next.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
-    }
   }
   function state() {
     g.classList.toggle("playing", playing);
@@ -61,7 +56,6 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     items.forEach((_, i) => {
       if (Math.abs(left(i) - x) < Math.abs(left(best) - x)) best = i;
     });
-    if (prev) cur = -1;
     mark(best);
   }, { passive: true });
   track.addEventListener("pointerdown", () => {
@@ -81,8 +75,6 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     playing = !playing;
     state();
   });
-  prev?.addEventListener("click", () => track.scrollBy({ left: -track.clientWidth * 0.8, behavior: "smooth" }));
-  next?.addEventListener("click", () => track.scrollBy({ left: track.clientWidth * 0.8, behavior: "smooth" }));
   new IntersectionObserver(([e]) => {
     seen = e.isIntersecting;
     state();
