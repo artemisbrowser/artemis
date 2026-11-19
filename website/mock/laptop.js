@@ -259,6 +259,18 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   })();
   scene.add(shadow);
 
+  // the screen's light pooled on the floor in front, faded in as the lid lifts
+  const pool = (() => {
+    const c = Object.assign(document.createElement("canvas"), { width: 256, height: 256 });
+    const x = c.getContext("2d"), r = x.createRadialGradient(128, 128, 0, 128, 128, 128);
+    r.addColorStop(0, "rgba(228,231,236,1)"); r.addColorStop(1, "rgba(228,231,236,0)");
+    x.fillStyle = r; x.fillRect(0, 0, 256, 256);
+    const m = new THREE.Mesh(flat(new THREE.PlaneGeometry(W * 2.1, D * 1.5)), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    m.position.set(0, -0.005, D * 0.35);
+    return m;
+  })();
+  scene.add(pool);
+
   const key = new THREE.DirectionalLight(0xffffff, 0.45);
   key.position.set(-30, 60, 40);
   scene.add(key);
@@ -281,6 +293,7 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   function draw({ lid: angle, glow: g, az, el, dist, y, z, fov = 26 }) {
     lid.rotation.x = -angle * DEG;
     glow.intensity = g;
+    pool.material.opacity = 0.2 * g * Math.min(1, angle / 25);
     camera.fov = fov;
     camera.updateProjectionMatrix();
     camera.position.set(dist * Math.cos(el) * Math.sin(az), y + dist * Math.sin(el), z + dist * Math.cos(el) * Math.cos(az));
