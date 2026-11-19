@@ -1,146 +1,107 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-/* Hero: the copy, then a MacBook whose 1352 × 878 pt screen is one point per --mu. Pinned, the MacBook
-   sits under the nav with a caption's room below. */
-.track-oow {
-  --mac-w: min(100vw - 2 * var(--gutter), (100svh - 180px) * 1606 / 968, 1280px);
-  --u: calc(var(--mac-w) / 1606);
-  position: relative;
-}
-
-.hero-copy {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 48px;
-  box-sizing: border-box;
-  width: var(--mac-w);
-  margin-inline: auto;
-  padding-top: calc(var(--nav-bottom) + 64 * var(--s));
-}
-.hero-copy h1 {
-  flex: none;
-  margin: 0;
-  font: 600 max(40px, calc(68 * var(--s))) / var(--lh-display) var(--font);
-  letter-spacing: var(--tr-display);
-}
-.hero-copy h1 span {
-  display: block;
-}
-.hero-side {
-  max-width: calc(480 * var(--s));
-}
-.hero-side .lede {
-  margin: 0;
-  font-size: max(16px, calc(19 * var(--s)));
-  font-weight: 500;
-  line-height: 1.4;
-  letter-spacing: var(--tr-intro);
-  color: var(--ink-2);
-  text-wrap: pretty;
-}
-.hero-side .get-block {
-  margin-top: calc(24 * var(--s));
-}
-.hero-side .get {
-  height: max(56px, calc(56 * var(--s)));
-  gap: max(10px, calc(10 * var(--s)));
-  padding: 0 max(26px, calc(26 * var(--s))) 0 max(6px, calc(6 * var(--s)));
-  font-size: max(17px, calc(17 * var(--s)));
-}
-.hero-side .get-well img {
-  width: max(44px, calc(44 * var(--s)));
-  height: max(44px, calc(44 * var(--s)));
-}
-.hero-side .fine {
-  margin: 12px 0 0;
-  font-size: max(12px, calc(12.5 * var(--s)));
-  line-height: 1.4;
-}
-
-.track-oow .stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+.hero {
   padding-top: 40px;
+  padding-bottom: var(--section-pad);
 }
-html.pin .track-oow .stage {
-  position: sticky;
-  top: 0;
-  box-sizing: border-box;
-  height: 100svh;
-  padding-top: calc(var(--nav-bottom) + 12px);
+.hero-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 40px;
 }
-
-.track-oow .rig {
+.hero h1 {
+  font-size: clamp(56px, 9vw, 112px);
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.hero-get {
+  text-align: right;
+}
+.slide {
+  position: relative;
+  width: min(1260px, 100vw - 2 * var(--gutter));
+  height: clamp(520px, 56vw, 720px);
+  overflow: hidden;
+  border-radius: 28px;
+  color-scheme: dark;
+  color: var(--ink);
+  background:
+    radial-gradient(70% 55% at 50% 88%, var(--glow), transparent 70%),
+    #000;
+}
+.slide-tide {
+  --glow: rgb(38 150 132 / 0.55);
+}
+.slide-ember {
+  --glow: rgb(232 131 74 / 0.5);
+}
+.slide-copy {
   position: absolute;
-  inset: calc(29 * var(--u)) 0 0;
+  left: 48px;
+  top: 44px;
 }
-
-/* the hero's meshes come from the 110×74 renders, so the H1 stays the largest paint (LCP) */
-.track-oow [data-look="nebula"] {
-  --look-img: url("/assets/spaces/space-nebula-110x74.png");
+.slide h2 {
+  font-size: clamp(36px, 4.4vw, 56px);
+  line-height: 1.07;
+  letter-spacing: -0.02em;
 }
-.track-oow [data-look="ember"] {
-  --look-img: url("/assets/spaces/space-ember-110x74.png");
+.slide-tide h2 {
+  color: #7fe0cd;
 }
-.track-oow [data-look="tide"] {
-  --look-img: url("/assets/spaces/space-tide-110x74.png");
+.slide-ember h2 {
+  color: #ffb27a;
 }
-.track-oow [data-look="aurora"] {
-  --look-img: url("/assets/spaces/space-aurora-110x74.png");
+.slide-copy p {
+  margin-top: 6px;
+  font-size: clamp(19px, 2vw, 24px);
+  font-weight: 600;
 }
-.track-oow [data-look="sunset"] {
-  --look-img: url("/assets/spaces/space-sunset-110x74.png");
+.slide .more {
+  position: absolute;
+  right: 48px;
+  top: 52px;
+  height: 44px;
+  padding: 0 22px;
+  border-radius: 980px;
+  background: #0071e3;
+  color: #fff;
+  font-size: 17px;
 }
-.track-oow [data-look="bloom"] {
-  --look-img: url("/assets/spaces/space-bloom-110x74.png");
-}
-
-/* The page is laid out at the card's sidebar-hidden width from the card's left edge, so hiding the sidebar
-   moves no box; with the sidebar shown it is centred on the card by translate. */
-.track-oow .page {
-  right: auto;
-  width: calc(100cqw - 2 * var(--edge) * var(--u));
-  translate: calc((var(--edge) - var(--grip) - 250) / 2 * var(--u)) 0;
-  transition: translate var(--dur-sidebar) var(--spring-sidebar);
-}
-.track-oow .win[data-sidebar="hidden"] .page {
-  translate: 0 0;
-}
-.track-oow .shot {
-  transition: background-position var(--dur-sidebar) var(--spring-sidebar);
-}
-
-@media (max-width: 1023px) {
-  .hero-copy {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 20px;
-  }
-  .hero-side {
-    max-width: 34em;
-  }
+.slide img {
+  position: absolute;
+  left: 50%;
+  bottom: -4%;
+  width: min(72%, 900px);
+  height: auto;
+  translate: -50% 0;
 }
 @media (max-width: 734px) {
-  .hero-copy {
-    width: auto;
-    padding: 92px var(--gutter) 0;
+  .hero-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
-  .hero-copy h1 {
-    font-size: min(44px, 11.25vw);
-    line-height: 1.07;
+  .hero-get {
+    text-align: left;
   }
-  .hero-side .lede {
-    font-size: 17px;
-    line-height: 1.47;
+  .slide {
+    height: 560px;
   }
-  .track-oow .stage {
-    padding-top: 32px;
+  .slide-copy {
+    left: 24px;
+    top: 28px;
   }
-  /* the page starts left of the card by its translate, so the shot starts that far in */
-  .track-oow .win:not([data-sidebar="hidden"]) .shot {
-    background-position-x: calc((250 + var(--grip) - var(--edge)) / 2 * var(--u));
+  .slide .more {
+    top: auto;
+    right: auto;
+    left: 24px;
+    bottom: 300px;
+  }
+  .slide img {
+    width: 150%;
+    left: 0;
+    translate: 0 0;
   }
 }

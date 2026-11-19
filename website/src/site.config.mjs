@@ -11,18 +11,11 @@ export const STAGE = null;
 export const DOWNLOAD_URL = "https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-2/Artemis-1.1.0-2.dmg";
 // the Arc block ships only while this is true and src/partials/07-arc.html exists.
 export const ARC_BLOCK = true;
-// the real sites the replica shows, only as page shots, favicons and titles inside its window; each maps to the
-// credit the footer must carry for its page shots, or "" when it appears only as a favicon and title.
+// the real sites in the screenshots, each mapped to the credit the home page must carry, or "" when none is owed.
 export const HOSTS = {
   "en.wikipedia.org": "Wikipedia text under CC BY-SA 4.0",
-  "www.openstreetmap.org": "© OpenStreetMap contributors",
   "github.com": "",
-  "www.notion.so": "",
-  "app.slack.com": "",
-  "linear.app": "",
-  "www.figma.com": "",
-  "calendar.google.com": "",
-  "mail.google.com": "",
+  "science.nasa.gov": "",
 };
 
 // Fin's note in the closing section, in his words; it may name Arc in either build.

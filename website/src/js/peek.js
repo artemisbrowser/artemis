@@ -2,8 +2,6 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import { root, mq, go } from "./core.js";
-import { mods, onMods } from "./keys.js";
-import { setSitebar } from "./sitebar.js";
 import { download } from "./download.js";
 
 const peek = document.getElementById("peek");
@@ -47,7 +45,6 @@ export function openPeek(what, from = document.activeElement) {
   if (steps) stepper(steps);
   openBtn.hidden = !target;
   opener = from;
-  setSitebar(false);
   clearTimeout(hideTimer);
   peek.hidden = false;
   root.classList.add("peek-open");
@@ -143,85 +140,12 @@ peek.addEventListener("keydown", (e) => {
   f.at(i < 0 ? 0 : (i + (e.shiftKey ? -1 : 1)) % f.length).focus();
 });
 
-/* ---------- link capsule: what a click would do in Artemis, relabelled under held modifiers ---------- */
-const cap = document.querySelector(".lcap");
-const capText = cap.firstElementChild;
-const LINKS = 'a[href^="#"], a[data-peek], a[data-get]';
-const host = new URL(document.querySelector('link[rel="canonical"]').href).host;
-const domain = /artemis_domain/i.test(host) ? "" : host;
-let capFor = null;
+const LINKS = 'a[href^="#"], [data-peek], a[data-get]';
 const getTpl = document.getElementById("peek-get");
-
-function label(a) {
-  const href = a.getAttribute("href");
-  const name =
-    a.dataset.peek || a.hasAttribute("data-get")
-      ? a.textContent.trim()
-      : (document.getElementById(href.slice(1))?.closest("[data-name]")?.dataset
-          .name ?? a.textContent.trim());
-  const m = mods();
-  if (m.has("alt"))
-    return m.has("meta")
-      ? "In Artemis, this opens in Scout"
-      : "In Artemis, this opens in Split View";
-  if (m.has("shift"))
-    return `Open ${name} in ${m.has("meta") ? "a New Tab" : "Peek"}`;
-  if (m.has("meta")) return `Open ${name} in a Background Tab`;
-  return domain ? domain + "/" + href.replace(/^\//, "") : `Artemis › ${name}`;
-}
-
-function showCap(a) {
-  capFor = a;
-  const t = label(a);
-  if (capText.textContent !== t) {
-    if (cap.classList.contains("on"))
-      capText.animate(
-        { opacity: [0, 1] },
-        { duration: 120, easing: "cubic-bezier(0, 0, .58, 1)" },
-      );
-    capText.textContent = t;
-  }
-  cap.classList.add("on");
-}
-function hideCap() {
-  capFor = null;
-  cap.classList.remove("on");
-}
-
-document.addEventListener("pointerover", (e) => {
-  const a = e.target.closest?.(LINKS);
-  if (
-    a &&
-    mq.fine.matches &&
-    e.pointerType !== "touch" &&
-    !a.closest('[aria-hidden="true"]')
-  )
-    showCap(a);
-});
-document.addEventListener("pointerout", (e) => {
-  if (
-    capFor &&
-    e.target.closest?.(LINKS) === capFor &&
-    !capFor.contains(e.relatedTarget)
-  )
-    hideCap();
-});
-addEventListener("scroll", () => capFor && hideCap(), { passive: true });
-onMods(() => capFor && showCap(capFor));
 
 document.addEventListener("click", (e) => {
   const a = e.target.closest?.(LINKS);
   if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey) return;
-  // a browser downloads on ⌥-click, so it is cancelled and the capsule flashes its Split View text
-  if (e.altKey) {
-    e.preventDefault();
-    if (capFor)
-      cap.animate(
-        { scale: [1, 1.06, 1] },
-        { duration: 260, easing: "ease-out" },
-      );
-    return;
-  }
   const from = a.closest("[inert]") ? document.activeElement : a;
   const href = a.getAttribute("href");
   if (a.dataset.peek) {
@@ -237,12 +161,9 @@ document.addEventListener("click", (e) => {
     const sec = document.getElementById(href.slice(1));
     if (!sec) return;
     e.preventDefault();
-    hideCap();
     e.shiftKey ? openPeek(sec.closest("section") ?? sec, from) : go(sec.id);
   }
 });
 addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  hideCap();
-  closePeek();
+  if (e.key === "Escape") closePeek();
 });

@@ -1,45 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-/* Units: px are CSS px. Replica metrics are points and always written as calc(N * var(--u)). */
-
 @property --accent {
   syntax: "<color>";
   inherits: true;
   initial-value: #2a75c5;
-}
-@property --sp {
-  syntax: "<number>";
-  inherits: false;
-  initial-value: 0;
-}
-/* read by .strip only; not inherited, so a space change restyles no panel */
-@property --si {
-  syntax: "<number>";
-  inherits: false;
-  initial-value: 0;
-}
-/* one replica point in px; registered, so an island's 100cqw computes where it is declared, never inside .win or .page */
-@property --u {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 1px;
-}
-/* one MacBook device unit in px, computed on the .mac that declares it */
-@property --mu {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 1px;
-}
-@property --mx {
-  syntax: "<percentage>";
-  inherits: false;
-  initial-value: 30%;
-}
-@property --my {
-  syntax: "<percentage>";
-  inherits: false;
-  initial-value: 0%;
 }
 :root {
   color-scheme: light dark;
@@ -81,7 +46,7 @@
   /* layout: --s is one 1440x900 artboard unit in px */
   --s: min(calc(100vw / 1440), calc(100svh / 900));
   --gutter: max(16px, 4vw);
-  --content: min(1440px, 0.8 * (100% - 2 * var(--inset))); /* the hero column, capped at 1440 */
+  --content: min(1260px, 100% - 2 * var(--gutter));
   --text-max: 980px;
   --measure: 40ch;
   --nav-h: 52px;
@@ -112,37 +77,37 @@
   --r-capsule-sm: 12px;
 
   /* colour: light first, zero chroma; colour comes from the product and the one Rigel accent */
-  --void: #ffffff;
-  --band: #f4f4f4;
-  --surface-1: #ffffff;
-  --ink: #161616;
-  --ink-2: #555555;
-  --ink-3: #6e6e6e;
-  --hairline: rgb(0 0 0 / 0.08);
-  --hairline-2: rgb(0 0 0 / 0.14);
-  --chip: #f0f0f0;
-  --chip-hover: #e6e6e6;
-  --cta-bg: #161616;
-  --cta-ink: #ffffff;
-  --cta-hover: #2e2e2e;
-  --nav-bg: rgb(255 255 255 / 0.8);
-  --nav-line: rgb(0 0 0 / 0.1);
-  --pill-fill: rgb(0 0 0 / 0.05);
-  --scrim-peek: rgb(0 0 0 / 0.32);
-  --btn: #ffffff;
-  --btn-hover: #f6f6f6;
+  --void: light-dark(#ffffff, #000000);
+  --band: light-dark(#f4f4f4, #121212);
+  --surface-1: light-dark(#ffffff, #1c1c1c);
+  --ink: light-dark(#161616, #ebebeb);
+  --ink-2: light-dark(#555555, #a1a1a1);
+  --ink-3: light-dark(#6e6e6e, #8e8e8e);
+  --hairline: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.09));
+  --hairline-2: light-dark(rgb(0 0 0 / 0.14), rgb(255 255 255 / 0.16));
+  --chip: light-dark(#f0f0f0, #1c1c1c);
+  --chip-hover: light-dark(#e6e6e6, #262626);
+  --cta-bg: light-dark(#161616, #ebebeb);
+  --cta-ink: light-dark(#ffffff, #161616);
+  --cta-hover: light-dark(#2e2e2e, #ffffff);
+  --nav-bg: light-dark(rgb(255 255 255 / 0.8), rgb(0 0 0 / 0.72));
+  --nav-line: light-dark(rgb(0 0 0 / 0.1), rgb(255 255 255 / 0.1));
+  --pill-fill: light-dark(rgb(0 0 0 / 0.05), rgb(255 255 255 / 0.08));
+  --scrim-peek: light-dark(rgb(0 0 0 / 0.32), rgb(0 0 0 / 0.5));
+  --btn: light-dark(#ffffff, #262626);
+  --btn-hover: light-dark(#f6f6f6, #2e2e2e);
   --btn-ring: 0 0 0 0.5px rgb(0 0 0 / 0.16), 0 1px 1px rgb(0 0 0 / 0.06);
-  --seg-track: #e6e6e6;
-  --seg-thumb: #ffffff;
+  --seg-track: light-dark(#e6e6e6, #242424);
+  --seg-thumb: light-dark(#ffffff, #5a5a5a);
   --seg-lift: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.06);
 
   /* Rigel, the bundled icon's blue: --accent fills, --accent-text is text and rings */
-  --accent: #2a75c5;
-  --accent-ink: #ffffff;
-  --accent-text: #1f63ad;
+  --accent: light-dark(#2a75c5, #4a8fd8);
+  --accent-ink: light-dark(#ffffff, #0b0b0c);
+  --accent-text: light-dark(#1f63ad, #9ac0e9);
   --focus: var(--accent);
-  --select: rgb(42 117 197 / 0.22);
-  --find: #ffcc00;
+  --select: light-dark(rgb(42 117 197 / 0.22), rgb(74 143 216 / 0.35));
+  --find: light-dark(#ffcc00, #ffd60a);
 
   /* scene ink: product scenes stay dark in both appearances */
   --sc-ink: #ffffff;
@@ -160,15 +125,12 @@
   --card-base: #0d214c;
 
   /* Mac keys: neutral caps on a 1 px lower edge; a pressed key sinks and takes Rigel */
-  --kc-face: #ffffff;
-  --kc-glyph: #1d1d1d;
-  --kc-ring: rgb(0 0 0 / 0.12);
-  --kc-edge: rgb(0 0 0 / 0.16);
+  --kc-face: light-dark(#ffffff, #262626);
+  --kc-glyph: light-dark(#1d1d1d, #ebebeb);
+  --kc-ring: light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.1));
+  --kc-edge: light-dark(rgb(0 0 0 / 0.16), rgb(0 0 0 / 0.6));
 
   /* shadows: neutral light from above, never tinted */
-  --sh-win:
-    0 0 0 0.5px rgb(0 0 0 / 0.2), 0 24px 64px -8px rgb(0 0 0 / 0.3),
-    0 8px 20px -6px rgb(0 0 0 / 0.16);
   --sh-capsule: 0 12px 32px rgb(0 0 0 / 0.24);
   --hl-top: inset 0 1px 0 rgb(255 255 255 / 0.1);
 
@@ -407,54 +369,22 @@
 /* Breakpoints (media queries cannot read custom properties):
    S ≤ 734 · M 735–1023 · L 1024–1279 · XL ≥ 1280. Pins need ≥ 735 wide and ≥ 600 tall. */
 
-/* dark: zero chroma on a true black ground */
+/* colours are light-dark() pairs; data-theme (the nav's toggle) overrides the system for this visit */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
-    --void: #000000;
-    --band: #121212;
-    --surface-1: #1c1c1c;
-    --ink: #ebebeb;
-    --ink-2: #a1a1a1;
-    --ink-3: #8e8e8e;
-    --hairline: rgb(255 255 255 / 0.09);
-    --hairline-2: rgb(255 255 255 / 0.16);
-    --chip: #1c1c1c;
-    --chip-hover: #262626;
-    --cta-bg: #ebebeb;
-    --cta-ink: #161616;
-    --cta-hover: #ffffff;
-    --nav-bg: rgb(0 0 0 / 0.72);
-    --nav-line: rgb(255 255 255 / 0.1);
-    --pill-fill: rgb(255 255 255 / 0.08);
-    --scrim-peek: rgb(0 0 0 / 0.5);
-    --btn: #262626;
-    --btn-hover: #2e2e2e;
+  :root:not([data-theme="light"]) {
     --btn-ring: 0 0 0 0.5px rgb(0 0 0 / 0.5), inset 0 0.5px 0 rgb(255 255 255 / 0.1);
-    --seg-track: #242424;
-    --seg-thumb: #5a5a5a;
     --seg-lift: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 0.5px 0 rgb(255 255 255 / 0.12);
-    --accent: #4a8fd8;
-    --accent-ink: #0b0b0c;
-    --accent-text: #9ac0e9;
-    --select: rgb(74 143 216 / 0.35);
-    --find: #ffd60a;
-    --kc-face: #262626;
-    --kc-glyph: #ebebeb;
-    --kc-ring: rgb(255 255 255 / 0.1);
-    --kc-edge: rgb(0 0 0 / 0.6);
-    --sh-win:
-      0 0 0 0.5px rgb(255 255 255 / 0.16), 0 30px 80px -20px rgb(0 0 0 / 0.7);
   }
 }
-/* dark scenes in either appearance: the windows, their captions, the Spaces panel and the site sidebar */
-.win,
-.cap,
-.panel-sky,
-.sitebar {
-  --kc-face: #333333;
-  --kc-glyph: #f0f0f0;
-  --kc-ring: rgb(255 255 255 / 0.12);
-  --kc-edge: rgb(0 0 0 / 0.6);
+:root[data-theme="dark"] {
+  --btn-ring: 0 0 0 0.5px rgb(0 0 0 / 0.5), inset 0 0.5px 0 rgb(255 255 255 / 0.1);
+  --seg-lift: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 0.5px 0 rgb(255 255 255 / 0.12);
 }
 @media (max-width: 1023px) {
   :root {
@@ -467,97 +397,6 @@
     --inset: 8px;
     --r-panel: 26px;
   }
-}
-
-/* the look's derived accent, set on window parts only (window.js); html[data-accent] is a record only (main.js) */
-:not(html)[data-accent="nebula"] {
-  --accent: #5849eb;
-  --card-base: #1f1a52;
-}
-:not(html)[data-accent="ember"] {
-  --accent: #eb793b;
-  --card-base: #380f12;
-}
-:not(html)[data-accent="tide"] {
-  --accent: #3b73eb;
-  --card-base: #0d214c;
-}
-:not(html)[data-accent="aurora"] {
-  --accent: #3bebbf;
-  --card-base: #0d2e24;
-}
-:not(html)[data-accent="sunset"] {
-  --accent: #eb793b;
-  --card-base: #2e1f66;
-}
-:not(html)[data-accent="bloom"] {
-  --accent: #eb3fdb;
-  --card-base: #4c1447;
-}
-:not(html)[data-accent="ink"] {
-  --accent: #6775eb;
-  --card-base: #121429;
-}
-:not(html)[data-accent="charcoal"] {
-  --accent: #cbcbeb;
-  --card-base: #212126;
-}
-/* look layers: the mesh as the app draws it, the 880x592 render stretched to cover */
-[data-look="nebula"] {
-  --look-img: url("/assets/spaces/space-nebula-880x592.png");
-  --look-base: #1f1a52;
-  --look-mid: #6b33a3;
-  --look-hot: #803385;
-  --look-grain: 0;
-}
-[data-look="ember"] {
-  --look-img: url("/assets/spaces/space-ember-880x592.png");
-  --look-base: #380f12;
-  --look-mid: #8f291f;
-  --look-hot: #cc6126;
-  --look-grain: 0.1;
-}
-[data-look="tide"] {
-  --look-img: url("/assets/spaces/space-tide-880x592.png");
-  --look-base: #0d214c;
-  --look-mid: #1f6b80;
-  --look-hot: #1f6b80;
-  --look-grain: 0;
-}
-[data-look="aurora"] {
-  --look-img: url("/assets/spaces/space-aurora-880x592.png");
-  --look-base: #0d2e24;
-  --look-mid: #1a6b57;
-  --look-hot: #298070;
-  --look-grain: 0.07;
-}
-[data-look="sunset"] {
-  --look-img: url("/assets/spaces/space-sunset-880x592.png");
-  --look-base: #2e1f66;
-  --look-mid: #a82e75;
-  --look-hot: #d16b33;
-  --look-grain: 0.05;
-}
-[data-look="bloom"] {
-  --look-img: url("/assets/spaces/space-bloom-880x592.png");
-  --look-base: #4c1447;
-  --look-mid: #a83870;
-  --look-hot: #a83870;
-  --look-grain: 0.04;
-}
-[data-look="ink"] {
-  --look-img: none;
-  --look-base: #121429;
-  --look-mid: #121429;
-  --look-hot: #1b1f3d;
-  --look-grain: 0;
-}
-[data-look="charcoal"] {
-  --look-img: none;
-  --look-base: #212126;
-  --look-mid: #212126;
-  --look-hot: #2c2c33;
-  --look-grain: 0.14;
 }
 
 @supports not (transition-timing-function: linear(0, 1)) {

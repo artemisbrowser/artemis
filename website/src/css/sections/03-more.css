@@ -1,0 +1,71 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+.more {
+  text-align: center;
+}
+.statement {
+  font-size: clamp(44px, 7vw, 96px);
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+}
+.statement span {
+  display: block;
+}
+.statement .dim {
+  color: #424245;
+}
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .statement .dim {
+      animation: light linear both;
+      animation-timeline: view();
+      animation-range: entry 40% cover 45%;
+    }
+  }
+}
+@keyframes light {
+  to {
+    color: #f5f5f7;
+  }
+}
+.more-mac {
+  width: min(100%, 1040px);
+  height: auto;
+  margin: 72px auto 0;
+  filter: drop-shadow(0 40px 120px rgb(38 150 132 / 0.35));
+}
+.more .lead {
+  margin: 64px auto 0;
+  text-align: left;
+}
+.stats {
+  margin: 72px auto 0;
+  padding: 0;
+  max-width: 980px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  list-style: none;
+  text-align: left;
+}
+.stats li {
+  padding-top: 20px;
+  border-top: 1px solid var(--hairline-2);
+}
+.stats .num {
+  font-size: clamp(32px, 3.4vw, 48px);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.stats p:last-child {
+  margin-top: 6px;
+  font-size: 17px;
+  color: var(--ink-3);
+}
+@media (max-width: 734px) {
+  .stats {
+    grid-template-columns: 1fr;
+  }
+}

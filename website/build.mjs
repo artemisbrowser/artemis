@@ -26,15 +26,10 @@ const kb = (n) => (n / 1024).toFixed(1) + " KB";
 // Page order. A missing partial becomes an empty stub; 07-arc never gets one (it is deletable).
 const SECTIONS = [
   ["01-hero", "top", "Overview"],
-  ["02-out-of-the-way", "native", "Native"],
-  ["06-privacy", "privacy", "Privacy"],
-  ["03-spaces", "spaces", "Spaces"],
-  ["04-command-bar", "command-bar", "Command bar"],
-  ["05-split-view", "split-view", "Split view"],
-  ["06-shape", "shape", "Make it yours"],
-  ["06-open-source", "open-source", "Open source"],
+  ["02-know", "know", "Get to know"],
+  ["03-more", "more", "More"],
   ["07-arc", "arc", null],
-  ["08-close", "fin", "Made by Fin"],
+  ["08-close", "fin", "Get Artemis"],
 ];
 const PAGES = {
   "index.html": {
@@ -226,7 +221,11 @@ export async function build(out) {
   };
   for (const f of walk(path.join(SRC, "img")))
     if (path.basename(f) !== "favicon-32.png")
-      plan(`/assets/img/${path.basename(f)}`, f, ROOT_FILES[path.basename(f)]);
+      plan(
+        `/assets/img/${path.relative(path.join(SRC, "img"), f).split(path.sep).join("/")}`,
+        f,
+        ROOT_FILES[path.basename(f)],
+      );
   for (const f of walk(path.join(SRC, "static")))
     plan(`/assets/static/${path.basename(f)}`, f, path.basename(f));
   for (const f of walk(path.join(SRC, "video")))
@@ -326,7 +325,7 @@ export async function build(out) {
   }
 
   // CSS
-  const cssParts = ["tokens", "base", "components", "window", "pages"].map(
+  const cssParts = ["tokens", "base", "components"].map(
     (n) => `css/${n}.css`,
   );
   for (const f of fs.readdirSync(path.join(SRC, "css/sections")).sort())

@@ -19,10 +19,20 @@ node build.mjs --check        # build it, then run the checks
 - `src/img`, `src/video`, `assets`: images and clips
 - `tools`: the checks and review helpers
 
+## Mac screenshots
+
+The Mac shots in `src/img/framed` are Artemis window captures framed in a MacBook Pro with [frames-cli](https://github.com/viticci/frames-cli). Clone it to `~/.cache/artemis/frames-cli` (or set `FRAMES_CLI`), then:
+
+```sh
+node tools/frame.mjs <capture.png> <name> [--backdrop assets/spaces/space-tide-880x592.png] [--width 2000]
+```
+
+It writes `src/img/framed/<name>.webp`. The frames are Apple's images and aren't covered by the GPL.
+
 ## Contributing
 
 It works the same as the app: fork, branch, open a PR against `main`, and sign the CLA on your first one. [CONTRIBUTING.md](../CONTRIBUTING.md) walks through it. Run `node build.mjs --check` before you open the PR, and add a screenshot for anything that changes how the site looks.
 
 ## Licence
 
-The website is covered by the same [licence](../LICENSE) as the app, the GPL 3.0. The Artemis name and icon are trademarks, so a copy you host needs its own.
+The website is covered by the same [licence](../LICENSE) as the app, the GPL 3.0, except the third-party images listed in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md). The Artemis name and icon are trademarks, so a copy you host needs its own.
