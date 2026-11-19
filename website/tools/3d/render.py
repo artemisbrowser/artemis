@@ -3,9 +3,13 @@
 
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
 #   [--shots side,closed,glow,three-quarter,seq] [--samples 128] [--height 1080] [--frames 120]
+#   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1]
+# Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
+# materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
+# --lid swing about a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
 # Cycles studio for the laptop: black sweep, softbox strips, the CC0 studio HDRI, a screen whose spill is neutral.
 # Units are cm (1 BU = 1 cm); poses use mock/laptop.js's orbit (az, el, dist, y, z, fov) in its Y-up space.
-import argparse, math, os, sys
+import argparse, json, math, os, re, sys
 import bpy, bmesh
 from mathutils import Vector
 
@@ -20,6 +24,11 @@ a.add_argument("--shots", default="side,closed,glow,three-quarter,seq")
 a.add_argument("--samples", type=int, default=128)
 a.add_argument("--height", type=int, default=1080)
 a.add_argument("--frames", type=int, default=120)
+a.add_argument("--map")
+a.add_argument("--lid", default=r"^(lid|display|screen|top)")
+a.add_argument("--rest-angle", type=float, default=0)
+a.add_argument("--turn", type=float, default=0)
+a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, whose V runs the other way")
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
 # linear base colour, roughness, HDRI strength
@@ -168,15 +177,59 @@ panel("front", (120, 16), (0, -20, 0.3), (0, -20, 10), 0.5)
 before = set(bpy.data.objects)
 bpy.ops.import_scene.gltf(filepath=args.glb)
 laptop = bpy.data.collections.new("laptop")
+scene.collection.children.link(laptop)
 for o in set(bpy.data.objects) - before:
     laptop.objects.link(o)
 for o in before:
     if o.type == "MESH" and o is not sweep:
         o.light_linking.receiver_collection = laptop
-hinge = bpy.data.objects["lid"]
-hinge.rotation_mode = "XYZ"
+new = set(bpy.data.objects) - before
+roots = [o for o in new if o.parent not in new]
+model = bpy.data.objects.new("model", None)
+laptop.objects.link(model)
+for o in roots:
+    o.parent = model
+model.rotation_euler.z = math.radians(args.turn)
 
-# materials by the names mock/laptop.js gives them
+
+def verts(objs):
+    bpy.context.view_layer.update()
+    return [o.matrix_world @ v.co for o in objs if o.type == "MESH" for v in o.data.vertices]
+
+
+# 31.26 cm wide, centred, feet on the floor
+vs = verts(new)
+model.scale *= 31.26 / (max(v.x for v in vs) - min(v.x for v in vs))
+vs = verts(new)
+model.location -= Vector(((max(v.x for v in vs) + min(v.x for v in vs)) / 2, (max(v.y for v in vs) + min(v.y for v in vs)) / 2, min(v.z for v in vs)))
+
+# the hinge: the lid's lowest verts, at their back
+lids = [o for o in new if re.search(args.lid, o.name, re.I) and not (o.parent and re.search(args.lid, o.parent.name, re.I))]
+hinge = bpy.data.objects.new("hinge", None)
+laptop.objects.link(hinge)
+if lids:
+    vs = verts({d for o in lids for d in [o, *o.children_recursive]})
+    low = min(v.z for v in vs)
+    hinge.location = (0, max(v.y for v in vs if v.z < low + 0.3), low)
+    bpy.context.view_layer.update()
+    for o in lids:
+        m = o.matrix_world.copy()
+        o.parent = hinge
+        o.matrix_world = m
+else:
+    print("render.py: no object matches --lid; the lid stays at its rest angle")
+
+# roles by material name: mock/'s exact names first, then common names in downloaded models
+ROLES = [(r"^(well|grille|port|foot|hinge|glass|scoop|alloy|recess|pad|keycap|screen)$", None),
+         (r"bezel", "glass"), (r"screen|display|lcd", "screen"), (r"glass", "glass"),
+         (r"alumin|metal|body|chassis|case|shell|silver|space.?(gr[ae]y|black)|anodi", "alloy"),
+         (r"keycap|keys?\b|key_|button", "keycap"), (r"feet|foot|rubber", "foot"), (r"trackpad|touchpad", "pad"),
+         (r"hinge", "hinge"), (r"grill|speaker", "grille"), (r"port|jack|usb|hdmi|magsafe", "port")]
+if args.map:
+    ROLES = list(json.load(open(args.map)).items()) + ROLES
+# a downloaded model's own textures win for these roles
+TEXTURED = {"keycap", "foot", "grille", "port", "pad"}
+
 alloy, alloy_b = principled("alloy", (0.5, 0.5, 0.5), 0.3, metal=1.0)
 recess, recess_b = principled("recess", (0.2, 0.2, 0.2), 0.45, metal=1.0)
 pad, pad_b = principled("pad", (0.5, 0.5, 0.5), 0.22, metal=1.0)
@@ -203,16 +256,18 @@ def flip_v(t, tex):
     t.links.new(m.outputs[0], tex.inputs["Vector"])
 
 
-# legends: the imported unlit material's image, as grey print rather than light
-legend = next(m for m in bpy.data.materials if m.name.startswith("legend"))
-img = next(n.image for n in legend.node_tree.nodes if n.type == "TEX_IMAGE")
-lm, lb = principled("legend-print", (0.35, 0.35, 0.37), 0.5)
-lt = lm.node_tree
-tex = lt.nodes.new("ShaderNodeTexImage")
-tex.image = img
-flip_v(lt, tex)
-lt.links.new(tex.outputs["Alpha"], lb.inputs["Alpha"])
-SIMPLE["legend"] = lm
+# mock/'s legends: the imported unlit material's image, as grey print rather than light
+legend = bpy.data.materials.get("legend")
+if legend:
+    img = next(n.image for n in legend.node_tree.nodes if n.type == "TEX_IMAGE")
+    lm, lb = principled("legend-print", (0.35, 0.35, 0.37), 0.5)
+    lt = lm.node_tree
+    tex = lt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    flip_v(lt, tex)
+    lt.links.new(tex.outputs["Alpha"], lb.inputs["Alpha"])
+    SIMPLE["legend"] = lm
+    ROLES.insert(0, (r"^legend$", "legend"))
 
 # screen: the capture to the camera, a neutral white-grey to everything it lights; glossy glass on top
 sm, sb = principled("screen-glass", (0, 0, 0), 0.05)
@@ -220,7 +275,8 @@ sb.inputs["Specular IOR Level"].default_value = 0.05
 st = sm.node_tree
 stex = st.nodes.new("ShaderNodeTexImage")
 stex.image = bpy.data.images.load(os.path.abspath(args.screen))
-flip_v(st, stex)
+if args.flip_uv:
+    flip_v(st, stex)
 spath = st.nodes.new("ShaderNodeLightPath")
 smix = st.nodes.new("ShaderNodeMix")
 smix.data_type = "RGBA"
@@ -234,11 +290,22 @@ st.links.new(spath.outputs["Is Camera Ray"], strength.inputs[0])
 st.links.new(strength.outputs[0], sb.inputs["Emission Strength"])
 SIMPLE["screen"] = sm
 
-for o in bpy.data.objects:
-    if o.type == "MESH" and o is not sweep:
-        for s in o.material_slots:
-            if s.material and s.material.name.split(".")[0] in SIMPLE:
-                s.material = SIMPLE[s.material.name.split(".")[0]]
+def role(m):
+    name = m.name.split(".")[0]
+    r = next((r or name for p, r in ROLES if re.search(p, name, re.I)), None)
+    textured = m.node_tree and any(n.type == "TEX_IMAGE" for n in m.node_tree.nodes)
+    return None if r == "keep" or (r in TEXTURED and textured and name != r) else r
+
+
+mapped = {}
+for o in new:
+    for s in o.material_slots if o.type == "MESH" else ():
+        if s.material and s.material.name not in mapped:
+            mapped[s.material.name] = role(s.material)
+        if s.material and mapped[s.material.name]:
+            s.material = SIMPLE[mapped[s.material.name]]
+for k, v in sorted(mapped.items()):
+    print(f"render.py: material {k!r} -> {v or 'kept as imported'}")
 
 cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
 scene.collection.objects.link(cam)
@@ -253,7 +320,7 @@ def pose(finish, lid, glow, az, el, dist, y, z, fov):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
         b.inputs["Roughness"].default_value = r
     bg.inputs["Strength"].default_value = light
-    hinge.rotation_euler = (-math.radians(lid), 0, 0)
+    hinge.rotation_euler = (math.radians(args.rest_angle - lid), 0, 0)
     strength.inputs[1].default_value = 1 - glow  # camera rays see 1, spill rays see glow
     strength.inputs[2].default_value = glow
     # mock/laptop.js orbit in Y-up (x, y, z) -> Blender (x, -z, y)
@@ -272,7 +339,7 @@ def shoot(path, aspect):
 
 
 os.makedirs(args.out, exist_ok=True)
-for name in args.shots.split(","):
+for name in filter(None, args.shots.split(",")):
     if name == "seq":
         os.makedirs(os.path.join(args.out, "seq"), exist_ok=True)
         for f in range(args.frames):
