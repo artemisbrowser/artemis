@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { HDRLoader } from "three/addons/loaders/HDRLoader.js";
+import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 
 // 14-inch dimensions, measured from product shots against the published 31.26 x 22.12 x 1.55
 const W = 31.26, D = 22.12, BASE_H = 0.95, LID_H = 0.45, FOOT = 0.1, R_PLAN = 0.85;
@@ -130,7 +131,7 @@ function keyboard(material) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;
-  const legends = new THREE.Mesh(flat(new THREE.PlaneGeometry(KEY_W, KEYS_D)), new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.85, depthWrite: false }));
+  const legends = new THREE.Mesh(flat(new THREE.PlaneGeometry(KEY_W, KEYS_D)), new THREE.MeshBasicMaterial({ name: "legend", map: tex, transparent: true, opacity: 0.85, depthWrite: false }));
   legends.position.y = 0.061;
   group.add(legends);
   return group;
@@ -169,41 +170,41 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
   const { alloy, roughness } = FINISHES[finish];
-  const aluminium = new THREE.MeshPhysicalMaterial({ color: alloy, metalness: 1, roughness });
-  const recess = new THREE.MeshStandardMaterial({ color: new THREE.Color(alloy).multiplyScalar(0.45), metalness: 1, roughness: roughness + 0.1 });
-  const ink = (color, rough) => new THREE.MeshStandardMaterial({ color, roughness: rough });
-  const blackGlass = new THREE.MeshPhysicalMaterial({ color: 0x050506, roughness: 0.12, clearcoat: 0.6 });
+  const aluminium = new THREE.MeshPhysicalMaterial({ name: "alloy", color: alloy, metalness: 1, roughness });
+  const recess = new THREE.MeshStandardMaterial({ name: "recess", color: new THREE.Color(alloy).multiplyScalar(0.45), metalness: 1, roughness: roughness + 0.1 });
+  const ink = (name, color, rough) => new THREE.MeshStandardMaterial({ name, color, roughness: rough });
+  const blackGlass = new THREE.MeshPhysicalMaterial({ name: "glass", color: 0x050506, roughness: 0.12, clearcoat: 0.6 });
 
   const laptop = new THREE.Group();
   laptop.position.y = FOOT;
   scene.add(laptop);
 
   const base = new THREE.Mesh(loft(W, D, R_PLAN, [...topRound(BASE_H, 0.1), ...bottomRound(0.4)]), aluminium);
-  const well = new THREE.Mesh(flat(card(WELL_W, WELL_D, 0.35)), ink(0x050506, 0.75));
+  const well = new THREE.Mesh(flat(card(WELL_W, WELL_D, 0.35)), ink("well", 0x050506, 0.75));
   well.position.set(0, BASE_H + 0.002, WELL_Z);
-  const keys = keyboard(ink(0x0b0b0c, 0.6));
+  const keys = keyboard(ink("keycap", 0x0b0b0c, 0.6));
   keys.position.set(0, BASE_H + 0.0, WELL_Z);
   laptop.add(base, well, keys);
 
   const dots = grille();
   for (const side of [-1, 1]) {
-    const g = new THREE.Mesh(flat(new THREE.PlaneGeometry(1.3, WELL_D - 0.6)), new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.9, alphaMap: dots, transparent: true }));
+    const g = new THREE.Mesh(flat(new THREE.PlaneGeometry(1.3, WELL_D - 0.6)), new THREE.MeshStandardMaterial({ name: "grille", color: 0x050506, roughness: 0.9, alphaMap: dots, transparent: true }));
     g.position.set(side * (WELL_W / 2 + (W - WELL_W) / 4), BASE_H + 0.003, WELL_Z);
     laptop.add(g);
   }
 
   const padZ = -D / 2 + 17.45;
   const padEdge = new THREE.Mesh(flat(card(13.06, 8.06, 0.58)), recess);
-  const pad = new THREE.Mesh(flat(card(13.0, 8.0, 0.55)), new THREE.MeshPhysicalMaterial({ color: alloy, metalness: 0.85, roughness: roughness - 0.08 }));
+  const pad = new THREE.Mesh(flat(card(13.0, 8.0, 0.55)), new THREE.MeshPhysicalMaterial({ name: "pad", color: alloy, metalness: 0.85, roughness: roughness - 0.08 }));
   padEdge.position.set(0, BASE_H + 0.002, padZ);
   pad.position.set(0, BASE_H + 0.004, padZ);
   laptop.add(padEdge, pad);
 
   // the thumb scoop on the front edge and the side ports, as recessed decals on the flat faces
-  const scoop = new THREE.Mesh(card(5.5, 0.3, 0, 0.15), new THREE.MeshStandardMaterial({ color: new THREE.Color(alloy).lerp(new THREE.Color(0xffffff), 0.2), metalness: 0.4, roughness: 0.45 }));
+  const scoop = new THREE.Mesh(card(5.5, 0.3, 0, 0.15), new THREE.MeshStandardMaterial({ name: "scoop", color: new THREE.Color(alloy).lerp(new THREE.Color(0xffffff), 0.2), metalness: 0.4, roughness: 0.45 }));
   scoop.position.set(0, BASE_H - 0.15, D / 2 + 0.002);
   laptop.add(scoop);
-  const portMat = ink(0x060607, 0.7);
+  const portMat = ink("port", 0x060607, 0.7);
   const PORTS = [
     [-1, 2.27, 1.02, 0.3, 0.15], [-1, 4.25, 0.82, 0.26, 0.13], [-1, 5.75, 0.82, 0.26, 0.13], [-1, 7.27, 0.36, 0.36, 0.18],
     [1, 2.25, 1.55, 0.42, 0.06], [1, 4.45, 0.82, 0.26, 0.13], [1, 6.05, 2.7, 0.16, 0.08],
@@ -213,19 +214,20 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
     m.position.set(side * (W / 2 + 0.002), 0.6, -D / 2 + from + w / 2);
     laptop.add(m);
   }
-  const feet = ink(0x111112, 0.85);
+  const feet = ink("foot", 0x111112, 0.85);
   for (const x of [-1, 1]) for (const z of [-1, 1]) {
     const f = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, FOOT, 32), feet);
     f.position.set(x * (W / 2 - 2.6), -FOOT / 2, z * (D / 2 - 2.0));
     laptop.add(f);
   }
 
-  const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, WELL_W, 32).rotateZ(Math.PI / 2), new THREE.MeshPhysicalMaterial({ color: 0x141416, metalness: 0.7, roughness: 0.45 }));
+  const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, WELL_W, 32).rotateZ(Math.PI / 2), new THREE.MeshPhysicalMaterial({ name: "hinge", color: 0x141416, metalness: 0.7, roughness: 0.45 }));
   hinge.position.set(0, BASE_H - 0.04, PIVOT_Z - 0.05);
   laptop.add(hinge);
 
   // the lid's pivot sits on the hinge; rotation.x = -angle opens it. Lid y 0 is the screen face
   const lid = new THREE.Group();
+  lid.name = "lid";
   lid.position.set(0, BASE_H + 0.03, PIVOT_Z);
   laptop.add(lid);
   // the lid shades from the hinge (dark) to its front edge, like a softbox falling off across it
@@ -238,7 +240,7 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
 
   const bezel = new THREE.Mesh(card(W - 0.36, LID_D - 0.36, R_PLAN - 0.18).rotateX(Math.PI / 2), blackGlass);
   bezel.position.set(0, -0.001, LID_D / 2);
-  const display = new THREE.Mesh(card(SCREEN_W, SCREEN_H, 0.55, 0.05).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }));
+  const display = new THREE.Mesh(card(SCREEN_W, SCREEN_H, 0.55, 0.05).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ name: "screen", map: tex, toneMapped: false }));
   display.position.set(0, -0.002, LID_D - SCREEN_TOP - SCREEN_H / 2);
   lid.add(bezel, display);
 
@@ -317,6 +319,15 @@ export async function mount(host, { screen, capture, shot = "orbit", finish = "b
   if (capture) {
     window.render3d = (p, t) => { resize(); render(p, t); };
     window.pose3d = (pose) => { resize(); draw(pose); };
+    // the laptop shut, as a GLB data URL without the screen image, for the Cycles rig
+    window.gltf3d = async () => {
+      const map = display.material.map;
+      lid.rotation.x = 0;
+      display.material.map = null;
+      const glb = await new GLTFExporter().parseAsync(laptop, { binary: true });
+      display.material.map = map;
+      return new Promise((done) => Object.assign(new FileReader(), { onload: (e) => done(e.target.result) }).readAsDataURL(new Blob([glb])));
+    };
   } else {
     renderer.setAnimationLoop((ms) => render(progress(), ms / 1000));
   }
