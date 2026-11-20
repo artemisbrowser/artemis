@@ -199,7 +199,7 @@ base_obj = base.obj("base")
 skin = base.obj("skin")
 
 cut = Geo()
-# keyboard well, trackpad slot, speaker grille slots
+# keyboard well and trackpad slot
 # the well's wall coves 0.94 mm down over 0.3 cm: (inset, mm below the deck), measured
 WELL = [(-0.03, 0), *zip((-0.02 + 0.02 * k for k in (0, 1, 2, 3, 5, 7, 9, 11, 13, 15)),
                          (0.03, 0.15, 0.26, 0.36, 0.53, 0.67, 0.78, 0.85, 0.88, 0.91))][::-1]
@@ -208,10 +208,6 @@ cut.loft(rings(13.915, 5.721, 0.42, [(i, ZT - d / 10) for i, d in WELL] + [(-0.0
 PAD = (6.21, 3.88, 0.38, 0, -6.419)
 cut.loft(rings(PAD[0] + 0.02, PAD[1] + 0.02, PAD[2] + 0.02, [(0, ZT - 0.12), (0, ZT - 0.01), (-0.01, ZT), (-0.01, ZT + 1)],
                12, PAD[3], PAD[4]), ["well", "alloy", "alloy"])
-GP, GCOLS, GROWS, GX, GY = 0.068, 6, 156, 14.95, -1.81
-for s in (1, -1):
-    x0, x1 = sorted((s * GX, s * (GX + GP * GCOLS)))
-    prism(cut, [(x0, GY), (x1, GY), (x1, GY + GP * GROWS), (x0, GY + GP * GROWS)], ZT - 0.06, ZT + 1, "alloy")
 # thumb scoop: a plane rising 0.65 back per unit up from 3.8 mm under the deck, eased out at the ends
 # by (x, mm the plane steps forward), measured
 SCOOP = [(0, 0), (2.18, 0), (2.24, 0.01), (2.3, 0.04), (2.36, 0.08), (2.42, 0.16), (2.48, 0.28), (2.54, 0.46),
@@ -310,23 +306,10 @@ for x, y in FEET:
     cut.loft(rings(1.05, 1.05, 1.05, [(0, Z0 - 1), (0, Z0), (0.09, Z0 + 0.032)], 16, x, y), "alloy")
 boolean(base_obj, "DIFFERENCE", cut.obj("cutter"))
 
-# speaker grilles: a perforated panel filling each slot, flush with the deck
+# speaker grilles: matte black panels just proud of the deck
 grille = Geo()
-ang = [k * math.pi / 4 for k in range(8)]
-for s in (1, -1):
-    for row in range(GROWS):
-        for col in range(GCOLS):
-            cx, cy = s * (GX + GP * (col + 0.5)), GY + GP * (row + 0.5)
-            sq = grille.add([(cx + GP / 2 * math.cos(a) / max(abs(math.cos(a)), abs(math.sin(a))),
-                              cy + GP / 2 * math.sin(a) / max(abs(math.cos(a)), abs(math.sin(a))), ZT) for a in ang])
-            hole = [(cx + 0.021 * math.cos(a), cy + 0.021 * math.sin(a)) for a in ang]
-            top = grille.add([(x, y, ZT) for x, y in hole])
-            bot = grille.add([(x, y, ZT - 0.05) for x, y in hole])
-            for i in range(8):
-                j = (i + 1) % 8
-                grille.face((sq[i], sq[j], top[j], top[i]), "alloy")
-                grille.face((top[i], top[j], bot[j], bot[i]), "grille")
-            grille.face(bot[::-1], "grille")
+for x0, x1 in ((14.09, 15.35), (-15.35, -14.09)):
+    grille.face(grille.add([(x0, -1.815, ZT + 0.001), (x1, -1.815, ZT + 0.001), (x1, 8.825, ZT + 0.001), (x0, 8.825, ZT + 0.001)]), "grille")
 grille.obj("grille", closed=False)
 
 # trackpad, feet, screws, hinge barrel
