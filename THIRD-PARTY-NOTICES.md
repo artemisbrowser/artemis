@@ -281,6 +281,8 @@ The website shows real third-party pages in screenshots of Artemis. These files 
 
 `website/mock/env/studio_small_09_1k.hdr` is [Studio Small 09](https://polyhaven.com/a/studio_small_09) by Sergej Majboroda, from Poly Haven under [CC0](https://creativecommons.org/publicdomain/zero/1.0/). It lights the 3D laptop prototype.
 
+The keyboard legends on the 3D laptop are set in [Inter](https://github.com/rsms/inter) 4.1 by Rasmus Andersson, under the [SIL Open Font License 1.1](https://openfontlicense.org). The font file isn't in this repository: `website/tools/3d/model.py` reads it from `~/.cache/artemis/fonts/Inter-Regular.ttf`.
+
 The MacBook Pro frames around `website/src/img/framed/*.webp` are Apple's product images from its design resources, composited with [frames-cli](https://github.com/viticci/frames-cli). They are Apple's, used under Apple's terms, and not covered by the GPL. MacBook Pro is a trademark of Apple Inc.
 
 `website/src/img/og-home.png` is a screenshot of the English Wikipedia article [Orion (constellation)](https://en.wikipedia.org/wiki/Orion_(constellation)), captured November 2026. Article text is by Wikipedia contributors under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). It contains [Orion_IAU.svg](https://commons.wikimedia.org/wiki/File:Orion_IAU.svg) by the IAU and Sky & Telescope magazine (Roger Sinnott, Rick Fienberg), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Being built on CC BY-SA material, it is shared under CC BY-SA 4.0 with these credits.

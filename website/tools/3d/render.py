@@ -36,7 +36,7 @@ a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, who
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
 # linear base colour, roughness, HDRI strength
-FINISHES = {"black": ((0.026, 0.027, 0.03), 0.34, 0.15), "silver": ((0.62, 0.63, 0.64), 0.3, 0.6)}
+FINISHES = {"black": ((0.093, 0.089, 0.095), 0.545, 0.15), "silver": ((0.62, 0.63, 0.64), 0.3, 0.6)}
 
 # name: (finish, aspect w:h, pose); lid in degrees, glow scales the screen's spill
 SHOTS = {
@@ -44,6 +44,8 @@ SHOTS = {
     "closed": ("black", 2200 / 900, dict(lid=0, glow=0, az=0, el=0.165, dist=82, y=0.8, z=0, fov=12)),
     "glow": ("black", 2220 / 1120, dict(lid=30, glow=0.8, az=0, el=0.19, dist=85, y=4.5, z=0, fov=14)),
     "three-quarter": ("silver", 720 / 540, dict(lid=110, glow=0.7, az=-0.85, el=0.3, dist=100, y=5, z=-2, fov=18)),
+    "ports": ("black", 2, dict(lid=0, glow=0, az=-1.36, el=0.02, dist=92, y=0.75, z=-7.6, fov=2.2)),
+    "deck": ("black", 2, dict(lid=110, glow=0.5, az=-0.3, el=0.75, dist=95, y=1.2, z=-1, fov=11)),
 }
 
 lerp = lambda a, b, t: a + (b - a) * t
@@ -271,15 +273,14 @@ TEXTURED = {"keycap", "foot", "grille", "port", "pad"}
 alloy, alloy_b = principled("alloy", (0.5, 0.5, 0.5), 0.3, metal=1.0)
 recess, recess_b = principled("recess", (0.2, 0.2, 0.2), 0.45, metal=1.0)
 pad, pad_b = principled("pad", (0.5, 0.5, 0.5), 0.22, metal=1.0)
-keycap, keycap_b = principled("keycap", (0.006, 0.006, 0.007), 0.6)
-keycap_b.inputs["Specular IOR Level"].default_value = 0.25  # satin caps, near-black from any angle
+keycap = principled("keycap", (0.003, 0.004, 0.004), 0.55, metal=0.2)[0]
 SIMPLE = {
-    "well": principled("well", (0.004, 0.004, 0.004), 0.7)[0],
+    "well": principled("well", (0.005, 0.005, 0.006), 0.6, metal=0.2)[0],
     "keycap": keycap,
     "grille": principled("grille", (0.003, 0.003, 0.003), 0.9)[0],
-    "port": principled("port", (0.002, 0.002, 0.002), 0.6)[0],
+    "port": principled("port", (0.05, 0.05, 0.05), 0.87)[0],
     "foot": principled("foot", (0.01, 0.01, 0.01), 0.85)[0],
-    "hinge": principled("hinge", (0.015, 0.015, 0.016), 0.4, metal=1.0)[0],
+    "hinge": principled("hinge", (0.003, 0.004, 0.004), 0.55, metal=0.2)[0],
     "glass": principled("glass", (0.002, 0.002, 0.002), 0.04, coat=1.0)[0],
     "scoop": recess,
     "alloy": alloy,
@@ -356,7 +357,7 @@ cam.data.clip_start, cam.data.clip_end = 1, 3000
 
 def pose(finish, lid, glow, az, el, dist, y, z, fov):
     color, rough, light = FINISHES[args.finish or finish]
-    for b, k, r in ((alloy_b, 1, rough), (recess_b, 0.45, rough + 0.1), (pad_b, 1, rough - 0.08)):
+    for b, k, r in ((alloy_b, 1, rough), (recess_b, 0.45, rough + 0.1), (pad_b, 0.89, rough)):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
         b.inputs["Roughness"].default_value = r
     bg.inputs["Strength"].default_value = light
