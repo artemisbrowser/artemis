@@ -36,7 +36,7 @@ a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, who
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
 # linear base colour, roughness, HDRI strength
-FINISHES = {"black": ((0.093, 0.089, 0.095), 0.545, 0.15), "silver": ((0.62, 0.63, 0.64), 0.3, 0.6)}
+FINISHES = {"black": ((0.093, 0.089, 0.095), 0.553, 0.15), "silver": ((0.62, 0.63, 0.64), 0.3, 0.6)}
 
 # name: (finish, aspect w:h, pose); lid in degrees, glow scales the screen's spill
 SHOTS = {
@@ -260,7 +260,7 @@ else:
     print("render.py: no object matches --lid; the lid stays at its rest angle")
 
 # roles by material name: mock/'s exact names first, then common names in downloaded models
-ROLES = [(r"^(well|grille|port|foot|hinge|glass|scoop|alloy|recess|pad|keycap|screen)$", None),
+ROLES = [(r"^(well|grille|port|foot|hinge|glass|seam|alloy|pad|keycap|screen)$", None),
          (r"bezel", "glass"), (r"screen|display|lcd", "screen"), (r"glass", "glass"),
          (r"alumin|metal|body|chassis|case|shell|silver|space.?(gr[ae]y|black)|anodi", "alloy"),
          (r"keycap|keys?\b|key_|button", "keycap"), (r"feet|foot|rubber", "foot"), (r"trackpad|touchpad", "pad"),
@@ -271,20 +271,19 @@ if args.map:
 TEXTURED = {"keycap", "foot", "grille", "port", "pad"}
 
 alloy, alloy_b = principled("alloy", (0.5, 0.5, 0.5), 0.3, metal=1.0)
-recess, recess_b = principled("recess", (0.2, 0.2, 0.2), 0.45, metal=1.0)
+seam, seam_b = principled("seam", (0.2, 0.2, 0.2), 0.45, metal=1.0)
 pad, pad_b = principled("pad", (0.5, 0.5, 0.5), 0.22, metal=1.0)
-keycap = principled("keycap", (0.003, 0.004, 0.004), 0.55, metal=0.2)[0]
+keycap = principled("keycap", (0.0035, 0.0036, 0.004), 0.55, metal=0.2)[0]
 SIMPLE = {
-    "well": principled("well", (0.005, 0.005, 0.006), 0.6, metal=0.2)[0],
+    "well": principled("well", (0.0052, 0.0055, 0.006), 0.605, metal=0.2)[0],
     "keycap": keycap,
-    "grille": principled("grille", (0.003, 0.003, 0.003), 0.9)[0],
+    "grille": principled("grille", (0, 0, 0), 1.0)[0],
     "port": principled("port", (0.05, 0.05, 0.05), 0.87)[0],
-    "foot": principled("foot", (0.01, 0.01, 0.01), 0.85)[0],
-    "hinge": principled("hinge", (0.003, 0.004, 0.004), 0.55, metal=0.2)[0],
-    "glass": principled("glass", (0.002, 0.002, 0.002), 0.04, coat=1.0)[0],
-    "scoop": recess,
+    "foot": principled("foot", (0, 0, 0), 0.8, metal=0.2)[0],
+    "hinge": keycap,
+    "glass": principled("glass", (0, 0, 0), 1.0)[0],
     "alloy": alloy,
-    "recess": recess,
+    "seam": seam,
     "pad": pad,
 }
 
@@ -310,9 +309,8 @@ if legend:
     SIMPLE["legend"] = lm
     ROLES.insert(0, (r"^legend$", "legend"))
 
-# screen: the capture to the camera, a neutral white-grey to everything it lights; glossy glass on top
-sm, sb = principled("screen-glass", (0, 0, 0), 0.05)
-sb.inputs["Specular IOR Level"].default_value = 0.05
+# screen: the capture to the camera, a neutral white-grey to everything it lights; a matte black face
+sm, sb = principled("screen-glass", (0, 0, 0), 1.0)
 st = sm.node_tree
 stex = st.nodes.new("ShaderNodeTexImage")
 stex.image = bpy.data.images.load(os.path.abspath(args.screen))
@@ -357,7 +355,7 @@ cam.data.clip_start, cam.data.clip_end = 1, 3000
 
 def pose(finish, lid, glow, az, el, dist, y, z, fov):
     color, rough, light = FINISHES[args.finish or finish]
-    for b, k, r in ((alloy_b, 1, rough), (recess_b, 0.45, rough + 0.1), (pad_b, 0.89, rough)):
+    for b, k, r in ((alloy_b, 1, rough), (seam_b, 1, rough + 0.088), (pad_b, 0.896, rough)):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
         b.inputs["Roughness"].default_value = r
     bg.inputs["Strength"].default_value = light

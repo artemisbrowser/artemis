@@ -4,8 +4,8 @@
 # blender -b --factory-startup -P tools/3d/model.py -- OUT.glb
 # A 14-inch laptop in Space Black, built from measurements, for render.py (--flip-uv 0).
 # Units are cm, Z up, front -y; the lid is closed, only lid parts are named lid*, and it turns about HINGE.
-# Material names are render.py roles; "print", "lens", "mark", "sensor" and "contact"
-# are kept as exported.
+# Material names are render.py roles; "print", "lens", "mark", "sensor", "contact", "gasket", "cover",
+# "pin", "bore" and "shell" are kept as exported.
 # Legends need Inter Regular 4.1 (OFL-1.1, github.com/rsms/inter) at ~/.cache/artemis/fonts/Inter-Regular.ttf.
 import math, os, re, sys
 import xml.etree.ElementTree as ET
@@ -16,11 +16,11 @@ OUT = sys.argv[sys.argv.index("--") + 1]
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 
-W, D, R = 31.02, 21.64, 1.11
-FOOT, H, LIDH = 0.16, 1.12, 0.36
+W, D, R, LD = 31.02, 21.64, 1.11, 21.66
+FOOT, H, LIDH = 0.16, 1.12, 0.335
 Z0, ZT = FOOT, FOOT + H
-LZ = ZT + 0.02  # the lid's display face, closed
-HINGE = (10.655, 0.767)  # the lid's axis (y, z): at 110 degrees its back edge sits behind the base, 0.27 off its floor
+LZ = ZT + 0.04  # the lid's display face, closed: its gasket rests on the deck
+HINGE = (10.5655, 0.8922)  # the lid's axis (y, z): opened 110 degrees, the lid lands on the reference's
 
 
 def material(name, color, rough, metal=0.0):
@@ -35,14 +35,15 @@ def material(name, color, rough, metal=0.0):
 
 
 M = {n: material(n, *a) for n, a in {
-    "alloy": ((0.093, 0.089, 0.095), 0.545, 1.0), "well": ((0.005, 0.005, 0.006), 0.6, 0.2),
-    "keycap": ((0.003, 0.004, 0.004), 0.55, 0.2), "print": ((0.8, 0.8, 0.8), 0.4),
-    "pad": ((0.083, 0.08, 0.085), 0.545, 1.0), "scoop": ((0.02, 0.02, 0.022), 0.4, 1.0),
-    "recess": ((0.02, 0.02, 0.022), 0.45, 1.0), "grille": ((0.003, 0.003, 0.003), 0.9),
-    "port": ((0.05, 0.05, 0.05), 0.87), "foot": ((0.01, 0.01, 0.01), 0.85),
-    "hinge": ((0.003, 0.004, 0.004), 0.55, 0.2), "glass": ((0.002, 0.002, 0.002), 0.04),
-    "screen": ((0.0, 0.0, 0.0), 0.05), "lens": ((0.01, 0.012, 0.02), 0.1),
-    "mark": ((0.22, 0.22, 0.23), 0.05, 1.0), "sensor": ((0.003, 0.004, 0.004), 0.58, 0.2), "contact": ((0.206, 0.206, 0.206), 0.2, 1.0)}.items()}
+    "alloy": ((0.093, 0.089, 0.095), 0.553, 1.0), "seam": ((0.0931, 0.0891, 0.0952), 0.641, 1.0),
+    "pad": ((0.0833, 0.0799, 0.085), 0.553, 1.0), "well": ((0.0052, 0.0055, 0.006), 0.605, 0.2),
+    "keycap": ((0.0035, 0.0036, 0.004), 0.55, 0.2), "print": ((0.8, 0.8, 0.8), 0.4),
+    "hinge": ((0.0035, 0.0036, 0.004), 0.55, 0.2), "sensor": ((0.0035, 0.0036, 0.004), 0.58, 0.2),
+    "grille": ((0.0, 0.0, 0.0), 1.0), "foot": ((0.0, 0.0, 0.0), 0.8, 0.2), "gasket": ((0.0, 0.0, 0.0), 0.8, 0.2),
+    "port": ((0.05, 0.05, 0.05), 0.87), "bore": ((0.025, 0.025, 0.025), 0.8), "pin": ((0.0689, 0.0678, 0.0644), 0.5, 0.75),
+    "shell": ((0.005, 0.005, 0.005), 0.001, 1.0), "contact": ((0.206, 0.206, 0.206), 0.2, 1.0),
+    "glass": ((0.0, 0.0, 0.0), 1.0), "cover": ((0.035, 0.035, 0.035), 0.8, 0.2), "screen": ((0.0, 0.0, 0.0), 0.05),
+    "lens": ((0.0, 0.0, 0.0), 1.0), "mark": ((0.22, 0.22, 0.23), 0.05, 1.0)}.items()}
 
 
 class Geo:
@@ -104,14 +105,25 @@ class Geo:
 
 
 def rrect(hw, hh, r, n=24, cx=0.0, cy=0.0):
-    """a rounded rectangle, counter-clockwise; coincident points dropped"""
-    r = min(r, hw, hh)
+    """a rounded rectangle, counter-clockwise; r is one radius or four from the +x +y corner on; coincident points dropped"""
     pts = []
-    for k, (sx, sy) in enumerate(((1, 1), (-1, 1), (-1, -1), (1, -1))):
+    for k, ((sx, sy), r) in enumerate(zip(((1, 1), (-1, 1), (-1, -1), (1, -1)), r if isinstance(r, tuple) else (r,) * 4)):
+        r = min(r, hw, hh)
         for j in range(n + 1):
             a = math.pi / 2 * (k + j / n)
             pts.append((cx + sx * (hw - r) + r * math.cos(a), cy + sy * (hh - r) + r * math.sin(a)))
     return [p for i, p in enumerate(pts) if math.dist(p, pts[i - 1]) > 1e-7]
+
+
+def clip_y(pts, y0):
+    """the part of a closed outline at y >= y0"""
+    out = []
+    for p, q in zip(pts, pts[1:] + pts[:1]):
+        if p[1] >= y0:
+            out.append(p)
+        if (p[1] - y0) * (q[1] - y0) < 0:
+            out.append((p[0] + (y0 - p[1]) / (q[1] - p[1]) * (q[0] - p[0]), y0))
+    return out
 
 
 def rings(hw, hh, r, profile, n=24, cx=0.0, cy=0.0):
@@ -138,15 +150,11 @@ def prism(g, pts2d, z0, z1, mat, basis=Matrix.Identity(3), at=Vector()):
 def boolean(target, op, other):
     """applies other to target and removes other"""
     mod = target.modifiers.new("b", "BOOLEAN")
-    mod.operation, mod.solver, mod.object, mod.material_mode = op, "EXACT", other, "TRANSFER"
+    mod.operation, mod.solver, mod.object, mod.material_mode, mod.use_self = op, "EXACT", other, "TRANSFER", True
     bpy.context.view_layer.update()
     target.data = bpy.data.meshes.new_from_object(target.evaluated_get(bpy.context.evaluated_depsgraph_get()))
     target.modifiers.clear()
     bpy.data.objects.remove(other)
-
-
-def ellipse_ring(x, cy, cz, ry, rz, n=48):
-    return [(x, cy + ry * math.cos(2 * math.pi * k / n), cz + rz * math.sin(2 * math.pi * k / n)) for k in range(n)]
 
 
 # ---------------------------------------------------------------- base
@@ -155,7 +163,7 @@ BASE = [(1.2, 0), (0.9, 0), (0.611, 0.016), (0.459, 0.05), (0.309, 0.121), (0.29
         (0.273, 0.15), (0.204, 0.206), (0.12, 0.3), (0.074, 0.398), (0.029, 0.539), (0.003, 0.787), (0, 0.9),
         *[(i, H - 0.02 + z) for i, z in fillet(0.02, 0.02, 3)]]
 BAND = ["alloy"] * (len(BASE) - 1)
-BAND[5] = BAND[6] = "well"  # the dark seam where the bottom case meets the top case
+BAND[5] = BAND[6] = "seam"  # where the bottom case meets the top case
 base.loft(rings(W / 2, D / 2, R, [(i, Z0 + z) for i, z in BASE], n=32), BAND)
 base_obj = base.obj("base")
 
@@ -179,23 +187,52 @@ SCOOP = [(0, 0), (2.18, 0), (2.24, 0.01), (2.3, 0.04), (2.36, 0.08), (2.42, 0.16
          (2.6, 0.75), (2.64, 1.05), (2.68, 1.46), (2.7, 1.77), (2.73, 2.6)]
 sz0, top = ZT - 0.38, ZT + 0.5
 cut.loft([[(x, -D / 2 - 0.3, sz0 + (e / 10 - 0.3) / 0.65), (x, -D / 2 + 0.65 * (top - sz0) - e / 10, top), (x, -D / 2 - 0.3, top)]
-          for x, e in [(-x, e) for x, e in SCOOP[:0:-1]] + SCOOP], "scoop")
-# hinge recess along the back
-prism(cut, rrect(11.95, 0.8, 0.15, 8, 0, D / 2 + 0.2), Z0 - 1, ZT + 1, "alloy")
+          for x, e in [(-x, e) for x, e in SCOOP[:0:-1]] + SCOOP], "alloy")
+# the hinge cut-out along the back, (y, z) measured: the deck rolls down into a lip, a floor below; the lip is
+# shallower behind the knuckles and notched between them; the hinge bar's ends show outboard; vents behind
+XB = Matrix(((0, 0, 1), (1, 0, 0), (0, 1, 0)))  # u -> y, v -> z, height -> x
+XV = Matrix(((1, 0, 0), (0, 0, 1), (0, 1, 0)))  # u -> x, v -> z, height -> y
+LIP = [(10.4, 1.4), (10.4, 1.281), (10.524, 0.961), (10.521, 0.932), (10.493, 0.907), (10.468, 0.906), (10.445, 0.921),
+       (10.401, 1.048), (10.352, 1.117), (10.286, 1.169), (10.226, 1.196), (10.19, 1.18), (10.196, 0.883), (10.212, 0.786),
+       (10.229, 0.74), (10.283, 0.658), (10.477, 0.468), (10.519, 0.406), (10.554, 0.329), (10.554, 0.32), (11.2, 0.32), (11.2, 1.4)]
+KTOP = [(10.4, 1.4), (10.4, 1.281), (10.434, 1.194), (10.388, 1.171), (10.337, 1.132), (10.26, 1.182), (10.193, 1.203)]
+BAR = [(10.193, 1.0), (10.62, 1.0), (10.66, 0.98), (10.69, 0.9), (10.68, 0.83), (10.65, 0.79), (10.57, 0.755), (10.235, 0.745)]
+prism(cut, LIP, -10.26, 10.26, "alloy", XB)
+for k in range(-2, 3):
+    prism(cut, rrect(0.41, 0.08, 0.08, 8, 0.99 * k, 1.075), 10.19, 10.6, "alloy", XV)
+for s in (1, -1):
+    prism(cut, KTOP + LIP[12:], *sorted((s * 10.24, s * 11.76)), "alloy", XB)
+    prism(cut, KTOP + BAR + LIP[15:], *sorted((s * 11.75, s * 11.83)), "alloy", XB)
+    prism(cut, rrect(2.805, 0.224, 0.001, 1, s * 8.855, 0.615), 10.146, 10.6, "alloy", XV)
+    prism(cut, rrect(1.46, 0.1, 0.04, 6, s * 3.99, 0.79), 9.36, 10.6, "hinge", XV)
+    for k in range(5):
+        x = s * (6.58 + 1.14 * k)
+        prism(cut, rrect(0.51, 0.195, 0.18, 8, x, 0.65), 9.36, 10.6, "hinge", XV)
+        prism(cut, [(9.36, 0.5), (9.36, 0.455), (10.0, 0.393), (10.6, 0.393), (10.6, 0.5)], x - 0.33, x + 0.33, "hinge", XB)
 # ports: (side, centre y, z above the bottom, outline, depth)
 stadium = lambda l, h, n=8: rrect(l / 2, h / 2, h / 2, n)
 TB = stadium(0.84, 0.27)
-HDMI = [(-0.72, 0.24), (-0.72, -0.11), (-0.6, -0.23), (0.6, -0.23), (0.72, -0.11), (0.72, 0.24)]
-PORTS = [(-1, 7.96, 0.73, stadium(1.42, 0.30), 0.106), (-1, 6.28, 0.736, TB, 0.65),
-         (-1, 4.78, 0.736, TB, 0.65), (-1, 3.505, 0.756, rrect(0.18, 0.18, 0.18, 8), 1.4),
-         (1, 8.135, 0.676, HDMI, 0.9), (1, 6.28, 0.736, TB, 0.65),
-         (1, 3.81, 0.75, rrect(1.33, 0.12, 0.05, 6), 1.49)]
+HDMI = [(-0.72, 0.245), (-0.72, -0.11), (-0.6, -0.23), (0.6, -0.23), (0.72, -0.11), (0.72, 0.245)]
+SD = rrect(1.13, 0.12, 0.05, 6)
+HDMI_IN = [(-0.66, 0.185), (-0.66, -0.08), (-0.56, -0.175), (0.56, -0.175), (0.66, -0.08), (0.66, 0.185)]
+PORTS = [(-1, 8.13, 0.73, stadium(1.72, 0.30), 0.11), (-1, 6.28, 0.736, TB, 0.65),
+         (-1, 4.78, 0.736, TB, 0.65),
+         (1, 8.135, 0.676, HDMI, 0.28), (1, 8.135, 0.676, HDMI_IN, 0.79), (1, 6.28, 0.736, TB, 0.65),
+         (1, 3.81, 0.75, rrect(1.3, 0.12, 0.05, 6), 0.25), (1, 3.76, 0.75, SD, 1.49), (1, 4.95, 0.75, rrect(0.1, 0.12, 0.05, 6), 1.28)]
 tongues = []
 for side, y, z, outline, depth in PORTS:
     basis = Matrix(((0, 0, side), (1, 0, 0), (0, 1, 0)))  # u -> y, v -> z, height -> outward x
-    prism(cut, outline, W / 2 - depth, W / 2 + 1, "port", basis, Vector((0, y, Z0 + z)))
+    at = Vector((0, y, Z0 + z))
+    prism(cut, outline, W / 2 - depth, W / 2 + 1, "shell" if outline is TB else "pin" if outline is SD else "port", basis, at)
     if outline is TB:
-        tongues.append((basis, Vector((0, y, Z0 + z))))
+        tongues += [(rrect(0.33, 0.035, 0.03, 4), 0.6, 0.17, basis, at, "port"), (rrect(0.33, 0.055, 0.03, 4), 0.6, 0.45, basis, at, "port")]
+    elif outline is HDMI_IN:
+        tongues.append((rrect(0.57, 0.04, 0.01, 4, 0, 0.005), 0.79, 0.3, basis, at, "port"))
+    elif outline is SD:
+        tongues += [(rrect(0.07, 0.03, 0.005, 2, 0.232 * k - 0.95, -0.09), 1.49, 1.0, basis, at, "pin") for k in range(9)]
+# the headphone jack's bore narrows to a point
+jack = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 3.505, Z0 + 0.756))
+cut.loft([[tuple(jack[1] + jack[0] @ Vector((u, v, W / 2 - d))) for u, v in rrect(r, r, r, 8)] for r, d in ((0.02, 1.33), (0.18, 0.95), (0.18, -1))], "bore")
 # intake slots on the lower curve of each side
 for s in (1, -1):
     n = Vector((s * math.cos(math.radians(35.7)), 0, -math.sin(math.radians(35.7))))
@@ -206,7 +243,7 @@ for s in (1, -1):
 # countersinks the feet sit in: 0.32 mm deep, 10.5 mm radius at the case
 FEET = [(sx * 12.865, y) for sx in (1, -1) for y in (8.162, -8.176)]
 for x, y in FEET:
-    cut.loft(rings(1.05, 1.05, 1.05, [(0, Z0 - 1), (0, Z0), (0.09, Z0 + 0.032)], 16, x, y), "recess")
+    cut.loft(rings(1.05, 1.05, 1.05, [(0, Z0 - 1), (0, Z0), (0.09, Z0 + 0.032)], 16, x, y), "alloy")
 boolean(base_obj, "DIFFERENCE", cut.obj("cutter"))
 
 # speaker grilles: a perforated panel filling each slot, flush with the deck
@@ -239,12 +276,8 @@ for x, y in FEET:
     parts.loft(rings(0.95, 0.95, 0.95, [(0.95 - r, Z0 + 0.0001 - d / 10) for r, d in DOME], 16, x, y), "foot")
 for x, y in [(sx * 14.44, sy * 9.85) for sx in (1, -1) for sy in (1, -1)]:
     parts.loft(rings(0.16, 0.16, 0.16, [(0, Z0 - 0.0005), (0, Z0 + 0.01)], 8, x, y), "port")
-BY, BZ = HINGE
-parts.loft([ellipse_ring(s * x, BY, BZ, r, r, 64) for s, x, r in
-            [(-1, 11.85, 0.34), (-1, 11.83, 0.4), (-1, 11.79, 0.42), (1, 11.79, 0.42), (1, 11.83, 0.4), (1, 11.85, 0.34)]],
-           "hinge")
-for basis, at in tongues:
-    prism(parts, rrect(0.33, 0.035, 0.03, 4), W / 2 - 0.6, W / 2 - 0.1, "port", basis, at)
+for outline, d0, d1, basis, at, mat in tongues:
+    prism(parts, outline, W / 2 - d0, W / 2 - d1, mat, basis, at)
 # the magnetic charging port: an insulating face with five contacts
 mag_basis, mag_at = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 8.12, Z0 + 0.735))
 prism(parts, stadium(1.07, 0.10), W / 2 - 0.11, W / 2 - 0.041, "port", mag_basis, mag_at)
@@ -333,7 +366,7 @@ for r, row in enumerate(ROWS):
                 legends += [(t, s, a, dy, cx, cy, hw, hh, dished) for t, s, a, dy in spec]
         if spec != "touch" and r == 3 and spec and spec[0][0] in ("F", "J"):
             z = cap_z(cx, cy - 0.56, cx, cy, hw, hh, True)
-            keys.loft(rings(0.18, 0.022, 0.022, [(0, z - 0.002), (0, z + 0.008)], 4, cx, cy - 0.56), "keycap")
+            keys.loft(rings(0.15, 0.035, 0.03, [(0, z - 0.002), (0, z + 0.024)], 4, cx, cy - 0.56), "keycap")
         x += w + GAP
 keys_obj = keys.obj("keys")
 pits = Geo()
@@ -439,27 +472,62 @@ glyphs.obj("legends", closed=False, weld=False)
 
 # ---------------------------------------------------------------- lid
 lid = Geo()
-LIDP = [(0.13, 0), (0.03, 0), (0.008, 0.006), (0, 0.025), (0, LIDH - 0.1),
-        *[(i, LIDH - 0.1 + z) for i, z in fillet(0.1, 0.1, 6)[1:]]]
-lid.loft(rings(W / 2, D / 2, R, [(i, LZ + z) for i, z in LIDP], 32), ["well"] + ["alloy"] * (len(LIDP) - 2))  # a black gasket round the glass
-lid.obj("lid")
+# (inset, cm behind the glass face), measured: a groove, a bead 0.4 mm proud, an alloy lip, the chamfered back edge
+GASKET = [(0.124, 0.085), (0.111, 0.085), (0.11, -0.021), (0.106, -0.031), (0.102, -0.035), (0.098, -0.038), (0.09, -0.04),
+          (0.074, -0.04), (0.066, -0.039), (0.062, -0.037), (0.058, -0.034), (0.054, -0.029), (0.051, 0.01)]
+LIDP = GASKET + [(0.014, 0.01), (0.01, 0.012), (0.006, 0.016), (0.002, 0.024), (0, 0.035), (0, LIDH - 0.2)] + \
+    [(i, LIDH - d) for i, d in [(0.002, 0.172), (0.006, 0.131), (0.014, 0.093), (0.03, 0.066), (0.05, 0.042), (0.07, 0.024),
+                                (0.09, 0.015), (0.11, 0.009), (0.13, 0.004), (0.17, 0)]]
+lid.loft(rings(W / 2, LD / 2, R, [(i, LZ + z) for i, z in LIDP], 32), ["gasket"] * (len(GASKET) - 1) + ["alloy"] * (len(LIDP) - len(GASKET)))
+lid_obj = lid.obj("lid")
+# the hinge end, (y, cm behind the glass face) measured shut: a matte chin outboard, a dark cover over an alloy
+# flange in the middle, alloy knuckles between; the bead stops short of them
+EDGE = clip_y(rrect(W / 2 - 0.045, LD / 2 - 0.045, R - 0.045, 32), 10.23)
+CHIN = [(10.255, 0.09), (10.256, -0.01), (10.272, -0.026), (10.307, -0.023), (10.373, 0.016), (10.437, 0.038), (10.533, 0.055),
+        (10.658, 0.05), (10.788, 0.008), (10.788, 0.09)]
+COVER = [(10.468, 0.094), (10.468, -0.008), (10.624, -0.405), (10.639, -0.434), (10.658, -0.449), (10.685, -0.454), (10.715, -0.442),
+         (10.715, 0.094)]
+FLANGE = [(10.735, 0.144), (10.734, -0.383), (10.724, -0.465), (10.698, -0.545), (10.634, -0.649), (10.639, -0.663), (10.807, -0.634),
+          (10.827, -0.507), (10.833, -0.42), (10.837, 0.144)]
+KNUCKLE = [(10.468, 0.144), (10.468, -0.008), (10.524, -0.151), (10.408, -0.24), (10.361, -0.288), (10.324, -0.347), (10.306, -0.407),
+           (10.306, -0.469), (10.321, -0.528), (10.351, -0.581), (10.397, -0.626), (10.449, -0.654), (10.51, -0.669), (10.626, -0.665),
+           (10.807, -0.634), (10.827, -0.509), (10.837, -0.315), (10.838, 0.144)]
+at = Vector((0, 0, LZ))
+bead, chin, keep = Geo(), Geo(), Geo()
+prism(bead, EDGE, LZ - 0.1, LZ + 0.06, "gasket")
+boolean(lid_obj, "DIFFERENCE", bead.obj("bead"))
+for s in (1, -1):
+    prism(chin, CHIN, *sorted((s * 11.83, s * 15.6)), "gasket", XB, at)
+prism(keep, EDGE, LZ - 0.1, LZ + 0.2, "gasket")
+boolean(chin_obj := chin.obj("lid-chin"), "INTERSECT", keep.obj("keep"))
+hinge = Geo()
+prism(hinge, COVER, -10.25, 10.25, "cover", XB, at)
+prism(hinge, FLANGE, -10.25, 10.25, "alloy", XB, at)
+for s in (1, -1):
+    prism(hinge, KNUCKLE, *sorted((s * 10.25, s * 11.83)), "alloy", XB, at)
+hinge.obj("lid-hinge")
 
 glass = Geo()
-glass.loft(rings(15.38, 10.565, R - 0.13, [(0.01, LZ - 0.003), (0, LZ + 0.004), (0, LZ + 0.04)], 32, 0, -0.135), "glass")
+GP = [(0.013, LZ), (0.009, LZ + 0.001), (0.005, LZ + 0.005), (0, LZ + 0.009), (0, LZ + 0.085)]
+glass.loft([[(x, y, z) for x, y in rrect(15.385 - i, 10.4695 - i, (0.25 - i, 0.25 - i, R - 0.124 - i, R - 0.124 - i), 32, 0, -0.2355)]
+            for i, z in GP], "glass")
+prism(glass, rrect(11.83, 0.111, 0.001, 1, 0, 10.332), LZ, LZ + 0.085, "glass")  # the border reaches further between the knuckles
 glass.obj("lid-glass")
 
-SX, SY0, SY1 = 15.05, -10.38, 9.46  # the panel: 30.10 x 19.84, its top edge at the lid's front
+SX, SY0, SY1 = 15.05, -10.365, 9.468  # the panel: 30.10 x 19.83, its top edge at the lid's front
+SH, SA, SN = (SY1 - SY0) / 2, 1.0, 3.6  # superellipse corners: size, exponent
+sgn = lambda c: math.copysign(1, c)
+outline = [(sgn(c) * (SX - SA + SA * abs(c) ** (2 / SN)), (SY0 + SY1) / 2 + sgn(s) * (SH - SA + SA * abs(s) ** (2 / SN)))
+           for c, s in ((math.cos(t), math.sin(t)) for t in (2 * math.pi * k / 128 for k in range(128)))]
 screen = Geo()
-screen.face(screen.add([(x, y, LZ - 0.0045) for x, y in rrect(SX, (SY1 - SY0) / 2, 0.45, 32, 0, (SY0 + SY1) / 2)])[::-1],
-            "screen")
+screen.face(screen.add([(x, y, LZ - 0.0002) for x, y in outline])[::-1], "screen")
 screen.uv = lambda p: ((p.x + SX) / (2 * SX), (SY1 - p.y) / (SY1 - SY0))
 screen.obj("lid-screen", closed=False)
 
 cam = Geo()
-PY = -9.905
-for pts, z, mat in [(rrect(0.59, 0.315, 0.315, 12, 0, PY), LZ - 0.0055, "glass"),
-                    (rrect(0.18, 0.18, 0.18, 12, 0.27, PY), LZ - 0.0062, "lens"),
-                    (rrect(0.10, 0.10, 0.10, 8, -0.27, PY), LZ - 0.0062, "lens")]:
+PY = -9.89
+for pts, z, mat in [(rrect(0.585, 0.32, 0.32, 12, 0, PY), LZ - 0.0003, "glass"),
+                    (rrect(0.0875, 0.0875, 0.0875, 12, 0.2725, PY), LZ - 0.0004, "lens")]:
     cam.face(cam.add([(x, y, z) for x, y in pts])[::-1], mat)
 cam.obj("lid-camera", closed=False)
 
