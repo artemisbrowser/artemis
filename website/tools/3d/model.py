@@ -142,6 +142,24 @@ def fillet(top, r, steps=4):
     return [(r + x, z) for x, z in arc(0, top - r, r, 180, 90, steps)]
 
 
+def spline(pts, step=0.02):
+    """a centripetal Catmull-Rom curve through pts, (inset, z), with points about step apart"""
+    P = [Vector(pts[0]) * 2 - Vector(pts[1]), *map(Vector, pts), Vector(pts[-1]) * 2 - Vector(pts[-2])]
+    out = [pts[0]]
+    for p0, p1, p2, p3 in zip(P, P[1:], P[2:], P[3:]):
+        t1 = (p1 - p0).length ** 0.5 + 1e-9
+        t2 = t1 + (p2 - p1).length ** 0.5 + 1e-9
+        t3 = t2 + (p3 - p2).length ** 0.5 + 1e-9
+        n = max(1, math.ceil((p2 - p1).length / step))
+        for k in range(1, n + 1):
+            t = t1 + (t2 - t1) * k / n
+            a1, a2, a3 = (p0 * (t1 - t) + p1 * t) / t1, (p1 * (t2 - t) + p2 * (t - t1)) / (t2 - t1), (p2 * (t3 - t) + p3 * (t - t2)) / (t3 - t2)
+            b1, b2 = (a1 * (t2 - t) + a2 * t) / t2, (a2 * (t3 - t) + a3 * (t - t1)) / (t3 - t1)
+            c = (b1 * (t2 - t) + b2 * (t - t1)) / (t2 - t1)
+            out.append((max(c.x, 0.0), c.y))
+    return out
+
+
 def prism(g, pts2d, z0, z1, mat, basis=Matrix.Identity(3), at=Vector()):
     """an extruded outline; basis maps local (u, v, height) to world"""
     ring = lambda z: [tuple(at + basis @ Vector((u, v, z))) for u, v in pts2d]
@@ -171,11 +189,11 @@ def boolean(target, op, other):
 
 # ---------------------------------------------------------------- base
 base = Geo()
-BASE = [(1.2, 0), (0.9, 0), (0.611, 0.016), (0.459, 0.05), (0.309, 0.121), (0.298, 0.13), (0.31, 0.14),
-        (0.273, 0.15), (0.204, 0.206), (0.12, 0.3), (0.074, 0.398), (0.029, 0.539), (0.003, 0.787), (0, 0.9),
-        *[(i, H - 0.02 + z) for i, z in fillet(0.02, 0.02, 3)]]
+BASE = [(1.2, 0), *spline([(0.9, 0), (0.611, 0.016), (0.459, 0.05), (0.3094, 0.1211)]),
+        *spline([(0.2777, 0.1429), (0.204, 0.206), (0.12, 0.3), (0.074, 0.398), (0.029, 0.539), (0.003, 0.787), (0, 0.9),
+                 *[(i, H - 0.02 + z) for i, z in fillet(0.02, 0.02, 3)]])]
 BAND = ["alloy"] * (len(BASE) - 1)
-BAND[5] = BAND[6] = "seam"  # where the bottom case meets the top case
+BAND[BASE.index((0.2777, 0.1429)) - 2] = "seam"  # the bottom case's lip, just under the crease where the top case starts
 base.loft(rings(W / 2, D / 2, R, [(i, Z0 + z) for i, z in BASE], n=32), BAND)
 base_obj = base.obj("base")
 skin = base.obj("skin")
@@ -219,8 +237,9 @@ for s in (1, -1):
     prism(cut, rrect(2.805, 0.224, 0.001, 1, s * 8.855, 0.615), 10.146, 10.6, "alloy", XV)
     prism(cut, rrect(1.46, 0.1, 0.04, 6, s * 3.99, 0.79), 9.36, 10.6, "hinge", XV)
     for k in range(5):
-        x = s * (6.58 + 1.14 * k)
-        prism(cut, rrect(0.51, 0.195, 0.18, 8, x, 0.65), 9.36, 10.6, "hinge", XV)
+        x = s * (6.5755 + 1.1375 * k)
+        # the mouth; corners are quarter ellipses, 0.19 across by 0.15 high
+        prism(cut, [(u, v * 0.15 / 0.19) for u, v in rrect(0.521, 0.2 * 0.19 / 0.15, 0.19, 8, x, 0.64 * 0.19 / 0.15)], 9.36, 10.6, "hinge", XV)
         prism(cut, [(9.36, 0.5), (9.36, 0.455), (10.0, 0.393), (10.6, 0.393), (10.6, 0.5)], x - 0.33, x + 0.33, "hinge", XB)
 # the headphone jack: a dark sleeve lines the case's hole, then the bore steps in and narrows to a point
 JACK = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 3.5, Z0 + 0.746))
@@ -265,12 +284,16 @@ for side, y, outline, depth, chamfer in PORTS:
     else:
         prism(cut, outline, W / 2 - depth, W / 2 + 1, "pin" if outline is SD else "port", basis, at)
     if outline is TB:
-        tongues += [(stadium(0.83, 0.25), 0.65, 0.64, basis, at, "port"), (stadium(0.56, 0.12), 0.64, 0.48, basis, at, "port"), (rrect(0.335, 0.03, 0.03, 4), 0.64, 0.23, basis, at, "port"),
-                    (rrect(0.3, 0.035, 0.01, 4, 0, -0.004), 0.49, 0.22, basis, at, "pin")]
+        # the blade's nose is chamfered and rounded in plan; the contacts start behind it
+        blade = [(rrect(hw, hh, 0.012, 4), d) for hw, hh, d in ((0.289, 0.015, 0.196), (0.3, 0.03, 0.211), (0.314, 0.03, 0.22),
+                                                                 (0.3225, 0.03, 0.24), (0.331, 0.03, 0.27), (0.3345, 0.03, 0.64))][::-1]
+        tongues += [([(stadium(0.83, 0.25), 0.65), (stadium(0.83, 0.25), 0.64)], basis, at, "port"),
+                    ([(stadium(0.56, 0.12), 0.64), (stadium(0.56, 0.12), 0.48)], basis, at, "port"), (blade, basis, at, "port"),
+                    ([(rrect(0.3, 0.035, 0.01, 4), 0.497), (rrect(0.3, 0.035, 0.01, 4), 0.232)], basis, at, "pin")]
     elif outline is HDMI_IN:
-        tongues.append((rrect(0.57, 0.04, 0.01, 4, 0, 0.005), 0.79, 0.3, basis, at, "port"))
+        tongues.append(([(rrect(0.57, 0.04, 0.01, 4, 0, 0.005), d) for d in (0.79, 0.3)], basis, at, "port"))
     elif outline is SD:
-        tongues += [(rrect(0.07, 0.03, 0.005, 2, 0.232 * k - 0.95, -0.09), 1.49, 1.0, basis, at, "pin") for k in range(9)]
+        tongues += [([(rrect(0.07, 0.03, 0.005, 2, 0.232 * k - 0.95, -0.09), d) for d in (1.49, 1.0)], basis, at, "pin") for k in range(9)]
 # intake slots on the lower curve of each side
 for s in (1, -1):
     n = Vector((s * math.cos(math.radians(35.7)), 0, -math.sin(math.radians(35.7))))
@@ -316,8 +339,8 @@ for x, y in FEET:
     parts.loft(rings(0.95, 0.95, 0.95, [(0.95 - r, Z0 + 0.0001 - d / 10) for r, d in DOME], 16, x, y), "foot")
 for x, y in [(sx * 14.44, sy * 9.85) for sx in (1, -1) for sy in (1, -1)]:
     parts.loft(rings(0.16, 0.16, 0.16, [(0, Z0 - 0.0005), (0, Z0 + 0.01)], 8, x, y), "port")
-for outline, d0, d1, basis, at, mat in tongues:
-    prism(parts, outline, W / 2 - d0, W / 2 - d1, mat, basis, at)
+for sections, basis, at, mat in tongues:
+    parts.loft([[tuple(at + basis @ Vector((u, v, W / 2 - d))) for u, v in outline] for outline, d in sections], mat)
 # the magnetic charging port: an insulating face with five contacts
 mag_basis, mag_at = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 8.126, PZ))
 prism(parts, stadium(1.07, 0.10), W / 2 - 0.11, W / 2 - 0.041, "port", mag_basis, mag_at)
