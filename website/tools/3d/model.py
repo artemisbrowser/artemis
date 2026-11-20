@@ -5,12 +5,13 @@
 # A 14-inch laptop in Space Black, built from measurements, for render.py (--flip-uv 0).
 # Units are cm, Z up, front -y; the lid is closed, only lid parts are named lid*, and it turns about HINGE.
 # Material names are render.py roles; "print", "lens", "mark", "sensor", "contact", "gasket", "cover",
-# "pin", "bore" and "shell" are kept as exported.
+# "pin" and "bore" are kept as exported.
 # Legends need Inter Regular 4.1 (OFL-1.1, github.com/rsms/inter) at ~/.cache/artemis/fonts/Inter-Regular.ttf.
 import math, os, re, sys
 import xml.etree.ElementTree as ET
 import bpy, bmesh
-from mathutils import Matrix, Vector
+from mathutils import Matrix, Vector, geometry
+from mathutils.bvhtree import BVHTree
 
 OUT = sys.argv[sys.argv.index("--") + 1]
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -41,7 +42,7 @@ M = {n: material(n, *a) for n, a in {
     "hinge": ((0.0035, 0.0036, 0.004), 0.55, 0.2), "sensor": ((0.0035, 0.0036, 0.004), 0.58, 0.2),
     "grille": ((0.0, 0.0, 0.0), 1.0), "foot": ((0.0, 0.0, 0.0), 0.8, 0.2), "gasket": ((0.0, 0.0, 0.0), 0.8, 0.2),
     "port": ((0.05, 0.05, 0.05), 0.87), "bore": ((0.025, 0.025, 0.025), 0.8), "pin": ((0.0689, 0.0678, 0.0644), 0.5, 0.75),
-    "shell": ((0.005, 0.005, 0.005), 0.001, 1.0), "contact": ((0.206, 0.206, 0.206), 0.2, 1.0),
+    "contact": ((0.206, 0.206, 0.206), 0.2, 1.0),
     "glass": ((0.0, 0.0, 0.0), 1.0), "cover": ((0.035, 0.035, 0.035), 0.8, 0.2), "screen": ((0.0, 0.0, 0.0), 0.05),
     "lens": ((0.0, 0.0, 0.0), 1.0), "mark": ((0.22, 0.22, 0.23), 0.05, 1.0)}.items()}
 
@@ -147,6 +148,17 @@ def prism(g, pts2d, z0, z1, mat, basis=Matrix.Identity(3), at=Vector()):
     g.loft([ring(z0), ring(z1)], mat)
 
 
+def inflate(pts, d):
+    """each vertex pushed d along its mitred normal; pts are counter-clockwise in y-up"""
+    out = []
+    for i, p in enumerate(pts):
+        a, b = pts[i - 1], pts[(i + 1) % len(pts)]
+        n1, n2 = [Vector((q[1] - o[1], o[0] - q[0])).normalized() for o, q in ((a, p), (p, b))]
+        m = (n1 + n2).normalized()
+        out.append((p[0] + m.x * d / max(m.dot(n1), 0.3), p[1] + m.y * d / max(m.dot(n1), 0.3)))
+    return out
+
+
 def boolean(target, op, other):
     """applies other to target and removes other"""
     mod = target.modifiers.new("b", "BOOLEAN")
@@ -166,6 +178,7 @@ BAND = ["alloy"] * (len(BASE) - 1)
 BAND[5] = BAND[6] = "seam"  # where the bottom case meets the top case
 base.loft(rings(W / 2, D / 2, R, [(i, Z0 + z) for i, z in BASE], n=32), BAND)
 base_obj = base.obj("base")
+skin = base.obj("skin")
 
 cut = Geo()
 # keyboard well, trackpad slot, speaker grille slots
@@ -209,30 +222,55 @@ for s in (1, -1):
         x = s * (6.58 + 1.14 * k)
         prism(cut, rrect(0.51, 0.195, 0.18, 8, x, 0.65), 9.36, 10.6, "hinge", XV)
         prism(cut, [(9.36, 0.5), (9.36, 0.455), (10.0, 0.393), (10.6, 0.393), (10.6, 0.5)], x - 0.33, x + 0.33, "hinge", XB)
-# ports: (side, centre y, z above the bottom, outline, depth)
+# the headphone jack: a dark sleeve lines the case's hole, then the bore steps in and narrows to a point
+JACK = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 3.5, Z0 + 0.746))
+
+
+def at_jack(u, v, d):
+    return tuple(JACK[1] + JACK[0] @ Vector((u, v, W / 2 - d)))
+
+
+def wall_inset(z):
+    return next(i0 + (i1 - i0) * (z - Z0 - z0) / (z1 - z0) for (i0, z0), (i1, z1) in zip(BASE, BASE[1:]) if z0 <= z - Z0 <= z1)
+
+
+cut.loft([[at_jack(u, v, d) for u, v in rrect(r, r, r, 8)]
+          for r, d in ((0.02, 1.39), (0.155, 1.25), (0.155, 0.91), (0.198, 0.91), (0.198, -1))], "bore")
+
+
+def bore(g, pts, depth, chamfer, mat, basis, at):
+    """a hole `depth` in from W / 2 through the side wall, its rim chamfered at 45 degrees"""
+    wall = lambda q, dh: [tuple(at + basis @ Vector((u, v, W / 2 - wall_inset(at.z + v) + dh))) for u, v in q]
+    flat = lambda q, h: [tuple(at + basis @ Vector((u, v, h))) for u, v in q]
+    rim = inflate(pts, 2 * chamfer)
+    g.loft([flat(pts, W / 2 - depth), wall(pts, -chamfer), wall(rim, chamfer), flat(rim, W / 2 + 1)], mat)
+
+
+# ports: (side, centre y, outline, depth, rim chamfer), all centred 7.446 mm above the bottom
 stadium = lambda l, h, n=8: rrect(l / 2, h / 2, h / 2, n)
-TB = stadium(0.84, 0.27)
-HDMI = [(-0.72, 0.245), (-0.72, -0.11), (-0.6, -0.23), (0.6, -0.23), (0.72, -0.11), (0.72, 0.245)]
+TB = stadium(0.839, 0.261)
+HDMI = [(-0.7215, 0.243), (-0.7215, -0.091), (-0.6015, -0.211), (0.6015, -0.211), (0.7215, -0.091), (0.7215, 0.243)]
 SD = rrect(1.13, 0.12, 0.05, 6)
 HDMI_IN = [(-0.66, 0.185), (-0.66, -0.08), (-0.56, -0.175), (0.56, -0.175), (0.66, -0.08), (0.66, 0.185)]
-PORTS = [(-1, 8.13, 0.73, stadium(1.72, 0.30), 0.11), (-1, 6.28, 0.736, TB, 0.65),
-         (-1, 4.78, 0.736, TB, 0.65),
-         (1, 8.135, 0.676, HDMI, 0.28), (1, 8.135, 0.676, HDMI_IN, 0.79), (1, 6.28, 0.736, TB, 0.65),
-         (1, 3.81, 0.75, rrect(1.3, 0.12, 0.05, 6), 0.25), (1, 3.76, 0.75, SD, 1.49), (1, 4.95, 0.75, rrect(0.1, 0.12, 0.05, 6), 1.28)]
+PZ = Z0 + 0.7446
+PORTS = [(-1, 8.126, stadium(1.734, 0.301), 0.105, 0.015), (-1, 6.2755, TB, 0.65, 0.01), (-1, 4.7875, TB, 0.65, 0.01),
+         (1, 8.1265, HDMI, 0.28, 0.008), (1, 8.1265, HDMI_IN, 0.79, 0), (1, 6.2755, TB, 0.65, 0.01),
+         (1, 3.8175, rrect(1.3285, 0.1255, 0.05, 6), 0.25, 0.01), (1, 3.76, SD, 1.49, 0), (1, 4.95, rrect(0.1, 0.12, 0.05, 6), 1.28, 0)]
 tongues = []
-for side, y, z, outline, depth in PORTS:
+for side, y, outline, depth, chamfer in PORTS:
     basis = Matrix(((0, 0, side), (1, 0, 0), (0, 1, 0)))  # u -> y, v -> z, height -> outward x
-    at = Vector((0, y, Z0 + z))
-    prism(cut, outline, W / 2 - depth, W / 2 + 1, "shell" if outline is TB else "pin" if outline is SD else "port", basis, at)
+    at = Vector((0, y, PZ - 0.0686 if outline is HDMI or outline is HDMI_IN else PZ))
+    if chamfer:
+        bore(cut, outline, depth, chamfer, "alloy", basis, at)
+    else:
+        prism(cut, outline, W / 2 - depth, W / 2 + 1, "pin" if outline is SD else "port", basis, at)
     if outline is TB:
-        tongues += [(rrect(0.33, 0.035, 0.03, 4), 0.6, 0.17, basis, at, "port"), (rrect(0.33, 0.055, 0.03, 4), 0.6, 0.45, basis, at, "port")]
+        tongues += [(stadium(0.83, 0.25), 0.65, 0.64, basis, at, "port"), (stadium(0.56, 0.12), 0.64, 0.48, basis, at, "port"), (rrect(0.335, 0.03, 0.03, 4), 0.64, 0.23, basis, at, "port"),
+                    (rrect(0.3, 0.035, 0.01, 4, 0, -0.004), 0.49, 0.22, basis, at, "pin")]
     elif outline is HDMI_IN:
         tongues.append((rrect(0.57, 0.04, 0.01, 4, 0, 0.005), 0.79, 0.3, basis, at, "port"))
     elif outline is SD:
         tongues += [(rrect(0.07, 0.03, 0.005, 2, 0.232 * k - 0.95, -0.09), 1.49, 1.0, basis, at, "pin") for k in range(9)]
-# the headphone jack's bore narrows to a point
-jack = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 3.505, Z0 + 0.756))
-cut.loft([[tuple(jack[1] + jack[0] @ Vector((u, v, W / 2 - d))) for u, v in rrect(r, r, r, 8)] for r, d in ((0.02, 1.33), (0.18, 0.95), (0.18, -1))], "bore")
 # intake slots on the lower curve of each side
 for s in (1, -1):
     n = Vector((s * math.cos(math.radians(35.7)), 0, -math.sin(math.radians(35.7))))
@@ -267,6 +305,8 @@ grille.obj("grille", closed=False)
 
 # trackpad, feet, screws, hinge barrel
 parts = Geo()
+parts.loft([[at_jack(u, v, wall_inset(JACK[1].z + v) if d is None else d) for u, v in rrect(r, r, r, 8)]
+            for r, d in ((0.1975, None), (0.179, None), (0.179, 0.91), (0.1975, 0.91), (0.1975, None))], "bore", cap=(False, False))
 parts.loft(rings(PAD[0], PAD[1], PAD[2], [(0, ZT - 0.12), *[(i, ZT - 0.022 + z) for i, z in fillet(0.012, 0.012, 3)]],
                  16, PAD[3], PAD[4]), "pad")
 # the feet are domed: (radius cm, mm below the case), measured
@@ -279,7 +319,7 @@ for x, y in [(sx * 14.44, sy * 9.85) for sx in (1, -1) for sy in (1, -1)]:
 for outline, d0, d1, basis, at, mat in tongues:
     prism(parts, outline, W / 2 - d0, W / 2 - d1, mat, basis, at)
 # the magnetic charging port: an insulating face with five contacts
-mag_basis, mag_at = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 8.12, Z0 + 0.735))
+mag_basis, mag_at = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 8.126, PZ))
 prism(parts, stadium(1.07, 0.10), W / 2 - 0.11, W / 2 - 0.041, "port", mag_basis, mag_at)
 for dy in (-0.38, -0.19, 0, 0.19, 0.38):
     prism(parts, rrect(0.026, 0.026, 0.026, 6), W / 2 - 0.042, W / 2 - 0.0408, "contact", mag_basis, mag_at + Vector((0, dy, 0)))
@@ -571,17 +611,6 @@ def stadium(a, b, r, n=16):
             for t in (t0 + math.pi * j / n for j in range(n + 1))]
 
 
-def inflate(pts, d):
-    """each vertex pushed d along its mitred normal; pts are counter-clockwise in y-up"""
-    out = []
-    for i, p in enumerate(pts):
-        a, b = pts[i - 1], pts[(i + 1) % len(pts)]
-        n1, n2 = [Vector((q[1] - o[1], o[0] - q[0])).normalized() for o, q in ((a, p), (p, b))]
-        m = (n1 + n2).normalized()
-        out.append((p[0] + m.x * d / max(m.dot(n1), 0.3), p[1] + m.y * d / max(m.dot(n1), 0.3)))
-    return out
-
-
 def ccw(pts):
     return pts if sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(pts, pts[1:] + pts[:1])) > 0 else pts[::-1]
 
@@ -614,6 +643,27 @@ for o in solids[1:]:
 for o in scene.objects:
     o.data.shade_smooth()
     o.data.set_sharp_from_angle(angle=math.radians(35))
+
+
+def adopt_normals(me, src):
+    """corners of me lying on src's surface and facing its way take src's interpolated normal"""
+    src.calc_loop_triangles()
+    tris = src.loop_triangles
+    tree = BVHTree.FromPolygons([v.co for v in src.vertices], [t.vertices for t in tris])
+    out = [c.vector.copy() for c in me.corner_normals]
+    for p in me.polygons:
+        for li in p.loop_indices:
+            co = me.vertices[me.loops[li].vertex_index].co
+            hit, fn, i, d = tree.find_nearest(co)
+            if hit and d < 1e-4 and fn.dot(p.normal) > 0.98:
+                t = tris[i]
+                out[li] = geometry.barycentric_transform(hit, *(src.vertices[v].co for v in t.vertices),
+                                                         *(src.corner_normals[l].vector for l in t.loops)).normalized()
+    me.normals_split_custom_set(out)
+
+
+adopt_normals(base_obj.data, skin.data)
+bpy.data.objects.remove(skin)
 for o in scene.objects:
     print(f"model.py: {o.name:12s} {sum(len(p.vertices) - 2 for p in o.data.polygons):7d} tris")
 bpy.ops.export_scene.gltf(filepath=OUT, export_format="GLB", export_yup=True, export_apply=True)
