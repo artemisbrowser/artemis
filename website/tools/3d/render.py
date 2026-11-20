@@ -3,10 +3,10 @@
 
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
 #   [--shots side,closed,glow,three-quarter,seq,seq@N] [--samples 128] [--height 1080] [--frames 120]
-#   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1]
+#   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1] [--finish black|silver] [--hinge Y Z]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
-# --lid swing about a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
+# --lid swing about --hinge, else a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
 # Cycles studio for the laptop: black sweep, softbox strips, the CC0 studio HDRI, a screen whose spill is neutral.
 # Units are cm (1 BU = 1 cm); poses use mock/laptop.js's orbit (az, el, dist, y, z, fov) in its Y-up space.
 import argparse, json, math, os, re, sys
@@ -28,6 +28,8 @@ a.add_argument("--map")
 a.add_argument("--lid", default=r"^(lid|display|screen|top)")
 a.add_argument("--rest-angle", type=float, default=0)
 a.add_argument("--turn", type=float, default=0)
+a.add_argument("--hinge", type=float, nargs=2, metavar=("Y", "Z"), help="the lid's axis in the file's Z-up units")
+a.add_argument("--finish", choices=["black", "silver"], help="every shot in this finish")
 a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, whose V runs the other way")
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
@@ -231,6 +233,8 @@ if lids:
     vs = verts({d for o in lids for d in [o, *o.children_recursive]})
     low = min(v.z for v in vs)
     hinge.location = (0, max(v.y for v in vs if v.z < low + 0.3), low)
+    if args.hinge:
+        hinge.location = model.matrix_world @ Vector((0, *args.hinge))
     bpy.context.view_layer.update()
     for o in lids:
         m = o.matrix_world.copy()
@@ -335,7 +339,7 @@ cam.data.clip_start, cam.data.clip_end = 1, 3000
 
 
 def pose(finish, lid, glow, az, el, dist, y, z, fov):
-    color, rough, light = FINISHES[finish]
+    color, rough, light = FINISHES[args.finish or finish]
     for b, k, r in ((alloy_b, 1, rough), (recess_b, 0.45, rough + 0.1), (pad_b, 1, rough - 0.08)):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
         b.inputs["Roughness"].default_value = r
