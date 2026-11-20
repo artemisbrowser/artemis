@@ -335,7 +335,7 @@ for dy in (-0.38, -0.19, 0, 0.19, 0.38):
 parts.obj("parts")
 
 # ---------------------------------------------------------------- keyboard
-UNIT, GAP, KH, PITCH_Y, KX0, KY0, KR = 1.68, 0.2165, 1.62, 1.8505, -13.639, 8.928, 0.15
+UNIT, GAP, KH, PITCH_Y, KX0, KY0, KR = 1.68, 0.2165, 1.62, 1.8505, -13.639, 8.936, 0.15
 KTOP = ZT + 0.013
 # character keys are dished: (superellipse radius over the flat top, cm below KTOP), measured
 DISH = [(0.1, 0.029), (0.18, 0.028), (0.26, 0.027), (0.34, 0.026), (0.42, 0.025), (0.5, 0.024), (0.58, 0.022),
