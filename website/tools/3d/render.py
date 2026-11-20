@@ -4,6 +4,7 @@
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
 #   [--shots side,closed,glow,three-quarter,seq,seq@N] [--samples 128] [--height 1080] [--frames 120]
 #   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1] [--finish black|silver] [--hinge Y Z]
+#   [--backdrop black|white]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
 # --lid swing about --hinge, else a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
@@ -30,6 +31,7 @@ a.add_argument("--rest-angle", type=float, default=0)
 a.add_argument("--turn", type=float, default=0)
 a.add_argument("--hinge", type=float, nargs=2, metavar=("Y", "Z"), help="the lid's axis in the file's Z-up units")
 a.add_argument("--finish", choices=["black", "silver"], help="every shot in this finish")
+a.add_argument("--backdrop", choices=["black", "white"], default="black")
 a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, whose V runs the other way")
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
@@ -133,6 +135,17 @@ ft.links.new(fblack.outputs[0], fmix.inputs[1])
 ft.links.new(floor_b.outputs[0], fmix.inputs[2])
 ft.links.new(fmix.outputs[0], ft.nodes["Material Output"].inputs[0])
 sweep.data.materials.append(floor)
+if args.backdrop == "white":
+    # matte white, darkened only where the laptop occludes it; AgX shows emission 3 as near-white
+    wm = bpy.data.materials.new("floor-white")
+    wt, wout = nodes(wm)
+    ao, em = wt.nodes.new("ShaderNodeAmbientOcclusion"), wt.nodes.new("ShaderNodeEmission")
+    ao.samples = 16
+    ao.inputs["Distance"].default_value = 6
+    em.inputs["Strength"].default_value = 3
+    wt.links.new(ao.outputs["Color"], em.inputs["Color"])
+    wt.links.new(em.outputs[0], wout.inputs[0])
+    sweep.data.materials[0] = wm
 
 
 def panel(name, size, at, aim, radiance, fade=0.0, soft=0.0):
@@ -194,7 +207,8 @@ panel("top", (70, 30), (0, 10, 75), (0, 0, 0), 1.2)
 panel("back", (100, 40), (0, 70, 40), (0, 0, 2), 1.5, fade=1.0)
 panel("key", (14, 70), (-70, -45, 35), (0, 0, 0), 1.0, soft=0.3)
 panel("rim", (14, 70), (75, 30, 30), (0, 0, 0), 0.8, soft=0.3)
-panel("front", (44, 16), (0, -20, 0.3), (0, -20, 10), 0.5, soft=0.15)
+if args.backdrop == "black":  # on white it would shade the floor, which lights the laptop's front itself
+    panel("front", (44, 16), (0, -20, 0.3), (0, -20, 10), 0.5, soft=0.15)
 
 before = set(bpy.data.objects)
 bpy.ops.import_scene.gltf(filepath=args.glb)
