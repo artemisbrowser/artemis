@@ -230,17 +230,17 @@ KTOP = [(10.4, 1.4), (10.4, 1.281), (10.434, 1.194), (10.388, 1.171), (10.337, 1
 BAR = [(10.193, 1.0), (10.62, 1.0), (10.66, 0.98), (10.69, 0.9), (10.68, 0.83), (10.65, 0.79), (10.57, 0.755), (10.235, 0.745)]
 prism(cut, LIP, -10.26, 10.26, "alloy", XB)
 for k in range(-2, 3):
-    prism(cut, rrect(0.41, 0.08, 0.08, 8, 0.99 * k, 1.075), 10.19, 10.6, "alloy", XV)
+    prism(cut, rrect(0.41, 0.08, 0.08, 8, 0.99 * k, 1.1), 10.19, 10.6, "alloy", XV)
 for s in (1, -1):
     prism(cut, KTOP + LIP[12:], *sorted((s * 10.24, s * 11.76)), "alloy", XB)
     prism(cut, KTOP + BAR + LIP[15:], *sorted((s * 11.75, s * 11.83)), "alloy", XB)
     prism(cut, rrect(2.805, 0.224, 0.001, 1, s * 8.855, 0.615), 10.146, 10.6, "alloy", XV)
-    prism(cut, rrect(1.46, 0.1, 0.04, 6, s * 3.99, 0.79), 9.36, 10.6, "hinge", XV)
+    prism(cut, rrect(1.46, 0.11, 0.04, 6, s * 3.99, 0.8), 9.36, 10.6, "hinge", XV)
     for k in range(5):
         x = s * (6.5755 + 1.1375 * k)
         # the mouth; corners are quarter ellipses, 0.19 across by 0.15 high
         prism(cut, [(u, v * 0.15 / 0.19) for u, v in rrect(0.521, 0.2 * 0.19 / 0.15, 0.19, 8, x, 0.64 * 0.19 / 0.15)], 9.36, 10.6, "hinge", XV)
-        prism(cut, [(9.36, 0.5), (9.36, 0.455), (10.0, 0.393), (10.6, 0.393), (10.6, 0.5)], x - 0.33, x + 0.33, "hinge", XB)
+        prism(cut, [(9.36, 0.5), (9.36, 0.455), (10.0, 0.393), (10.6, 0.393), (10.6, 0.5)], x - 0.5, x + 0.5, "hinge", XB)
 # the headphone jack: a dark sleeve lines the case's hole, then the bore steps in and narrows to a point
 JACK = Matrix(((0, 0, -1), (1, 0, 0), (0, 1, 0))), Vector((0, 3.5, Z0 + 0.746))
 
@@ -293,7 +293,10 @@ for side, y, outline, depth, chamfer in PORTS:
     elif outline is HDMI_IN:
         tongues.append(([(rrect(0.57, 0.04, 0.01, 4, 0, 0.005), d) for d in (0.79, 0.3)], basis, at, "port"))
     elif outline is SD:
-        tongues += [([(rrect(0.07, 0.03, 0.005, 2, 0.232 * k - 0.95, -0.09), d) for d in (1.49, 1.0)], basis, at, "pin") for k in range(9)]
+        # card contacts (centre, half width, face depth, sprung); a sprung face leans back as it drops
+        for cx, hw, f, lean in ((-0.86, 0.2, 1.03, 0), *((0.25 * k, 0.07, 1.03, 1) for k in range(-2, 3)), (0.8, 0.12, 1.03, 1), (1.01, 0.07, 0.82, 1)):
+            bottoms = (-0.18, -0.18, -0.14, -0.12) if lean else (-0.12,) * 4
+            tongues.append(([(rrect(hw, (-0.06 - b) / 2, 0.005, 2, cx, (-0.06 + b) / 2), d) for b, d in zip(bottoms, (1.49, f + 0.23, f + 0.16, f))], basis, at, "pin"))
 # intake slots on the lower curve of each side
 for s in (1, -1):
     n = Vector((s * math.cos(math.radians(35.7)), 0, -math.sin(math.radians(35.7))))

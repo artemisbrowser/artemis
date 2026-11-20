@@ -12,6 +12,7 @@
 # Units are cm (1 BU = 1 cm); poses use mock/laptop.js's orbit (az, el, dist, y, z, fov) in its Y-up space.
 import argparse, json, math, os, re, sys
 import bpy, bmesh
+import numpy as np
 from mathutils import Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -273,6 +274,33 @@ TEXTURED = {"keycap", "foot", "grille", "port", "pad"}
 alloy, alloy_b = principled("alloy", (0.5, 0.5, 0.5), 0.3, metal=1.0)
 seam, seam_b = principled("seam", (0.2, 0.2, 0.2), 0.45, metal=1.0)
 pad, pad_b = principled("pad", (0.5, 0.5, 0.5), 0.22, metal=1.0)
+
+# blasted grain tiling every 1 cm with ~0.06 mm features: red is height (slope std 0.048 per axis),
+# green an independent roughness offset (std 0.023 about the finish's roughness, stored as 0.5 + z / 8)
+G = 2048
+f = np.fft.fftfreq(G)
+field = lambda seed: np.real(np.fft.ifft2(np.fft.fft2(np.random.default_rng(seed).standard_normal((G, G))) * np.exp(-2 * (math.pi * 2.4) ** 2 * (f[:, None] ** 2 + f[None, :] ** 2))))
+h, z = field(7), field(8)
+gy, gx = np.gradient(h, 1 / G)
+h *= 0.048 / math.sqrt((gx.var() + gy.var()) / 2)
+grain = bpy.data.images.new("grain", G, G, float_buffer=True, is_data=True)
+grain.pixels.foreach_set(np.stack([(h - h.min()) / np.ptp(h), np.clip(0.5 + (z - z.mean()) / z.std() / 8, 0, 1), 0 * h, 1 + 0 * h], -1).astype(np.float32).ravel())
+ROUGH = {}  # principled -> the socket its finish roughness goes in
+for b in (alloy_b, seam_b):
+    t = b.id_data
+    co, tex, rgb, bump, mad, add = (t.nodes.new(k) for k in ("ShaderNodeTexCoord", "ShaderNodeTexImage", "ShaderNodeSeparateColor", "ShaderNodeBump", "ShaderNodeMath", "ShaderNodeMath"))
+    tex.image, tex.projection, tex.projection_blend, tex.interpolation = grain, "BOX", 0.3, "Cubic"
+    bump.inputs["Distance"].default_value = float(np.ptp(h))
+    mad.operation, mad.inputs[1].default_value, mad.inputs[2].default_value = "MULTIPLY_ADD", 0.184, -0.092
+    add.operation = "ADD"
+    t.links.new(co.outputs["Object"], tex.inputs[0])
+    t.links.new(tex.outputs[0], rgb.inputs[0])
+    t.links.new(rgb.outputs[0], bump.inputs["Height"])
+    t.links.new(bump.outputs[0], b.inputs["Normal"])
+    t.links.new(rgb.outputs[1], mad.inputs[0])
+    t.links.new(mad.outputs[0], add.inputs[0])
+    t.links.new(add.outputs[0], b.inputs["Roughness"])
+    ROUGH[b] = add.inputs[1]
 keycap = principled("keycap", (0.0035, 0.0036, 0.004), 0.55, metal=0.2)[0]
 SIMPLE = {
     "well": principled("well", (0.0052, 0.0055, 0.006), 0.605, metal=0.2)[0],
@@ -357,7 +385,7 @@ def pose(finish, lid, glow, az, el, dist, y, z, fov):
     color, rough, light = FINISHES[args.finish or finish]
     for b, k, r in ((alloy_b, 1, rough), (seam_b, 1, rough + 0.088), (pad_b, 0.896, rough)):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
-        b.inputs["Roughness"].default_value = r
+        ROUGH.get(b, b.inputs["Roughness"]).default_value = r
     bg.inputs["Strength"].default_value = light
     hinge.rotation_euler = (math.radians(args.rest_angle - lid), 0, 0)
     strength.inputs[1].default_value = 1 - glow  # camera rays see 1, spill rays see glow
