@@ -257,9 +257,11 @@ TEXTURED = {"keycap", "foot", "grille", "port", "pad"}
 alloy, alloy_b = principled("alloy", (0.5, 0.5, 0.5), 0.3, metal=1.0)
 recess, recess_b = principled("recess", (0.2, 0.2, 0.2), 0.45, metal=1.0)
 pad, pad_b = principled("pad", (0.5, 0.5, 0.5), 0.22, metal=1.0)
+keycap, keycap_b = principled("keycap", (0.006, 0.006, 0.007), 0.6)
+keycap_b.inputs["Specular IOR Level"].default_value = 0.25  # satin caps, near-black from any angle
 SIMPLE = {
     "well": principled("well", (0.004, 0.004, 0.004), 0.7)[0],
-    "keycap": principled("keycap", (0.008, 0.008, 0.009), 0.5)[0],
+    "keycap": keycap,
     "grille": principled("grille", (0.003, 0.003, 0.003), 0.9)[0],
     "port": principled("port", (0.002, 0.002, 0.002), 0.6)[0],
     "foot": principled("foot", (0.01, 0.01, 0.01), 0.85)[0],

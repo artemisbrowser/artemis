@@ -4,8 +4,9 @@
 # blender -b --factory-startup -P tools/3d/model.py -- OUT.glb
 # A 14-inch laptop in Space Black, built from measurements, for render.py (--flip-uv 0).
 # Units are cm, Z up, front -y; the lid is closed, only lid parts are named lid*, and it turns about HINGE.
-# Material names are render.py roles; "print" and "lens" are kept as exported.
-import math, sys
+# Material names are render.py roles; "print", "lens" and "mark" are kept as exported.
+import math, os, re, sys
+import xml.etree.ElementTree as ET
 import bpy, bmesh
 from mathutils import Matrix, Vector
 
@@ -38,7 +39,8 @@ M = {n: material(n, *a) for n, a in {
     "recess": ((0.02, 0.02, 0.022), 0.45, 1.0), "grille": ((0.003, 0.003, 0.003), 0.9),
     "port": ((0.002, 0.002, 0.002), 0.6), "foot": ((0.01, 0.01, 0.01), 0.85),
     "hinge": ((0.015, 0.015, 0.016), 0.4, 1.0), "glass": ((0.002, 0.002, 0.002), 0.04),
-    "screen": ((0.0, 0.0, 0.0), 0.05), "lens": ((0.01, 0.012, 0.02), 0.1)}.items()}
+    "screen": ((0.0, 0.0, 0.0), 0.05), "lens": ((0.01, 0.012, 0.02), 0.1),
+    "mark": ((0.22, 0.22, 0.23), 0.05, 1.0)}.items()}
 
 
 class Geo:
@@ -131,6 +133,16 @@ def prism(g, pts2d, z0, z1, mat, basis=Matrix.Identity(3), at=Vector()):
     g.loft([ring(z0), ring(z1)], mat)
 
 
+def boolean(target, op, other):
+    """applies other to target and removes other"""
+    mod = target.modifiers.new("b", "BOOLEAN")
+    mod.operation, mod.solver, mod.object, mod.material_mode = op, "EXACT", other, "TRANSFER"
+    bpy.context.view_layer.update()
+    target.data = bpy.data.meshes.new_from_object(target.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    target.modifiers.clear()
+    bpy.data.objects.remove(other)
+
+
 def ellipse_ring(x, cy, cz, ry, rz, n=48):
     return [(x, cy + ry * math.cos(2 * math.pi * k / n), cz + rz * math.sin(2 * math.pi * k / n)) for k in range(n)]
 
@@ -188,13 +200,7 @@ for s in (1, -1):
 FEET = [(sx * 12.82, sy * 8.13) for sx in (1, -1) for sy in (1, -1)]
 for x, y in FEET:
     prism(cut, rrect(1.07, 1.07, 1.07, 12, x, y), Z0 - 1, Z0 + 0.02, "recess")
-cutter = cut.obj("cutter")
-mod = base_obj.modifiers.new("cut", "BOOLEAN")
-mod.operation, mod.solver, mod.object, mod.material_mode = "DIFFERENCE", "EXACT", cutter, "TRANSFER"
-bpy.context.view_layer.update()
-base_obj.data = bpy.data.meshes.new_from_object(base_obj.evaluated_get(bpy.context.evaluated_depsgraph_get()))
-base_obj.modifiers.clear()
-bpy.data.objects.remove(cutter)
+boolean(base_obj, "DIFFERENCE", cut.obj("cutter"))
 
 # speaker grilles: a perforated panel filling each slot, flush with the deck
 grille = Geo()
@@ -340,6 +346,85 @@ for pts, z, mat in [(rrect(0.59, 0.315, 0.315, 12, 0, PY), LZ - 0.0055, "glass")
                     (rrect(0.10, 0.10, 0.10, 8, -0.27, PY), LZ - 0.0062, "lens")]:
     cam.face(cam.add([(x, y, z) for x, y in pts])[::-1], mat)
 cam.obj("lid-camera", closed=False)
+
+# the Artemis mark from the site's icon, mirror-polished in the lid's back: the comet passes
+# behind the left leg and over the right, each crossing parted by a GAP of bare alloy
+icon = ET.parse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../src/static/icon.svg")).getroot()
+paths = {e.get("id") or e.get("class"): e.get("d") for e in icon.iter() if e.tag.endswith("path")}
+LEG_R = float(next(e.get("stroke-width") for e in icon.iter() if e.get("class") == "a")) / 2
+GAP = 16
+
+
+def svg_points(d):
+    """an M/L/A/Z outline as points; arcs are circular"""
+    tok = re.findall(r"[MLAZ]|-?[\d.]+", d)
+    pts, i = [], 0
+    while i < len(tok):
+        c = tok[i]
+        if c in "ML":
+            pts.append((float(tok[i + 1]), float(tok[i + 2])))
+            i += 3
+        elif c == "A":
+            r, fa, fs, x1, y1 = float(tok[i + 1]), int(tok[i + 4]), int(tok[i + 5]), float(tok[i + 6]), float(tok[i + 7])
+            x0, y0 = pts[-1]
+            hx, hy = (x0 - x1) / 2, (y0 - y1) / 2
+            k = (-1 if fa == fs else 1) * math.sqrt(max(0, r * r / (hx * hx + hy * hy) - 1))
+            cx, cy = k * hy + (x0 + x1) / 2, -k * hx + (y0 + y1) / 2
+            a0 = math.atan2(y0 - cy, x0 - cx)
+            da = (math.atan2(y1 - cy, x1 - cx) - a0) % (2 * math.pi)
+            if not fs:
+                da -= 2 * math.pi
+            pts += [(cx + r * math.cos(a0 + da * t / 16), cy + r * math.sin(a0 + da * t / 16)) for t in range(1, 17)]
+            i += 8
+        else:
+            i += 1
+    return pts
+
+
+def stadium(a, b, r, n=16):
+    ang = math.atan2(b[1] - a[1], b[0] - a[0])
+    return [(p[0] + r * math.cos(t), p[1] + r * math.sin(t)) for p, t0 in ((b, ang - math.pi / 2), (a, ang + math.pi / 2))
+            for t in (t0 + math.pi * j / n for j in range(n + 1))]
+
+
+def inflate(pts, d):
+    """each vertex pushed d along its mitred normal; pts are counter-clockwise in y-up"""
+    out = []
+    for i, p in enumerate(pts):
+        a, b = pts[i - 1], pts[(i + 1) % len(pts)]
+        n1, n2 = [Vector((q[1] - o[1], o[0] - q[0])).normalized() for o, q in ((a, p), (p, b))]
+        m = (n1 + n2).normalized()
+        out.append((p[0] + m.x * d / max(m.dot(n1), 0.3), p[1] + m.y * d / max(m.dot(n1), 0.3)))
+    return out
+
+
+def ccw(pts):
+    return pts if sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(pts, pts[1:] + pts[:1])) > 0 else pts[::-1]
+
+
+foot_l, apex, foot_r = svg_points(paths["a"])
+comet = svg_points(paths["comet"])
+comet = [p for i, p in enumerate(comet) if math.dist(p, comet[i - 1]) > 1e-6]
+TOP = LZ + LIDH
+# read from behind the open lid: the icon's top toward the closed lid's front, its right toward -x
+xs, ys = [p[0] for p in comet + [foot_l, foot_r]], [apex[1] - LEG_R, foot_l[1] + LEG_R]
+MK = 3.4 / (ys[1] - ys[0])  # the A stands 3.4 tall
+to_lid = lambda pts: ccw([(-(x - (min(xs) + max(xs)) / 2) * MK, (y - sum(ys) / 2) * MK) for x, y in pts])
+
+
+def mark_solid(pts, z0, z1):
+    g = Geo()
+    prism(g, pts, z0, z1, "mark")
+    return g.obj("lid-mark")
+
+
+solids = [mark_solid(to_lid(stadium(foot_l, apex, LEG_R)), TOP - 0.002, TOP + 0.0004),
+          mark_solid(to_lid(stadium(foot_r, apex, LEG_R)), TOP - 0.002, TOP + 0.0004),
+          mark_solid(to_lid(comet), TOP - 0.002, TOP + 0.0004)]
+boolean(solids[2], "DIFFERENCE", mark_solid(to_lid(stadium(foot_l, apex, LEG_R + GAP)), TOP - 0.01, TOP + 0.01))
+boolean(solids[1], "DIFFERENCE", mark_solid(inflate(to_lid(comet), GAP * MK), TOP - 0.01, TOP + 0.01))
+for o in solids[1:]:
+    boolean(solids[0], "UNION", o)
 
 # ---------------------------------------------------------------- finish
 for o in scene.objects:
