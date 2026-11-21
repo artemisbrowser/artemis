@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
-#   [--shots side,closed,glow,three-quarter,seq,seq@N] [--samples 128] [--height 1080] [--frames 120]
+#   [--shots side,closed,glow,three-quarter,seq,seq@N,tour,tour@N] [--samples 128] [--height 1080] [--frames 120]
 #   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1] [--finish black|silver] [--hinge Y Z]
 #   [--backdrop black|white]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
@@ -57,6 +57,12 @@ def hero(p):
     """mock/laptop.js SHOTS.hero with its lid curve, p = scroll 0..1"""
     o = smooth(p / 0.75)
     return dict(lid=lerp(9, 108, o), glow=lerp(0.8, 0.7, o), az=0, el=lerp(0.42, 0.06, smooth(p)), dist=lerp(95, 58, smooth(p)), y=lerp(0, 10, o), z=lerp(4, -1, o), fov=26)
+
+
+def tour(p):
+    """closed from behind, reading the mark, then round to the front three-quarter as the lid opens; p = 0..1"""
+    o, s = smooth((p - 0.3) / 0.6), smooth(p)
+    return dict(lid=lerp(0, 110, o), glow=lerp(0, 0.7, o), az=lerp(math.pi, -0.85, s), el=lerp(0.85, 0.3, s), dist=100, y=lerp(0.8, 8.5, o), z=lerp(0, -2, o), fov=lerp(16, 23, s))
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -407,15 +413,12 @@ def shoot(path, aspect):
 
 os.makedirs(args.out, exist_ok=True)
 for name in filter(None, args.shots.split(",")):
-    if name.startswith("seq@"):
-        f = int(name[4:])
-        pose("black", **hero(f / (args.frames - 1)))
-        shoot(os.path.join(args.out, f"f{f:04d}.png"), 16 / 9)
-    elif name == "seq":
-        os.makedirs(os.path.join(args.out, "seq"), exist_ok=True)
-        for f in range(args.frames):
-            pose("black", **hero(f / (args.frames - 1)))
-            shoot(os.path.join(args.out, "seq", f"f{f:04d}.png"), 16 / 9)
+    path, _, at = name.partition("@")
+    if path in ("seq", "tour"):
+        os.makedirs(os.path.join(args.out, path), exist_ok=True)
+        for f in [int(at)] if at else range(args.frames):
+            pose("black", **(hero if path == "seq" else tour)(f / (args.frames - 1)))
+            shoot(os.path.join(args.out, path, f"f{f:04d}.png"), 16 / 9)
     else:
         finish, aspect, p = SHOTS[name]
         pose(finish, **p)
