@@ -20,6 +20,19 @@
 .hero-get {
   text-align: right;
 }
+/* the laptop opens once on a black stage */
+.stage {
+  width: min(1260px, 100vw - 2 * var(--gutter));
+  margin: 0 auto 40px;
+  overflow: hidden;
+  border-radius: 28px;
+  background: #000;
+}
+.stage video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
 .slide {
   position: relative;
   width: min(1260px, 100vw - 2 * var(--gutter));
