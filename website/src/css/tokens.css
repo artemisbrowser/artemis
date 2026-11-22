@@ -45,7 +45,7 @@
 
   /* layout: --s is one 1440x900 artboard unit in px */
   --s: min(calc(100vw / 1440), calc(100svh / 900));
-  --gutter: max(16px, 4vw);
+  --gutter: max(24px, 4vw);
   --content: min(1260px, 100% - 2 * var(--gutter));
   --text-max: 980px;
   --measure: 40ch;
@@ -393,7 +393,7 @@
 }
 @media (max-width: 734px) {
   :root {
-    --section-pad: 64px;
+    --section-pad: 88px;
     --inset: 8px;
     --r-panel: 26px;
   }

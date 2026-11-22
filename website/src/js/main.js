@@ -47,6 +47,39 @@ function syncGet() {
 new IntersectionObserver(syncGet).observe(heroGet);
 addEventListener("pageshow", syncGet);
 
+/* ---------- reveals fire once on entry; anything already above the viewport shows at once ---------- */
+const reveals = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries)
+      if (e.isIntersecting || e.boundingClientRect.top < 0) {
+        e.target.classList.add("in");
+        reveals.unobserve(e.target);
+      }
+  },
+  { rootMargin: "0px 0px -10% 0px" },
+);
+for (const el of document.querySelectorAll(".reveal")) reveals.observe(el);
+
+/* ---------- the nav marks the section crossing mid-viewport; on phones its links drop from a chevron ---------- */
+const links = [...nav.querySelectorAll(".localnav-links a")];
+const menu = nav.querySelector("[data-nav-menu]");
+const current = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries)
+      links
+        .find((a) => a.hash === `#${e.target.id}`)
+        .toggleAttribute("aria-current", e.isIntersecting);
+  },
+  { rootMargin: "-50% 0px -50% 0px" },
+);
+for (const a of links) current.observe(document.querySelector(a.hash));
+const shut = () => menu.setAttribute("aria-expanded", false);
+menu.addEventListener("click", () =>
+  menu.setAttribute("aria-expanded", menu.getAttribute("aria-expanded") !== "true"),
+);
+nav.querySelector(".localnav-links").addEventListener("click", shut);
+addEventListener("keydown", (e) => e.key === "Escape" && shut());
+
 /* ---------- phones get the link for later, never a Mac download ---------- */
 if (mq.coarse.matches)
   for (const a of document.querySelectorAll("[data-get]")) {

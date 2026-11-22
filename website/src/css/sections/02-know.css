@@ -7,7 +7,6 @@
   --pv-w: min(1440px, 100%);
   --pv-h: 760px;
   --pv-scale: 1;
-  background: light-dark(#f5f5f7, #1d1d1f);
 }
 .know h2 {
   width: var(--pv-w);
@@ -25,7 +24,7 @@
   margin-inline: auto;
   overflow: clip;
   border-radius: 28px;
-  background: light-dark(#fff, #000);
+  background: light-dark(#f5f5f7, #000);
 }
 .viewer-in {
   position: relative;
@@ -47,7 +46,7 @@
 .pills li {
   view-transition-name: match-element;
   border-radius: 28px;
-  background: light-dark(rgb(232 232 237 / 0.8), rgb(42 42 45 / 0.72));
+  background: light-dark(rgb(255 255 255 / 0.8), rgb(42 42 45 / 0.72));
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
@@ -156,7 +155,7 @@
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: light-dark(rgb(232 232 237), rgb(42 42 45));
+  background: light-dark(#fff, rgb(42 42 45));
   color: var(--ink);
 }
 .step .ico,
@@ -244,6 +243,15 @@
   }
   .stage img {
     width: 100%;
+  }
+  /* pills scrolling under the pinned picture fade out beneath it */
+  .stage::after {
+    content: "";
+    position: absolute;
+    inset: 100% 0 auto;
+    height: 24px;
+    background: linear-gradient(light-dark(#f5f5f7, #000), transparent);
+    pointer-events: none;
   }
   .steps {
     display: none;

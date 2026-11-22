@@ -2,28 +2,37 @@
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
 .hero {
-  padding-top: 40px;
+  padding-top: clamp(40px, 5.6vw, 80px);
   padding-bottom: var(--section-pad);
 }
 .hero-head {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 40px;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 32px;
+  text-align: center;
 }
 .hero h1 {
-  font-size: clamp(56px, 9vw, 112px);
-  line-height: 1;
-  letter-spacing: -0.03em;
+  font-size: clamp(56px, 6.67vw, 96px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+.hero-tag {
+  max-width: 17em;
+  margin-top: 8px;
+  font-size: var(--t-card);
+  line-height: var(--lh-card);
+  font-weight: 600;
+  color: var(--ink-2);
+  text-wrap: balance;
 }
 .hero-get {
-  text-align: right;
+  margin-top: 28px;
 }
 /* the laptop opens once on a black stage */
 .hero-film {
   width: min(1260px, 100vw - 2 * var(--gutter));
-  margin: 0 auto 40px;
+  margin: 0 auto 64px;
   overflow: hidden;
   border-radius: 28px;
   background: #000;
@@ -32,6 +41,7 @@
   display: block;
   width: 100%;
   height: auto;
+  object-fit: cover;
 }
 .slide {
   position: relative;
@@ -40,7 +50,7 @@
   overflow: hidden;
   border-radius: 28px;
   color: var(--ink);
-  background: light-dark(#f5f5f7, #000);
+  background: light-dark(#f5f5f7, #161617);
 }
 .slide-copy {
   position: absolute;
@@ -48,11 +58,9 @@
   top: 44px;
 }
 .slide h2 {
-  font-size: clamp(36px, 4.4vw, 56px);
-  line-height: 1.07;
-  letter-spacing: -0.02em;
-}
-.slide h2 {
+  font-size: var(--t-section);
+  line-height: var(--lh-section);
+  letter-spacing: var(--tr-section);
   color: var(--accent);
 }
 .slide-copy p {
@@ -101,27 +109,28 @@
   translate: -50% 0;
 }
 @media (max-width: 734px) {
-  .hero-head {
-    flex-direction: column;
-    align-items: flex-start;
+  /* 5:4 crops the film's empty sides; the closed lid, its widest frame, still fits */
+  .hero-film {
+    margin-bottom: 48px;
   }
-  .hero-get {
-    text-align: left;
+  .hero-film video {
+    aspect-ratio: 5 / 4;
   }
   .slide {
-    height: 560px;
+    width: calc(100vw - 2 * var(--gutter) - 34px);
+    height: 420px;
   }
   .slide-copy {
     left: 24px;
     top: 28px;
   }
   .slide .more {
-    top: auto;
+    top: 116px;
     right: auto;
     left: 24px;
-    bottom: 300px;
   }
   .slide img {
-    width: 140%;
+    bottom: 12px;
+    width: 100%;
   }
 }

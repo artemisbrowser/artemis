@@ -5,9 +5,9 @@
   text-align: center;
 }
 .statement {
-  font-size: clamp(44px, 7vw, 96px);
-  line-height: 1.04;
-  letter-spacing: -0.03em;
+  font-size: clamp(40px, 5.56vw, 80px);
+  line-height: 1.05;
+  letter-spacing: -0.015em;
 }
 .statement span {
   display: block;
@@ -15,28 +15,23 @@
 .statement .dim {
   color: var(--ink);
 }
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .statement .dim {
-      animation: light linear both;
-      animation-timeline: view();
-      animation-range: entry 40% cover 45%;
-    }
-  }
-}
-@keyframes light {
-  from {
+/* the second line lights up after the headline has landed */
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .statement .dim {
     color: light-dark(#d2d2d7, #424245);
+    transition: color 900ms var(--ease-in-out) 500ms;
+  }
+  .statement.in .dim {
+    color: var(--ink);
   }
 }
 .more-mac {
   width: min(100%, 1040px);
   height: auto;
-  margin: 72px auto 0;
+  margin: 64px auto 0;
 }
 .more .lead {
-  margin: 64px auto 0;
-  text-align: left;
+  margin: 56px auto 0;
 }
 .stats {
   margin: 72px auto 0;
@@ -46,7 +41,6 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 32px;
   list-style: none;
-  text-align: left;
 }
 .stats li {
   padding-top: 20px;
@@ -66,5 +60,10 @@
 @media (max-width: 734px) {
   .stats {
     grid-template-columns: 1fr;
+    gap: 40px;
+  }
+  .stats li {
+    padding-top: 0;
+    border-top: 0;
   }
 }

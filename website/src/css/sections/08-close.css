@@ -19,8 +19,9 @@
 }
 .close h2 {
   margin-bottom: 28px;
-  font-size: clamp(48px, 7vw, 80px);
-  letter-spacing: -0.03em;
+  font-size: var(--t-xl);
+  line-height: var(--lh-xl);
+  letter-spacing: var(--tr-xl);
 }
 .letter {
   max-width: 640px;
@@ -28,9 +29,9 @@
   text-align: left;
 }
 .letter .note {
-  font-size: clamp(19px, 1.9vw, 24px);
-  line-height: 1.42;
-  font-weight: 600;
+  font-size: clamp(19px, 1.6vw, 21px);
+  line-height: calc(1em + 8px);
+  font-weight: 500;
   color: var(--ink-2);
 }
 .sig {
