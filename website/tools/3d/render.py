@@ -4,7 +4,7 @@
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
 #   [--shots side,closed,glow,three-quarter,seq,seq@N,tour,tour@N] [--samples 128] [--height 1080] [--frames 120]
 #   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1] [--finish black|silver] [--hinge Y Z]
-#   [--backdrop black|white|none]
+#   [--backdrop black|white|none] [--exposure STOPS]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
 # --lid swing about --hinge, else a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
@@ -33,6 +33,7 @@ a.add_argument("--turn", type=float, default=0)
 a.add_argument("--hinge", type=float, nargs=2, metavar=("Y", "Z"), help="the lid's axis in the file's Z-up units")
 a.add_argument("--finish", choices=["black", "silver"], help="every shot in this finish")
 a.add_argument("--backdrop", choices=["black", "white", "none"], default="black")
+a.add_argument("--exposure", type=float, default=0)
 a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, whose V runs the other way")
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
@@ -80,6 +81,7 @@ scene.cycles.use_denoising = True
 scene.render.use_persistent_data = True
 scene.view_settings.view_transform = "AgX"
 scene.view_settings.look = "AgX - Medium High Contrast"
+scene.view_settings.exposure = args.exposure
 scene.render.image_settings.file_format = "PNG"
 
 
