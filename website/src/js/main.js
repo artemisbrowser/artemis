@@ -10,7 +10,6 @@ const cls = root.classList;
 const modes = () => ["fine", "coarse"].forEach((k) => cls.toggle(k, mq[k].matches));
 modes();
 for (const k of ["fine", "coarse"]) mq[k].addEventListener("change", modes);
-cls.add("js");
 
 /* ---------- the hero laptop opens once; reduced motion shows it open ---------- */
 const stage = document.querySelector("[data-stage]");

@@ -879,10 +879,15 @@ button.ctl:active {
   pointer-events: none;
   transition: opacity var(--dur-fade) var(--ease-in-out);
 }
-.localnav.has-get .pill.sm,
-html:not(.js) .localnav .pill.sm {
+.localnav.has-get .pill.sm {
   opacity: 1;
   pointer-events: auto;
+}
+@media (scripting: none) {
+  .localnav .pill.sm {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ---------- gallery: a snapping track, a timed dot pill and a play pill ---------- */
