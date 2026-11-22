@@ -1113,10 +1113,8 @@ button.ctl:active {
 .playpause::before {
   transition: background-color 100ms linear;
 }
-@media (hover: hover) {
-  .playpause:hover::before {
-    background: light-dark(rgb(210 210 215 / 0.72), rgb(84 84 88 / 0.72));
-  }
+.playpause:hover::before {
+  background: light-dark(rgb(210 210 215 / 0.72), rgb(84 84 88 / 0.72));
 }
 .playpause .ico {
   position: relative;
