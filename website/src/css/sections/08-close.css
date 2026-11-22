@@ -7,15 +7,35 @@
 /* the glow is a box-shadow on a box just inside the squircle, 21/192 in from the image edge */
 /* a drop-shadow filter here makes WebKit paint an opaque box over the hero heading */
 .close-icon {
+  position: relative;
   display: flow-root;
   width: 75px;
   height: 75px;
   margin: 10.5px auto 34.5px;
+}
+.close-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
   border-radius: 16px;
   box-shadow: 0 12px 96px rgb(42 117 197 / 0.55);
 }
 .close-icon img {
   margin: -10.5px;
+}
+/* the glow lights after the icon has landed */
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .close-icon::before {
+    opacity: 0;
+    scale: 0.6;
+    transition:
+      opacity 1200ms var(--ease-in-out) 500ms,
+      scale 1200ms var(--ease-reveal) 500ms;
+  }
+  .close-icon.in::before {
+    opacity: 1;
+    scale: 1;
+  }
 }
 .close h2 {
   margin-bottom: 28px;

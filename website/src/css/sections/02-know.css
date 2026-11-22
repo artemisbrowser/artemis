@@ -231,8 +231,8 @@
   }
   .stage,
   .active .stage {
-    position: sticky;
-    inset: var(--nav-h) auto auto;
+    position: relative;
+    inset: auto;
     z-index: 2;
     width: auto;
     height: auto;
@@ -244,8 +244,12 @@
   .stage img {
     width: 100%;
   }
-  /* pills scrolling under the pinned picture fade out beneath it */
-  .stage::after {
+  /* the picture pins only beside an open card, whose text fades out beneath it */
+  .active .stage {
+    position: sticky;
+    top: var(--nav-h);
+  }
+  .active .stage::after {
     content: "";
     position: absolute;
     inset: 100% 0 auto;
