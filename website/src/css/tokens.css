@@ -257,6 +257,9 @@
     1
   );
   --dur-pop: 496ms;
+  /* overshoots 4.5% at 330ms */
+  --spring-pill: linear(0, 0.031, 0.111, 0.218, 0.337, 0.459, 0.575, 0.679, 0.77, 0.846, 0.908, 0.955, 0.991, 1.015, 1.032, 1.041, 1.045, 1.045, 1.042, 1.038, 1.033, 1.027, 1.022, 1.017, 1.012, 1.009, 1.005, 1.003, 1.001, 1);
+  --dur-pill: 600ms;
   --spring-morph: linear(
     0,
     0.0079 1.2%,
@@ -405,6 +408,7 @@
     --spring-panel: cubic-bezier(0.339, 0.687, 0.083, 1.112);
     --spring-carousel: cubic-bezier(0.351, 0.699, 0.087, 1.134);
     --spring-pop: cubic-bezier(0.413, 1.365, 0.034, 1.001);
+    --spring-pill: cubic-bezier(0.36, 1.22, 0.5, 1);
     --spring-morph: cubic-bezier(0.433, 1.477, 0.046, 0.969);
     --spring-hover: cubic-bezier(0.3, 0.514, 0.106, 1.093);
     --spring-library: cubic-bezier(0.45, 1.576, 0.047, 0.954);
