@@ -21,13 +21,13 @@ node build.mjs --check        # build it, then run the checks
 
 ## Mac screenshots
 
-The Mac shots in `src/img/framed` are Artemis window captures framed in a MacBook Pro with [frames-cli](https://github.com/viticci/frames-cli). Clone it to `~/.cache/artemis/frames-cli` (or set `FRAMES_CLI`), then:
+The Mac shots in `src/img/framed` are Artemis window captures rendered on our own laptop model. Build the model once with Blender (`blender -b --factory-startup -P tools/3d/model.py -- ~/.cache/artemis/3d-render/mbp14.glb`), then:
 
 ```sh
 node tools/frame.mjs <capture.png> <name> [--backdrop assets/spaces/space-tide-880x592.png] [--width 2000]
 ```
 
-It writes `src/img/framed/<name>.webp`. The frames are Apple's images and aren't covered by the GPL.
+It writes `src/img/framed/<name>.webp`.
 
 ## Contributing
 

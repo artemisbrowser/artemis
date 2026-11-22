@@ -4,7 +4,7 @@
 # blender -b --factory-startup -P tools/3d/render.py -- --glb laptop.glb --screen mock/screen-spaces.jpg --out DIR
 #   [--shots side,closed,glow,three-quarter,seq,seq@N,tour,tour@N] [--samples 128] [--height 1080] [--frames 120]
 #   [--map roles.json] [--lid REGEX] [--rest-angle DEG] [--turn DEG] [--flip-uv 0|1] [--finish black|silver] [--hinge Y Z]
-#   [--backdrop black|white]
+#   [--backdrop black|white|none]
 # Any laptop glTF works: it is turned by --turn, scaled to 31.26 cm wide and set on the floor, and its
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
 # --lid swing about --hinge, else a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
@@ -32,7 +32,7 @@ a.add_argument("--rest-angle", type=float, default=0)
 a.add_argument("--turn", type=float, default=0)
 a.add_argument("--hinge", type=float, nargs=2, metavar=("Y", "Z"), help="the lid's axis in the file's Z-up units")
 a.add_argument("--finish", choices=["black", "silver"], help="every shot in this finish")
-a.add_argument("--backdrop", choices=["black", "white"], default="black")
+a.add_argument("--backdrop", choices=["black", "white", "none"], default="black")
 a.add_argument("--flip-uv", type=int, default=1, help="1 for mock/'s export, whose V runs the other way")
 args = a.parse_args(sys.argv[sys.argv.index("--") + 1:])
 
@@ -47,6 +47,7 @@ SHOTS = {
     "three-quarter": ("silver", 720 / 540, dict(lid=110, glow=0.7, az=-0.85, el=0.3, dist=100, y=5, z=-2, fov=18)),
     "ports": ("black", 2, dict(lid=0, glow=0, az=-1.36, el=0.02, dist=92, y=0.75, z=-7.6, fov=2.2)),
     "deck": ("black", 2, dict(lid=110, glow=0.5, az=-0.3, el=0.75, dist=95, y=1.2, z=-1, fov=11)),
+    "front": ("black", 2000 / 1208, dict(lid=92, glow=0.5, az=0, el=0.03, dist=124, y=10.4, z=-9, fov=12)),
 }
 
 lerp = lambda a, b, t: a + (b - a) * t
@@ -155,6 +156,9 @@ if args.backdrop == "white":
     wt.links.new(ao.outputs["Color"], em.inputs["Color"])
     wt.links.new(em.outputs[0], wout.inputs[0])
     sweep.data.materials[0] = wm
+if args.backdrop == "none":
+    scene.render.film_transparent = True
+    sweep.hide_render = True
 
 
 def panel(name, size, at, aim, radiance, fade=0.0, soft=0.0):
@@ -216,7 +220,7 @@ panel("top", (70, 30), (0, 10, 75), (0, 0, 0), 1.2)
 panel("back", (100, 40), (0, 70, 40), (0, 0, 2), 1.5, fade=1.0)
 panel("key", (14, 70), (-70, -45, 35), (0, 0, 0), 1.0, soft=0.3)
 panel("rim", (14, 70), (75, 30, 30), (0, 0, 0), 0.8, soft=0.3)
-if args.backdrop == "black":  # on white it would shade the floor, which lights the laptop's front itself
+if args.backdrop != "white":  # on white it would shade the floor, which lights the laptop's front itself
     panel("front", (44, 16), (0, -20, 0.3), (0, -20, 10), 0.5, soft=0.15)
 
 before = set(bpy.data.objects)
