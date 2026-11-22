@@ -6,7 +6,6 @@
   --pv-pad: clamp(48px, 6.25vw, 90px);
   --pv-w: min(1440px, 100%);
   --pv-h: 760px;
-  --pv-scale: 1;
 }
 .know h2 {
   width: var(--pv-w);
@@ -25,6 +24,7 @@
   overflow: clip;
   border-radius: 28px;
   background: light-dark(#f5f5f7, #000);
+  color: light-dark(var(--ink), #f5f5f7);
 }
 /* the pill stack is centred, so it re-centres as a card grows */
 .viewer-in {
@@ -62,24 +62,24 @@
 .pills button[aria-expanded] {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   height: 56px;
   padding: 0 32px 0 14px;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.022em;
   white-space: nowrap;
-  color: var(--ink);
+  color: inherit;
   outline-offset: -4px;
-  transition: opacity 300ms var(--ease-in-out) 250ms;
+  transition: opacity 400ms var(--ease-in-out) 350ms;
 }
 .pills button[aria-expanded] .ico {
-  width: 22px;
-  height: 22px;
-  padding: 3px;
-  border: 1.6px solid currentColor;
+  width: 24px;
+  height: 24px;
+  padding: 3.25px;
+  border: 1px solid currentColor;
   border-radius: 50%;
-  stroke-width: 2.2;
+  stroke-width: 2.48;
 }
 .pills .open button[aria-expanded] {
   position: absolute;
@@ -90,13 +90,14 @@
   transition: none;
 }
 .pills p {
+  --rise: 28px;
   position: absolute;
   top: 0;
   left: 0;
   width: var(--card-w);
-  padding: 28px;
+  padding: var(--rise);
   font-size: 17px;
-  line-height: 25px;
+  line-height: 24px;
   letter-spacing: -0.022em;
   outline: none;
   opacity: 0;
@@ -112,26 +113,23 @@
   transition: opacity 550ms var(--ease-in-out) 250ms;
 }
 .pills b {
-  color: var(--accent);
-}
-.pills .link-btn {
-  margin-left: 4px;
+  font-weight: 600;
 }
 @media (prefers-reduced-motion: no-preference) {
   .pills button[aria-expanded] span {
     transform-origin: 0 50%;
-    transition: scale 300ms var(--ease-in-out) 250ms;
+    transition: scale 400ms var(--ease-in-out) 350ms;
   }
   .pills .open button[aria-expanded] span {
     scale: 0.8;
     transition: none;
   }
   .pills p {
-    translate: 0 28px;
+    translate: 0 var(--rise);
     transition:
       opacity 200ms var(--ease-in-out),
-      translate 300ms var(--ease-in-out),
-      visibility 0s 300ms;
+      translate 0s 200ms,
+      visibility 0s 200ms;
   }
   .pills .open p {
     translate: 0 0;
@@ -141,30 +139,20 @@
   }
 }
 
-/* 36px circles with a 44px hit area; the steps sit beside the open card where anchors exist */
+/* 36px circles with a 44px hit area; the steps stay at the middle of the viewer */
 .steps,
 .shut {
   position: absolute;
   visibility: hidden;
 }
 .steps {
-  --at: 50%;
   z-index: 1;
-  top: var(--at);
+  top: 50%;
   left: calc(var(--pv-pad) / 2 - 18px);
   display: grid;
   gap: 28px;
   translate: 0 -50%;
   transition: visibility 0s 150ms;
-}
-@supports (top: anchor(center)) {
-  .pills .open {
-    anchor-name: --card;
-  }
-  .steps {
-    position-anchor: --card;
-    top: anchor(center, var(--at));
-  }
 }
 .shut {
   top: 20px;
@@ -187,8 +175,10 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: light-dark(#fff, rgb(42 42 45));
-  color: var(--ink);
+  background: light-dark(rgb(255 255 255 / 0.8), rgb(42 42 45 / 0.72));
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  color: inherit;
   scale: 0;
 }
 .step {
@@ -206,7 +196,7 @@
   scale: 1;
   transition: scale var(--dur-pop) var(--spring-pop);
 }
-@media (prefers-reduced-motion: no-preference) {
+@media (prefers-reduced-motion: no-preference) and (min-width: 834px) {
   .shut {
     translate: 0 120px;
     transition:
@@ -221,11 +211,15 @@
       translate var(--dur-pill) var(--spring-pill);
   }
 }
-.step .ico,
+.step .ico {
+  width: 22.5px;
+  height: 22.5px;
+  stroke-width: 2.35;
+}
 .shut .ico {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.6;
+  width: 21.33px;
+  height: 21.33px;
+  stroke-width: 2.25;
 }
 .step .up {
   rotate: 90deg;
@@ -238,34 +232,32 @@
   cursor: default;
 }
 
-/* a fixed 1440x760 canvas centred in the card; pictures sit at x 877, or x 982 beside an open card */
+/* pictures fill the viewer; --shot-x and --shot-y place the middle of the laptop, 51.5% down its picture */
 .stage {
+  --shot-x: 59.2%;
+  --shot-y: calc(50% - 13px);
+  --shot-w: 67.8%;
   position: absolute;
-  top: 0;
-  left: 50%;
-  width: 1440px;
-  height: 760px;
-  display: grid;
-  place-items: center;
-  translate: calc(-50% + 157px) 0;
-  scale: var(--pv-scale);
-  transform-origin: 50% 0;
+  inset: 0;
   transition: translate var(--dur-pill) var(--spring-pill);
 }
+/* below 1440 wide the open card would cover the screen, so the picture steps aside */
 .active .stage {
-  translate: calc(-50% + 262px) 0;
+  translate: min(12vw, max(0px, (1440px - 100vw) * 0.35)) 0;
 }
-.stage > * {
-  grid-area: 1 / 1;
+.stage img {
+  position: absolute;
+  top: var(--shot-y);
+  left: var(--shot-x);
+  width: var(--shot-w);
+  max-width: none;
+  height: auto;
+  translate: -50% -51.5%;
   opacity: 0;
   transition: opacity 200ms var(--ease-in-out);
 }
-.stage > .on {
+.stage .on {
   opacity: 1;
-}
-.stage img {
-  width: 784px;
-  height: auto;
 }
 
 @media (max-width: 1440px) {
@@ -276,31 +268,25 @@
 @media (max-width: 1068px) {
   .know {
     --pv-h: 720px;
-    --pv-scale: 0.9474;
   }
 }
-/* phone: the picture, then a band holding one sideways row of pills; an open card is centred in the band */
+/* phone: pictures fill a 640px viewer and one sideways row of pills lies along its foot.
+   Open, every pill is a card-wide slot, so the neighbours show at the edges under the steps. */
 @media (max-width: 833px) {
   .know {
     --pv-pad: 24px;
-    --band: 240px;
-  }
-  .viewer {
-    min-height: 0;
-    display: flex;
-    flex-direction: column-reverse;
+    --pv-h: 640px;
   }
   .viewer-in {
-    position: static;
-    min-height: var(--band);
-    padding: 12px 0;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0 0 20px;
   }
   .pills {
     --card-w: calc(100vw - 80px);
-    flex: 1;
     display: flex;
-    align-items: center;
-    min-width: 0;
+    align-items: flex-end;
     padding-inline: var(--pv-pad);
     overflow-x: auto;
     overscroll-behavior-x: contain;
@@ -308,9 +294,39 @@
   }
   .pills li {
     flex: none;
-    transition: opacity 150ms var(--ease-in-out);
+  }
+  .pills button[aria-expanded] {
+    padding-left: 16px;
+    font-size: 14px;
+    letter-spacing: -0.016em;
+    transition: opacity 200ms var(--ease-in-out) 100ms;
+  }
+  .pills button[aria-expanded] span {
+    transition: none;
+  }
+  .pills .open p {
+    transition:
+      opacity 250ms var(--ease-in-out) 160ms,
+      translate 400ms var(--ease-in-out);
+  }
+  /* stepping between cards, the text travels with its card */
+  .swap .pills p {
+    transition:
+      opacity 100ms var(--ease-in-out),
+      translate 0s 100ms,
+      visibility 0s 100ms;
+  }
+  .swap .pills .open p {
+    transition: opacity 250ms var(--ease-in-out);
+  }
+  .pills p {
+    --rise: 24px;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: -0.016em;
   }
   .active .pills {
+    gap: 10px;
     padding-inline: 40px;
     overflow-x: hidden;
   }
@@ -319,36 +335,64 @@
     content: "";
     flex: 0 0 100%;
   }
-  .active .pills li:not(.open) {
+  .active .pills li {
+    width: var(--card-w);
+  }
+  .active .pills button[aria-expanded] {
     opacity: 0;
     visibility: hidden;
     transition:
-      opacity 150ms var(--ease-in-out),
-      visibility 0s 150ms;
+      opacity 120ms var(--ease-in-out),
+      visibility 0s 120ms;
   }
-  .stage,
+  .stage {
+    --shot-x: 50%;
+    --shot-y: 48.4%;
+    --shot-w: 109%;
+  }
   .active .stage {
-    position: relative;
-    inset: auto;
-    width: auto;
-    height: auto;
-    aspect-ratio: 16 / 10;
     translate: 0 0;
-    scale: 1;
   }
-  .stage img {
-    width: 100%;
-  }
+  /* the steps are bare chevrons over the neighbouring pills, 88px tall along the foot of the card */
   .steps {
-    --at: calc(100% - var(--band) / 2);
-    right: 2px;
-    left: 2px;
+    top: auto;
+    right: 0;
+    transition: visibility 0s 100ms;
+    bottom: 20px;
+    left: 0;
     display: flex;
     justify-content: space-between;
+    translate: 0 0;
     pointer-events: none;
   }
-  .step {
+  .step,
+  .active .step {
+    display: flex;
+    align-items: flex-end;
+    width: 40px;
+    height: 88px;
+    padding-bottom: 16.75px;
+    border-radius: 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    scale: 1;
+    opacity: 0;
     pointer-events: auto;
+    transition: opacity 100ms var(--ease-in-out);
+  }
+  .active .step {
+    opacity: 1;
+    transition: opacity 200ms var(--ease-in-out);
+  }
+  .step:last-child {
+    justify-content: flex-end;
+  }
+  .step:disabled {
+    visibility: hidden;
+  }
+  .step::after {
+    content: none;
   }
   .step .up {
     rotate: 0deg;
@@ -356,9 +400,15 @@
   .step .down {
     rotate: 180deg;
   }
+  /* in flow so it can stick under the bar while the viewer scrolls past */
   .shut {
-    z-index: 1;
-    top: 16px;
-    right: 16px;
+    position: sticky;
+    top: calc(var(--nav-h) + 16px);
+    order: -1;
+    align-self: flex-end;
+    margin: 16px 20px auto 0;
+  }
+  .active .shut {
+    transition: scale var(--dur-pill) var(--spring-pill);
   }
 }
