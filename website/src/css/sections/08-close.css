@@ -4,11 +4,18 @@
 .close {
   text-align: center;
 }
+/* the glow is a box-shadow on a box just inside the squircle, 21/192 in from the image edge */
+/* a drop-shadow filter here makes WebKit paint an opaque box over the hero heading */
 .close-icon {
-  width: 96px;
-  height: 96px;
-  margin: 0 auto 24px;
-  filter: drop-shadow(0 12px 48px rgb(42 117 197 / 0.55));
+  display: flow-root;
+  width: 75px;
+  height: 75px;
+  margin: 10.5px auto 34.5px;
+  border-radius: 16px;
+  box-shadow: 0 12px 96px rgb(42 117 197 / 0.55);
+}
+.close-icon img {
+  margin: -10.5px;
 }
 .close h2 {
   margin-bottom: 28px;
