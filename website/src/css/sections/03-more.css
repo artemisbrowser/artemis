@@ -25,148 +25,33 @@
     color: var(--ink);
   }
 }
-/* without scroll timelines the scene is the last picture over its three captions */
+/* without scroll timelines the scene is three pictures in a row, each over its caption */
 .scene {
+  --w: min(72vw, (100svh - var(--nav-h) - 190px) * 1.655);
+  --zoom: 2.03;
+  --drop: 14%;
   margin-top: 64px;
 }
-.scene-mac {
-  display: grid;
-  width: min(1040px, 100% - 2 * var(--gutter));
-  margin-inline: auto;
-}
-.scene-mac img {
-  grid-area: 1 / 1;
-  width: 100%;
-  height: auto;
-}
-.scene-caps {
+.scene-set {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 32px;
-  width: min(980px, 100% - 2 * var(--gutter));
-  margin: 48px auto 0;
-  padding: 0;
-  list-style: none;
-  text-align: left;
+  width: min(1200px, 100% - 2 * var(--gutter));
+  margin-inline: auto;
+}
+.scene-set figure {
+  margin: 0;
+}
+.scene-set img {
+  width: 100%;
+  height: auto;
+}
+.scene-set figcaption {
+  max-width: 560px;
+  margin: 24px auto 0;
 }
 .more .wrap > .lead {
   margin: 56px auto 0;
-}
-/* the laptop holds under the nav while its screen changes twice, then pushes in until the screen fills
-   the width; --zoom is 100vw over the screen's share (68.6%) of the laptop's width */
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .scene {
-      --w: min(72vw, (100svh - var(--nav-h) - 190px) * 1.655);
-      --zoom: 2.03;
-      --drop: 14%;
-      height: 320vh;
-      margin-top: 0;
-      view-timeline: --scene block;
-      view-timeline-inset: var(--nav-h) 0px;
-    }
-    .scene-pin {
-      position: sticky;
-      top: var(--nav-h);
-      height: calc(100svh - var(--nav-h));
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      overflow: clip;
-    }
-    .scene-mac {
-      flex: none;
-      width: var(--w);
-      transform-origin: 50% 43.7%;
-      animation: push linear both;
-      animation-timeline: --scene;
-      animation-range: contain 74% contain 100%;
-    }
-    .scene-mac img + img {
-      animation: appear linear both;
-      animation-timeline: --scene;
-      animation-range: contain 22% contain 28%;
-    }
-    .scene-mac img + img + img {
-      animation-range: contain 46% contain 52%;
-    }
-    .scene-caps {
-      grid-template-columns: 1fr;
-      width: min(560px, 100% - 2 * var(--gutter));
-      margin-top: 40px;
-      text-align: center;
-    }
-    .scene-caps li {
-      grid-area: 1 / 1;
-      animation: cap-1 linear both;
-      animation-timeline: --scene;
-      animation-range: contain;
-    }
-    .scene-caps li + li {
-      animation-name: cap-2;
-    }
-    .scene-caps li + li + li {
-      animation-name: cap-3;
-    }
-  }
-}
-@keyframes push {
-  to {
-    scale: var(--zoom);
-    translate: 0 var(--drop);
-  }
-}
-@keyframes appear {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes cap-1 {
-  0%,
-  20% {
-    opacity: 1;
-    translate: 0 0;
-  }
-  26%,
-  100% {
-    opacity: 0;
-    translate: 0 -12px;
-  }
-}
-@keyframes cap-2 {
-  0%,
-  24% {
-    opacity: 0;
-    translate: 0 12px;
-  }
-  30%,
-  44% {
-    opacity: 1;
-    translate: 0 0;
-  }
-  50%,
-  100% {
-    opacity: 0;
-    translate: 0 -12px;
-  }
-}
-@keyframes cap-3 {
-  0%,
-  48% {
-    opacity: 0;
-    translate: 0 12px;
-  }
-  54%,
-  70% {
-    opacity: 1;
-    translate: 0 0;
-  }
-  76%,
-  100% {
-    opacity: 0;
-    translate: 0 -12px;
-  }
 }
 .stats {
   margin: 72px auto 0;
@@ -201,10 +86,9 @@
     padding-top: 0;
     border-top: 0;
   }
-  .scene-caps {
+  .scene-set {
     grid-template-columns: 1fr;
-    gap: 16px;
-    text-align: center;
+    gap: 48px;
   }
   /* a phone pushes further, cropping the screen's sides, so the picture fills more than a thin band */
   .scene {
@@ -213,3 +97,119 @@
     --drop: 28%;
   }
 }
+/* the laptop holds under the nav while its screen changes twice, each caption leaving before the next
+   arrives, then pushes in until the screen fills the width: --zoom is 100vw over the screen's 68.6% share */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .scene {
+      height: 320vh;
+      margin-top: 0;
+      view-timeline: --scene block;
+      view-timeline-inset: var(--nav-h) 0px;
+    }
+    .scene-pin {
+      position: sticky;
+      top: var(--nav-h);
+      height: calc(100svh - var(--nav-h));
+      display: grid;
+      place-content: center;
+      overflow: clip;
+    }
+    .scene-set {
+      grid-template-columns: var(--w);
+      gap: 0;
+      width: auto;
+    }
+    .scene-set figure {
+      grid-area: 1 / 1;
+    }
+    .scene-set img {
+      transform-origin: 50% 43.7%;
+      animation: push linear both;
+      animation-timeline: --scene;
+      animation-range: contain 74% contain 100%;
+    }
+    .scene-set figure + figure img {
+      animation-name: push, appear;
+      animation-timeline: --scene, --scene;
+      animation-range:
+        contain 74% contain 100%,
+        contain 21% contain 26%;
+    }
+    .scene-set figure + figure + figure img {
+      animation-range:
+        contain 74% contain 100%,
+        contain 45% contain 50%;
+    }
+    .scene-set figcaption {
+      margin-top: 40px;
+      animation: cap-1 linear both;
+      animation-timeline: --scene;
+      animation-range: contain;
+    }
+    .scene-set figure + figure figcaption {
+      animation-name: cap-2;
+    }
+    .scene-set figure + figure + figure figcaption {
+      animation-name: cap-3;
+    }
+  }
+}
+@keyframes push {
+  to {
+    scale: var(--zoom);
+    translate: 0 var(--drop);
+  }
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes cap-1 {
+  0%,
+  18% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  23%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}
+@keyframes cap-2 {
+  0%,
+  24% {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  29%,
+  42% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  47%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}
+@keyframes cap-3 {
+  0%,
+  48% {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  53%,
+  66% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  72%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}
+
