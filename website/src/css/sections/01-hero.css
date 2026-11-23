@@ -4,14 +4,14 @@
 .hero {
   padding-bottom: var(--section-pad);
 }
-/* one screen: the headline, the picture in the height left over, the download docked at its foot */
+/* one screen: the headline, the lid under it, the keys running out under the docked download */
 .hero-stage {
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   height: max(640px, 100svh - var(--nav-h));
   margin-bottom: 64px;
-  padding-top: clamp(40px, min(5.6vw, 9svh), 80px);
+  padding-top: clamp(40px, min(4vw, 6svh), 56px);
 }
 .hero-head {
   display: flex;
@@ -34,13 +34,13 @@
   color: var(--ink-2);
   text-wrap: balance;
 }
-/* the picture fits the height on its black stage; a box narrower than 5:4 would crop the screen */
 .hero-film {
   position: relative;
+  container-type: size;
   align-self: center;
   width: min(1260px, 100vw - 2 * var(--gutter));
   height: calc(100% - 12px);
-  max-height: min(709px, (100vw - 2 * var(--gutter)) * 0.8);
+  max-height: min(709px, (100vw - 2 * var(--gutter)) * 0.534);
   margin: 0 auto;
   overflow: hidden;
   border-radius: 28px;
@@ -50,9 +50,18 @@
   position: absolute;
   top: 0;
   left: 50%;
-  width: auto;
-  height: 100%;
-  translate: -50% 0;
+  /* the lid spans 64% of the picture, 8% to 52% down it: 300cqh keeps the first key row in a short box */
+  width: min(118cqw, 300cqh);
+  height: auto;
+  translate: -50% -5.4%;
+  mask-image: linear-gradient(#000 63%, #0000 80%);
+}
+.hero-film::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 80px;
+  background: linear-gradient(#0000, #000);
 }
 @media (prefers-reduced-motion: no-preference) {
   .hero-film img {
@@ -163,11 +172,10 @@
     height: auto;
     margin-bottom: 48px;
   }
-  /* 5:4 crops the picture's empty sides */
   .hero-film {
     height: auto;
     max-height: none;
-    aspect-ratio: 5 / 4;
+    aspect-ratio: 15 / 8;
   }
   .hero-get {
     position: static;

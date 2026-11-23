@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|close]
+// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|above]
 // Puts a window capture on a backdrop at the laptop's screen size, renders it on the laptop from tools/3d and writes
 // src/img/framed/<name>.webp. A capture already the screen's shape is used as is. Needs Playwright, Blender and cwebp.
 import fs from "node:fs";
@@ -18,7 +18,7 @@ const pwDir = process.env.PLAYWRIGHT_BROWSERS_PATH
 const args = process.argv.slice(2);
 const [input, name] = args;
 const opt = (k, d) => (args.includes("--" + k) ? args[args.indexOf("--" + k) + 1] : d);
-if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px] [--shot front|close]");
+if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px] [--shot front|above]");
 
 const BLENDER = process.env.BLENDER || "/Applications/Blender.app/Contents/MacOS/Blender";
 const GLB = process.env.LAPTOP_GLB || path.join(os.homedir(), ".cache/artemis/3d-render/mbp14.glb");
@@ -51,8 +51,8 @@ if (Math.abs(iw / ih - W / H) > 0.01) {
 
 const width = Number(opt("width", "2000"));
 const shot = opt("shot", "front");
-// front is cut out for any card; close keeps its black stage
-const [ratio, samples, stage] = { front: [1208 / 2000, 64, "none"], close: [9 / 16, 128, "black"] }[shot];
+// front is cut out for any card; above keeps its black stage
+const [ratio, samples, stage] = { front: [1208 / 2000, 64, "none"], above: [9 / 16, 128, "black"] }[shot];
 execFileSync(BLENDER, ["-b", "--factory-startup", "-P", path.join(ROOT, "tools/3d/render.py"), "--", "--glb", GLB, "--screen", screen,
   "--out", tmp, "--shots", shot, "--samples", String(samples), "--height", String(Math.round(width * ratio)), "--flip-uv", "0",
   "--backdrop", stage, "--hinge", "10.5655", "0.8922"], { stdio: "ignore" });

@@ -9,7 +9,7 @@
 # materials are given roles by name (printed; --map {"regex": "role"|"keep"} overrides). Objects matching
 # --lid swing about --hinge, else a hinge found at their lowest back edge; --rest-angle is the lid's angle in the file.
 # Cycles studio for the laptop: black sweep, softbox strips, the CC0 studio HDRI, a screen whose spill is neutral.
-# Units are cm (1 BU = 1 cm); poses use mock/laptop.js's orbit (az, el, dist, y, z, fov) in its Y-up space, slid sideways by x.
+# Units are cm (1 BU = 1 cm); poses use mock/laptop.js's orbit (az, el, dist, y, z, fov) in its Y-up space.
 import argparse, json, math, os, re, sys
 import bpy, bmesh
 import numpy as np
@@ -49,7 +49,7 @@ SHOTS = {
     "ports": ("black", 2, dict(lid=0, glow=0, az=-1.36, el=0.02, dist=92, y=0.75, z=-7.6, fov=2.2)),
     "deck": ("black", 2, dict(lid=110, glow=0.5, az=-0.3, el=0.75, dist=95, y=1.2, z=-1, fov=11)),
     "front": ("black", 2000 / 1208, dict(lid=92, glow=0.5, az=0, el=0.03, dist=124, y=10.4, z=-9, fov=12)),
-    "close": ("black", 16 / 9, dict(lid=100, glow=0.8, az=-0.42, el=0.07, dist=49, x=-2, y=10.8, z=-12, fov=26)),
+    "above": ("black", 16 / 9, dict(lid=92, glow=6, az=0, el=0.98, dist=125, y=5, z=-10, fov=13.8, dark=True)),
 }
 
 lerp = lambda a, b, t: a + (b - a) * t
@@ -164,6 +164,9 @@ if args.backdrop == "none":
     sweep.hide_render = True
 
 
+LAMPS = {}
+
+
 def panel(name, size, at, aim, radiance, fade=0.0, soft=0.0):
     """a one-sided softbox of size (w, h) cm at `at` facing `aim`, unseen by the camera; fade darkens it towards its bottom
     edge, soft ramps its outer `soft` fraction to black on every side"""
@@ -217,12 +220,15 @@ def panel(name, size, at, aim, radiance, fade=0.0, soft=0.0):
     o.visible_camera = False
     o.parent = rig
     scene.collection.objects.link(o)
+    LAMPS[name] = o
 
 
 panel("top", (70, 30), (0, 10, 75), (0, 0, 0), 1.2)
 panel("back", (100, 40), (0, 70, 40), (0, 0, 2), 1.5, fade=1.0)
 panel("key", (14, 70), (-70, -45, 35), (0, 0, 0), 1.0, soft=0.3)
 panel("rim", (14, 70), (75, 30, 30), (0, 0, 0), 0.8, soft=0.3)
+# mirrors into the `above` camera off the lid's top edge
+panel("edge", (60, 14), (0, 45, 40), (0, 11, 22), 6)
 if args.backdrop != "white":  # on white it would shade the floor, which lights the laptop's front itself
     panel("front", (44, 16), (0, -20, 0.3), (0, -20, 10), 0.5, soft=0.15)
 
@@ -394,20 +400,27 @@ cam.data.sensor_fit = "VERTICAL"
 cam.data.clip_start, cam.data.clip_end = 1, 3000
 
 
-def pose(finish, lid, glow, az, el, dist, y, z, fov, x=0):
+def pose(finish, lid, glow, az, el, dist, y, z, fov, dark=False):
     color, rough, light = FINISHES[args.finish or finish]
     for b, k, r in ((alloy_b, 1, rough), (seam_b, 1, rough + 0.088), (pad_b, 0.896, rough)):
         b.inputs["Base Color"].default_value = (*(c * k for c in color), 1)
         ROUGH.get(b, b.inputs["Roughness"]).default_value = r
-    bg.inputs["Strength"].default_value = light
+    # dark: a near-black room where the screen's own colours are the spill
+    bg.inputs["Strength"].default_value = 0.03 if dark else light
+    for name, o in LAMPS.items():
+        o.hide_render = name not in ("back", "edge") if dark else name == "edge"
+    for link in smix.inputs["A"].links:
+        st.links.remove(link)
+    if dark:
+        st.links.new(stex.outputs["Color"], smix.inputs["A"])
     hinge.rotation_euler = (math.radians(args.rest_angle - lid), 0, 0)
     strength.inputs[1].default_value = 1 - glow  # camera rays see 1, spill rays see glow
     strength.inputs[2].default_value = glow
     # mock/laptop.js orbit in Y-up (x, y, z) -> Blender (x, -z, y)
     p = (dist * math.cos(el) * math.sin(az), y + dist * math.sin(el), z + dist * math.cos(el) * math.cos(az))
     rig.rotation_euler = (0, 0, az)
-    cam.location = (p[0] + x, -p[2], p[1])
-    cam.rotation_euler = (Vector((x, -z, y)) - cam.location).to_track_quat("-Z", "Y").to_euler()
+    cam.location = (p[0], -p[2], p[1])
+    cam.rotation_euler = (Vector((0, -z, y)) - cam.location).to_track_quat("-Z", "Y").to_euler()
     cam.data.angle = math.radians(fov)
 
 
