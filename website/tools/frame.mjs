@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000]
+// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|close]
 // Puts a window capture on a backdrop at the laptop's screen size, renders it on the laptop from tools/3d and writes
 // src/img/framed/<name>.webp. A capture already the screen's shape is used as is. Needs Playwright, Blender and cwebp.
 import fs from "node:fs";
@@ -18,7 +18,7 @@ const pwDir = process.env.PLAYWRIGHT_BROWSERS_PATH
 const args = process.argv.slice(2);
 const [input, name] = args;
 const opt = (k, d) => (args.includes("--" + k) ? args[args.indexOf("--" + k) + 1] : d);
-if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px]");
+if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px] [--shot front|close]");
 
 const BLENDER = process.env.BLENDER || "/Applications/Blender.app/Contents/MacOS/Blender";
 const GLB = process.env.LAPTOP_GLB || path.join(os.homedir(), ".cache/artemis/3d-render/mbp14.glb");
@@ -39,10 +39,10 @@ if (Math.abs(iw / ih - W / H) > 0.01) {
   const backdrop = path.resolve(opt("backdrop", path.join(ROOT, "assets/spaces/space-tide-880x592.png")));
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: W / 2, height: H / 2 }, deviceScaleFactor: 2 });
-  // the window keeps its capture's point size, shrunk only to fit 88% x 86% of the screen
+  // the window fills the screen but for a rim of backdrop
   await page.setContent(`<style>
     body { margin: 0; height: 100vh; display: grid; place-items: center; background: url(${dataUrl(backdrop)}) center / cover; }
-    img { width: ${iw / 2}px; max-width: 88vw; max-height: 86vh; object-fit: contain; filter: drop-shadow(0 22px 40px rgb(0 0 0 / 0.45)); }
+    img { max-width: 96vw; height: 95vh; object-fit: contain; filter: drop-shadow(0 22px 40px rgb(0 0 0 / 0.45)); }
   </style><img src="${dataUrl(screen)}">`);
   screen = path.join(tmp, "screen.png");
   await page.screenshot({ path: screen });
@@ -50,11 +50,14 @@ if (Math.abs(iw / ih - W / H) > 0.01) {
 }
 
 const width = Number(opt("width", "2000"));
+const shot = opt("shot", "front");
+// front is cut out for any card; close keeps its black stage
+const [ratio, samples, stage] = { front: [1208 / 2000, 64, "none"], close: [9 / 16, 128, "black"] }[shot];
 execFileSync(BLENDER, ["-b", "--factory-startup", "-P", path.join(ROOT, "tools/3d/render.py"), "--", "--glb", GLB, "--screen", screen,
-  "--out", tmp, "--shots", "front", "--samples", "64", "--height", String(Math.round((width * 1208) / 2000)), "--flip-uv", "0",
-  "--backdrop", "none", "--hinge", "10.5655", "0.8922"], { stdio: "ignore" });
+  "--out", tmp, "--shots", shot, "--samples", String(samples), "--height", String(Math.round(width * ratio)), "--flip-uv", "0",
+  "--backdrop", stage, "--hinge", "10.5655", "0.8922"], { stdio: "ignore" });
 const dest = path.join(ROOT, "src/img/framed", `${name}.webp`);
 fs.mkdirSync(path.dirname(dest), { recursive: true });
-execFileSync("cwebp", ["-quiet", "-q", "82", "-alpha_q", "100", path.join(tmp, "front.png"), "-o", dest]);
+execFileSync("cwebp", ["-quiet", "-q", "82", "-alpha_q", "100", path.join(tmp, `${shot}.png`), "-o", dest]);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(path.relative(process.cwd(), dest));

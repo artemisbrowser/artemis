@@ -4,7 +4,7 @@
 .hero {
   padding-bottom: var(--section-pad);
 }
-/* one screen: the headline, the film in the height left over, the download docked at its foot */
+/* one screen: the headline, the picture in the height left over, the download docked at its foot */
 .hero-stage {
   position: relative;
   display: grid;
@@ -34,7 +34,7 @@
   color: var(--ink-2);
   text-wrap: balance;
 }
-/* the laptop opens once on a black stage; the film fits the height, and a box narrower than 5:4 would crop the lid */
+/* the picture fits the height on its black stage; a box narrower than 5:4 would crop the screen */
 .hero-film {
   position: relative;
   align-self: center;
@@ -46,13 +46,24 @@
   border-radius: 28px;
   background: #000;
 }
-.hero-film video {
+.hero-film img {
   position: absolute;
   top: 0;
   left: 50%;
   width: auto;
   height: 100%;
   translate: -50% 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hero-film img {
+    animation: hero-in 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+}
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    scale: 1.06;
+  }
 }
 .hero-get {
   position: absolute;
@@ -152,7 +163,7 @@
     height: auto;
     margin-bottom: 48px;
   }
-  /* 5:4 crops the film's empty sides; the closed lid, its widest frame, still fits */
+  /* 5:4 crops the picture's empty sides */
   .hero-film {
     height: auto;
     max-height: none;

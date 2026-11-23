@@ -11,13 +11,6 @@ const modes = () => ["fine", "coarse"].forEach((k) => cls.toggle(k, mq[k].matche
 modes();
 for (const k of ["fine", "coarse"]) mq[k].addEventListener("change", modes);
 
-/* ---------- the hero laptop opens once; reduced motion shows it open ---------- */
-const stage = document.querySelector("[data-stage]");
-const opened = () => (stage.currentTime = stage.duration - 0.05);
-if (!mq.reduce.matches) stage.play().catch(opened);
-else if (stage.readyState) opened();
-else stage.addEventListener("loadedmetadata", opened, { once: true });
-
 /* ---------- appearance: the toggle overrides the system for this visit only ---------- */
 const sys = matchMedia("(prefers-color-scheme: dark)");
 const toggle = document.querySelector("[data-theme-toggle]");
