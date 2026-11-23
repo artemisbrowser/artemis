@@ -175,7 +175,10 @@
   .hero-film {
     height: auto;
     max-height: none;
-    aspect-ratio: 15 / 8;
+    aspect-ratio: 16 / 9;
+  }
+  .hero-film img {
+    width: 135cqw;
   }
   .hero-get {
     position: static;
