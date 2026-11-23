@@ -18,19 +18,153 @@
   font-size: clamp(32px, 4.45vw, 56px);
   letter-spacing: -0.025em;
 }
-/* the picture is the import window alone, cropped just inside its edge; the radius follows its corners */
-.move-card img {
+.move-art {
+  --g: 12px;
+  /* from an Artemis-side item back onto its Arc twin: half the figure, one gap, half the chevron */
+  --off: calc(-50cqi - var(--g) - 9px);
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--g);
   width: min(100% - 48px, 520px);
-  height: auto;
   margin: 48px auto;
-  border-radius: 3% / 3.7%;
-  box-shadow: 0 24px 64px rgb(0 0 0 / 0.36);
+}
+.move-art .side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-card);
+  background: var(--surface-1);
+  box-shadow: 0 12px 32px light-dark(rgb(0 0 0 / 0.07), rgb(0 0 0 / 0.4));
+  font-size: 12px;
+  line-height: 16px;
+}
+.move-art .who {
+  padding: 0 2px 2px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.move-art .to .who {
+  color: var(--accent);
+}
+.move-art .go {
+  scale: -1 1;
+  color: var(--ink-3);
+}
+.move-art .it {
+  padding: 8px;
+  border-radius: 10px;
+  /* opaque, so an item in flight covers its Arc twin */
+  background: light-dark(#f2f2f2, #2e2e2e);
+}
+.move-art .it:nth-child(3) { --n: 1; }
+.move-art .it:nth-child(4) { --n: 2; }
+.move-art .it:nth-child(5) { --n: 3; }
+.move-art .side:not(.to) .it {
+  opacity: 0.4;
+}
+.move-art .space {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.move-art .space b {
+  flex: 1;
+  font-weight: 600;
+}
+.move-art .space i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  opacity: 0.35;
+}
+.move-art .space i:first-of-type {
+  opacity: 1;
+}
+.move-art .pins {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.move-art .pins i {
+  display: grid;
+  place-items: center;
+  height: 26px;
+  border-radius: 7px;
+  background: light-dark(#fff, rgb(255 255 255 / 0.08));
+}
+.move-art .pins i::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--fav);
+}
+.move-art .pins i:nth-child(1) { --fav: #d9702a; }
+.move-art .pins i:nth-child(2) { --fav: #2a75c5; }
+.move-art .pins i:nth-child(3) { --fav: #3c9a5f; }
+.move-art .pins i:nth-child(4) { --fav: #c2385a; }
+.move-art .pins i:nth-child(5) { --fav: #b8921f; }
+.move-art .pins i:nth-child(6) { --fav: var(--ink-3); }
+.move-art .list p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.move-art .list .ico {
+  width: 14px;
+  height: 14px;
+}
+.move-art .list i {
+  display: block;
+  height: 6px;
+  margin: 6px 0 0 20px;
+  border-radius: 3px;
+  background: var(--hairline-2);
+}
+.move-art .list i:last-child {
+  width: 55%;
+}
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .move-art .it {
+    --at: calc(700ms + var(--n, 0) * 160ms);
+  }
+  .move-card:not(.in) .move-art .side:not(.to) .it {
+    opacity: 1;
+  }
+  .move-art .side:not(.to) .it {
+    transition: opacity 500ms var(--ease-in-out) calc(var(--at) + 200ms);
+  }
+  .move-card:not(.in) .move-art .to .it {
+    translate: var(--off) 0;
+  }
+  .move-card.in .move-art .to .it {
+    animation: move-glide 1000ms var(--ease-in-out) var(--at) both;
+  }
+}
+@keyframes move-glide {
+  from {
+    translate: var(--off) 0;
+  }
+  50% {
+    translate: calc(var(--off) / 2) -10px;
+    scale: 1.04;
+    box-shadow: var(--g-drop);
+  }
+  to {
+    translate: 0 0;
+  }
 }
 @media (max-width: 734px) {
   .move-card {
     grid-template-columns: 1fr;
   }
-  .move-card img {
+  .move-art {
     margin-top: 0;
   }
 }
