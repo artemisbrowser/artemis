@@ -56,7 +56,7 @@ const reveals = new IntersectionObserver(
         reveals.unobserve(e.target);
       }
   },
-  { rootMargin: "0px 0px -10% 0px" },
+  { rootMargin: "0px 0px -15% 0px" },
 );
 for (const el of document.querySelectorAll(".reveal")) reveals.observe(el);
 
@@ -77,7 +77,7 @@ const shut = () => menu.setAttribute("aria-expanded", false);
 menu.addEventListener("click", () =>
   menu.setAttribute("aria-expanded", menu.getAttribute("aria-expanded") !== "true"),
 );
-nav.querySelector(".localnav-links").addEventListener("click", shut);
+for (const el of [nav.querySelector(".localnav-links"), nav.nextElementSibling]) el.addEventListener("click", shut);
 addEventListener("keydown", (e) => e.key === "Escape" && shut());
 
 /* ---------- phones get the link for later, never a Mac download ---------- */

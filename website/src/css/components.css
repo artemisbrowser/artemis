@@ -785,18 +785,18 @@ button.ctl:active {
     opacity: 0;
     translate: 0 30px;
     transition:
-      opacity 700ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--rd, 0ms),
-      translate 800ms var(--ease-reveal) var(--rd, 0ms);
+      opacity 870ms cubic-bezier(0.46, 0.1, 0.44, 1) calc(var(--rd, 0ms) + 25ms),
+      translate 680ms cubic-bezier(0.48, 0.05, 0.46, 1) var(--rd, 0ms);
   }
   .reveal.in {
     opacity: 1;
     translate: 0 0;
   }
   .d1 {
-    --rd: 120ms;
+    --rd: 133ms;
   }
   .d2 {
-    --rd: 240ms;
+    --rd: 267ms;
   }
   /* .seq stays put and brings its children in one after another */
   .reveal.seq {
@@ -910,41 +910,82 @@ button.ctl:active {
     height: 14px;
     stroke-width: 2;
     rotate: -90deg;
-    transition: rotate 300ms var(--ease-in-out);
+    transition: scale 320ms cubic-bezier(0.65, 0, 0.35, 1);
   }
   .navmenu[aria-expanded="true"] .ico {
-    rotate: 90deg;
+    scale: -1 1;
   }
+  .localnav {
+    transition:
+      background-color 240ms var(--ease-in-out),
+      box-shadow 240ms var(--ease-in-out);
+  }
+  .localnav:has([aria-expanded="true"]) {
+    background-color: var(--void);
+    box-shadow: inset 0 -1px 0 transparent;
+    transition-duration: 320ms;
+  }
+  /* closing: the links leave first, then the tray and the shade follow 240ms later */
   .localnav-links {
     position: absolute;
     inset: 100% 0 auto;
     display: grid;
     gap: 0;
     margin: 0;
-    padding: 4px var(--gutter) 16px;
+    padding: 11px var(--gutter) 27px calc(var(--gutter) + 16px);
     background: var(--void);
     border-bottom: 1px solid var(--hairline-2);
-    font-size: 17px;
-    font-weight: 600;
+    font-size: 14px;
     visibility: hidden;
-    opacity: 0;
-    translate: 0 -8px;
+    clip-path: inset(0 0 100%);
     transition:
-      opacity 250ms var(--ease-in-out),
-      translate 250ms var(--ease-in-out),
-      visibility 0s 250ms;
+      clip-path 320ms var(--ease-in-out) 240ms,
+      visibility 0s 560ms;
   }
   .navmenu[aria-expanded="true"] + .localnav-links {
     visibility: visible;
+    clip-path: inset(0);
+    transition: clip-path 320ms var(--ease-in-out);
+  }
+  .localnav-links a {
+    height: 34px;
+    border: 0;
+    opacity: 0;
+    translate: 0 -4px;
+    transition:
+      opacity calc(400ms - var(--i, 0) * 20ms) var(--ease-in-out),
+      translate calc(400ms - var(--i, 0) * 20ms) var(--ease-in-out);
+  }
+  .navmenu[aria-expanded="true"] + .localnav-links a {
     opacity: 1;
     translate: 0 0;
     transition:
-      opacity 250ms var(--ease-in-out),
-      translate 250ms var(--ease-in-out);
+      opacity 320ms var(--ease-in-out) calc(260ms + var(--i, 0) * 20ms),
+      translate 320ms var(--ease-in-out) calc(260ms + var(--i, 0) * 20ms);
   }
-  .localnav-links a {
-    height: 44px;
-    border: 0;
+  .localnav-links a:nth-child(2) {
+    --i: 1;
+  }
+  .localnav-links a:nth-child(3) {
+    --i: 2;
+  }
+  .navshade {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--z-nav) - 1);
+    background: light-dark(rgb(232 232 237 / 0.4), rgb(51 51 54 / 0.4));
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    visibility: hidden;
+    opacity: 0;
+    transition:
+      opacity 320ms var(--ease-in-out) 240ms,
+      visibility 0s 560ms;
+  }
+  .localnav:has([aria-expanded="true"]) + .navshade {
+    visibility: visible;
+    opacity: 1;
+    transition: opacity 320ms var(--ease-in-out);
   }
   .theme {
     margin-left: auto;
