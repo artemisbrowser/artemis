@@ -149,6 +149,19 @@ for (const v of document.querySelectorAll("[data-viewer]")) {
   items.forEach((li, i) => (li.querySelector("[aria-expanded]").onclick = () => show(i, true)));
   v.querySelector(".shut").onclick = () => show(-1, true);
   for (const b of [up, down]) b.onclick = () => show(cur + +b.dataset.step, false);
+  // phone: a one-finger sideways swipe on an open card steps like the chevrons
+  let x0, y0;
+  v.addEventListener("touchstart", (e) => ([x0, y0] = e.touches.length > 1 ? [NaN, NaN] : [e.touches[0].clientX, e.touches[0].clientY]), { passive: true });
+  v.addEventListener(
+    "touchend",
+    (e) => {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - x0;
+      const to = cur - Math.sign(dx);
+      if (cur >= 0 && isRow() && Math.abs(dx) > 40 && Math.abs(dx) > 2 * Math.abs(t.clientY - y0) && items[to]) show(to, false);
+    },
+    { passive: true },
+  );
   v.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && cur >= 0) show(-1, true);
   });

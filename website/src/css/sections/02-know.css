@@ -102,6 +102,7 @@
   font-size: 17px;
   line-height: 24px;
   letter-spacing: -0.022em;
+  text-wrap: wrap;
   outline: none;
   opacity: 0;
   visibility: hidden;
@@ -362,7 +363,12 @@
   .active .stage {
     translate: 0 0;
   }
-  /* the steps are bare chevrons over the neighbouring pills, 88px tall along the foot of the card */
+  /* sideways drags on an open card are know.js swipes; vertical ones still scroll the page */
+  .viewer.active {
+    touch-action: pan-y pinch-zoom;
+  }
+  /* the steps are bare chevrons over the neighbouring pills, 40 by 88px
+     along the foot of the card, each chevron mid-box and clear of the screen edge */
   .steps {
     top: auto;
     right: 0;
@@ -378,6 +384,7 @@
   .active .step {
     display: flex;
     align-items: flex-end;
+    justify-content: center;
     width: 40px;
     height: 88px;
     padding-bottom: 16.75px;
@@ -393,9 +400,6 @@
   .active .step {
     opacity: 1;
     transition: opacity 200ms var(--ease-in-out);
-  }
-  .step:last-child {
-    justify-content: flex-end;
   }
   .step:disabled {
     opacity: 0;
