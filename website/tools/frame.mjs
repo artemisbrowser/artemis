@@ -39,10 +39,12 @@ if (Math.abs(iw / ih - W / H) > 0.01) {
   const backdrop = path.resolve(opt("backdrop", path.join(ROOT, "assets/spaces/space-tide-880x592.png")));
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: W / 2, height: H / 2 }, deviceScaleFactor: 2 });
-  // the window fills the screen but for a rim of backdrop
+  // the window fills the screen under the 37 pt menu bar but for a 12 pt rim of backdrop;
+  // its corners are cut to the window's own radius, 32 px in a 2x capture
+  const k = Math.min((0.96 * W) / 2 / iw, (H / 2 - 37 - 24) / ih);
   await page.setContent(`<style>
-    body { margin: 0; height: 100vh; display: grid; place-items: center; background: url(${dataUrl(backdrop)}) center / cover; }
-    img { max-width: 96vw; height: 95vh; object-fit: contain; filter: drop-shadow(0 22px 40px rgb(0 0 0 / 0.45)); }
+    body { margin: 0; height: 100vh; box-sizing: border-box; padding-top: 37px; display: grid; place-items: center; background: url(${dataUrl(backdrop)}) center / cover; }
+    img { width: ${iw * k}px; height: ${ih * k}px; border-radius: ${32 * k}px; filter: drop-shadow(0 22px 40px rgb(0 0 0 / 0.45)); }
   </style><img src="${dataUrl(screen)}">`);
   screen = path.join(tmp, "screen.png");
   await page.screenshot({ path: screen });
