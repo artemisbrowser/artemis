@@ -2,14 +2,22 @@
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
 .hero {
-  padding-top: clamp(40px, 5.6vw, 80px);
   padding-bottom: var(--section-pad);
+}
+/* one screen: the headline, the film in the height left over, the download docked at its foot */
+.hero-stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: max(640px, 100svh - var(--nav-h));
+  margin-bottom: 64px;
+  padding-top: clamp(40px, min(5.6vw, 9svh), 80px);
 }
 .hero-head {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin-bottom: 32px;
+  margin-bottom: 16px;
   text-align: center;
 }
 .hero h1 {
@@ -26,22 +34,44 @@
   color: var(--ink-2);
   text-wrap: balance;
 }
-.hero-get {
-  margin-top: 28px;
-}
-/* the laptop opens once on a black stage */
+/* the laptop opens once on a black stage; the film fits the height, and a box narrower than 5:4 would crop the lid */
 .hero-film {
+  position: relative;
+  align-self: center;
   width: min(1260px, 100vw - 2 * var(--gutter));
-  margin: 0 auto 64px;
+  height: calc(100% - 12px);
+  max-height: min(709px, (100vw - 2 * var(--gutter)) * 0.8);
+  margin: 0 auto;
   overflow: hidden;
   border-radius: 28px;
   background: #000;
 }
 .hero-film video {
-  display: block;
-  width: 100%;
-  height: auto;
-  object-fit: cover;
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: auto;
+  height: 100%;
+  translate: -50% 0;
+}
+.hero-get {
+  position: absolute;
+  inset: auto 0 36px;
+  width: fit-content;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 10px 10px 10px 24px;
+  border-radius: 32px;
+  background: #242426;
+  white-space: nowrap;
+}
+.hero-get .fine {
+  margin: 0;
+  color: #f5f5f7;
+  font-size: 14px;
+  font-weight: 600;
 }
 .slide {
   position: relative;
@@ -117,12 +147,33 @@
   translate: -50% 0;
 }
 @media (max-width: 734px) {
-  /* 5:4 crops the film's empty sides; the closed lid, its widest frame, still fits */
-  .hero-film {
+  .hero-stage {
+    display: block;
+    height: auto;
     margin-bottom: 48px;
   }
-  .hero-film video {
+  /* 5:4 crops the film's empty sides; the closed lid, its widest frame, still fits */
+  .hero-film {
+    height: auto;
+    max-height: none;
     aspect-ratio: 5 / 4;
+  }
+  .hero-get {
+    position: static;
+    width: auto;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px var(--gutter) 0;
+    background: none;
+    white-space: normal;
+  }
+  .hero-get .fine {
+    color: var(--ink-2);
+  }
+  .hero-get .pill {
+    height: 36px;
+    padding: 0 15px;
+    font-size: 14px;
   }
   .slide {
     width: calc(100vw - 2 * var(--gutter) - 21px);
