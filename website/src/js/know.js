@@ -35,7 +35,8 @@ for (const v of document.querySelectorAll("[data-viewer]")) {
       const one = (s, lead = 0) => [s, s, lead];
       const [sw, sh, lead] = !isRow() ? one(spring(0.72, 15), -0.017) : i < 0 ? one(spring(0.99, 23), 0.025) : cur < 0 ? [spring(0.65, 17.5), spring(0.6, 13.5), 0] : one(spring(0.9, 14.5), 0.017);
       const tween = (s, f) => frames((t) => f(s(t + lead)));
-      // sizes run through layout, so the others follow; a translate covers what layout cannot, like the scroll jump
+      // sizes run through layout, so the others follow; an offset covers what layout cannot, like the scroll jump.
+      // Offsets that cancel layout are left and top, never translate, so they land in the same frame as the sizes.
       const to = items.map((li) => li.getBoundingClientRect());
       items.forEach((li, j) => {
         if (from[j].width !== to[j].width || from[j].height !== to[j].height)
@@ -45,7 +46,7 @@ for (const v of document.querySelectorAll("[data-viewer]")) {
       items.forEach((li, j) => {
         const dx = from[j].left - start[j].left;
         const dy = from[j].top - start[j].top;
-        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) live.push(li.animate({ translate: tween(sw, (u) => `${dx * (1 - u)}px ${dy * (1 - u)}px`) }, sampled));
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) live.push(li.animate({ left: tween(sw, (u) => `${dx * (1 - u)}px`), top: tween(sw, (u) => `${dy * (1 - u)}px`) }, sampled));
       });
     }
     if (focus) (i >= 0 ? items[i].querySelector("p") : items[cur].querySelector("button")).focus({ preventScroll: true });
@@ -78,14 +79,15 @@ for (const v of document.querySelectorAll("[data-viewer]")) {
         li.animate(
           frames((t) => {
             const [w, h] = size(j, t);
-            // widths run through layout, so the translate is measured from where layout has put the pill
+            // widths run through layout, so the offset is measured from where layout has put the pill
             let x = r[0].left;
             for (let i = 0; i < j; i++) x += size(i, t)[0] + gap;
             const sy = Math.max(1, h / r[j].height);
             const round = Math.min(w, r[j].height) / 2;
             return {
               width: `${w}px`,
-              translate: `${(t < 0.454 ? mid - w / 2 : mix(mid - 20, r[j].left, ease(t - 0.53))) - x}px ${j || t >= 0.454 ? 0 : 0.18 * (36 - h)}px`,
+              left: `${(t < 0.454 ? mid - w / 2 : mix(mid - 20, r[j].left, ease(t - 0.53))) - x}px`,
+              top: `${j || t >= 0.454 ? 0 : 0.18 * (36 - h)}px`,
               scale: `1 ${sy}`,
               borderRadius: `${round}px / ${round / sy}px`,
               clipPath: `inset(${Math.max(0, (r[j].height - h) / 2)}px 0 round 28px)`,
