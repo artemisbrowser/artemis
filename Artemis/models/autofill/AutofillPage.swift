@@ -160,15 +160,20 @@ enum AutofillPage {
       const nonName = /^(organization|street-address|address-|postal-code|country|tel|email)/;
       const fromName = { "name": "cc-name", "given-name": "cc-given-name", "family-name": "cc-family-name" };
       // per field: { type, section, kind, live }
-      let meta = new WeakMap(), sections = [];
+      let meta = new WeakMap(), sections = [], hidden = [];
       const initial = new WeakMap(), typed = new WeakSet(), filled = new WeakSet();
 
       function scan() {
         meta = new WeakMap();
         sections = [];
         const roots = new Map();
+        hidden = [];
         for (const el of [...document.querySelectorAll("input,select,textarea")].slice(0, 600)) {
-          if (!fits(el) || !visible(el)) continue;
+          if (!fits(el)) continue;
+          if (!visible(el)) {
+            if (hidden.length < 20) hidden.push(el);
+            continue;
+          }
           const r = el.form || el.closest("form") || document;
           if (!roots.has(r)) roots.set(r, []);
           roots.get(r).push({ el, group: " ", ...classify(el) });
@@ -242,12 +247,14 @@ enum AutofillPage {
       let reported = "";
       function report() {
         scan();
+        resized.disconnect();
+        for (const el of hidden) resized.observe(el);
         const kinds = {};
         for (const s of sections.filter(s => s.live)) kinds[s.kind] = [...new Set([...(kinds[s.kind] ?? []), ...s.types])];
         const sent = JSON.stringify(kinds);
-        if (sent === reported) return;
+        if (sent !== reported) post({ type: "fields", kinds });
         reported = sent;
-        post({ type: "fields", kinds });
+        return kinds;
       }
 
       function phone(v) {
@@ -512,12 +519,48 @@ enum AutofillPage {
         return address || card ? { address, card } : null;
       }
 
-      let timer = 0;
-      const observer = new MutationObserver(() => { timer ||= setTimeout(() => { timer = 0; report(); }, 300); });
+      // No document-wide observer: the field count is polled every 250 ms for 5 s after load, a trusted gesture or a
+      // history move, else every 4 s and never while hidden. A field hidden at the last report rescans once it
+      // gains a size. A rescan runs 300 ms after the first change, or 2 s apart while the page keeps changing.
+      let timer = 0, last = 0, count = 0, active = 0, poller = 0;
+      const tags = ["input", "select", "textarea"].map(t => document.getElementsByTagName(t));
+      const fieldCount = () => tags.reduce((sum, t) => sum + t.length, 0);
+      const soon = () => {
+        timer ||= setTimeout(() => { timer = 0; last = Date.now(); report(); }, Date.now() - last > 2000 ? 300 : 2000);
+      };
+      // a field's first entry is its baseline: reading its size in the scan would force a layout
+      const sized = new WeakMap();
+      const resized = new ResizeObserver(entries => {
+        for (const e of entries) {
+          const has = e.contentRect.width > 1 && e.contentRect.height > 1;
+          if (has && sized.get(e.target) === false) soon();
+          sized.set(e.target, has);
+        }
+      });
+      const poll = () => {
+        poller = 0;
+        if (document.hidden) return;
+        const n = fieldCount();
+        if (n !== count) {
+          count = n;
+          soon();
+        }
+        poller = setTimeout(poll, Date.now() - active < 5000 ? 250 : 4000);
+      };
+      const wake = e => {
+        if (e?.isTrusted === false) return;
+        active = Date.now();
+        if (e) soon();
+        clearTimeout(poller);
+        poll();
+      };
+      for (const type of ["pointerdown", "focusin"]) addEventListener(type, wake, true);
+      for (const type of ["pageshow", "popstate", "hashchange", "visibilitychange"]) addEventListener(type, wake);
+      for (const type of ["transitionend", "animationend"]) addEventListener(type, soon, true);
       const start = () => {
         report();
-        observer.observe(document.documentElement, { childList: true, subtree: true,
-          attributes: true, attributeFilter: ["type", "style", "class", "hidden", "autocomplete"] });
+        count = fieldCount();
+        wake();
       };
       if (document.readyState === "loading") addEventListener("DOMContentLoaded", start, { once: true });
       else start();
@@ -532,6 +575,8 @@ enum AutofillPage {
       }, true);
 
       Object.defineProperty(globalThis, "__artemisAutofill", { value: Object.freeze({
+        // this frame's field kinds as of now, also reported
+        rescan: () => report(),
         // `values` into one section of `kind`: the one the person picked from, else the first live one.
         // Returns how many fields took a value
         fill(origin, values, kind) {

@@ -14,7 +14,7 @@
 #     N        1-99, the build of that version; CFBundleVersion = x*1e6 + y*1e4 + z*100 + N
 #     CHANNEL  release | beta (beta items reach users on the Beta and Nightly channels)
 #     --dry-run prints each outward step instead of running it; pushes to a local ARTEMIS_PUBLIC_REMOTE still run
-#   COLLAGE=spec.json the Discord post's feature collage: required for release, with "approved": true
+#   COLLAGE=spec.json the Discord post's feature collage: required, with "approved": true
 #
 # Needs $R = ~/Library/Application Support/ArtemisRelease with sparkle_ed25519, sparkle/bin, venv, strip_ios.py,
 # add_headers.py, leak-words and private-gate. ARTEMIS_RELEASE_DIR (another $R) and ARTEMIS_PUBLIC_REMOTE (a local bare repo, with
@@ -72,11 +72,11 @@ prepare() {
     BUILD=$((BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 10000 + BASH_REMATCH[3] * 100 + N))
   fi
   [[ -f $NOTES ]] || die "no notes file $NOTES"
-  # a release from the private tree announces itself on Discord, and that post needs a collage Fin approved
+  # a build from the private tree announces itself on Discord, and that post needs a collage Fin approved
   COLLAGE=${COLLAGE:+$(cd "$(dirname "$COLLAGE")" && pwd)/$(basename "$COLLAGE")}
-  if [[ $CHANNEL == release && -f discord/release/post.mjs ]]; then
+  if [[ -f discord/release/post.mjs ]]; then
     [[ -n $COLLAGE && -f $COLLAGE ]] && grep -q '"approved": *true' "$COLLAGE" ||
-      die "a release needs COLLAGE=spec.json, with \"approved\": true once Fin has seen it"
+      die "an update post needs COLLAGE=spec.json, with \"approved\": true once Fin has seen it"
   fi
   [[ -f $R/sparkle_ed25519 ]] || die "missing $R/sparkle_ed25519"
 
@@ -250,9 +250,9 @@ PY
     DL=$URL DISCORD_NOTES=$OUT/notes.md
     if [[ -f $OUT/notes-discord.md ]]; then DISCORD_NOTES=$OUT/notes-discord.md; fi
     if [[ $CHANNEL == release ]]; then DL=https://artemisbrowser.app/download; fi
-    # 20 fps keeps a release collage under Discord's 10 MB
+    # 20 fps keeps a collage under Discord's 10 MB
     POST=(env FPS=20 node discord/release/post.mjs "$VERSION" "$N" "$CHANNEL" "$DISCORD_NOTES"
-      "https://github.com/$REPO/releases/tag/$TAG" "$DL" ${COLLAGE:+"$COLLAGE"})
+      "https://github.com/$REPO/releases/tag/$TAG" "$DL" "$COLLAGE")
     # rendering uploads any keycap emoji the bot lacks, so a dry run doesn't
     if [[ -z $DRY ]]; then
       [[ -d discord/node_modules ]] || npm --prefix discord ci --silent

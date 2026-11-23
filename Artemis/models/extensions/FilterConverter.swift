@@ -58,11 +58,7 @@ nonisolated enum FilterConverter {
         }
         let converted = ContentBlockerConverter().convertArray(
             rules: lines, safariVersion: .autodetect(), advancedBlocking: false, maxJsonSizeBytes: nil,
-            progress: nil, maxRules: max(0, ceiling - extraExceptions.count))
-        if converted.discardedSafariRules > 0 {
-            Diagnostics.record(
-                area: "blocker", message: "over WebKit's rule ceiling: \(converted.discardedSafariRules) rules dropped")
-        }
+            progress: nil, maxRules: max(0, ceiling - extraExceptions.count), anchorsSiteHides: true)
         var json = converted.safariRulesJSON.trimmingCharacters(in: .whitespacesAndNewlines)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys

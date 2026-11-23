@@ -252,6 +252,19 @@ final class Autofill: NSObject, WKScriptMessageHandler {
 
     /// whether the top document shows `frame` through each iframe between them; the frame names itself to the top
     /// by a trusted postMessage, so no other frame on its origin can stand in for it
+    /// rescans every frame now, so `tab.autofillFrames` holds this moment's forms rather than the last report.
+    /// a frame that can't answer keeps its last report
+    func refresh(_ tab: BrowserTab) async {
+        for frame in await PageTranslation.allFrames(in: tab.webView) ?? [] {
+            guard let kinds = try? await tab.webView.callAsyncJavaScript(
+                "return globalThis.__artemisAutofill?.rescan() ?? null", in: frame, contentWorld: AutofillPage.world)
+                as? [String: [String]]
+            else { continue }
+            let origin = SitePermissionStore.originString(frame.securityOrigin)
+            tab.autofillFrames[LoginKeys.key(frame)] = kinds.isEmpty ? nil : AutofillFrame(frame: frame, origin: origin, kinds: kinds)
+        }
+    }
+
     func isShown(_ frame: WKFrameInfo, in tab: BrowserTab) async -> Bool {
         let nonce = UUID().uuidString
         _ = try? await tab.webView.callAsyncJavaScript(

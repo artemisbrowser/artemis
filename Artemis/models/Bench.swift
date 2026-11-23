@@ -144,6 +144,115 @@ enum Bench {
         }
     }
 
+    // MARK: - Tab sleep
+
+    private static let sleepSites = [
+        "https://en.wikipedia.org/wiki/Web_browser", "https://news.ycombinator.com/",
+        "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API", "https://github.com/apple/swift",
+        "https://www.bbc.co.uk/news", "https://www.theguardian.com/international", "https://www.reddit.com/r/macapps/",
+        "https://stackoverflow.com/questions", "https://www.apple.com/mac/", "https://www.nytimes.com/",
+        "https://www.youtube.com/", "https://www.amazon.co.uk/", "https://www.imdb.com/chart/top/",
+        "https://www.theverge.com/", "https://arstechnica.com/", "https://www.figma.com/",
+        "https://www.notion.com/", "https://www.spotify.com/", "https://www.airbnb.co.uk/",
+        "https://www.booking.com/", "https://www.espn.com/", "https://www.cnn.com/",
+        "https://www.nasa.gov/", "https://www.nature.com/", "https://www.economist.com/",
+        "https://www.wired.com/", "https://www.twitch.tv/", "https://www.pinterest.com/",
+        "https://www.etsy.com/", "https://www.ikea.com/gb/en/", "https://www.bbc.co.uk/sport",
+        "https://www.reuters.com/", "https://www.bloomberg.com/", "https://docs.python.org/3/",
+        "https://www.rust-lang.org/", "https://developer.apple.com/documentation/webkit",
+    ]
+
+    /// physical footprint of this process and every process it is responsible for (WebKit's
+    /// content, network and GPU processes), in MB, and how many processes that is
+    private static func familyFootprint() -> (total: Double, app: Double, processes: Int) {
+        typealias Responsible = @convention(c) (pid_t) -> pid_t
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid")
+        else { return (footprintMB(), footprintMB(), 1) }
+        let responsible = unsafeBitCast(symbol, to: Responsible.self)
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        let me = getpid()
+        var total = 0.0, processes = 0
+        for pid in pids.prefix(max(count, 0)) where pid > 0 && (pid == me || responsible(pid) == me) {
+            var usage = rusage_info_v4()
+            let result = withUnsafeMutablePointer(to: &usage) {
+                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            }
+            guard result == 0 else { continue }
+            total += Double(usage.ri_phys_footprint) / 1_048_576
+            processes += 1
+        }
+        return (total, footprintMB(), processes)
+    }
+
+    /// ARTEMIS_BENCH=1 ARTEMIS_BENCH_LOOP=sleep: 36 live sites over three spaces, used over the last
+    /// 36 minutes, then the idle sweep, a memory warning and waking slept tabs
+    private static func sleepBench(_ manager: TabManager, bench: Space) async {
+        let spaces = [bench] + (2...3).map {
+            manager.createSpace(
+                name: "Bench\($0)", icon: "gauge", appearance: SpacePreset.all[$0].appearance, profileID: Profile.defaultID)
+        }
+        manager.selectSpace(bench)
+        var tabs: [BrowserTab] = []
+        for (index, site) in sleepSites.enumerated() {
+            let tab = manager.newTab(url: URL(string: site), select: false, in: spaces[index % 3])
+            if index < 6 { tab.isPinned = true }
+            tabs.append(tab)
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        for _ in 0..<240 where tabs.contains(where: { $0.webView.isLoading }) {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        for tab in tabs { _ = try? await tab.webView.evaluateJavaScript("window.scrollTo(0, 1200)") }
+        try? await Task.sleep(for: .seconds(10))
+        for (index, tab) in tabs.enumerated() { tab.lastAccessed = Date(timeIntervalSinceNow: -60 * Double(index) - 30) }
+
+        func measure(_ name: String) {
+            let family = familyFootprint()
+            let asleep = tabs.count(where: \.isHibernated)
+            lines.append(String(
+                format: "%-12@ total %7.0f MB  app %5.0f MB  processes %3d  asleep %2d/%d",
+                name as NSString, family.total, family.app, family.processes, asleep, tabs.count))
+        }
+        measure("loaded")
+        await manager.hibernateIdleTabs()
+        try? await Task.sleep(for: .seconds(10))
+        measure("idle sweep")
+        await manager.relieveMemoryPressure(critical: false)
+        try? await Task.sleep(for: .seconds(10))
+        measure("warning")
+        lines.append("")
+
+        // selecting a slept tab until its first contentful paint, and whether its scroll came back
+        var wakes: [Double] = []
+        var scrolled = 0
+        for tab in tabs.filter(\.isHibernated).prefix(8) {
+            guard let space = spaces.first(where: { $0.tabs.contains { $0 === tab } }) else { continue }
+            manager.selectSpace(space)
+            try? await Task.sleep(for: .milliseconds(600))
+            let start = Date().timeIntervalSince1970 * 1000
+            manager.selectedTabID = tab.id
+            var painted = 0.0
+            for _ in 0..<100 where painted == 0 {
+                try? await Task.sleep(for: .milliseconds(50))
+                let probe = "(() => { const p = performance.getEntriesByName('first-contentful-paint')[0]; "
+                    + "return p ? performance.timeOrigin + p.startTime : 0 })()"
+                painted = (try? await tab.webView.evaluateJavaScript(probe)) as? Double ?? 0
+            }
+            if painted > 0 { wakes.append(painted - start) }
+            try? await Task.sleep(for: .seconds(1))
+            if ((try? await tab.webView.evaluateJavaScript("window.scrollY")) as? Double ?? 0) > 0 { scrolled += 1 }
+        }
+        let sorted = wakes.sorted()
+        if !sorted.isEmpty {
+            lines.append(String(
+                format: "wake to first paint ms: median %.0f  p90 %.0f  n %d  scroll restored %d",
+                sorted[sorted.count / 2], sorted[min(sorted.count - 1, sorted.count * 9 / 10)], sorted.count, scrolled))
+        }
+        lines.append("")
+        lines.append("done \(Date())")
+    }
+
     // MARK: - Report
 
     private nonisolated(unsafe) static var lines: [String] = []
@@ -214,15 +323,15 @@ enum Bench {
         // the tab loops alternate between two tabs
         let count = max(Int(ProcessInfo.processInfo.environment["ARTEMIS_BENCH_TABS"] ?? "") ?? sites.count, 2)
         for index in 0..<count {
-            let site = sites[index % sites.count]
-            let tab = manager.newTab()
-            if useLiveSites, let url = URL(string: site) {
-                tab.load(url)
-            } else {
+            let url = useLiveSites ? URL(string: sites[index % sites.count]) : nil
+            // unselected, so a URL-less tab doesn't open the ⌘T bar
+            let tab = manager.newTab(url: url, select: false)
+            if url == nil {
                 tab.webView.loadHTMLString(
                     BenchPage.html(index: index),
                     baseURL: URL(string: "https://bench.artemis.example/page\(index)"))
             }
+            manager.selectedTabID = tab.id
             tabs.append(tab)
             try? await Task.sleep(for: .milliseconds(300))
         }
@@ -270,6 +379,7 @@ enum Bench {
         // lets the first frame reach the screen rather than merely be scheduled
         try? await Task.sleep(for: .milliseconds(50))
         let elapsed = processStartInterval()
+        let madeAtWindow = BrowserTab.webViewsMade
         lines = [
             "Artemis launch — \(Date())",
             "",
@@ -289,6 +399,16 @@ enum Bench {
                 format: "%8.0f  (+%6.0f)  %@", at * 1000, (at - last) * 1000, name as NSString))
             last = at
         }
+        if let paint = await BenchFrames.firstPaintLine() { lines.insert(paint, at: 3) }
+        markLock.lock()
+        let later = marks.filter { $0.1 > last }.sorted { $0.1 < $1.1 }
+        markLock.unlock()
+        for (name, at) in later {
+            lines.append(String(format: "%8.0f  (+%6.0f)  %@", at * 1000, (at - last) * 1000, name as NSString))
+            last = at
+        }
+        try? await Task.sleep(for: .seconds(max(0, elapsed + 10 - processStartInterval())))
+        lines.insert("web views made: \(madeAtWindow) at window, \(BrowserTab.webViewsMade) 10 s later", at: 4)
         flush()
         NSApp.terminate(nil)
     }
@@ -361,6 +481,7 @@ enum Bench {
     }
 
     static func run(manager: TabManager) async {
+        if BenchFrames.isRequested { return await BenchFrames.run(manager: manager) }
         lines = ["Artemis bench (\(runLabel)) — \(Date())", ""]
         results = []
 
@@ -427,6 +548,21 @@ enum Bench {
         manager.selectSpace(bench)
         try? await Task.sleep(for: .milliseconds(500))
 
+        if ProcessInfo.processInfo.environment["ARTEMIS_BENCH_LOOP"] == "sleep" {
+            await sleepBench(manager, bench: bench)
+            isCounting = false
+            counter.stop()
+            manager.selectSpace(home)
+            for stale in manager.spaces where stale.name.hasPrefix("Bench") { manager.deleteSpace(stale) }
+            manager.saveNow()
+            SelfTest.forgetTestTraces(manager)
+            flush()
+            ExtensionManager.shared.isMasterEnabled = extensionsWereEnabled
+            try? await Task.sleep(for: .milliseconds(500))
+            NSApp.terminate(nil)
+            return
+        }
+
         // `ARTEMIS_BENCH_LOOP=<case>` repeats one interaction for a minute, steady
         // enough for a profiler to attach to
         if let loop = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_LOOP"] {
@@ -445,14 +581,51 @@ enum Bench {
             // step's main-thread cost is measured even with no display to drive frames
             let sync = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_SYNC"] != nil
             var stepTimes: [Double] = []
+            var loadWall: [Double] = [], loadPage: [Double] = [], loadPaint: [Double] = []
+            // the bar's field takes the keyboard only in the key window, so "bar" needs the front
+            var barField: NSTextView?
+            var barPhrases = 0, barMangled = 0
+            let keyGap = Int(ProcessInfo.processInfo.environment["ARTEMIS_BENCH_KEY_GAP_MS"] ?? "") ?? 150
+            if loop == "bar", let window = SelfTest.mainWindow() {
+                manager.openNewTabBar()
+                for _ in 0..<24 where barField == nil {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    barField = window.firstResponder as? NSTextView
+                }
+                if barField == nil {
+                    lines.append("WARNING: the bar's field never took the keyboard — keystrokes are NOT measured")
+                }
+            }
+            // ARTEMIS_BENCH_MARK: a 20 pt square child window in the bottom-right corner flips
+            // black/white as each step starts, committed before the step's update, for screen recordings
+            let mark: CALayer? = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_MARK"] == nil
+                ? nil
+                : SelfTest.mainWindow().flatMap { window in
+                    let corner = NSRect(x: window.frame.maxX - 30, y: window.frame.minY + 10, width: 20, height: 20)
+                    let panel = NSPanel(
+                        contentRect: corner, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
+                        defer: false)
+                    panel.contentView?.wantsLayer = true
+                    window.addChildWindow(panel, ordered: .above)
+                    panel.contentView?.layer?.actions = ["backgroundColor": NSNull()]
+                    return panel.contentView?.layer
+                }
+            if ProcessInfo.processInfo.environment["ARTEMIS_BENCH_MARK"] != nil, mark == nil {
+                lines.append("WARNING: no step mark")
+            }
             var steps = 0
             let meter = BusyMeter()
             meter.start()
+            Coverage.mark("_launch")
             await phase("loop-\(loop)", counter: counter) {
                 let deadline = Date().addingTimeInterval(60)
                 var i = 0
                 while Date() < deadline {
                     let stepStart = CACurrentMediaTime()
+                    if let mark {
+                        mark.backgroundColor = (i.isMultiple(of: 2) ? NSColor.white : NSColor.black).cgColor
+                        CATransaction.flush()
+                    }
                     switch loop {
                     case "tab": manager.selectedTabID = tabs[i % tabs.count].id
                     // flipping between two pages
@@ -520,6 +693,46 @@ enum Bench {
                         manager.commitSplitLayout(split)
                     // nothing at all: what the app burns with its tabs open and no one at it
                     case "idle": break
+                    // one keystroke in the ⌘T bar every `ARTEMIS_BENCH_KEY_GAP_MS` (150); each
+                    // phrase is checked for lost keys before the next replaces it
+                    case "bar":
+                        guard let field = barField else { break }
+                        let phrase = Array("bench page \(i / 12 % 60)")
+                        let at = i % 12
+                        if at == 0, i > 0 {
+                            let typed = String(Array("bench page \((i - 1) / 12 % 60)").prefix(12))
+                            barPhrases += 1
+                            if !field.string.lowercased().hasPrefix(typed) { barMangled += 1 }
+                        }
+                        if at == 0 {
+                            field.insertText(
+                                String(phrase[0]), replacementRange: NSRange(location: 0, length: field.string.utf16.count))
+                        } else if at < phrase.count {
+                            field.insertText(String(phrase[at]), replacementRange: field.selectedRange())
+                        }
+                    // a page loads in a tab nobody is looking at; `ARTEMIS_BENCH_URL` loads a real one
+                    case "load":
+                        let tab = tabs[0]
+                        let t0 = CACurrentMediaTime()
+                        if let url = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_URL"].flatMap(URL.init) {
+                            tab.load(url)
+                        } else {
+                            tab.webView.loadHTMLString(
+                                BenchPage.html(index: i % 8),
+                                baseURL: URL(string: "https://bench.artemis.example/load\(i)"))
+                        }
+                        try? await Task.sleep(for: .milliseconds(20))
+                        while tab.webView.isLoading, CACurrentMediaTime() - t0 < 30 {
+                            try? await Task.sleep(for: .milliseconds(5))
+                        }
+                        loadWall.append((CACurrentMediaTime() - t0) * 1000)
+                        let timing = try? await tab.webView.evaluateJavaScript("""
+                            (() => { const n = performance.getEntriesByType('navigation')[0];
+                              const p = performance.getEntriesByName('first-contentful-paint')[0];
+                              return [n ? n.loadEventEnd : -1, p ? p.startTime : -1] })()
+                            """) as? [Double]
+                        loadPage.append(timing?.first ?? -1)
+                        loadPaint.append(timing?.last ?? -1)
                     case "sidebar":
                         manager.isSidebarCollapsed = !i.isMultiple(of: 2)
                     case "agent":
@@ -534,7 +747,8 @@ enum Bench {
                         manager.requestNewTab()
                         try? await Task.sleep(for: .milliseconds(300))
                         manager.isCommandBarVisible = false
-                        let opened = manager.newTab()
+                        let opened = manager.newTab(select: false)
+                        manager.selectedTabID = opened.id
                         opened.webView.loadHTMLString(
                             BenchPage.html(index: i % 8),
                             baseURL: URL(string: "https://bench.artemis.example/new\(i)"))
@@ -554,13 +768,25 @@ enum Bench {
                     if i.isMultiple(of: 10) {
                         takeFront()
                     }
-                    try? await Task.sleep(for: .milliseconds(loop == "flick" ? 150 : 400))
+                    try? await Task.sleep(for: .milliseconds(loop == "bar" ? keyGap : loop == "flick" ? 150 : 400))
                 }
             }
             meter.stop()
+            Coverage.mark("loop-\(loop)")
             lines.append(String(
                 format: "main busy per step ms: %.2f  longest stall ms: %.1f  steps %d",
                 meter.busy * 1000 / Double(max(steps, 1)), meter.longest * 1000, steps))
+            if barPhrases > 0 {
+                lines.append("bar phrases mangled: \(barMangled) of \(barPhrases) at \(keyGap) ms a key")
+            }
+            for (name, values) in [
+                ("load wall ms", loadWall), ("load loadEventEnd ms", loadPage), ("load FCP ms", loadPaint),
+            ] where !values.isEmpty {
+                let sorted = values.sorted()
+                lines.append(String(
+                    format: "%@: median %.1f  p90 %.1f  n %d",
+                    name as NSString, sorted[sorted.count / 2], sorted[sorted.count * 9 / 10], sorted.count))
+            }
             if !stepTimes.isEmpty {
                 let sorted = stepTimes.sorted()
                 lines.append(String(

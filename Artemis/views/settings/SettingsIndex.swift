@@ -457,7 +457,7 @@ nonisolated extension SettingID {
         case .fingerprintDefence:
             SettingsEntry(
                 pane: .privacy, title: "Randomise fingerprintable readings", section: "Fingerprint Defence",
-                keywords: ["fingerprinting", "canvas", "anonymity"])
+                keywords: ["fingerprinting", "canvas", "anonymity", "fonts"])
         case .sitePermissions:
             SettingsEntry(
                 pane: .privacy, title: "Site Permissions", section: "Site Permissions",

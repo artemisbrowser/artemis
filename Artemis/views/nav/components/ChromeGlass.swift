@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
+import AppKit
 import SwiftUI
 
 /// the face every sidebar icon button wears: hit box, glyph tint and highlight.
@@ -57,14 +58,68 @@ struct RowHighlight: View {
     var isSelected = false
     var radius: CGFloat = 10
     static let glassBleed: CGFloat = 4
+    /// from selection until the pane has faded out
+    @State private var paneMounted = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        if isSelected {
+        if PerfFlags.animatesLitPaneInLayer {
+            shape.fill(ink.opacity(isSelected ? 0 : opacity))
+                .background {
+                    if isSelected || paneMounted {
+                        LitPane(lit: isSelected, ink: ink, radius: radius) { paneMounted = false }
+                            .transition(.identity)
+                    }
+                }
+                .onChange(of: isSelected, initial: true) { _, selected in
+                    if selected { paneMounted = true }
+                }
+        } else if isSelected {
             Color.clear.chromeGlass(in: shape, lit: true)
         } else {
             shape.fill(ink.opacity(opacity))
         }
+    }
+}
+
+/// `chromeGlass(lit: true)` as an AppKit view whose fade runs in Core Animation, on the
+/// `Motion.hoverSpring` when the change was animated; `faded` fires once a fade-out ends
+private struct LitPane: NSViewRepresentable {
+    let lit: Bool
+    let ink: Color
+    let radius: CGFloat
+    let faded: () -> Void
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let view = NSGlassEffectView()
+        view.wantsLayer = true
+        view.alphaValue = 0
+        return view
+    }
+
+    func updateNSView(_ view: NSGlassEffectView, context: Context) {
+        view.appearance = NSAppearance(named: ChromeGlassScheme.scheme(under: ink) == .light ? .aqua : .darkAqua)
+        view.tintColor = NSColor(ink.opacity(0.12))
+        view.cornerRadius = radius
+        let target: CGFloat = lit ? 1 : 0
+        guard view.alphaValue != target, let layer = view.layer else { return }
+        let from = layer.presentation()?.opacity ?? layer.opacity
+        view.alphaValue = target
+        guard context.transaction.animation != nil, !context.transaction.disablesAnimations else {
+            // never mid-update: `faded` writes view state
+            if !lit { DispatchQueue.main.async(execute: faded) }
+            return
+        }
+        let spring = Motion.hoverSpring
+        let fade = CASpringAnimation(perceptualDuration: spring.duration, bounce: spring.bounce)
+        fade.keyPath = "opacity"
+        fade.fromValue = from
+        fade.toValue = Float(target)
+        CATransaction.begin()
+        // a fade replaced by a re-selection still completes; only a pane left dark is done
+        CATransaction.setCompletionBlock { [weak view] in if view?.alphaValue == 0 { faded() } }
+        layer.add(fade, forKey: "opacity")
+        CATransaction.commit()
     }
 }
 
@@ -105,7 +160,11 @@ struct ChromeGlassScheme: ViewModifier {
     @Environment(\.chromeInk) private var ink
 
     func body(content: Content) -> some View {
+        content.environment(\.colorScheme, Self.scheme(under: ink))
+    }
+
+    static func scheme(under ink: Color) -> ColorScheme {
         let c = ink.resolve(in: EnvironmentValues())
-        content.environment(\.colorScheme, 0.299 * c.red + 0.587 * c.green + 0.114 * c.blue < 0.5 ? .light : .dark)
+        return 0.299 * c.red + 0.587 * c.green + 0.114 * c.blue < 0.5 ? .light : .dark
     }
 }

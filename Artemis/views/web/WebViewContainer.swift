@@ -4,12 +4,17 @@
 import SwiftUI
 import WebKit
 
+/// clicks fall through to the page under it
+private final class Still: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// a stable slot for a tab's `WKWebView` in a browser window; it sits empty while
 /// the mini-player borrows the view, so SwiftUI never tears the view down
 final class WebHostView: NSView {
     weak var tab: BrowserTab?
-    /// the last frame of the page, shown while another window has the real thing
-    private let still = NSImageView()
+    /// the last frame of the page, shown while another window has the real thing or over it as it wakes
+    private let still = Still()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -59,9 +64,9 @@ final class WebHostView: NSView {
         webView.frame = bounds
         // the page's frame is managed in `layout()`
         webView.autoresizingMask = []
-        addSubview(webView)
+        addSubview(webView, positioned: .below, relativeTo: still)
         tab?.webHost = self
-        hideStill()
+        coverWake()
         if let tab, tab.stillFrame != nil, !isShownInSeveralWindows(tab) { tab.stillFrame = nil }
         focusHostedWebView()
     }
@@ -91,9 +96,11 @@ final class WebHostView: NSView {
         still.isHidden = still.image == nil
     }
 
-    private func hideStill() {
-        still.isHidden = true
-        still.image = nil
+    /// over the live page, the still it slept with until it has loaded
+    fileprivate func coverWake() {
+        still.image = tab?.wakeStill
+        still.frame = bounds
+        still.isHidden = still.image == nil
     }
 
     /// takes the page back when this window turns key or registers: a claim from another
@@ -207,7 +214,7 @@ struct WebViewContainer: NSViewRepresentable {
 
     func updateNSView(_ nsView: WebHostView, context: Context) {
         nsView.tab = tab
-        if !nsView.hostsLiveView { nsView.showStill() }
+        if nsView.hostsLiveView { nsView.coverWake() } else { nsView.showStill() }
         // reading `isMiniPlayerActive` re-runs this when the mini-player hands the view back
         nsView.host(tab.webView, borrowed: tab.isMiniPlayerActive)
         let hidden = !isVisible && PerfFlags.hidesOffscreenPages
@@ -241,12 +248,19 @@ struct PageStack: NSViewRepresentable {
     }
 }
 
+@objc private protocol WKWebViewPresentationSPI {
+    func _doAfterNextPresentationUpdate(_ updateBlock: @escaping () -> Void)
+}
+
 final class PageStackView: NSView {
     private var hosts: [BrowserTab.ID: (host: WebHostView, generation: Int)] = [:]
     private var shownID: BrowserTab.ID?
     /// held opaque under the incoming page until its fade lands, mounted or not
     private var fadingID: BrowserTab.ID?
     private var fadeToken = 0
+    /// the shown page, mounted before its first commit and held clear until it commits
+    private var pendingID: BrowserTab.ID?
+    private var startedToken = 0
     /// the tabs the card last asked for; a held page outside them goes when its fade lands
     private var mounted: Set<BrowserTab.ID> = []
 
@@ -263,7 +277,8 @@ final class PageStackView: NSView {
         let switched = new != shownID
         if switched {
             let holds = PerfFlags.holdsCrossfadePage
-            fadingID = shownID.flatMap { hosts[$0] != nil && (holds || mounted.contains($0)) ? $0 : nil }
+            // a page that never showed has nothing to fade from
+            fadingID = shownID.flatMap { $0 != pendingID && hosts[$0] != nil && (holds || mounted.contains($0)) ? $0 : nil }
             shownID = new
         }
         for (id, entry) in hosts where !mounted.contains(id) && id != fadingID {
@@ -272,7 +287,7 @@ final class PageStackView: NSView {
         }
         for tab in tabs {
             if let entry = hosts[tab.id], entry.generation == tab.webViewGeneration {
-                if !entry.host.hostsLiveView { entry.host.showStill() }
+                if entry.host.hostsLiveView { entry.host.coverWake() } else { entry.host.showStill() }
                 entry.host.host(tab.webView, borrowed: tab.isMiniPlayerActive)
                 continue
             }
@@ -287,7 +302,12 @@ final class PageStackView: NSView {
             hosts[tab.id] = (host, tab.webViewGeneration)
         }
         applyVisibility()
-        if switched { fade() }
+        if switched {
+            fade()
+        } else if let id = pendingID, id == shownID, let host = hosts[id]?.host, host.tab?.url != nil {
+            fade()
+            host.focusHostedWebView()
+        }
     }
 
     private func isHidden(_ id: BrowserTab.ID) -> Bool {
@@ -316,6 +336,35 @@ final class PageStackView: NSView {
     private func fade() {
         fadeToken += 1
         let token = fadeToken
+        pendingID = nil
+        for entry in hosts.values { entry.host.layer?.removeAnimation(forKey: "hold") }
+        guard BrowserTab.skipsPaintWait, let id = shownID, let host = hosts[id]?.host, host.hostsLiveView,
+            let tab = host.tab
+        else { return crossfade(token) }
+        let webView = tab.webView
+        // the incoming page has nothing to show until it has painted in this window; its fade
+        // replaces the hold in one transaction
+        let hold = CABasicAnimation(keyPath: "opacity")
+        hold.fromValue = 0
+        hold.toValue = 0
+        hold.duration = 1
+        if tab.url == nil {
+            hold.repeatCount = .infinity
+            host.layer?.add(hold, forKey: "hold")
+            pendingID = id
+            return crossfade(token, incoming: false)
+        }
+        host.layer?.add(hold, forKey: "hold")
+        let start = { [weak self] in
+            guard let self, token == fadeToken, startedToken != token else { return }
+            startedToken = token
+            crossfade(token)
+        }
+        unsafeBitCast(webView, to: WKWebViewPresentationSPI.self)._doAfterNextPresentationUpdate(start)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: start)
+    }
+
+    private func crossfade(_ token: Int, incoming: Bool = true) {
         let animation = CABasicAnimation(keyPath: "opacity")
         animation.duration = Motion.contentSwapDuration
         animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -329,9 +378,12 @@ final class PageStackView: NSView {
             fadingID = nil
             applyVisibility()
         }
-        if let id = shownID, let layer = hosts[id]?.host.layer {
+        if incoming, let id = shownID, let layer = hosts[id]?.host.layer {
             animation.fromValue = 0
             animation.toValue = 1
+            // a frame drawn before the fade's begin time would show the page at full opacity
+            animation.fillMode = .backwards
+            layer.removeAnimation(forKey: "hold")
             layer.add(animation, forKey: "fade")
         } else if let id = fadingID, let host = hosts[id]?.host {
             animation.fromValue = 1

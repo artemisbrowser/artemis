@@ -473,6 +473,7 @@ final class AgentBridge {
             try reachable()
         }
         if name == "screenshot" {
+            await Autofill.shared.refresh(tab)
             guard !task.concealing.contains(tab.id), !tab.autofillFrames.values.contains(where: { $0.kinds["card"] != nil }),
                 try await Self.page(tab, "return String(A.showsSecret());") == "false"
             else {
@@ -571,6 +572,7 @@ final class AgentBridge {
         let unfilled = AgentFailure("Nothing was filled: the user refused, or the form no longer takes it.")
         var secrets: [String] = []
         if kind == "card" {
+            await Autofill.shared.refresh(tab)
             let frames = tab.autofillFrames.values.filter { $0.kinds["card"] != nil }
             // the page's own form, or else a framed one only where it is the one card form and shows
             let unclear = AgentFailure("This page shows no single card form; ask the user to fill it.")

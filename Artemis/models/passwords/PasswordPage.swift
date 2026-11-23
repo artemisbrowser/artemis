@@ -49,7 +49,8 @@ enum PasswordPage {
     static let minimumShown = 10
 
     /// 20 characters, or as near as `rules` allow, of unambiguous letters and digits with one symbol
-    /// inside, from `!#$@` (the ones sites that restrict symbols most often accept) or what the rules name
+    /// inside, from `!#$@` (the ones sites that restrict symbols most often accept) or what the rules name.
+    /// Every third character is a digit or symbol, so `PasswordStrength` finds no word in it: 20 rate strong
     static func strongPassword(_ rules: PasswordRules = PasswordRules(), symbols: Bool = true) -> String {
         let letters = Array("abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789".filter(rules.isAllowed))
         let named = (rules.required.flatMap { $0 } + rules.allowed).filter { $0.hasPrefix("[") }
@@ -64,9 +65,14 @@ enum PasswordPage {
         let length = min(max(20, rules.minLength), rules.maxLength)
         var password = ""
         // the system generator is a CSPRNG on Apple platforms
-        for _ in 0..<1000 where !letters.isEmpty && length > 2 {
-            var chars = (0..<length).map { _ in letters.randomElement()! }
-            for _ in 0..<min(symbolCount, length - 2) { chars[1 + Int.random(in: 0..<(length - 2))] = marks.randomElement()! }
+        // digits no leet reading turns into letters; under 19 characters the shape cannot rate strong,
+        // so shorter passwords, and sites without letters or these digits, are drawn unshaped
+        let breaks = length >= 19 && letters.contains(where: \.isLetter) ? Array("2689".filter(rules.isAllowed)) : []
+        let plain = breaks.isEmpty ? letters : letters.filter(\.isLetter)
+        let slots = breaks.isEmpty ? Array(1..<max(1, length - 1)) : Array(stride(from: 2, to: max(length - 1, 3), by: 3))
+        for _ in 0..<1000 where !plain.isEmpty && length > 2 {
+            var chars = (0..<length).map { i in (i % 3 == 2 && !breaks.isEmpty ? breaks : plain).randomElement()! }
+            for _ in 0..<min(symbolCount, slots.count) { chars[slots.randomElement()!] = marks.randomElement()! }
             password = String(chars)
             let mixed = rules.required.isEmpty
                 ? ["lower", "upper", "digit"].allSatisfy { kind in password.contains { PasswordRules.matches($0, kind) } }
@@ -258,20 +264,55 @@ enum PasswordPage {
         if (keyKinds) post({ type: "keys", keys: null });
       });
 
-      let reported = false, timer = 0;
+      // No document-wide observer: the input and password-field counts are polled every 250 ms for 5 s after load, a
+      // trusted gesture or a history move, else every 4 s and never while hidden; password fields with no size are
+      // watched for size. All of it stops once a form is reported.
+      let reported = false, timer = 0, counts = "", active = 0, poller = 0;
+      const inputs = document.getElementsByTagName("input");
+      const tally = () => inputs.length + ":" + document.querySelectorAll("input[type=password]").length;
+      const soon = () => { if (!reported) timer ||= setTimeout(scan, 150); };
+      const appeared = new ResizeObserver(entries => {
+        if (entries.some(e => e.contentRect.width > 1 && e.contentRect.height > 1)) soon();
+      });
       const scan = () => {
         timer = 0;
+        appeared.disconnect();
+        if (reported) return;
         const all = passwords(document);
-        if (reported || !all.length) return;
+        if (!all.length) {
+          for (const el of [...document.querySelectorAll("input[type=password]")].filter(el => el.offsetWidth <= 1).slice(0, 20)) {
+            appeared.observe(el);
+          }
+          return;
+        }
         reported = true;
-        observer.disconnect();
+        clearTimeout(poller);
         post({ type: "fields", fresh: all.some(p => roles(root(p)).fresh.includes(p)) });
       };
-      const observer = new MutationObserver(() => { timer ||= setTimeout(scan, 400); });
+      const poll = () => {
+        poller = 0;
+        if (reported || document.hidden) return;
+        const now = tally();
+        if (now !== counts) {
+          counts = now;
+          soon();
+        }
+        poller = setTimeout(poll, Date.now() - active < 5000 ? 250 : 4000);
+      };
+      const wake = e => {
+        if (e?.isTrusted === false || reported) return;
+        active = Date.now();
+        if (e) soon();
+        clearTimeout(poller);
+        poll();
+      };
+      for (const type of ["pointerdown", "focusin"]) addEventListener(type, wake, true);
+      for (const type of ["pageshow", "popstate", "hashchange", "visibilitychange"]) addEventListener(type, wake);
+      for (const type of ["transitionend", "animationend"]) addEventListener(type, soon, true);
       const start = () => {
         scan();
-        if (!reported) observer.observe(document.documentElement, { childList: true, subtree: true,
-          attributes: true, attributeFilter: ["type", "style", "class", "hidden"] });
+        counts = tally();
+        wake();
       };
       if (document.readyState === "loading") addEventListener("DOMContentLoaded", start, { once: true });
       else start();

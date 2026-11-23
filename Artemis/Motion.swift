@@ -73,7 +73,8 @@ enum Motion {
     /// a glass control swelling into its menu and settling back
     static var menu: Animation { moving(0.42, 0.32) }
 
-    /// hovers and quick toggles
+    /// hovers and quick toggles. a `Spring` so a layer can fade with the same physics
+    static var hoverSpring: Spring { movingSpring(0.22, 0.10) }
     static var hover: Animation { moving(0.22, 0.10) }
 
     /// the agent's mark travelling to where it will act

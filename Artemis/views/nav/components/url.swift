@@ -18,6 +18,7 @@ struct UrlField: View {
     var inToolbar = false
 
     var body: some View {
+        let _ = Bench.tick("UrlField")
         let locked = SpaceLock.shared.isLocked(tabManager.currentSpace)
         let tab = tabManager.unlockedContentTab
         HStack(spacing: 6) {

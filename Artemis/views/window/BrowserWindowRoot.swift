@@ -10,6 +10,7 @@ struct BrowserWindowRoot: View {
     @State private var box = ManagerBox()
 
     var body: some View {
+        let _ = Bench.markOnce("BrowserWindowRoot: first body")
         let manager = box.resolve()
         MainView()
             .environment(manager)

@@ -7,12 +7,24 @@ import WebKit
 /// per-site noise in canvas readback, the WebGL GPU strings, Web Audio data and `hardwareConcurrency`:
 /// one answer per site within a controller (a profile, or its incognito pages) for the launch, different
 /// across sites, controllers and launches. the seed is drawn per controller and never persisted
+/// private WKPreferences SPI, via `unsafeBitCast`; KVC can't reach an underscored setter
+@objc private protocol WKPreferencesFontsSPI {
+    func _setShouldAllowUserInstalledFonts(_ allow: Bool)
+}
+
 enum FingerprintNoise {
     static let enabledKey = "fingerprintDefence"
 
     /// read once per launch: `removeAllUserScripts`, the only removal API, would drop extension
     /// content scripts
     static let isEnabled = UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+
+    /// on, pages get system and web fonts but not the ones the user installed, and a process pool's
+    /// first page skips WebKit's main-thread scan of every installed font
+    static func hideInstalledFonts(from prefs: WKPreferences, _ hide: Bool = isEnabled) {
+        guard prefs.responds(to: Selector(("_setShouldAllowUserInstalledFonts:"))) else { return }
+        unsafeBitCast(prefs, to: WKPreferencesFontsSPI.self)._setShouldAllowUserInstalledFonts(!hide)
+    }
 
     /// at document start, before any page script reads a surface
     static func install(into controller: WKUserContentController) {

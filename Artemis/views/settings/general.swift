@@ -94,7 +94,7 @@ struct GeneralSettings: View {
                     set: { on in
                         swipeNavigation = on
                         for manager in BrowserWindows.shared.allManagers {
-                            for tab in manager.allTabs { tab.webView.allowsBackForwardNavigationGestures = on }
+                            for tab in manager.allTabs { tab.madeWebView?.allowsBackForwardNavigationGestures = on }
                         }
                     }
                 ).undoable("Swipe Navigation")) {

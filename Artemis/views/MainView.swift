@@ -34,6 +34,9 @@ struct MainView: View {
     @AppStorage("sidebarRevealDuration") private var sidebarRevealDuration = 0.2
     /// set only from the onChange handlers, never mid-render
     @State private var isSidebarOverlayVisible = false
+    /// the overlay's panel: mounted while collapsed, but not while the pinned sidebar slides away
+    @State private var isOverlayPanelUp = false
+    @State private var overlayPanelMount: Task<Void, Never>?
     @State private var isOverlayHovered = false
     /// a context menu takes the cursor's hover for as long as it is open
     @State private var isMenuOpen = false
@@ -161,7 +164,9 @@ struct MainView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 isSidebarOverlayVisible = handOver
+                if !collapsed { isOverlayPanelUp = false }
             }
+            if handOver { withAnimation(Motion.sidebar) { isOverlayPanelUp = true } }
             collapseDismissTask?.cancel()
             if handOver {
                 collapseDismissTask = Task {
@@ -180,6 +185,7 @@ struct MainView: View {
             }
         }
         .onChange(of: isSidebarOverlayVisible) { _, visible in
+            if visible, isSidebarCollapsed { isOverlayPanelUp = true }
             overlayEnterTask?.cancel()
             if visible {
                 overlayEntering = true
@@ -210,6 +216,15 @@ struct MainView: View {
         }
         .onChange(of: isEditingPillAddress) { _, editing in
             if !editing { releaseOverlayHold() }
+        }
+        // hidden, the panel mounts once the slide has gone, so a first peek finds its frost ready
+        .onChange(of: isSidebarRevealed, initial: true) { _, revealed in
+            overlayPanelMount?.cancel()
+            guard !revealed else { return }
+            overlayPanelMount = Task {
+                try? await Task.sleep(for: .seconds(Motion.sidebarSpring.settlingDuration))
+                if !Task.isCancelled, isSidebarCollapsed { isOverlayPanelUp = true }
+            }
         }
         .onChange(of: isSidebarRevealed && !overlayEntering, initial: true) { was, settled in
             pinSlide?.cancel()
@@ -263,9 +278,8 @@ struct MainView: View {
                 .animation(Motion.pop, value: tabManager.isGiftVisible)
         }
         .background {
-            WindowBackdrop(sidebarPinned: !isSidebarCollapsed)
-                // in step with the shell's slide; pinning from the peek swaps in place
-                .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
+            // pinning from the peek swaps in place
+            WindowBackdrop(sidebarPinned: !isSidebarCollapsed, animatesPin: !isSidebarOverlayVisible)
                 .animation(Motion.panel, value: tabManager.isLibraryOpen)
                 // the pinned sidebar's frost strip sits on its leading side
                 .environment(\.layoutDirection, direction)
@@ -524,11 +538,11 @@ struct MainView: View {
                 .frame(maxHeight: .infinity)
                 // overlay mode: empty sidebar areas must not click through to the page
                 .background {
-                    if isSidebarCollapsed { Color.black.opacity(0.001) }
+                    if isOverlayPanelUp { Color.black.opacity(0.001) }
                 }
                 // pinned mode shows the window's backdrop instead
                 .background(alignment: .leading) {
-                    if isSidebarCollapsed {
+                    if isOverlayPanelUp {
                         OverlayPanelBackground(
                             width: shownSidebarWidth + edgeInset,
                             windowWidth: windowSize.width)
@@ -573,7 +587,9 @@ struct MainView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(isSidebarOverlayVisible ? nil : Motion.sidebar, value: isSidebarCollapsed)
+        // pinning or unpinning snaps the rig, which keeps its pinned look while it slides;
+        // only the overlay wears the panel
+        .animation(nil, value: isSidebarCollapsed)
         .animation(Motion.panel, value: tabManager.isLibraryOpen)
     }
 
@@ -850,26 +866,332 @@ struct MainView: View {
 /// it re-runs this rather than the window body
 private struct CommandBarOverlay: View {
     @Environment(TabManager.self) private var tabManager
+    @Environment(TooltipState.self) private var tooltipState
 
     var body: some View {
         // no scrim: the page and the sidebar's edge reveal stay live
-        GeometryReader { geo in
-            if let origin = tabManager.addressBarOrigin {
-                let window = geo.frame(in: .global).origin
-                AddressBar(
-                    origin: origin.isEmpty ? .zero : origin.offsetBy(dx: -window.x, dy: -window.y),
-                    size: geo.size)
-                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
-            } else if tabManager.isCommandBarVisible {
-                // a fresh bar when it switches between new tab and address
-                CommandBar(address: tabManager.commandBarEditsAddress)
-                    .id(tabManager.commandBarEditsAddress)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, geo.size.height * 0.2)
-                    .transition(Motion.grow(from: 0.97, anchor: .top))
+        let shown = tabManager.isCommandBarVisible && tabManager.addressBarOrigin == nil
+        ZStack {
+            GeometryReader { geo in
+                if let origin = tabManager.addressBarOrigin {
+                    let window = geo.frame(in: .global).origin
+                    AddressBar(
+                        origin: origin.isEmpty ? .zero : origin.offsetBy(dx: -window.x, dy: -window.y),
+                        size: geo.size)
+                        .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                }
             }
+            CommandBarLayer(
+                shown: shown, address: tabManager.commandBarEditsAddress, tabManager: tabManager,
+                tooltipState: tooltipState)
+                .allowsHitTesting(shown)
         }
         .animation(Motion.pop, value: tabManager.isCommandBarVisible)
+    }
+}
+
+/// the ⌘T bar in a hosting view of its own, whose layer runs the grow and fade
+/// in Core Animation on `Motion.popSpring`, scaled about the overlay's top centre
+private struct CommandBarLayer: NSViewRepresentable {
+    let shown: Bool
+    let address: Bool
+    let tabManager: TabManager
+    let tooltipState: TooltipState
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: CommandBarHost, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func makeNSView(context: Context) -> CommandBarHost {
+        let host = CommandBarHost(rootView: CommandBarRoot(environment: environment(context)))
+        host.holdEarlyKeys()
+        host.sizingOptions = []
+        host.safeAreaRegions = []
+        host.isHidden = true
+        return host
+    }
+
+    func updateNSView(_ host: CommandBarHost, context: Context) {
+        host.update(
+            shown: shown, address: address, environment: environment(context),
+            animated: !context.transaction.disablesAnimations)
+    }
+
+    private func environment(_ context: Context) -> CommandBarRoot.Environment {
+        .init(
+            tabManager: tabManager, tooltipState: tooltipState, colorScheme: context.environment.colorScheme,
+            layoutDirection: context.environment.layoutDirection)
+    }
+}
+
+struct CommandBarRoot: View {
+    /// nil while unmounted
+    var bar: Bar?
+    let environment: Environment
+    var report: (CGRect) -> Void = { _ in }
+
+    var body: some View {
+        GeometryReader { geo in
+            if let bar {
+                // a fresh bar each time it opens or switches between new tab and address
+                CommandBar(address: bar.address, live: bar.live)
+                    .id(bar.mount)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("commandBarHost")) } action: { report($0) }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, geo.size.height * 0.2)
+            }
+        }
+        .coordinateSpace(.named("commandBarHost"))
+        .environment(environment.tabManager)
+        .environment(environment.tooltipState)
+        .environment(ExtensionManager.shared)
+        .environment(\.colorScheme, environment.colorScheme)
+        .environment(\.layoutDirection, environment.layoutDirection)
+    }
+
+    struct Bar {
+        let address: Bool
+        let mount: Int
+        /// false from the moment it starts to close
+        let live: () -> Bool
+    }
+
+    /// a hosted view gets none of the window root's environment on its own
+    struct Environment {
+        let tabManager: TabManager
+        let tooltipState: TooltipState
+        let colorScheme: ColorScheme
+        let layoutDirection: LayoutDirection
+    }
+}
+
+final class CommandBarHost: NSHostingView<CommandBarRoot> {
+    private(set) var shown = false
+    /// where the bar is, in this view's flipped coordinates; clicks elsewhere pass through
+    private var barRect = CGRect.zero
+    /// the grow's progress: 0 hidden, 1 shown, on `Motion.popSpring` from `start`
+    private var from: CGFloat = 0
+    private var target: CGFloat = 0
+    private var startVelocity: CGFloat = 0
+    private var start: CFTimeInterval = 0
+    private var generation = 0
+
+    private var address = false
+    private var mount = 0
+
+    func update(shown: Bool, address: Bool, environment: CommandBarRoot.Environment, animated: Bool) {
+        if shown {
+            if !self.shown || address != self.address { mount += 1 }
+            self.address = address
+        }
+        let changed = shown != self.shown
+        self.shown = shown
+        if changed {
+            hadKeyboard = false
+            shownAt = CACurrentMediaTime()
+            staleField = (window?.firstResponder as? NSTextView)?.delegate
+        }
+        if shown || changed && !PerfFlags.leavesClosingBarAlone { render(environment) }
+        guard changed else { return }
+        generation += 1
+        if shown {
+            isHidden = false
+            layoutSubtreeIfNeeded()
+        }
+        guard animated, let layer else { return finish(generation) }
+        let now = CACurrentMediaTime()
+        let progress = self.progress(at: now)
+        let target: CGFloat = shown ? 1 : 0
+        if Motion.reduceMotion {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            fade.duration = 0.12
+            run([fade], from: progress, to: target, on: layer, at: now, velocity: 0)
+        } else {
+            let spring = Motion.popSpring
+            let speed = progress == target ? 0 : velocity(at: now) / (target - progress)
+            let animations = ["opacity", "transform"].map { key in
+                let animation = CASpringAnimation(keyPath: key)
+                animation.mass = spring.mass
+                animation.stiffness = spring.stiffness
+                animation.damping = spring.damping
+                animation.initialVelocity = speed
+                animation.duration = spring.settlingDuration
+                return animation
+            }
+            run(animations, from: progress, to: target, on: layer, at: now, velocity: velocity(at: now))
+        }
+    }
+
+    private func run(
+        _ animations: [CABasicAnimation], from progress: CGFloat, to target: CGFloat, on layer: CALayer,
+        at now: CFTimeInterval, velocity: CGFloat
+    ) {
+        self.from = progress
+        self.target = target
+        startVelocity = velocity
+        start = now
+        animations[0].delegate = Ending { [weak self, generation] in self?.finish(generation) }
+        for animation in animations {
+            let isOpacity = animation.keyPath == "opacity"
+            animation.fromValue = isOpacity ? progress : transform(progress, layer)
+            animation.toValue = isOpacity ? target : transform(target, layer)
+            // the clock starts where `progress` was read, not at the commit
+            animation.beginTime = layer.convertTime(now, from: nil)
+            animation.fillMode = .both
+            animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: animation.keyPath)
+        }
+    }
+
+    private final class Ending: NSObject, CAAnimationDelegate {
+        let done: () -> Void
+        init(_ done: @escaping () -> Void) { self.done = done }
+        func animationDidStop(_ animation: CAAnimation, finished: Bool) { if finished { done() } }
+    }
+
+    /// scale about the top centre of this view, in the superlayer's space
+    private func transform(_ progress: CGFloat, _ layer: CALayer) -> NSValue {
+        let scale = 0.97 + 0.03 * progress
+        let frame = layer.frame
+        let down = layer.superlayer?.contentsAreFlipped() ?? false
+        let dx = frame.midX - layer.position.x
+        let dy = (down ? frame.minY : frame.maxY) - layer.position.y
+        var t = CATransform3DMakeTranslation(-dx, -dy, 0)
+        t = CATransform3DConcat(t, CATransform3DMakeScale(scale, scale, 1))
+        t = CATransform3DConcat(t, CATransform3DMakeTranslation(dx, dy, 0))
+        return NSValue(caTransform3D: t)
+    }
+
+    private func progress(at now: CFTimeInterval) -> CGFloat {
+        guard !Motion.reduceMotion, now - start < Motion.popSpring.settlingDuration else { return target }
+        return from + Motion.popSpring.value(target: target - from, initialVelocity: startVelocity, time: now - start)
+    }
+
+    private func velocity(at now: CFTimeInterval) -> CGFloat {
+        guard !Motion.reduceMotion, now - start < Motion.popSpring.settlingDuration else { return 0 }
+        return Motion.popSpring.velocity(target: target - from, initialVelocity: startVelocity, time: now - start)
+    }
+
+    private func finish(_ generation: Int) {
+        guard generation == self.generation else { return }
+        from = shown ? 1 : 0
+        target = from
+        startVelocity = 0
+        layer?.removeAllAnimations()
+        guard !shown else { return }
+        isHidden = true
+        barRect = .zero
+        render(rootView.environment)
+    }
+
+    /// first mounted in a window, where its focus can land; a move between windows keeps it
+    private func render(_ environment: CommandBarRoot.Environment) {
+        let mounted = (shown || !isHidden) && (window != nil || rootView.bar != nil)
+        rootView = CommandBarRoot(
+            bar: mounted ? .init(address: address, mount: mount, live: { [weak self] in self?.shown == true }) : nil,
+            environment: environment
+        ) { [weak self] in self?.barRect = $0 }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard shown, window != nil, rootView.bar == nil else { return }
+        render(rootView.environment)
+        layoutSubtreeIfNeeded()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard shown, barRect.contains(convert(point, from: superview)) else { return nil }
+        return super.hitTest(point)
+    }
+
+    // MARK: - Early keys
+
+    /// keys typed while the bar is open but its field hasn't the keyboard (⌘T to mount, or a
+    /// re-host as the buttons fold), oldest first, replayed to the field once it has
+    private var heldKeys: [NSEvent] = []
+    private var heldSince: CFTimeInterval = 0
+    private var hadKeyboard = false
+    private var shownAt: CFTimeInterval = 0
+    private var settled = false
+    private var replaying = false
+    private var keyMonitor: Any?
+
+    /// the field the keyboard was in as the bar last opened or closed, which a fresh mount replaces
+    private weak var staleField: AnyObject?
+
+    private var fieldHasKeyboard: Bool {
+        guard let responder = window?.firstResponder as? NSView, responder.isDescendant(of: self) else { return false }
+        return (responder as? NSTextView)?.delegate.map { $0 !== staleField } ?? true
+    }
+
+    /// what the model says, which is ahead of `shown` until SwiftUI's next update
+    private var isOpen: Bool {
+        let manager = rootView.environment.tabManager
+        return manager.isCommandBarVisible && manager.addressBarOrigin == nil
+    }
+
+    func holdEarlyKeys() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return event }
+                return self.route(event)
+            }
+        }
+    }
+
+    private func route(_ event: NSEvent) -> NSEvent? {
+        guard !replaying, event.window === window, !event.modifierFlags.contains(.command) else { return event }
+        // through only to a field that has had the keyboard since before this key, or to wherever the
+        // keyboard went once the field let it go, or never took it in the bar's first second
+        let ready = shown && fieldHasKeyboard && hadKeyboard
+        let away = shown && !fieldHasKeyboard && window?.firstResponder !== window
+            && (hadKeyboard || CACurrentMediaTime() - shownAt > 1)
+        if shown, fieldHasKeyboard { hadKeyboard = true }
+        guard isOpen else {
+            releaseHeldKeys()
+            return event
+        }
+        if heldKeys.isEmpty, ready || away { return event }
+        heldKeys.append(event)
+        if heldKeys.count == 1 {
+            heldSince = CACurrentMediaTime()
+            settled = false
+            awaitKeyboard()
+        }
+        return nil
+    }
+
+    /// one key a turn once the field has had the keyboard for a turn, so SwiftUI takes each
+    /// before the next; a field that takes none for a second gets them all wherever they go
+    private func awaitKeyboard() {
+        guard !heldKeys.isEmpty else { return }
+        guard isOpen, CACurrentMediaTime() - heldSince < 1 else { return releaseHeldKeys() }
+        if settled, fieldHasKeyboard {
+            hadKeyboard = true
+            heldSince = CACurrentMediaTime()
+            replay(heldKeys.removeFirst())
+        }
+        settled = fieldHasKeyboard
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in self?.awaitKeyboard() }
+    }
+
+    private func releaseHeldKeys() {
+        let keys = heldKeys
+        heldKeys = []
+        for key in keys { replay(key) }
+    }
+
+    /// through the app, so every other local monitor sees it as if it had never been held
+    private func replay(_ event: NSEvent) {
+        replaying = true
+        NSApp.sendEvent(event)
+        replaying = false
+    }
+
+    deinit {
+        MainActor.assumeIsolated { keyMonitor.map(NSEvent.removeMonitor) }
     }
 }
 
@@ -893,10 +1215,14 @@ private struct WindowBackdrop: View {
     @Environment(TabManager.self) private var tabManager
     @Environment(TooltipState.self) private var tooltipState
     let sidebarPinned: Bool
+    let animatesPin: Bool
 
     var body: some View {
         SpaceBackdrop(
             spaces: tabManager.stripSpaces, position: tabManager.backdropPosition, sidebarPinned: sidebarPinned)
+            // in step with the shell's slide, and only where glass shows the pinned frost
+            .animation(
+                animatesPin && isGlassInView(tabManager) ? Motion.sidebar : nil, value: sidebarPinned)
             .onChange(of: tabManager.blendedAccent, initial: true) { _, accent in
                 tooltipState.accent = accent
             }
@@ -946,6 +1272,7 @@ private struct CardStack: View {
     private var accent: Color { tabManager.currentSpace.appearance.accent }
 
     var body: some View {
+        let _ = Bench.tick("CardStack")
         ZStack {
             if tabManager.activeEssentialID == nil, SpaceLock.shared.isLocked(tabManager.currentSpace) {
                 // nothing of a locked space is mounted, so nothing of it can be seen or typed into
@@ -995,7 +1322,10 @@ private struct CardStack: View {
     private var mountedTabs: [BrowserTab] {
         var tabs: [BrowserTab] = []
         func add(_ tab: BrowserTab?) {
-            guard let tab, tab.url != nil, !tabs.contains(where: { $0.id == tab.id }) else { return }
+            // a page on its first load mounts too; PageStack holds it clear until it commits
+            guard let tab, tab.url != nil || BrowserTab.skipsPaintWait && tab.awaitingMount != nil,
+                !tabs.contains(where: { $0.id == tab.id })
+            else { return }
             tabs.append(tab)
         }
         // what's shown, even before the warm set refreshes
@@ -1072,7 +1402,7 @@ private struct OverlayPanelBackground: View {
     let windowWidth: CGFloat
 
     var body: some View {
-        let glassInView = isGlassInView
+        let glassInView = isGlassInView(tabManager)
         let onRight = layoutDirection == .rightToLeft
         let edge: Alignment = onRight ? .trailing : .leading
         // laid out left to right with the page side picked by hand: a mirrored clip
@@ -1098,16 +1428,16 @@ private struct OverlayPanelBackground: View {
             .allowsHitTesting(false)
             .environment(\.layoutDirection, .leftToRight)
     }
+}
 
-    /// mirrors SpaceBackdrop's own floor/incoming check
-    private var isGlassInView: Bool {
-        let spaces = tabManager.stripSpaces
-        let floor = Int(tabManager.backdropPosition.rounded(.down))
-        let floorGlass = spaces.indices.contains(floor) && spaces[floor].appearance.fill == .glass
-        let nextGlass = spaces.indices.contains(floor + 1)
-            && spaces[floor + 1].appearance.fill == .glass
-        return floorGlass || nextGlass
-    }
+/// mirrors SpaceBackdrop's own floor/incoming check
+@MainActor private func isGlassInView(_ tabManager: TabManager) -> Bool {
+    let spaces = tabManager.stripSpaces
+    let floor = Int(tabManager.backdropPosition.rounded(.down))
+    let floorGlass = spaces.indices.contains(floor) && spaces[floor].appearance.fill == .glass
+    let nextGlass = spaces.indices.contains(floor + 1)
+        && spaces[floor + 1].appearance.fill == .glass
+    return floorGlass || nextGlass
 }
 
 /// the web card's window-space frames, written as the card moves and read only

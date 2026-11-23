@@ -105,7 +105,7 @@ struct PrivacySettings: View {
                 Toggle(isOn: $fingerprintDefence.undoable("Fingerprint Defence")) {
                     InfoLabel(
                         "Randomise fingerprintable readings",
-                        info: "Gives each site slightly different hardware readings, so trackers can't build a stable fingerprint. Takes effect on the next launch.")
+                        info: "Gives each site slightly different hardware readings and hides the fonts you installed, so trackers can't build a stable fingerprint. Takes effect on the next launch.")
                 }
                 .settingsAnchor(.fingerprintDefence)
             }

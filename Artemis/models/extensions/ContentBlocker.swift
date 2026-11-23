@@ -77,7 +77,7 @@ final class ContentBlocker {
     }()
     /// bump when the output changes without a converter version: a vendored patch, a dependency
     /// pin or `FilterConverter` itself
-    private static let converterRevision = 2
+    private static let converterRevision = 4
     /// how often a running app looks for lists past their expiry, in seconds; no list is asked for sooner
     private static let refreshPeriod: TimeInterval = 3 * 3600
     /// how long a copy stays current when its list states no expiry
@@ -396,13 +396,28 @@ final class ContentBlocker {
     /// whose pages are blocked whole, in a rule list of its own
     private func install(sources: [String], pages: String?, reloadTabs: Bool) async {
         let fixes = Self.siteFixes
-        let (converted, pageRule) = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
-            (FilterConverter.convert(sources, extraExceptions: fixes), pages.flatMap(FilterConverter.pageBlock))
+        let qos: QualityOfService = reloadTabs ? .userInitiated : .utility
+        let built = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
+            Self.builtByHelper(sources, pages: pages, qos: qos)
         }.value
 
         var compiled: [WKContentRuleList] = []
-        for json in [converted.json, pageRule].compactMap(\.self) {
-            if let list = await compile(json) { compiled.append(list) }
+        let converted: FilterConverter.Result
+        if let built, let lists = await Self.storedLists(built.identifiers) {
+            converted = built.counts
+            compiled = lists
+        } else {
+            let (result, pageRule) = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
+                (FilterConverter.convert(sources, extraExceptions: fixes), pages.flatMap(FilterConverter.pageBlock))
+            }.value
+            converted = result
+            for json in [result.json, pageRule].compactMap(\.self) {
+                if let list = await compile(json) { compiled.append(list) }
+            }
+        }
+        if converted.overCeilingCount > 0 {
+            Diagnostics.record(
+                area: "blocker", message: "over WebKit's rule ceiling: \(converted.overCeilingCount) rules dropped")
         }
         guard !compiled.isEmpty else {
             if installed.isEmpty, sources != [Self.starterList] {
@@ -428,11 +443,8 @@ final class ContentBlocker {
     }
 
     private func compile(_ json: String) async -> WKContentRuleList? {
-        let store = WKContentRuleListStore.default()
-        let identifier = "artemis-block-\(Self.digest(json))"
-        if let existing = try? await store?.contentRuleList(forIdentifier: identifier) { return existing }
         do {
-            return try await store?.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json)
+            return try await Self.compiled(json)
         } catch {
             // WebKit puts the parser's own message in the help anchor; the
             // localized description is only "compile failed"
@@ -473,11 +485,18 @@ final class ContentBlocker {
             defaults.string(forKey: Self.compiledFixesKey) == Self.fixesFingerprint
         else { return false }
 
+        let together = PerfFlags.startsLaunchPageEarly, cache = trackerHostsCache, readsEarly = together && trackerHosts.isEmpty
+        async let early: Set<String> = readsEarly ? Self.readTrackerHosts(cache) : []
         var lists: [WKContentRuleList] = []
-        for identifier in identifiers {
-            guard let list = try? await store.contentRuleList(forIdentifier: identifier)
-            else { return false }
-            lists.append(list)
+        if together {
+            guard let found = await Self.lookUp(identifiers, in: store) else { return false }
+            lists = found
+        } else {
+            for identifier in identifiers {
+                guard let list = try? await store.contentRuleList(forIdentifier: identifier)
+                else { return false }
+                lists.append(list)
+            }
         }
 
         replaceInstalled(with: lists)
@@ -486,9 +505,23 @@ final class ContentBlocker {
             droppedCount = stats[1]
             overCeilingCount = stats[2]
         }
-        if trackerHosts.isEmpty { trackerHosts = await Self.readTrackerHosts(trackerHostsCache) }
+        if trackerHosts.isEmpty { trackerHosts = together ? await early : await Self.readTrackerHosts(cache) }
         debugLog("blocklists: reused \(lists.count) already-compiled lists")
         return true
+    }
+
+    /// every list, asked for all at once and returned in order; nil if any is missing
+    private static func lookUp(_ identifiers: [String], in store: WKContentRuleListStore) async -> [WKContentRuleList]? {
+        await withCheckedContinuation { done in
+            var found = [WKContentRuleList?](repeating: nil, count: identifiers.count), left = identifiers.count
+            for (i, identifier) in identifiers.enumerated() {
+                store.lookUpContentRuleList(forIdentifier: identifier) { list, _ in
+                    found[i] = list
+                    left -= 1
+                    if left == 0 { done.resume(returning: found.contains { $0 == nil } ? nil : found.compactMap { $0 }) }
+                }
+            }
+        }
     }
 
     /// no list subscribed: nothing blocks, not even the starter list
@@ -520,6 +553,83 @@ final class ContentBlocker {
         where identifier.hasPrefix("artemis-block") && !identifiers.contains(identifier) {
             try? await store.removeContentRuleList(forIdentifier: identifier)
         }
+    }
+
+    static func identifier(of json: String) -> String { "artemis-block-\(digest(json))" }
+
+    private static func compiled(_ json: String) async throws -> WKContentRuleList? {
+        let store = WKContentRuleListStore.default()
+        if let existing = try? await store?.contentRuleList(forIdentifier: identifier(of: json)) { return existing }
+        return try await store?.compileContentRuleList(forIdentifier: identifier(of: json), encodedContentRuleList: json)
+    }
+
+    private static func storedLists(_ identifiers: [String]) async -> [WKContentRuleList]? {
+        var lists: [WKContentRuleList] = []
+        for id in identifiers {
+            guard let list = try? await WKContentRuleListStore.default()?.contentRuleList(forIdentifier: id)
+            else { return nil }
+            lists.append(list)
+        }
+        return lists
+    }
+
+    // MARK: - the conversion helper
+
+    nonisolated static let helperArgument = "convert-blocklists"
+
+    /// `Artemis convert-blocklists`: lists on stdin, then a NUL and the page-block hosts, compiled into the
+    /// shared store; stdout is "identifier rules dropped overCeiling [pageIdentifier]".
+    /// The converter's and compiler's heap dies with it
+    static func runHelper() -> Never {
+        // the converter's Debug logging prints, so only this descriptor reaches the parent
+        let out = FileHandle(fileDescriptor: dup(STDOUT_FILENO), closeOnDealloc: true)
+        dup2(open("/dev/null", O_WRONLY), STDOUT_FILENO)
+        let input = FileHandle.standardInput.readDataToEndOfFile()
+        let parts = input.split(separator: 0, maxSplits: 1, omittingEmptySubsequences: false)
+        let result = FilterConverter.convert([String(decoding: parts[0], as: UTF8.self)], extraExceptions: siteFixes)
+        let pageRule = parts.count > 1 ? FilterConverter.pageBlock(String(decoding: parts[1], as: UTF8.self)) : nil
+        Task {
+            var reply = "\(identifier(of: result.json)) \(result.ruleCount) \(result.droppedCount) \(result.overCeilingCount)"
+            for json in [result.json, pageRule].compactMap(\.self) {
+                guard (try? await compiled(json)) != nil else { exit(1) }
+            }
+            if let pageRule { reply += " \(identifier(of: pageRule))" }
+            out.write(Data((reply + "\n").utf8))
+            exit(0)
+        }
+        RunLoop.main.run()
+        exit(1)
+    }
+
+    /// the helper's compiled lists (page block last) and counts, nil when it fails. It reads stdin
+    /// to its end before writing, so writing everything first can't deadlock
+    nonisolated static func builtByHelper(
+        _ sources: [String], pages: String?, qos: QualityOfService
+    ) -> (identifiers: [String], counts: FilterConverter.Result)? {
+        guard let binary = Bundle.main.executableURL else { return nil }
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = binary
+        process.arguments = [helperArgument]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.qualityOfService = qos
+        let writer = input.fileHandleForWriting
+        _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+        guard (try? process.run()) != nil else { return nil }
+        for source in sources { try? writer.write(contentsOf: Data((source + "\n").utf8)) }
+        if let pages { try? writer.write(contentsOf: Data([0]) + Data(pages.utf8)) }
+        try? writer.close()
+        let reply = (try? output.fileHandleForReading.readToEnd()).flatMap { $0 } ?? Data()
+        process.waitUntilExit()
+        let fields = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+        guard process.terminationStatus == 0, fields.count >= 4 else { return nil }
+        let counts = fields[1...3].compactMap { Int($0) }
+        guard counts.count == 3 else { return nil }
+        return (
+            [String(fields[0])] + fields.dropFirst(4).map(String.init),
+            FilterConverter.Result(ruleCount: counts[0], droppedCount: counts[1], overCeilingCount: counts[2])
+        )
     }
 
     private static func digest(_ text: String) -> String {

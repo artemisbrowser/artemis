@@ -25,7 +25,8 @@ public class ContentBlockerConverter {
         advancedBlocking: Bool = false,
         maxJsonSizeBytes: Int? = nil,
         progress: Progress? = nil,
-        maxRules: Int? = nil
+        maxRules: Int? = nil,
+        anchorsSiteHides: Bool = false
     ) -> ConversionResult {
         var shouldContinue: Bool {
             !(progress?.isCancelled ?? false)
@@ -58,12 +59,20 @@ public class ContentBlockerConverter {
         }
 
         let compiler = Compiler(errorsCounter: errorsCounter, version: safariVersion)
+        compiler.splitsMultiSiteHides = anchorsSiteHides
+        let rulesLimit = maxRules ?? safariVersion.rulesLimit
 
         // Compile simple rules to Safari content blocking JSON.
-        let compilationResult = compiler.compileRules(rules: simpleRules, progress: progress)
+        var compilationResult = compiler.compileRules(rules: simpleRules, progress: progress)
+        if anchorsSiteHides { compilationResult.anchorSiteHides() }
+        // split hides that would push rules past the limit stay whole; a fresh counter keeps errors counted once
+        if anchorsSiteHides, compilationResult.rulesCount > rulesLimit {
+            compilationResult = Compiler(errorsCounter: ErrorsCounter(), version: safariVersion)
+                .compileRules(rules: simpleRules, progress: progress)
+            compilationResult.anchorSiteHides()
+        }
 
         // Compose the Safari content blocking JSON.
-        let rulesLimit = maxRules ?? safariVersion.rulesLimit
         let result = SafariCbBuilder.buildCbJson(
             from: compilationResult,
             maxRules: rulesLimit,

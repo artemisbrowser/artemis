@@ -12,6 +12,8 @@ struct CommandBar: View {
     var address = false
     /// inside the AddressBar growing out of the pill, which draws the glass
     var grown = false
+    /// false while it closes: it takes no seed and no focus
+    var live: () -> Bool = { true }
     @Environment(TabManager.self) private var tabManager
     @Environment(\.colorScheme) private var colorScheme
     /// the field's text: what was typed, then any host completion, selected
@@ -105,12 +107,13 @@ struct CommandBar: View {
             DispatchQueue.main.async { isFocused = true }
         }
         .onChange(of: tabManager.commandBarSeed, initial: true) {
-            guard !address, let seed = tabManager.commandBarSeed else { return }
+            guard live(), !address, let seed = tabManager.commandBarSeed else { return }
             tabManager.commandBarSeed = nil
             scope = nil
             query = seed
         }
         .onChange(of: tabManager.commandBarFocusRequest) {
+            guard live() else { return }
             if address && !grown { startOnAddress() }
             syncModifiers()
             isFocused = true
@@ -198,12 +201,11 @@ struct CommandBar: View {
             acceptFill()
             return .ignored
         }
-        // plain ↵ arrives through the field's own submit; this is only the
-        // modified forms, which the field doesn't answer
+        // taken before the field sees it, so the field never ends editing on the way out
         .onKeyPress(.return, phases: .down) { press in
             let held = press.modifiers.intersection([.shift, .command, .option])
-            guard !held.isEmpty else { return .ignored }
-            executeSelected(launch: engine.launch(for: press.modifiers, address: address))
+            guard !held.isEmpty || PerfFlags.takesReturnBeforeField else { return .ignored }
+            submit(press.modifiers)
             return .handled
         }
         .onKeyPress(.escape) {
@@ -269,20 +271,24 @@ struct CommandBar: View {
         let before = typed
         typed = text
         fill = nil
-        let editor = BrowserWindows.shared.window(of: tabManager)?.firstResponder as? NSTextView
-        let composing = editor?.hasMarkedText() ?? false
-        guard scope == nil, !composing, text.count == before.count + 1, text.hasPrefix(before),
-            let found = engine.autofill(for: text)
+        // the field runs ahead of `text` when keys come faster than SwiftUI updates
+        guard let editor = BrowserWindows.shared.window(of: tabManager)?.firstResponder as? NSTextView,
+            editor.string == text, !editor.hasMarkedText(), scope == nil,
+            text.count == before.count + 1, text.hasPrefix(before), let found = engine.autofill(for: text)
         else { return }
         // a vibrant field's selection only blends with the glass once the bar's morph settles
-        if let field = editor?.delegate as? NSTextField,
+        if let field = editor.delegate as? NSTextField,
             let plain = field.superview?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
             field.appearance = NSAppearance(named: plain)
         }
         fill = found
         query = text + found.completion
         written = query
-        selection = TextSelection(range: query.index(query.startIndex, offsetBy: text.count)..<query.endIndex)
+        let completion = query.index(query.startIndex, offsetBy: text.count)..<query.endIndex
+        selection = TextSelection(range: completion)
+        // in the editor this turn: SwiftUI's own write lands later, over any key typed meanwhile
+        editor.string = query
+        editor.setSelectedRange(NSRange(completion, in: query))
     }
 
     /// the completion becomes typed text
@@ -320,6 +326,16 @@ struct CommandBar: View {
         query = ""
     }
 
+    private func submit(_ modifiers: EventModifiers) {
+        // pasted or expanded text can arrive with its ↵ before onChange(of: query) reads it
+        if query != typed + (fill?.completion ?? "") {
+            typed = query
+            fill = nil
+        }
+        refresh()
+        executeSelected(launch: engine.launch(for: modifiers, address: address))
+    }
+
     private func executeSelected(launch: CommandLaunch) {
         guard let item = selected else { return }
         execute(item, launch: launch)
@@ -344,8 +360,9 @@ struct CommandBar: View {
 
     private func close() {
         tabManager.isCommandBarVisible = false
-        // the address bar shrinks back into the pill still showing what it held
-        guard !grown else { return }
+        // the address bar shrinks back into the pill still showing what it held, and
+        // a closing ⌘T bar fades as it was: its next open is a fresh mount
+        guard !grown, !PerfFlags.leavesClosingBarAlone else { return }
         query = ""
         textHits = []
         suggestions = []
@@ -380,15 +397,7 @@ struct CommandBar: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: grown ? Self.addressFontSize : 22))
                 .focused($isFocused)
-                .onSubmit {
-                    // pasted or expanded text can arrive with its ↵ before onChange(of: query) reads it
-                    if query != typed + (fill?.completion ?? "") {
-                        typed = query
-                        fill = nil
-                    }
-                    refresh()
-                    executeSelected(launch: engine.launch(for: [], address: address))
-                }
+                .onSubmit { submit([]) }
 
             if let tabBang {
                 HStack(spacing: 6) {

@@ -575,7 +575,7 @@ final class AgentTask: Identifiable {
     static let unasked = ["take_snapshot", "screenshot", "list_tabs", "list_spaces", "scroll", "hover", "wait_for", "show_tab", "close_tab"]
         .map { "mcp__artemis__\($0)" }.joined(separator: ",")
     /// the Claude Code release whose auto mode, permission asks and denial limit Artemis was checked against
-    static let checkedRelease = "2.1.328"
+    static let checkedRelease = "2.1.330"
 
     /// Auto runs under Claude Code's auto mode, whose classifier sees the user's messages and the
     /// calls; Manual and Bypass under its default mode, where Artemis answers each permission ask

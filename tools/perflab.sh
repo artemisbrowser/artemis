@@ -9,6 +9,7 @@
 #   tools/perflab.sh --run <env...>        start it with ARTEMIS_DIAG=perf plus <env>
 # PERF_ID=PerfB keeps a second arm beside the first (own bundle id and container)
 # PERF_CONFIG=Debug builds Debug instead, for iterating on a lab test
+# PERF_COVERAGE=1 adds coverage counters and ARTEMIS_COVERAGE (tools/test-impact-map.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
@@ -25,7 +26,10 @@ mkdir -p "$OUT"
 
 if [[ "${1-}" != "--run" ]]; then
   if [[ "${1-}" != "--copy" ]]; then
+    coverage=()
+    [[ -n "${PERF_COVERAGE-}" ]] && coverage=(CLANG_COVERAGE_MAPPING=YES CLANG_ENABLE_CODE_COVERAGE=YES 'OTHER_SWIFT_FLAGS=$(inherited) -DARTEMIS_COVERAGE')
     xcodebuild -scheme Artemis -configuration "$CONFIG" -derivedDataPath .build build \
+      ${coverage[@]+"${coverage[@]}"} \
       | grep -E "error:|BUILD" | tee /dev/stderr | grep -q "BUILD SUCCEEDED"
   fi
   rm -rf "$APP" && mkdir -p ".build/$ID"

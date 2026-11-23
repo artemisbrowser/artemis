@@ -219,7 +219,15 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// rebuilt (not mutated) when the tab changes profile — WebKit fixes a web
     /// view's data store at creation, so a new jar means a new web view
-    @ObservationIgnored private(set) var webView: WKWebView
+    var webView: WKWebView { madeWebView ?? makeWebView(with: BrowserTab.defaultConfiguration(dataStore: dataStore)) }
+    /// the web view if anything has asked for it yet; a restored tab makes it on first use
+    @ObservationIgnored private(set) var madeWebView: WKWebView?
+
+    private var hasNeverLoaded: Bool {
+        madeWebView.map { $0.url == nil && !$0.isLoading && $0.backForwardList.currentItem == nil } ?? true
+    }
+    /// web views made since launch, for the launch bench
+    nonisolated(unsafe) static var webViewsMade = 0
     /// the cookie jar this tab's web view is bound to. `ProfileStore` caches one
     /// store per profile, so `===` tells a real profile move from a no-op
     @ObservationIgnored private(set) var dataStore: WKWebsiteDataStore
@@ -529,7 +537,7 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// true while the tab is producing audio
     var isPlayingMedia: Bool {
-        guard webView.responds(to: Selector(("_isPlayingAudio"))) else { return false }
+        guard let webView = madeWebView, webView.responds(to: Selector(("_isPlayingAudio"))) else { return false }
         return unsafeBitCast(webView, to: WKWebViewMediaSPI.self)._isPlayingAudio
     }
 
@@ -675,11 +683,26 @@ final class BrowserTab: NSObject, Identifiable {
         configuration: WKWebViewConfiguration = BrowserTab.defaultConfiguration()
     ) {
         self.id = id
-        webView = ArtemisWebView(frame: .zero, configuration: configuration)
         dataStore = configuration.websiteDataStore
         super.init()
+        makeWebView(with: configuration)
+    }
+
+    private init(id: UUID, deferringIn dataStore: WKWebsiteDataStore) {
+        self.id = id
+        self.dataStore = dataStore
+        super.init()
+    }
+
+    @discardableResult
+    private func makeWebView(with configuration: WKWebViewConfiguration) -> WKWebView {
+        let view = ArtemisWebView(frame: .zero, configuration: configuration)
+        madeWebView = view
+        Self.webViewsMade += 1
+        if Self.webViewsMade == 1 { Bench.mark("first web view made") }
         configureWebView()
         observeWebView()
+        return view
     }
 
     /// one-time web-view setup, shared by `init` and `rebuildWebView`
@@ -729,9 +752,7 @@ final class BrowserTab: NSObject, Identifiable {
         reader = nil
         observations.forEach { $0.invalidate() }
         observations = []
-        webView = ArtemisWebView(frame: .zero, configuration: configuration)
-        configureWebView()
-        observeWebView()
+        makeWebView(with: configuration)
         webViewGeneration += 1
     }
 
@@ -746,7 +767,11 @@ final class BrowserTab: NSObject, Identifiable {
         id: UUID = UUID(), restoring url: URL, pinned: Bool, pinnedURL: URL? = nil,
         lastAccessed: Date = Date(), dataStore: WKWebsiteDataStore? = nil
     ) {
-        self.init(id: id, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
+        if PerfFlags.makesWebViewsLazily {
+            self.init(id: id, deferringIn: dataStore ?? .default())
+        } else {
+            self.init(id: id, configuration: BrowserTab.defaultConfiguration(dataStore: dataStore))
+        }
         isPinned = pinned
         self.pinnedURL = pinned ? (pinnedURL ?? url) : nil
         pendingURL = url
@@ -796,6 +821,11 @@ final class BrowserTab: NSObject, Identifiable {
         guard let pendingURL else { return }
         self.pendingURL = nil
         isHibernated = false
+        if let image = sleepImage {
+            wakeStill = image
+            sleepFrame = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.wakeStill = nil }
+        }
         if let state = savedInteractionState {
             savedInteractionState = nil
             lastAttemptedURL = pendingURL
@@ -942,6 +972,86 @@ final class BrowserTab: NSObject, Identifiable {
         debugLog("tab hibernated: \(current.absoluteString)")
     }
 
+    /// the page as it looked going to sleep, as JPEG, until it wakes
+    @ObservationIgnored private(set) var sleepFrame: Data?
+    var sleepImage: NSImage? { sleepFrame.flatMap(NSImage.init(data:)) }
+    /// that still, over the woken page until it finishes or fails loading, for at most 5 s
+    private(set) var wakeStill: NSImage?
+    /// since when the page has had requests in flight at every policy check
+    @ObservationIgnored private var requestsInFlightSince: Date?
+
+    /// put to sleep by policy: first what `canHibernate` can't see at once, then a still of the
+    /// page. `idle` is asked again after every wait
+    func sleepIfIdle(while idle: () -> Bool) async {
+        guard canHibernate, idle() else { return }
+        if PerfFlags.sleepExemptions, await isBusy() { return }
+        let frame = PerfFlags.keepsSleepFrame ? await still() : nil
+        guard canHibernate, idle() else { return }
+        hibernate()
+        sleepFrame = frame
+    }
+
+    /// what sleep would cost: unsent text in a form, a download it started, or a live app, which
+    /// may notify, shows a badge or has had requests in flight for 30 s of checks
+    private func isBusy() async -> Bool {
+        let selector = Selector(("_networkRequestsInProgress"))
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        let inFlight =
+            webView.responds(to: selector) && unsafeBitCast(webView.method(for: selector), to: Getter.self)(webView, selector)
+        requestsInFlightSince = inFlight ? requestsInFlightSince ?? Date() : nil
+        if appBadge != nil || mayNotify || DownloadManager.shared.isDownloading(from: webView) { return true }
+        if let since = requestsInFlightSince, since.timeIntervalSinceNow <= -30 { return true }
+        return await hasUnsentText()
+    }
+
+    /// its site has been allowed to send notifications, which only an awake page can
+    var mayNotify: Bool {
+        !isPrivate && SitePermissionStore.originString(url).flatMap {
+            SitePermissionStore.shared.decision(for: $0, .notifications, ephemeral: false)
+        } == .allow
+    }
+
+    private static let sleepWorld = WKContentWorld.world(name: "artemis-sleep")
+    /// typed text a form still holds: a login form's autofill doesn't count
+    private static let unsentTextProbe = """
+        (() => {
+          const skip = ['hidden', 'password', 'submit', 'button', 'reset', 'image', 'file', 'range', 'color']
+          for (const e of document.querySelectorAll('input, textarea')) {
+            if (e.form && e.form.querySelector('input[type=password]')) continue
+            if (e.type === 'checkbox' || e.type === 'radio') { if (e.checked !== e.defaultChecked) return true; continue }
+            if (!skip.includes(e.type) && e.value !== e.defaultValue) return true
+          }
+          const a = document.activeElement
+          return !!(a && a.isContentEditable && a.textContent.trim())
+        })()
+        """
+
+    /// a page too busy to answer within a second has nothing worth keeping awake for
+    private func hasUnsentText() async -> Bool {
+        final class Once { var done = false }
+        let once = Once()
+        return await withCheckedContinuation { answer in
+            func finish(_ value: Bool) {
+                guard !once.done else { return }
+                once.done = true
+                answer.resume(returning: value)
+            }
+            webView.evaluateJavaScript(Self.unsentTextProbe, in: nil, in: Self.sleepWorld) { finish((try? $0.get()) as? Bool ?? false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { finish(false) } }
+        }
+    }
+
+    /// the page at its on-screen size, as JPEG
+    private func still() async -> Data? {
+        guard !webView.bounds.isEmpty else { return nil }
+        let configuration = WKSnapshotConfiguration()
+        configuration.afterScreenUpdates = false
+        guard let image = try? await webView.takeSnapshot(configuration: configuration),
+            let picture = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return nil }
+        return NSBitmapImageRep(cgImage: picture).representation(using: .jpeg, properties: [.compressionFactor: 0.6])
+    }
+
     /// close a pinned tab's page but keep the pin: it returns to the unloaded state
     /// of a restored pin at `pinnedURL`, with its session dropped
     func closeToPinned() {
@@ -953,9 +1063,7 @@ final class BrowserTab: NSObject, Identifiable {
     /// unloaded at `target` with its session dropped, as a restored tab is: nothing loads until it is shown
     func park(at target: URL, title: String? = nil) {
         // a never-loaded view is already what a fresh one would be
-        let pristine =
-            webView.url == nil && !webView.isLoading && webView.backForwardList.currentItem == nil
-            && (isHibernated || lastAttemptedURL == nil)
+        let pristine = hasNeverLoaded && (isHibernated || lastAttemptedURL == nil)
         WebNotifications.shared.forgetPage(in: id)
         appBadge = nil
         savedInteractionState = nil
@@ -996,8 +1104,58 @@ final class BrowserTab: NSObject, Identifiable {
         processPool.perform(warm)
     }
 
+    private static let webKitFeatures: [String: NSObject] = {
+        let list = (WKPreferences.self as AnyObject).perform(Selector(("_features")))?.takeUnretainedValue() as? [NSObject]
+        return Dictionary((list ?? []).compactMap { f in (f.value(forKey: "key") as? String).map { ($0, f) } }) { a, _ in a }
+    }()
+
+    /// one of WebKit's internal feature flags, by key; a no-op where this WebKit lacks it
+    private static func setFeature(_ key: String, _ enabled: Bool, on prefs: WKPreferences) {
+        let selector = Selector(("_setEnabled:forFeature:"))
+        guard let feature = webKitFeatures[key], prefs.responds(to: selector) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool, AnyObject) -> Void
+        unsafeBitCast(prefs.method(for: selector), to: Setter.self)(prefs, selector, enabled, feature)
+    }
+
     /// every tab's process pool; a pool per tab would scan every font on main per tab
     static let processPool = WKProcessPool()
+
+    /// same-site tabs in one jar spread over at most this many web content processes
+    static let processesPerSite = 4
+
+    /// scheme plus registrable domain, as WebKit draws process boundaries; nil off the web
+    static func site(of url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+            let host = url.host()?.lowercased()
+        else { return nil }
+        return scheme + "://" + (PasswordStore.registrableDomain(host) ?? host)
+    }
+
+    /// once `url`'s site fills `processesPerSite` processes in `store`, a page in the one
+    /// holding fewest of its tabs, for a fresh tab to join; nil while there is room
+    private static func processSharer(for url: URL, in store: WKWebsiteDataStore) -> WKWebView? {
+        guard let site = site(of: url) else { return nil }
+        var views: [ObjectIdentifier: WKWebView] = [:]
+        for tab in BrowserWindows.shared.allManagers.lazy.flatMap(\.allTabs) {
+            guard tab.dataStore === store, let view = tab.madeWebView, view.url.flatMap(Self.site(of:)) == site
+            else { continue }
+            views[ObjectIdentifier(view)] = view
+        }
+        let byProcess = Dictionary(grouping: views.values) { $0.value(forKey: "_webProcessIdentifier") as? Int32 ?? 0 }
+            .filter { $0.key > 0 }
+        guard byProcess.count >= processesPerSite else { return nil }
+        return byProcess.values.min { $0.count < $1.count }?.first
+    }
+
+    /// a page re-entering the window doesn't hold main until it has painted; false where WebKit
+    /// lacks the SPI, which keeps the wait
+    static let skipsPaintWait: Bool = {
+        let has =
+            WKWebViewConfiguration.instancesRespond(to: Selector(("_setWaitsForPaintAfterViewDidMoveToWindow:")))
+            && WKWebView.instancesRespond(to: Selector(("_doAfterNextPresentationUpdate:")))
+        if !has { debugLog("tabs: no _setWaitsForPaintAfterViewDidMoveToWindow:, pages wait to paint on entering a window") }
+        return has
+    }()
 
     /// `dataStore` binds the tab to a profile's jar; nil is WebKit's default store,
     /// which is the default profile's
@@ -1011,6 +1169,7 @@ final class BrowserTab: NSObject, Identifiable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         // Writing Tools rewrites in place inside the page's editors
         configuration.writingToolsBehavior = .complete
+        if skipsPaintWait { configuration.setValue(false, forKey: "waitsForPaintAfterViewDidMoveToWindow") }
         // the in-app Web Inspector needs this as well as `isInspectable`
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         // Delete is the page's key: WebKit would go back on any press the page lets through
@@ -1028,6 +1187,8 @@ final class BrowserTab: NSObject, Identifiable {
             mediaPrefs._setMediaDevicesEnabled(true)
         }
         ExtensionLab.quiet(prefs)
+        FingerprintNoise.hideInstalledFonts(from: prefs)
+        if PerfFlags.backsOffHiddenTimers { setFeature("HiddenPageDOMTimerThrottlingAutoIncreases", true, on: prefs) }
         // an incognito page takes its parent profile's controllers; WebKit lets in
         // only the extensions with private access
         let isPrivate = dataStore?.isPersistent == false
@@ -1039,9 +1200,34 @@ final class BrowserTab: NSObject, Identifiable {
 
     // MARK: - Navigation
 
-    func load(_ url: URL) {
+    /// `afterMount` waits for this turn's display commit, so the page is already in its window
+    /// and main is free when its web process asks for a connection
+    func load(_ url: URL, afterMount: Bool = false) {
         // WebKit runs a loaded `javascript:` URL in the current document's origin
         guard url.scheme?.lowercased() != "javascript" else { return }
+        loadTicket += 1
+        if hasNeverLoaded, let sharer = Self.processSharer(for: url, in: dataStore) {
+            // a cross-site navigation later swaps the page out of the sharer's process
+            let configuration = BrowserTab.defaultConfiguration(dataStore: dataStore)
+            configuration.perform(Selector(("_setRelatedWebView:")), with: sharer)
+            if madeWebView == nil { makeWebView(with: configuration) } else { replaceWebView(with: configuration) }
+        }
+        if afterMount, webView.window == nil {
+            awaitingMount = url
+            lastAttemptedURL = url
+            let ticket = loadTicket
+            let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.max) {
+                [weak self] observer, _ in
+                CFRunLoopObserverInvalidate(observer)
+                guard let self, loadTicket == ticket else { return }
+                start(url)
+            }
+            return CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        }
+        start(url)
+    }
+
+    private func start(_ url: URL) {
         debugLog("tab load: \(url.absoluteString)")
         launchOwed = true
         lastAttemptedURL = url
@@ -1066,6 +1252,11 @@ final class BrowserTab: NSObject, Identifiable {
                 url, allowingReadAccessTo: url.path.hasPrefix(home.path + "/") ? home : url.deletingLastPathComponent())
             : webView.load(URLRequest(url: url))
     }
+
+    /// the url a load waits on its mount for, kept until that load ends; the card mounts the page for it
+    private(set) var awaitingMount: URL?
+    /// bumped by every load and stop; a load waiting on its mount starts only if still current
+    @ObservationIgnored private var loadTicket = 0
 
     private func openArchive(_ file: URL) {
         do {
@@ -1209,6 +1400,7 @@ final class BrowserTab: NSObject, Identifiable {
     /// it pulls in again, ignoring the caches
     func reloadFromOrigin() { webView.reloadFromOrigin() }
     func stopLoading() {
+        loadTicket += 1
         stopRequested = true
         endRequestedLoad()
         webView.stopLoading()
@@ -1227,7 +1419,7 @@ final class BrowserTab: NSObject, Identifiable {
     }
 
     /// whether the Web Inspector is open; turns true a beat after `toggleInspector`
-    var isInspectorVisible: Bool { inspectorSPI?.isVisible ?? false }
+    var isInspectorVisible: Bool { madeWebView != nil && inspectorSPI?.isVisible == true }
 
     /// ⌥⌘I / menu: open this tab's Web Inspector, or close it if already up. The page is
     /// inspectable, Safari's Develop menu included, only while this has it open
@@ -1249,6 +1441,7 @@ final class BrowserTab: NSObject, Identifiable {
 
     /// the main frame's committed url, same-document changes included; SPI, else `webView.url`
     private var committedURL: URL? {
+        guard let webView = madeWebView else { return nil }
         guard webView.responds(to: Selector(("_committedURL"))) else { return webView.url }
         return webView.value(forKey: "_committedURL") as? URL
     }
@@ -1452,6 +1645,7 @@ extension BrowserTab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         debugLog("didFinish url=\(webView.url?.absoluteString ?? "nil")")
+        wakeStill = nil
         loadError = nil
         guard reader == nil else { return }
         fetchFavicon()
@@ -1477,6 +1671,7 @@ extension BrowserTab: WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        wakeStill = nil
         if navigation === requestedNavigation { endRequestedLoad() }
         if let navigation, navigationDecisions.object(forKey: navigation)?.intValue == userAgentAllowed {
             matchUserAgent()
@@ -1487,9 +1682,11 @@ extension BrowserTab: WKNavigationDelegate {
     private func endRequestedLoad() {
         requestedNavigation = nil
         requestedURL = nil
+        if awaitingMount != nil { awaitingMount = nil }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        wakeStill = nil
         handleLoadError(error)
     }
 
@@ -2120,7 +2317,7 @@ extension BrowserTab: WKWebExtensionTab {
         return (manager.tabs + manager.essentials).firstIndex { $0.id == id } ?? 0
     }
 
-    func webView(for context: WKWebExtensionContext) -> WKWebView? { webView }
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { madeWebView }
 
     func url(for context: WKWebExtensionContext) -> URL? { url ?? lastAttemptedURL }
 

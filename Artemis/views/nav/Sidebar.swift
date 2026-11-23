@@ -1631,6 +1631,8 @@ struct Sidebar: View {
                         .allowsHitTesting(live)
                 }
             }
+            // a glide animates the strip's offset only: the panels it reslots change at once
+            .transaction(value: tabManager.spacePagePosition) { $0.animation = nil }
             .modifier(PagerOffset(pitch: pitch))
             .frame(width: w, height: geo.size.height, alignment: .topLeading)
             .clippedPastSides()
@@ -2972,7 +2974,10 @@ private struct PanelSlot<Content: View>: View, Equatable {
     let live: Bool
     @ViewBuilder let content: () -> Content
 
-    var body: some View { content() }
+    var body: some View {
+        let _ = Bench.tick("PanelSlot")
+        content()
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         !lhs.live && !rhs.live && lhs.space === rhs.space

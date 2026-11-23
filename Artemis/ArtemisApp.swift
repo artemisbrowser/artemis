@@ -10,7 +10,9 @@ import UserNotifications
 @main
 enum Launch {
     static func main() {
-        if CommandLine.arguments.dropFirst().first == "mcp" { AgentStdio.run() }
+        let command = CommandLine.arguments.dropFirst().first
+        if command == "mcp" { AgentStdio.run() }
+        if command == ContentBlocker.helperArgument { ContentBlocker.runHelper() }
         ArtemisApp.main()
     }
 }
@@ -21,7 +23,7 @@ struct ArtemisApp: App {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     /// the manager that loads the session; the first window takes it
-    @State private var seedManager = TabManager()
+    @State private var seedManager: TabManager
     @State private var windows = BrowserWindows.shared
     /// the focused window's manager, mirrored into `@State`: menu items refresh
     /// only against `@State`, never against `windows.current`
@@ -66,10 +68,13 @@ struct ArtemisApp: App {
         WindowChrome.clampStoredEdgeInset()
         // before any window exists, or AppKit's window-tab items stay in the menus
         NSWindow.allowsAutomaticWindowTabbing = false
-        BrowserWindows.shared.seed = seedManager
+        let seed = TabManager()
+        _seedManager = State(initialValue: PerfFlags.buildsOneSeed ? seed : TabManager())
+        BrowserWindows.shared.seed = seed
     }
 
     var body: some Scene {
+        let _ = Bench.markOnce("ArtemisApp: body")
         // menu items track app state only while they hang off a group with a window
         WindowGroup(id: Self.browserWindowID) {
             BrowserWindowRoot()
@@ -89,6 +94,7 @@ struct ArtemisApp: App {
         .windowToolbarStyle(.unifiedCompact)
         .windowResizability(.contentMinSize)
         .commands {
+            let _ = Bench.markOnce("ArtemisApp: commands")
             // the standard Close (⌘W) item would race our Close Tab — remove it
             CommandGroup(replacing: .saveItem) {}
 
@@ -535,6 +541,7 @@ struct ArtemisApp: App {
 
             // spaces
             CommandMenu("Spaces") {
+                let _ = Bench.markOnce("ArtemisApp: last menu")
                 Button("New Space…") {
                     shown(browser).isSpaceCreatorVisible = true
                 }
@@ -712,6 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// opens a window if neither a browser nor a Scout window was made well after a restore
     /// would have landed: restoration keys off the scene's view type, which a new build can change
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Bench.mark("didFinishLaunching")
         ScoutWindow.watchActivation()
         _ = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let fKey = event.charactersIgnoringModifiers?.unicodeScalars.first.map { (0xF704...0xF726).contains($0.value) } == true
@@ -732,6 +740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconAppearance = NSApp.observe(\.effectiveAppearance) { _, _ in
             Task { @MainActor in AppIconChoice.apply() }
         }
+        Bench.mark("didFinishLaunching end")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if !BrowserWindows.shared.hasMainWindow, !ScoutWindow.isShowing { self.openBrowserWindow() }
         }

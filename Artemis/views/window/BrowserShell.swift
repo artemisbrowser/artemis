@@ -186,7 +186,11 @@ final class ShellView<Sidebar: View, Content: View, Panel: View>: NSView {
                 CGRect(x: mirrored ? bounds.width - x - width : x, y: 0, width: width, height: height),
                 options: .alignAllEdgesNearest)
         }
-        let sidebar = rect(x: sidebarX.value(at: now), width: sidebarWidth.value(at: now))
+        // the sidebar's host sits at its destination and a slide moves only its layer:
+        // a host whose frame moves re-lays out its whole graph that frame
+        let sidebar = rect(x: sidebarX.target, width: sidebarWidth.target)
+        let slide = rect(x: sidebarX.value(at: now), width: sidebarWidth.value(at: now)).minX - sidebar.minX
+        sidebarHost.layer?.setAffineTransform(CGAffineTransform(translationX: slide, y: 0))
         let x = contentX.value(at: now)
         let content = rect(x: x, width: max(bounds.width - x - contentTrailing.value(at: now), 0))
         let panel = rect(x: bounds.width - panelInset.value(at: now), width: panelWidth)

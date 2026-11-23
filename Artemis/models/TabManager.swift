@@ -383,6 +383,7 @@ final class TabManager {
         // build everything in locals first — stored properties must all be
         // initialized before `self` (and `self.spaces`) can be touched
         let session = SessionStore.load()
+        Bench.mark("TabManager: session decoded")
         // while a session that won't decode is on disk or set aside, its profiles and tabs are
         // unknown, so sweep nothing they own
         let sessionUnreadable =
@@ -390,6 +391,7 @@ final class TabManager {
             || FileManager.default.fileExists(atPath: SessionStore.fileURL.appendingPathExtension("unreadable").path)
         let loadedProfiles = session.map { $0.profiles.map(Self.makeProfile(from:)) }
             ?? [Self.makeProfile(from: .makeDefault())]
+        Bench.mark("TabManager: profiles made")
         let loadedSpaces: [Space]
         if let loaded = session?.spaces, !loaded.isEmpty {
             loadedSpaces = loaded.map(Self.makeSpace(from:))
@@ -430,7 +432,14 @@ final class TabManager {
         // the restored tab waits on the already-compiled list (~2ms warm; a
         // cache miss returns at once and the rebuild reloads what is open)
         Task { @MainActor in
-            await ContentBlocker.shared.installPreviouslyCompiled()
+            if PerfFlags.startsLaunchPageEarly {
+                async let installed = ContentBlocker.shared.installPreviouslyCompiled()
+                await makeLaunchPageOnceVisible()
+                _ = await installed
+            } else {
+                await ContentBlocker.shared.installPreviouslyCompiled()
+            }
+            Bench.mark("launch page: rules installed")
             prepareCurrentSpace()
             await ContentBlocker.shared.apply()
         }
@@ -566,7 +575,7 @@ final class TabManager {
 
     /// the tab owning `webView`, for script-message handlers shared by every tab
     func tab(hosting webView: WKWebView) -> BrowserTab? {
-        allTabs.first { $0.webView === webView }
+        allTabs.first { $0.madeWebView === webView }
     }
 
     /// the space a tab lives in — nil for favourites and the Peek preview,
@@ -600,7 +609,7 @@ final class TabManager {
         guard let page = hoveredLinkPage else { return }
         let shown = onScreenTabIDs
         let onScreen = (allTabs + [peekTab].compactMap { $0 }).contains {
-            shown.contains($0.id) && ObjectIdentifier($0.webView) == page
+            shown.contains($0.id) && $0.madeWebView.map(ObjectIdentifier.init) == page
         }
         guard navigating.map(ObjectIdentifier.init) == page || !onScreen else { return }
         clearHoverTask?.cancel()
@@ -973,11 +982,18 @@ final class TabManager {
         wire(tab)
         insert(tab, into: space, select: select)
         if let url {
-            tab.load(url)
+            // a page shown at once mounts first and loads after; a popup's load is WebKit's own
+            tab.load(url, afterMount: select && configuration == nil && space.id == currentSpace.id && showsPagesNow)
         } else if select, configuration == nil {
             openNewTabBar()
         }
         return tab
+    }
+
+    /// this window is on screen and mounts pages in its card
+    var showsPagesNow: Bool {
+        guard kind != .scout, let window = BrowserWindows.shared.window(of: self) else { return false }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
     }
 
     /// `announce` is false for a page extensions already know, a promoted Peek
@@ -2234,7 +2250,6 @@ final class TabManager {
         archiveStaleTabs()
         archiveTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.archiveStaleTabs()
-            self?.hibernateIdleTabs()
         }
         watchMemoryPressure()
     }
@@ -2245,11 +2260,21 @@ final class TabManager {
     static let hibernateAfterMinutesKey = "hibernateAfterMinutes"
     static let defaultHibernateAfterMinutes: Double = 30
 
+    private static var isLowPower: Bool {
+        PerfFlags.sleepsHarderOnLowPower && ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
+
+    /// background tabs past this many, most recently used first, sleep after a third of the wait
+    static var awakeTabCount: Int { isLowPower ? 3 : 5 }
+
     private var hibernateInterval: TimeInterval {
         let minutes = UserDefaults.standard.object(forKey: Self.hibernateAfterMinutesKey) as? Double
             ?? Self.defaultHibernateAfterMinutes
-        return minutes * 60
+        return minutes * 60 / (Self.isLowPower ? 2 : 1)
     }
+
+    @ObservationIgnored private static var sleepTimer: Timer?
+    @ObservationIgnored private static var watchesLastWindow = false
 
     /// tabs that must stay awake no matter how long they've idled: whatever is
     /// on screen right now (including every pane of a shown split), the focused
@@ -2277,31 +2302,107 @@ final class TabManager {
         return ids
     }
 
-    /// background tabs that sleep on their own: never a pin, a favourite or what is on screen
-    private func sleepers(idleSince cutoff: Date) -> [BrowserTab] {
-        let keep = visibleTabIDs
-        return allTabs.filter { !keep.contains($0.id) && !$0.isPinned && !$0.isEssential && $0.lastAccessed < cutoff }
+    /// the spaces some window shows
+    private var shownSpaceIDs: Set<Space.ID> {
+        Set(([self] + BrowserWindows.shared.allManagers).map(\.selectedSpaceID))
     }
 
-    /// release the web view of any background tab left untouched past the
-    /// threshold. the tab stays in the sidebar exactly as it was — selecting it
-    /// restores scroll position and form state from its interaction blob
-    func hibernateIdleTabs() {
+    /// what sleep never takes: every window's page, the mini-player's, and each space's own page,
+    /// which with `sleepsFarKeepers` stays awake only in and beside a space some window shows
+    private var awakeTabIDs: Set<BrowserTab.ID> {
+        guard PerfFlags.sleepsFarKeepers else { return visibleTabIDs }
+        var ids = onScreenTabIDs
+        for manager in BrowserWindows.shared.allManagers { ids.formUnion(manager.onScreenTabIDs) }
+        if let playing = miniPlayer.tab { ids.insert(playing.id) }
+        let shown = shownSpaceIDs
+        let shownAt = spaces.indices.filter { shown.contains(spaces[$0].id) }
+        for index in spaces.indices where shownAt.contains(where: { abs($0 - index) <= 1 }) {
+            ids.formUnion([spaces[index].selectedTabID, spaces[index].selectedEssentialID].compactMap { $0 })
+        }
+        return ids
+    }
+
+    /// background tabs sleep may take, most recently used first. a pin sleeps only outside every
+    /// shown space, and a favourite only off screen, both with `sleepsFarKeepers`
+    func sleepCandidates() -> [BrowserTab] {
+        let awake = awakeTabIDs
+        let far = PerfFlags.sleepsFarKeepers
+        let shown = far ? shownSpaceIDs : []
+        let shownPins = Set(spaces.filter { shown.contains($0.id) }.flatMap(\.pinnedTabs).map(\.id))
+        return allTabs.filter { tab in
+            if awake.contains(tab.id) { return false }
+            if tab.isEssential { return far }
+            if tab.isPinned { return far && !shownPins.contains(tab.id) }
+            return true
+        }
+        .sorted { $0.lastAccessed > $1.lastAccessed }
+    }
+
+    /// one at a time, each checked again as its turn comes
+    private func putToSleep(_ tabs: [BrowserTab]) async {
+        for tab in tabs {
+            await tab.sleepIfIdle { [weak self] in self?.awakeTabIDs.contains(tab.id) == false }
+        }
+    }
+
+    /// sleep every background tab untouched past the idle wait, or past a third of it beyond the
+    /// newest few. selecting one restores its scroll and form state from its interaction blob
+    func hibernateIdleTabs() async {
         let interval = hibernateInterval
         guard interval > 0 else { return }
-        for tab in sleepers(idleSince: Date(timeIntervalSinceNow: -interval)) { tab.hibernate() }
+        let now = Date()
+        let tired = sleepCandidates().enumerated().filter { rank, tab in
+            let wait = PerfFlags.keepsNewestAwake && rank >= Self.awakeTabCount ? interval / 3 : interval
+            return now.timeIntervalSince(tab.lastAccessed) >= wait
+        }
+        await putToSleep(tired.map(\.element))
     }
 
-    /// critical memory pressure sleeps every background tab that may sleep; a warning sleeps none
-    func relieveMemoryPressure() {
-        for tab in sleepers(idleSince: Date()) { tab.hibernate() }
+    /// critical pressure sleeps every background tab that may sleep; a warning, those past the newest few
+    func relieveMemoryPressure(critical: Bool = true) async {
+        let candidates = sleepCandidates()
+        await putToSleep(critical ? candidates : Array(candidates.dropFirst(Self.awakeTabCount)))
     }
 
     private func watchMemoryPressure() {
-        let source = DispatchSource.makeMemoryPressureSource(eventMask: .critical, queue: .main)
-        source.setEventHandler { [weak self] in self?.relieveMemoryPressure() }
+        let events: DispatchSource.MemoryPressureEvent = PerfFlags.sleepsOnWarning ? [.warning, .critical] : .critical
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: events, queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            let critical = source?.data.contains(.critical) ?? true
+            Task { await self?.relieveMemoryPressure(critical: critical) }
+        }
         source.resume()
         memoryPressureSource = source
+        Self.sleepTimer?.invalidate()
+        Self.sleepTimer = Timer.scheduledTimer(
+            withTimeInterval: PerfFlags.keepsNewestAwake ? 60 : 300, repeats: true
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let manager = self ?? BrowserWindows.shared.mainManagers.first else { return }
+                Task { await manager.hibernateIdleTabs() }
+            }
+        }
+        watchLastWindow()
+    }
+
+    /// with no browser window left, nothing is on screen: every tab that may sleep does
+    private func watchLastWindow() {
+        guard PerfFlags.sleepsWithNoWindow, !Self.watchesLastWindow else { return }
+        Self.watchesLastWindow = true
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { _ in
+            // after BrowserWindows' own observer of the same close has unregistered the window
+            DispatchQueue.main.async {
+                guard !BrowserWindows.shared.hasMainWindow, let manager = BrowserWindows.shared.seed else { return }
+                Task { await manager.releaseWithNoWindow() }
+            }
+        }
+    }
+
+    func releaseWithNoWindow() async {
+        let playing = miniPlayer.tab?.id
+        for tab in allTabs where tab.id != playing {
+            await tab.sleepIfIdle { !BrowserWindows.shared.hasMainWindow }
+        }
     }
 
     /// file every Today tab untouched past its profile's threshold in the archive.
@@ -2920,6 +3021,19 @@ final class TabManager {
         for j in [i - 1, i + 1] where spaces.indices.contains(j) {
             activateSplit(for: shownPage(in: spaces[j]), in: spaces[j])
         }
+    }
+
+    /// the page launch will show gets its web view, unloaded, once a window is on screen (or
+    /// after 1 s), so building it never delays the window and overlaps the rule-list lookup
+    private func makeLaunchPageOnceVisible() async {
+        let start = ContinuousClock.now
+        while !NSApp.windows.contains(where: { $0.occlusionState.contains(.visible) && BrowserWindows.shared.manager(for: $0) === self }),
+            ContinuousClock.now - start < .seconds(1) {
+            try? await Task.sleep(for: .milliseconds(4))
+        }
+        Bench.mark("launch page: window visible")
+        guard let tab = selectedTab ?? currentSpace.firstOpenTab else { return }
+        _ = tab.webView
     }
 
     /// give the current space a valid selection and warm it. a closed Scout or

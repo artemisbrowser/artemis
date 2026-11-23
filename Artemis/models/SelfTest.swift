@@ -1146,6 +1146,7 @@ enum SelfTest {
             ("miniplayernotch", { await testMiniPlayerNotch(manager: manager) }),
             ("pageresizesettles", { await testPageResizeSettles(manager: manager) }),
             ("pagestack", { await testPageStack(manager: manager) }),
+            ("newtabmount", { await testNewTabMount(manager: manager) }),
             ("splitresizeholds", { testSplitResizeHolds(manager: manager) }),
             ("windowscopedmonitors", { await testWindowScopedMonitors(manager: manager) }),
             ("splitpanemoves", { testSplitPaneMoves(manager: manager) }),
@@ -1223,6 +1224,8 @@ enum SelfTest {
                 }
             ),
             ("converter", { await testConverter() }),
+            ("sitehides", { await testSiteHides() }),
+            ("sitepool", { await testSitePool(manager: manager) }),
             ("liveblocking", { await testLiveBlocking() }),
             ("privacycleaner", { await testPrivacyCleaner(manager: manager) }),
             ("printing", { await testPrinting(manager: manager) }),
@@ -1258,6 +1261,8 @@ enum SelfTest {
             ("toolbaraddress", { await testToolbarAddress(manager: manager) }),
             ("windowdrag", { await testWindowDrag(manager: manager) }),
             ("commandbarthroughsidebar", { await testCommandBarThroughSidebar(manager: manager) }),
+            ("commandbargrow", { await testCommandBarGrow(manager: manager) }),
+            ("commandbarkeys", { await testCommandBarKeys(manager: manager) }),
             ("sidebarright", { await testSidebarOnRight(manager: manager) }),
             ("linkbubblepage", { await testLinkBubblePage(manager: manager) }),
             ("librarypeek", { await testLibraryPeek(manager: manager) }),
@@ -1305,12 +1310,19 @@ enum SelfTest {
             ("incognitoextensions", { await testIncognitoExtensions(manager: manager) }),
         ]
         let run = plumbing
-        for (name, test) in run where wants(name) { await test() }
+        Coverage.mark("_launch")
+        for (name, test) in run where wants(name) {
+            await test()
+            if Coverage.mark(name) { emit("group \(name)") }
+        }
         if withExtensions.contains(where: { wants($0.0) }) {
             ExtensionManager.shared.isMasterEnabled = true
             try? await Task.sleep(for: .milliseconds(500))
         }
-        for (name, test) in withExtensions where wants(name) { await test() }
+        for (name, test) in withExtensions where wants(name) {
+            await test()
+            if Coverage.mark(name) { emit("group \(name)") }
+        }
         // only when named: a real fullscreen takes over a Space on the screen
         if groups.contains("lightsfullscreen") { await testLightsFullscreen() }
         // only when named: what youtube.com serves and how fast is not the suite's to hold still
@@ -4132,7 +4144,7 @@ enum SelfTest {
         record(
             "scripting: nor one behind leading whitespace", tab.lastAttemptedURL == nil && tab.title == "Scripted",
             "\(tab.lastAttemptedURL?.absoluteString ?? "") \(tab.title)")
-        URL(string: "javascript://%0Adocument.title='x'").map(tab.load)
+        URL(string: "javascript://%0Adocument.title='x'").map { tab.load($0) }
         record(
             "scripting: a tab refuses to load a javascript: URL from any caller", tab.lastAttemptedURL == nil,
             tab.lastAttemptedURL?.absoluteString ?? "")
@@ -6790,7 +6802,11 @@ enum SelfTest {
     /// the link bubble lasts only while the page that reported its link is the one shown, unchanged
     private static func testLinkBubblePage(manager: TabManager) async {
         let home = manager.selectedTabID
-        defer { manager.selectedTabID = home }
+        // a tab made without a url opens the ⌘T bar
+        defer {
+            manager.isCommandBarVisible = false
+            manager.selectedTabID = home
+        }
         func hovered() async -> BrowserTab {
             let tab = manager.newTab()
             await load(tab, html: "<html><body><a id='l' href='https://selftest-bubble.example/page'>link</a></body></html>")
@@ -6845,9 +6861,11 @@ enum SelfTest {
         manager.isCommandBarVisible = false
         try? await Task.sleep(for: .milliseconds(300))
         manager.openNewTabBar()
-        await settle(.seconds(6)) { window.firstResponder is NSTextView }
+        await settle(.seconds(6)) { barHasKeyboard(window) }
+        // insertText skips the host's hold on keys typed before a fresh field has taken its first update
+        try? await Task.sleep(for: .milliseconds(150))
         func field() -> NSTextView? { window.firstResponder as? NSTextView }
-        guard field() != nil else {
+        guard barHasKeyboard(window) else {
             manager.isCommandBarVisible = false
             return note("autofill field: skipped, the bar's field never took the keyboard (key window \(window.isKeyWindow))")
         }
@@ -6909,6 +6927,12 @@ enum SelfTest {
         await testFillHighlight(manager: manager, window: window)
     }
 
+    /// the window's field editor answers for the ⌘T bar's own field, not one an earlier bar or test left it on
+    private static func barHasKeyboard(_ window: NSWindow) -> Bool {
+        guard let field = (window.firstResponder as? NSTextView)?.delegate as? NSView else { return false }
+        return field.window === window && sequence(first: field, next: \.superview).contains { $0 is CommandBarHost }
+    }
+
     /// the completion's highlight is drawn in one colour from the first fill on
     private static func testFillHighlight(manager: TabManager, window: NSWindow) async {
         let host = "rubricfill.selftest.example"
@@ -6916,14 +6940,16 @@ enum SelfTest {
         defer { manager.close(tab) }
         try? await Task.sleep(for: .milliseconds(300))
         manager.openNewTabBar()
-        await settle(.seconds(6)) { window.firstResponder is NSTextView }
+        await settle(.seconds(6)) { barHasKeyboard(window) }
+        // insertText skips the host's hold on keys typed before a fresh field has taken its first update
+        try? await Task.sleep(for: .milliseconds(150))
         func field() -> NSTextView? { window.firstResponder as? NSTextView }
         // the field editor's own pixels mid-run, and the blend its layer composites with
         func highlight() -> String {
             guard let field = field(), field.selectedRange().length > 0,
                 let layout = field.layoutManager, let container = field.textContainer,
                 let rep = field.bitmapImageRepForCachingDisplay(in: field.bounds)
-            else { return "none" }
+            else { return "none \(field()?.string ?? "-") \(field().map { NSStringFromRange($0.selectedRange()) } ?? "")" }
             let glyphs = layout.glyphRange(forCharacterRange: field.selectedRange(), actualCharacterRange: nil)
             let run = layout.boundingRect(forGlyphRange: glyphs, in: container)
                 .offsetBy(dx: field.textContainerOrigin.x, dy: field.textContainerOrigin.y)
@@ -6943,13 +6969,211 @@ enum SelfTest {
         }
         try? await Task.sleep(for: .milliseconds(800))
         seen.append(highlight())
-        let fills = seen.filter { $0 != "none" }
+        let fills = seen.filter { !$0.hasPrefix("none") }
         // a blended selection changes colour on screen as the glass under it settles
         record(
             "autofill field: the completion's highlight keeps one colour while you type",
             fills.count > 2 && Set(fills).count == 1 && fills[0].hasSuffix("blend none"),
             seen.joined(separator: " | "))
         manager.isCommandBarVisible = false
+    }
+
+    /// keys typed with no gap between them, from the moment ⌘T opens the bar, all land in order
+    private static func testCommandBarKeys(manager: TabManager) async {
+        guard let window = BrowserWindows.shared.window(of: manager) else {
+            return record("command bar keys: the window is up", false)
+        }
+        let shown = UserDefaults.standard.object(forKey: BrowserToolbar.shownKey)
+        UserDefaults.standard.set(false, forKey: BrowserToolbar.shownKey)
+        defer { UserDefaults.standard.set(shown, forKey: BrowserToolbar.shownKey) }
+        // US keycodes; ":" is ⇧;
+        let codes: [Character: UInt16] = [
+            "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25, "0": 29,
+            ".": 47, "/": 44, ":": 41, "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "k": 40, "s": 1, "y": 16,
+        ]
+        func post(_ text: String, then submit: Bool) {
+            func key(_ characters: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags) {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    NSEvent.keyEvent(
+                        with: type, location: .zero, modifierFlags: flags,
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                        isARepeat: false, keyCode: code
+                    ).map { NSApp.postEvent($0, atStart: false) }
+                }
+            }
+            for character in text {
+                key(String(character), codes[character] ?? 0, character == ":" ? .shift : [])
+            }
+            if submit { key("\r", 36, []) }
+        }
+        func fieldText() -> String? { (window.firstResponder as? NSTextView)?.string }
+
+        for (label, delay) in [("150 ms after ⌘T", 150), ("at once after ⌘T", 0)] {
+            manager.isCommandBarVisible = false
+            becomeKey(window)
+            try? await Task.sleep(for: .milliseconds(600))
+            let tabs = manager.currentSpace.tabs.count
+            let text = "127.0.0.1:9/keys/\(String(UUID().uuidString.prefix(6)).lowercased())"
+                .map { codes[$0] == nil ? "a" : String($0) }.joined()
+            manager.openNewTabBar()
+            if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+            post(text, then: false)
+            await settle(.seconds(2)) { fieldText()?.hasPrefix(text) == true }
+            let typed = fieldText() ?? "none"
+            post("", then: true)
+            await settle(.seconds(2)) { !manager.isCommandBarVisible }
+            let opened = manager.selectedTab
+            let landed = opened?.lastAttemptedURL?.absoluteString ?? opened?.url?.absoluteString ?? "none"
+            record(
+                "command bar keys: typed with no gap \(label), every key lands and ↵ opens it",
+                typed.hasPrefix(text) && landed.contains(text) && manager.currentSpace.tabs.count == tabs + 1,
+                "field \(typed), opened \(landed)")
+            if let opened, manager.currentSpace.tabs.count > tabs { manager.close(opened) }
+        }
+        manager.isCommandBarVisible = false
+    }
+
+    /// the ⌘T bar's Core Animation grow follows `Motion.popSpring` about the overlay's
+    /// top centre, takes clicks only on the bar, and unmounts once faded
+    private static func testCommandBarGrow(manager: TabManager) async {
+        func barHost(in view: NSView) -> CommandBarHost? {
+            view as? CommandBarHost ?? view.subviews.lazy.compactMap { barHost(in: $0) }.first
+        }
+        guard let window = BrowserWindows.shared.window(of: manager),
+            let host = window.contentView.flatMap({ barHost(in: $0) }), let layer = host.layer
+        else { return record("command bar grow: the window and the bar's host are up", false) }
+        let shown = UserDefaults.standard.object(forKey: BrowserToolbar.shownKey)
+        UserDefaults.standard.set(false, forKey: BrowserToolbar.shownKey)
+        defer { UserDefaults.standard.set(shown, forKey: BrowserToolbar.shownKey) }
+        manager.isCommandBarVisible = false
+        becomeKey(window)
+        await settle { host.isHidden }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        let spring = Motion.popSpring
+        /// worst gap from the spring, in opacity and in scale, and the top edge's worst drift in points
+        func sample(to target: Double) async -> (opacity: Double, scale: Double, top: Double, frames: Int) {
+            await settle(.seconds(1)) { layer.animation(forKey: "opacity") != nil }
+            // uncommitted, the presentation shows the model
+            CATransaction.flush()
+            guard let began = layer.animation(forKey: "opacity")?.beginTime else { return (1, 1, 1, 0) }
+            let flipped = host.superview?.isFlipped ?? false
+            let model = layer.frame
+            let top = flipped ? model.minY : model.maxY
+            var worst = (opacity: 0.0, scale: 0.0, top: 0.0, frames: 0)
+            while let presented = layer.presentation(), layer.animation(forKey: "opacity") != nil {
+                let t = layer.convertTime(CACurrentMediaTime(), from: nil) - began
+                guard t < spring.settlingDuration else { break }
+                // the presentation layer is drawn for the coming frame, up to one frame from now
+                func gap(_ value: Double, _ map: (Double) -> Double) -> Double {
+                    stride(from: -1.0 / 60, through: 1.0 / 60, by: 1.0 / 960).map { dt in
+                        let p = spring.value(target: 1.0, initialVelocity: 0, time: max(t + dt, 0))
+                        return abs(value - map(target == 1 ? p : 1 - p))
+                    }.min() ?? 1
+                }
+                let frame = presented.frame
+                worst.opacity = max(worst.opacity, gap(Double(presented.opacity)) { $0 })
+                worst.scale = max(worst.scale, gap(Double(presented.transform.m11)) { 0.97 + 0.03 * $0 })
+                worst.top = max(worst.top, abs(Double((flipped ? frame.minY : frame.maxY) - top)))
+                worst.top = max(worst.top, abs(Double(frame.midX - model.midX)))
+                worst.frames += 1
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+            return worst
+        }
+
+        manager.openNewTabBar()
+        let grow = await sample(to: 1)
+        await settle { layer.animationKeys() == nil }
+        record(
+            "command bar grow: opacity and scale follow Motion.popSpring about the top centre",
+            grow.frames >= 10 && grow.opacity < 0.02 && grow.scale < 0.001 && grow.top < 0.5,
+            "frames \(grow.frames), worst opacity \(grow.opacity), scale \(grow.scale), anchor drift \(grow.top) pt")
+        await settle { window.firstResponder is NSTextView }
+        let field = window.firstResponder as? NSTextView
+        let spot = field.map { $0.convert($0.visibleRect, to: nil) }.map { NSPoint(x: $0.minX + 4, y: $0.midY) } ?? .zero
+        let corner = NSPoint(x: 40, y: 40)
+        // SwiftUI's host takes a press on its field itself and hands it on
+        let onBar = window.contentView?.hitTest(spot).map { $0 === host || $0.isDescendant(of: host) } == true
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSEvent.mouseEvent(
+                with: type, location: spot, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                pressure: type == .leftMouseDown ? 1 : 0
+            ).map { NSApp.postEvent($0, atStart: false) }
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+        record(
+            "command bar grow: the bar holds the keyboard and takes clicks only on itself",
+            field?.isDescendant(of: host) == true && onBar && manager.isCommandBarVisible
+                && window.firstResponder === field
+                && window.contentView?.hitTest(corner)?.isDescendant(of: host) != true,
+            "on bar \(onBar), visible \(manager.isCommandBarVisible), "
+                + "responder \(String(describing: window.firstResponder.map { type(of: $0) })), "
+                + "corner \(String(describing: window.contentView?.hitTest(corner).map { type(of: $0) }))")
+
+        manager.isCommandBarVisible = false
+        let shrink = await sample(to: 0)
+        await settle { host.isHidden }
+        record(
+            "command bar grow: closing shrinks it back on the same spring, then unmounts it",
+            shrink.frames >= 10 && shrink.opacity < 0.02 && shrink.scale < 0.001 && shrink.top < 0.5
+                && host.isHidden && layer.animationKeys() == nil
+                && window.contentView?.hitTest(spot)?.isDescendant(of: host) != true,
+            "frames \(shrink.frames), worst opacity \(shrink.opacity), scale \(shrink.scale), "
+                + "anchor drift \(shrink.top) pt, hidden \(host.isHidden)")
+
+        // reversed mid-grow, it carries on from where it was: no step outruns the spring's top speed,
+        // give or take the frame the presentation runs ahead
+        manager.openNewTabBar()
+        await settle(.seconds(1)) { layer.animation(forKey: "opacity") != nil }
+        CATransaction.flush()
+        let pace = stride(from: 0, through: spring.settlingDuration, by: 0.001)
+            .map { abs(spring.velocity(target: 1.0, initialVelocity: 0, time: $0)) }.max() ?? 0
+        var trace: [(time: Double, opacity: Double)] = []
+        var closed = false
+        while trace.count < 200, !(closed && host.isHidden) {
+            let opacity = Double(layer.presentation()?.opacity ?? 0)
+            trace.append((CACurrentMediaTime(), opacity))
+            if !closed, opacity > 0.35 {
+                closed = true
+                manager.isCommandBarVisible = false
+            }
+            try? await Task.sleep(for: .milliseconds(8))
+        }
+        let leap = zip(trace, trace.dropFirst()).map { abs($1.opacity - $0.opacity) - pace * ($1.time - $0.time + 1.0 / 60) }.max() ?? 1
+        await settle { host.isHidden }
+        record(
+            "command bar grow: a close mid-grow turns back without a jump",
+            closed && leap < 0.02 && (trace.map(\.opacity).max() ?? 1) < 0.99 && host.isHidden,
+            "largest step past the pace \(leap), peak \(trace.map(\.opacity).max() ?? 0), samples \(trace.count)")
+
+        // drawn under the Peek, as an overlay above it in the window
+        manager.peek(URL(string: "about:blank")!)
+        await settle { manager.peekTab?.webView.window === window }
+        try? await Task.sleep(for: .milliseconds(500))
+        manager.openNewTabBar()
+        await settle { window.firstResponder is NSTextView && host.layer?.animationKeys() == nil }
+        if let peek = manager.peekTab?.webView, let bar = window.firstResponder as? NSTextView,
+            bar.isDescendant(of: host)
+        {
+            let rect = bar.convert(bar.visibleRect, to: nil)
+            let point = NSPoint(x: rect.midX, y: rect.midY)
+            let underPeek = peek.convert(peek.bounds, to: nil).contains(point)
+            if underPeek {
+                record(
+                    "command bar grow: the Peek stays above the bar",
+                    window.contentView?.hitTest(point)?.isDescendant(of: host) == false)
+            } else {
+                note("command bar grow: skipped the Peek order check — the Peek doesn't cover the bar")
+            }
+        } else {
+            note("command bar grow: skipped the Peek order check — the bar or the Peek wasn't up")
+        }
+        manager.isCommandBarVisible = false
+        manager.closePeek()
+        await settle { host.isHidden }
     }
 
     private static func testCommandBarThroughSidebar(manager: TabManager) async {
@@ -8413,6 +8637,93 @@ enum SelfTest {
         record("hidden page: audio graph still running", audio)
     }
 
+    /// a page shown at once mounts before WebKit loads it; every other open loads at once
+    private static func testNewTabMount(manager: TabManager) async {
+        guard let served = serveLoopback("<html><body style='background:#234'>mounted</body></html>") else {
+            return record("new tab mount: serves a page", false)
+        }
+        defer { close(served.socket) }
+        let url = URL(string: "http://127.0.0.1:\(served.port)/mount")!
+        let previous = manager.selectedTabID
+        SelfTest.mainWindow()?.makeKeyAndOrderFront(nil)
+        await settle { manager.showsPagesNow }
+
+        let shown = manager.newTab(url: url, select: true)
+        let deferred = !shown.webView.isLoading && shown.webView.window == nil && shown.lastAttemptedURL == url
+        var inWindowAtLoad: Bool?
+        let watch = shown.webView.observe(\.isLoading) { webView, _ in
+            if webView.isLoading, inWindowAtLoad == nil { inWindowAtLoad = webView.window != nil }
+        }
+        await settle { shown.url == url && !shown.isLoading }
+        watch.invalidate()
+        record(
+            "new tab mount: a page shown at once loads after it is mounted",
+            deferred && inWindowAtLoad == true && shown.url == url,
+            "deferred \(deferred) inWindowAtLoad \(String(describing: inWindowAtLoad)) url \(shown.url?.absoluteString ?? "nil")")
+        await settle { shown.webHost?.layer?.animation(forKey: "hold") == nil }
+        record(
+            "new tab mount: the page is revealed once it commits",
+            shown.webHost?.isHidden == false && shown.webHost?.layer?.animation(forKey: "hold") == nil)
+
+        let background = manager.newTab(url: url, select: false)
+        record("new tab mount: a background tab loads at once", background.webView.isLoading)
+        let popup = manager.newTab(url: url, configuration: BrowserTab.defaultConfiguration(), select: true)
+        record("new tab mount: a popup's page loads at once", popup.webView.isLoading)
+        let other = Space(name: "Mount probe", icon: "circle.fill")
+        manager.spaces.append(other)
+        let elsewhere = manager.newTab(url: url, select: true, in: other)
+        record("new tab mount: a tab in a space not shown loads at once", elsewhere.webView.isLoading)
+        let windowless = TabManager(kind: .main, startingOn: manager.selectedSpaceID)
+        let offscreen = windowless.newTab(url: url, select: true)
+        record("new tab mount: a window not on screen loads at once", offscreen.webView.isLoading)
+
+        let stopped = manager.newTab(url: url, select: true)
+        stopped.stopLoading()
+        let closed = manager.newTab(url: url, select: true)
+        manager.close(closed)
+        try? await Task.sleep(for: .milliseconds(300))
+        record(
+            "new tab mount: a load stopped or closed before it starts never starts",
+            stopped.url == nil && !stopped.webView.isLoading && closed.url == nil && !closed.webView.isLoading,
+            "stopped \(stopped.url?.absoluteString ?? "nil") closed \(closed.url?.absoluteString ?? "nil")")
+
+        if let window = BrowserWindows.shared.window(of: manager) {
+            manager.isCommandBarVisible = false
+            try? await Task.sleep(for: .milliseconds(300))
+            manager.openNewTabBar()
+            await settle(.seconds(6)) { barHasKeyboard(window) }
+            try? await Task.sleep(for: .milliseconds(150))
+            if let field = window.firstResponder as? NSTextView, barHasKeyboard(window) {
+                let typed = url.absoluteString + "?focus"
+                field.insertText(typed, replacementRange: NSRange(location: 0, length: (field.string as NSString).length))
+                try? await Task.sleep(for: .milliseconds(300))
+                let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                    isARepeat: false, keyCode: 36)
+                event.map(window.sendEvent)
+                await settle { manager.selectedTab?.url?.absoluteString == typed && manager.selectedTab?.isLoading == false }
+                let submitted = manager.selectedTab
+                await settle { submitted.map { window.firstResponder === $0.webView } ?? false }
+                let focused = try? await submitted?.webView.evaluateJavaScript("document.hasFocus()") as? Bool
+                record(
+                    "new tab mount: a page opened from the command bar takes the keyboard once loaded",
+                    submitted?.url?.absoluteString == typed && window.firstResponder === submitted?.webView && focused == true,
+                    "url \(submitted?.url?.absoluteString ?? "nil") responder \(String(describing: window.firstResponder)) hasFocus \(String(describing: focused))")
+                if let submitted, submitted !== shown { manager.close(submitted) }
+            } else {
+                manager.isCommandBarVisible = false
+                note("new tab mount: skipped the command bar focus check, the bar never took the keyboard (key \(window.isKeyWindow))")
+            }
+        }
+
+        for tab in [shown, background, popup, stopped] { manager.close(tab) }
+        windowless.close(offscreen)
+        manager.close(elsewhere)
+        manager.deleteSpace(other)
+        manager.selectedTabID = previous
+    }
+
     /// The card's pages share one AppKit stack: the shown page is unhidden and
     /// takes the pointer, and the page it replaced is hidden or let go once the
     /// fade has landed.
@@ -8448,6 +8759,10 @@ enum SelfTest {
         record(
             "page stack: the page switched from is hidden or let go",
             second.webHost.map { $0.isHidden || $0.superview == nil } ?? true)
+        record(
+            "page stack: a page entering the window doesn't hold main until it paints",
+            BrowserTab.skipsPaintWait
+                && first.webView.configuration.value(forKey: "waitsForPaintAfterViewDidMoveToWindow") as? Bool == false)
         let centre = stack.convert(NSPoint(x: stack.bounds.midX, y: stack.bounds.midY), to: stack.superview)
         record(
             "page stack: only the shown page takes the pointer",
@@ -10581,6 +10896,16 @@ enum SelfTest {
             describe(f))
 
         await loadAutofill(tab, """
+            <html><body><div id=sheet style="display:none"><form><input id=shown autocomplete="cc-number">
+            <input autocomplete="cc-exp"></form></div><script>setTimeout(() => sheet.style.display = "block", 400);</script></body></html>
+            """)
+        let hiddenFirst = tab.autofillFrames.isEmpty
+        await settle { tab.autofillFrames.values.contains { $0.kinds["card"] != nil } }
+        record(
+            "autofill: a form shown after load is found and reported",
+            hiddenFirst && tab.autofillFrames.values.contains { $0.kinds["card"] != nil })
+
+        await loadAutofill(tab, """
             <html><body><form><input id=holder autocomplete=cc-name></form>
             <iframe srcdoc='<form><input id=fnum autocomplete="cc-number"><input id=fexp autocomplete="cc-exp"></form>'></iframe>
             </body></html>
@@ -11227,6 +11552,48 @@ enum SelfTest {
             "return __artemisPasswords.fill('https://evil.example', 'a', 'b', false, 0)", world: PasswordPage.world)
         record("passwords: a frame on another origin is never filled", foreign == "false", foreign)
 
+        for (label, page) in [
+            ("inserted", """
+                <p>loading</p><script>setTimeout(() => document.body.insertAdjacentHTML("beforeend",
+                  '<form><input autocomplete=username><input type=password></form>'), 400);</script>
+                """),
+            ("shown", """
+                <div id=sheet style="display:none"><form><input autocomplete=username><input type=password></form></div>
+                <script>setTimeout(() => sheet.style.display = "block", 400);</script>
+                """),
+            ("retyped", """
+                <form><input autocomplete=username><input id=pw></form>
+                <script>setTimeout(() => pw.type = "password", 400);</script>
+                """),
+        ] {
+            await load(tab, html: "<html><body>\(page)</body></html>")
+            let early = tab.loginTarget == nil
+            await settle { tab.loginTarget != nil }
+            record("passwords: a login form \(label) after load is reported", early && tab.loginTarget != nil)
+        }
+
+        await load(tab, html: """
+            <html><body><form id=step><input autocomplete=username><button>Next</button></form>\(recorder)</body></html>
+            """)
+        try? await Task.sleep(for: .milliseconds(600))
+        let usernameOnly = tab.loginTarget == nil
+        let swapped = ContinuousClock.now
+        _ = await read("""
+            step.outerHTML = '<form id=step><input id=pass type=password autocomplete=current-password><button>Sign in</button></form>'
+            """)
+        await settle { tab.loginTarget != nil }
+        let reportedAfter = ContinuousClock.now - swapped
+        _ = await read("step.outerHTML = '<form id=step><input id=again type=password autocomplete=current-password></form>'")
+        var refilled = false
+        if let target = PasswordAutofill.shared.target(in: tab) {
+            refilled = await PasswordAutofill.shared.fill(username: "fin", password: "hunter2", into: target, in: tab)
+        }
+        let value = await read("return document.querySelector('input[type=password]').id + '=' + document.querySelector('input[type=password]').value")
+        record(
+            "passwords: a password step that replaces the username step is reported within 700 ms",
+            usernameOnly && tab.loginTarget != nil && reportedAfter <= .milliseconds(700), "\(reportedAfter)")
+        record("passwords: a login form re-rendered after it was reported still fills", refilled && value == "again=hunter2", value)
+
         await load(tab, html: """
             <html><body><form><input id=u2 autocomplete=username>
             <input id=tiny type=password style="width:4px;height:4px;padding:0;border:0"></form>
@@ -11503,6 +11870,19 @@ enum SelfTest {
     /// fingerprint noise is stable within one site in a session and differs between
     /// sites; both checked against live pages
     private static func testFingerprintNoise(manager: TabManager) async {
+        let key = "_shouldAllowUserInstalledFonts"
+        let prefs = WKPreferences()
+        FingerprintNoise.hideInstalledFonts(from: prefs, true)
+        let hidden = prefs.value(forKey: key) as? Bool
+        FingerprintNoise.hideInstalledFonts(from: prefs, false)
+        let shown = prefs.value(forKey: key) as? Bool
+        let tab = BrowserTab.defaultConfiguration().preferences.value(forKey: key) as? Bool
+        let extensionPage = WebExtensionRuntime.controller(for: Profile.defaultID).configuration.webViewConfiguration?
+            .preferences.value(forKey: key) as? Bool
+        record(
+            "fingerprint defence: installed fonts are hidden from pages with it on, shown with it off, and tabs and extension pages follow the setting",
+            hidden == false && shown == true && tab == !FingerprintNoise.isEnabled && extensionPage == tab,
+            "\(String(describing: hidden)) \(String(describing: shown)) \(String(describing: tab)) \(String(describing: extensionPage))")
         guard FingerprintNoise.isEnabled else {
             note("fingerprint noise: switched off, skipping")
             return
@@ -12688,6 +13068,16 @@ enum SelfTest {
             return record("converter: emits valid JSON", false, String(result.json.prefix(200)))
         }
         record("converter: counts what it emits", rules.count == result.ruleCount, "\(rules.count) vs \(result.ruleCount)")
+        let pages = "||pages.selftest.example^"
+        let apart = await Task.detached {
+            ContentBlocker.builtByHelper([fixture], pages: pages, qos: .userInitiated)
+        }.value
+        let expected = [result.json, FilterConverter.pageBlock(pages)].compactMap(\.self).map(ContentBlocker.identifier)
+        record(
+            "converter: the helper process compiles the JSON this one converts, byte for byte",
+            apart?.identifiers == expected && expected.count == 2 && apart?.counts.ruleCount == result.ruleCount
+                && apart?.counts.droppedCount == result.droppedCount,
+            apart.map { "\($0.identifiers) vs \(expected)" } ?? "helper failed")
         func action(_ rule: [String: Any]) -> [String: Any] { rule["action"] as? [String: Any] ?? [:] }
         func trigger(_ rule: [String: Any]) -> [String: Any] { rule["trigger"] as? [String: Any] ?? [:] }
         record(
@@ -12734,6 +13124,134 @@ enum SelfTest {
         } catch {
             record("converter: WebKit compiles the list", false, error.localizedDescription)
         }
+    }
+
+    /// a site's own hides follow the frame's host, not the top page's. 127.0.0.1 and localhost stand in for two sites
+    private static func testSiteHides() async {
+        let fixture = """
+            127.0.0.1##.ip-ad
+            localhost##.name-ad
+            127.0.0.1,localhost##.both-ad
+            a.test,b.test,c.test##.far-ad
+            ##.any-ad
+            @@||localhost^$generichide
+            """
+        let converted = FilterConverter.convert([fixture])
+        let rules = (try? JSONSerialization.jsonObject(with: Data(converted.json.utf8)) as? [[String: Any]]) ?? []
+        let siteHides = rules.filter {
+            let selector = ($0["action"] as? [String: Any])?["selector"] as? String ?? ""
+            return [".ip-ad", ".name-ad", ".both-ad"].contains { selector.contains($0) }
+        }
+        record(
+            "sitehides: one-site and several-site hides merge into each site's rule on its own URL, with no top-page condition",
+            siteHides.count == 2 && siteHides.allSatisfy {
+                let trigger = $0["trigger"] as? [String: Any] ?? [:]
+                return trigger["if-domain"] == nil && trigger["resource-type"] as? [String] == ["document"]
+            },
+            "\(siteHides.map { $0["trigger"] ?? "" })")
+        let tight = FilterConverter.convert([fixture], ceiling: rules.count - 1)
+        record(
+            "sitehides: when splitting would pass the rule ceiling, several-site hides stay whole and no rule drops",
+            tight.overCeilingCount == 0 && tight.json.contains(".far-ad") && tight.json.contains("if-domain"),
+            "\(tight.ruleCount) rules, \(tight.overCeilingCount) over")
+
+        let page = """
+            <div class=ip-ad>x</div><div class=name-ad>x</div><div class=any-ad>x</div><div class=both-ad>x</div><script>
+            const state = () => ["ip-ad", "name-ad", "any-ad", "both-ad"].map(c =>
+              getComputedStyle(document.querySelector("." + c)).display === "none" ? "hidden" : "shown").join(",");
+            if (top !== window) addEventListener("load", () => parent.postMessage(state(), "*"));
+            else addEventListener("message", e => { window.framed = e.data; });
+            </script>
+            """
+        guard
+            let server = LiveLoopback(reply: { path, port in
+                let frame = path.hasPrefix("/ip-frame") ? "127.0.0.1" : path.hasPrefix("/name-frame") ? "localhost" : nil
+                let body = Data((page + (frame.map { "<iframe src=http://\($0):\(port)/page></iframe>" } ?? "")).utf8)
+                return Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
+            }),
+            let list = try? await WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "artemis-selftest-sitehides", encodedContentRuleList: converted.json)
+        else { return record("sitehides: the fixture list compiles and a loopback server starts", false) }
+        defer { server.close() }
+        let tab = BrowserTab()
+        let controller = SharedWebContent.userContentController(for: Profile.defaultID)
+        controller.add(list)
+        func states(_ url: String) async -> (top: String, frame: String) {
+            _ = await loadRemote(tab, url)
+            var framed = ""
+            for _ in 0..<30 where url.hasSuffix("-frame") && framed.isEmpty {
+                try? await Task.sleep(for: .milliseconds(100))
+                framed = (try? await tab.webView.evaluateJavaScript("window.framed ?? ''")) as? String ?? ""
+            }
+            return ((try? await tab.webView.evaluateJavaScript("state()")) as? String ?? "?", framed)
+        }
+        let port = server.port
+        let ip = await states("http://127.0.0.1:\(port)/page")
+        let name = await states("http://localhost:\(port)/page")
+        let sub = await states("http://www.localhost:\(port)/page")
+        record(
+            "sitehides: each site's hide lands on its own top page and subdomains, and $generichide spares its generic hides",
+            ip.top == "hidden,shown,hidden,hidden" && name.top == "shown,hidden,shown,hidden"
+                && sub.top == "shown,hidden,shown,hidden",
+            "127.0.0.1 \(ip.top), localhost \(name.top), www.localhost \(sub.top)")
+        let nameInIP = await states("http://127.0.0.1:\(port)/name-frame")
+        let ipInName = await states("http://localhost:\(port)/ip-frame")
+        record(
+            "sitehides: a framed site gets its own hides and not the top page's, both ways",
+            nameInIP.frame.hasPrefix("shown,hidden") && ipInName.frame.hasPrefix("hidden,shown")
+                && nameInIP.frame.hasSuffix(",hidden") && ipInName.frame.hasSuffix(",hidden"),
+            "localhost in 127.0.0.1 \(nameInIP.frame), 127.0.0.1 in localhost \(ipInName.frame)")
+        controller.remove(list)
+        try? await WKContentRuleListStore.default()?.removeContentRuleList(forIdentifier: "artemis-selftest-sitehides")
+    }
+
+    private static func testSitePool(manager: TabManager) async {
+        guard
+            let server = LiveLoopback(reply: { _, _ in
+                let body = Data("<!doctype html><title>pool</title><p>pool".utf8)
+                return Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
+            })
+        else { return record("sitepool: a loopback server starts", false) }
+        defer { server.close() }
+        func pid(_ tab: BrowserTab) -> Int32 { tab.webView.value(forKey: "_webProcessIdentifier") as? Int32 ?? 0 }
+        let site = "http://pool.localhost:\(server.port)/"
+        let before = manager.allTabs.filter { $0.url.flatMap(BrowserTab.site(of:)) == BrowserTab.site(of: URL(string: site)!) }
+        var tabs: [BrowserTab] = []
+        defer { tabs.forEach { manager.close($0) } }
+        for page in 0..<(BrowserTab.processesPerSite + 2) {
+            let tab = manager.newTab(url: URL(string: site + "p\(page)")!, select: false)
+            tabs.append(tab)
+            await tab.settle()
+        }
+        let pids = tabs.map(pid)
+        let pool = Set(pids.prefix(BrowserTab.processesPerSite))
+        record(
+            "sitepool: a site's tabs fill \(BrowserTab.processesPerSite) processes, then join the least-loaded",
+            before.isEmpty && pool.count == BrowserTab.processesPerSite && !pool.contains(0)
+                && pids.suffix(2).allSatisfy(pool.contains) && pids[pids.count - 1] != pids[pids.count - 2],
+            "pids \(pids), \(before.count) tabs already on the site")
+
+        let mover = tabs.removeLast()
+        defer { manager.close(mover) }
+        _ = await loadRemote(mover, "http://127.0.0.1:\(server.port)/away")
+        let kept = Array(pids.dropLast())
+        record(
+            "sitepool: a pooled tab leaves on a cross-site navigation and the rest stay put",
+            !pool.contains(pid(mover)) && pid(mover) != 0 && tabs.map(pid) == kept,
+            "moved to \(pid(mover)), rest \(tabs.map(pid))")
+
+        // the process the fifth tab joined holds two of them
+        let victim = pids[BrowserTab.processesPerSite]
+        kill(victim, SIGKILL)
+        for _ in 0..<50 where tabs.indices.contains(where: { kept[$0] == victim && pid(tabs[$0]) != 0 }) {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let after = tabs.map(pid)
+        record(
+            "sitepool: killing one pooled process takes out its tabs only",
+            kept.filter { $0 == victim }.count == 2
+                && zip(kept, after).allSatisfy { $0.0 == victim ? $0.1 == 0 : $0.0 == $0.1 },
+            "killed \(victim), before \(kept), after \(after)")
     }
 
     /// each switch installs its own lists and no other's. leaves ads on, the rest off
@@ -12972,6 +13490,24 @@ enum SelfTest {
         // --- half two: the real converted lists
         await blocker.updateLists(force: false)
         record("blocker: rules installed", blocker.ruleCount > 0, "\(blocker.ruleCount) rules")
+        let shipped = ["easylist", "easyprivacy"].compactMap {
+            try? String(
+                contentsOf: blocker.cacheURL(Blocklist(id: $0, name: "", detail: "", url: URL(string: "https://example.com")!)),
+                encoding: .utf8)
+        }
+        let (here, apart) = await Task.detached {
+            (
+                FilterConverter.convert(shipped, extraExceptions: ContentBlocker.siteFixes),
+                ContentBlocker.builtByHelper(shipped, pages: nil, qos: .userInitiated)
+            )
+        }.value
+        record(
+            "blocker: the helper compiles the shipped lists byte for byte as the app converts them",
+            shipped.count == 2 && apart?.identifiers == [ContentBlocker.identifier(of: here.json)]
+                && apart?.counts.ruleCount == here.ruleCount && apart?.counts.droppedCount == here.droppedCount
+                && apart?.counts.overCeilingCount == here.overCeilingCount,
+            "\(shipped.count) lists, \(here.ruleCount) rules, "
+                + (apart.map { "\($0.identifiers) vs \(ContentBlocker.identifier(of: here.json))" } ?? "helper failed"))
         note(blocker.statusLine)
         _ = await loadRemote(tab, "https://example.com/?real=1")
         // EasyList targets the ad subdomains, not the doubleclick.net apex
@@ -13917,17 +14453,112 @@ enum SelfTest {
         }
 
         var tabs = await fixture()
-        manager.relieveMemoryPressure()
+        await manager.relieveMemoryPressure()
         let critical = slept(tabs)
-        record("tabsleep: critical pressure sleeps background tabs, never a pin or favourite",
-            critical == "background recent", "slept \(critical)")
+        record("tabsleep: critical pressure sleeps background tabs and favourites, never a shown space's pin",
+            critical == "background recent favourite", "slept \(critical)")
 
         tabs = await fixture()
         for (_, tab) in tabs { tab.lastAccessed = .distantPast }
-        manager.hibernateIdleTabs()
+        await manager.hibernateIdleTabs()
         let idle = slept(tabs)
-        record("tabsleep: the idle sweep never sleeps a pin or favourite",
-            idle == "background recent", "slept \(idle)")
+        record("tabsleep: the idle sweep never sleeps a shown space's pin",
+            idle == "background recent favourite", "slept \(idle)")
+        manager.selectedTabID = previous
+
+        // past the newest few, a third of the wait; a warning sleeps everything past them
+        let wait = (UserDefaults.standard.object(forKey: TabManager.hibernateAfterMinutesKey) as? Double
+            ?? TabManager.defaultHibernateAfterMinutes) * 60
+        func ranked() async -> [BrowserTab] {
+            var made: [BrowserTab] = []
+            for index in 0..<(TabManager.awakeTabCount + 2) {
+                let tab = manager.newTab(url: nil, select: false)
+                await load(tab, html: "<title>Ranked</title>")
+                tab.lastAccessed = Date(timeIntervalSinceNow: -wait / 3 - 60 - Double(index))
+                made.append(tab)
+            }
+            manager.selectedTabID = previous
+            return made
+        }
+        func verdict(_ made: [BrowserTab], sleeps: (Int, BrowserTab) -> Bool) -> (Bool, String) {
+            let order = manager.sleepCandidates().map(\.id)
+            let wrong = made.filter { tab in
+                let rank = order.firstIndex(of: tab.id) ?? -1
+                return tab.isHibernated != sleeps(rank, tab)
+            }
+            let detail = made.map { "\(order.firstIndex(of: $0.id) ?? -1):\($0.isHibernated ? "z" : "a")" }
+            return (wrong.isEmpty && made.contains(where: \.isHibernated), detail.joined(separator: " "))
+        }
+        var made = await ranked()
+        await manager.hibernateIdleTabs()
+        var (right, detail) = verdict(made) { rank, _ in rank >= TabManager.awakeTabCount }
+        for tab in made { manager.close(tab) }
+        record("tabsleep: past the newest \(TabManager.awakeTabCount), a third of the idle wait sleeps a tab", right, detail)
+
+        made = await ranked()
+        for tab in made { tab.lastAccessed = Date(timeIntervalSinceNow: -Double(made.firstIndex { $0 === tab } ?? 0)) }
+        await manager.relieveMemoryPressure(critical: false)
+        (right, detail) = verdict(made) { rank, _ in rank >= TabManager.awakeTabCount }
+        for tab in made { manager.close(tab) }
+        record("tabsleep: a memory warning sleeps the tabs past the newest few", right, detail)
+
+        // a pin in a space no window shows, and a far space's own page, sleep like any other
+        let far = (0..<3).map { Space(name: "SelfTest Far \($0)", icon: "circle.fill") }
+        manager.spaces.append(contentsOf: far)
+        let pin = BrowserTab()
+        pin.isPinned = true
+        let own = BrowserTab()
+        far[2].tabs = [pin, own]
+        far[2].selectedTabID = own.id
+        for tab in [pin, own] {
+            await load(tab, html: "<title>Far</title>")
+            tab.lastAccessed = Date(timeIntervalSinceNow: -60)
+        }
+        let shownAt = manager.spaces.firstIndex { $0.id == manager.selectedSpaceID } ?? 0
+        await manager.relieveMemoryPressure()
+        let farAway = (manager.spaces.firstIndex { $0 === far[2] } ?? 0) - shownAt >= 2
+        record(
+            "tabsleep: a pin and the own page of a space far from any shown one sleep",
+            !farAway || (pin.isHibernated && own.isHibernated),
+            "pin \(pin.isHibernated) own \(own.isHibernated) far \(farAway)")
+        manager.spaces.removeAll { space in far.contains { $0 === space } }
+
+        // unsent text keeps a page awake; a sleeping page keeps a still for its wake
+        let typed = manager.newTab(url: nil, select: false)
+        let plain = manager.newTab(url: nil, select: false)
+        manager.selectedTabID = previous
+        for tab in [typed, plain] {
+            tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+            await load(tab, html: "<title>Form</title><form><textarea id=t></textarea></form>")
+        }
+        _ = try? await typed.webView.evaluateJavaScript("document.getElementById('t').value = 'half a reply'")
+        let notifier = manager.newTab(url: nil, select: false)
+        manager.selectedTabID = previous
+        let notifierSite = "https://notify.selftest.example"
+        notifier.webView.loadHTMLString("<title>Chat</title>", baseURL: URL(string: notifierSite + "/"))
+        await settle { !notifier.webView.isLoading && notifier.url?.host() == "notify.selftest.example" }
+        SitePermissionStore.shared.set(.allow, for: notifierSite, .notifications, ephemeral: false)
+        defer { SitePermissionStore.shared.forget(notifierSite) }
+        await manager.relieveMemoryPressure()
+        record(
+            "tabsleep: a page holding unsent text stays awake, a plain one sleeps with a still",
+            !typed.isHibernated && plain.isHibernated && plain.sleepImage != nil,
+            "typed \(typed.isHibernated) plain \(plain.isHibernated) still \(plain.sleepImage != nil)")
+        record(
+            "tabsleep: a page whose site may send notifications stays awake",
+            notifier.mayNotify && !notifier.isHibernated, "may notify \(notifier.mayNotify), asleep \(notifier.isHibernated)")
+        manager.close(notifier)
+        plain.activateIfNeeded()
+        let covered = plain.wakeStill != nil
+        plain.webView.stopLoading()
+        let start = Date()
+        await settle(.seconds(8)) { plain.wakeStill == nil }
+        let gone = Date().timeIntervalSince(start)
+        record(
+            "tabsleep: a woken page shows its still until the load ends, and a stopped load drops it within 5 s",
+            covered && plain.wakeStill == nil && plain.sleepFrame == nil && gone < 5.5,
+            String(format: "covered %@, gone after %.1f s", "\(covered)", gone))
+        for tab in [typed, plain] { manager.close(tab) }
         manager.selectedTabID = previous
     }
 
@@ -19225,7 +19856,13 @@ enum SelfTest {
                 "restored=\(restored) vs plain=\(plain)")
         }
 
-        func closeWindowX() -> CGFloat { sidebarLights(window).first?.convert(NSPoint.zero, to: nil).x ?? 0 }
+        // the sidebar slides by its layer, so the drawn position adds the layers' translation to the frame's
+        func closeWindowX() -> CGFloat {
+            guard let button = sidebarLights(window).first else { return 0 }
+            let slide = sequence(first: button as NSView, next: \.superview)
+                .reduce(0) { $0 + ($1.layer?.affineTransform().tx ?? 0) }
+            return button.convert(NSPoint.zero, to: nil).x + slide
+        }
         // wait for the expanded rest position: the app may have been left collapsed, and the
         // pin-in animation can lag a busy main thread
         var restX = closeWindowX()
@@ -25479,6 +26116,15 @@ extension SelfTest {
         record(
             "agent secrets: a page that shows a card number in the clear is not pictured for it",
             shown.failed && shown.text.contains("picture") && !blank.failed, "\(shown.text) | \(blank.text)")
+        _ = await holdCall(tab, """
+            document.body.insertAdjacentHTML("beforeend", "<form id=late><input autocomplete=cc-number><input autocomplete=cc-exp></form>");
+            return "";
+            """)
+        let lateCard = await agentCall(fd, "screenshot", ["tab": id])
+        record(
+            "agent secrets: a card form that appears with no input is not pictured, even when asked at once",
+            lateCard.failed && lateCard.text.contains("card form"), lateCard.text)
+        _ = await holdCall(tab, "document.getElementById('late').remove(); return '';")
         task.conceal("4111111111111111", in: tab.id)
         await look()
         let pictured = await agentCall(fd, "screenshot", ["tab": id])

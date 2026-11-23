@@ -25,6 +25,7 @@ final class DownloadItem: NSObject, Identifiable {
     let isBlocked: Bool
 
     @ObservationIgnored private var download: WKDownload?
+    func isFrom(_ webView: WKWebView) -> Bool { download?.webView === webView }
     @ObservationIgnored private var progressObservation: NSKeyValueObservation?
     /// the name the requester chose, over the one the response suggests
     @ObservationIgnored private let preferredFilename: String?
@@ -267,6 +268,11 @@ final class DownloadManager {
 
     var hasActiveDownloads: Bool {
         items.contains { $0.state == .downloading }
+    }
+
+    /// a download still running that this page started
+    func isDownloading(from webView: WKWebView) -> Bool {
+        items.contains { $0.state == .downloading && $0.isFrom(webView) }
     }
 
     /// what the sidebar's download pill shows: running and failed downloads, and

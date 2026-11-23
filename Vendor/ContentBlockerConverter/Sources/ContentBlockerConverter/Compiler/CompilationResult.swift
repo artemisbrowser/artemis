@@ -77,3 +77,33 @@ struct CompilationResult {
         }
     }
 }
+
+extension CompilationResult {
+    /// a hide for one site matches the frame's own URL on document loads instead of WebKit's top-URL
+    /// condition, which is checked on every load; that site's `$elemhide` exceptions gain the same copy
+    mutating func anchorSiteHides() {
+        cssBlockingDomainSensitive = cssBlockingDomainSensitive.map { $0.anchoredToSite ?? $0 }
+        cssElemhideExceptions = cssElemhideExceptions.flatMap { entry in entry.anchoredToSite.map { [entry, $0] } ?? [entry] }
+    }
+}
+
+extension BlockerEntry {
+    /// a hide on several sites as one hide per site; anything else unchanged
+    var perSite: [BlockerEntry] {
+        guard let domains = trigger.ifDomain, domains.count > 1, trigger == Trigger(ifDomain: domains, urlFilter: ".*")
+        else { return [self] }
+        return domains.map { BlockerEntry(trigger: Trigger(ifDomain: [$0], urlFilter: ".*"), action: action) }
+    }
+
+    /// this entry on document loads whose own URL is on its one `if-domain`; nil for any other trigger.
+    /// `*example.org` also covers subdomains
+    var anchoredToSite: BlockerEntry? {
+        guard let domain = trigger.ifDomain?.first, trigger == Trigger(ifDomain: [domain], urlFilter: ".*") else { return nil }
+        let wide = domain.hasPrefix("*")
+        let host = wide ? domain.dropFirst() : Substring(domain)
+        guard !host.isEmpty, host.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) })
+        else { return nil }
+        let filter = "^[^:]+://+" + (wide ? #"([^:/]+\.)?"# : "") + host.replacingOccurrences(of: ".", with: #"\."#) + "[/:?#]"
+        return BlockerEntry(trigger: Trigger(urlFilter: filter, resourceType: ["document"]), action: action)
+    }
+}

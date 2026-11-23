@@ -9,6 +9,8 @@ class Compiler {
     private static let MAX_SELECTORS_PER_RULE = 250
 
     private let blockerEntryFactory: BlockerEntryFactory
+    /// hides for several sites compile as one hide per site, merged into each site's own rule
+    var splitsMultiSiteHides = false
 
     /// Initializes Safari content blocker compiler.
     init(errorsCounter: ErrorsCounter, version: SafariVersion) {
@@ -74,6 +76,7 @@ class Compiler {
 
         // Stage 2. Compact cosmetic rules.
 
+        if splitsMultiSiteHides { cssBlocking = cssBlocking.flatMap(\.perSite) }
         let cssCompact = Compiler.compactCssRules(cssBlocking: cssBlocking)
 
         compilationResult.cssBlockingWide = cssCompact.cssBlockingWide

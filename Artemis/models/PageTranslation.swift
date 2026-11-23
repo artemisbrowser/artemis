@@ -75,13 +75,7 @@ enum PageTranslation {
     /// every frame to translate, parents first; `[nil]` (the main frame) without the frame-tree SPI.
     /// a frame whose element opts out is skipped with everything inside it
     static func frames(in webView: WKWebView) async -> [WKFrameInfo?] {
-        guard webView.responds(to: NSSelectorFromString("_frames:")) else { return [nil] }
-        let root: FrameNode? = await withCheckedContinuation { done in
-            unsafeBitCast(webView, to: WKWebViewFramesSPI.self)._frames { node in
-                done.resume(returning: node.map(FrameNode.init))
-            }
-        }
-        guard let root else { return [nil] }
+        guard let root = await frameTree(of: webView) else { return [nil] }
         var out: [WKFrameInfo?] = []
         func walk(_ node: FrameNode) async {
             out.append(node.info)
@@ -94,6 +88,21 @@ enum PageTranslation {
         }
         await walk(root)
         return out
+    }
+
+    /// every frame of the page, parents first; nil without the frame-tree SPI
+    static func allFrames(in webView: WKWebView) async -> [WKFrameInfo]? {
+        func flat(_ node: FrameNode) -> [WKFrameInfo] { [node.info] + node.children.flatMap(flat) }
+        return await frameTree(of: webView).map(flat)
+    }
+
+    private static func frameTree(of webView: WKWebView) async -> FrameNode? {
+        guard webView.responds(to: NSSelectorFromString("_frames:")) else { return nil }
+        return await withCheckedContinuation { done in
+            unsafeBitCast(webView, to: WKWebViewFramesSPI.self)._frames { node in
+                done.resume(returning: node.map(FrameNode.init))
+            }
+        }
     }
 
     private struct FrameNode {

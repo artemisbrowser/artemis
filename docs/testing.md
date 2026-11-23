@@ -29,6 +29,40 @@ To run only some groups, name them: `ARTEMIS_SELFTEST=reports,routing`. A group'
 
 `tools/perflab.sh` builds a copy under its own bundle id and data folder, so a lab run never touches an installed Artemis. `PERF_CONFIG=Debug tools/perflab.sh` builds Debug instead of Release, which is much quicker when iterating on a test. Then start it with `tools/perflab.sh --run ARTEMIS_SELFTEST=<groups>`. A lab copy named `Artemis <ID>` writes its report to `~/Library/Logs/Artemis/artemis-selftest-<ID>.log`, and every other file it writes there carries the same `-<ID>` suffix, so lab runs and a run of your own never overwrite each other.
 
+### Running only what a change reaches
+
+`tools/test-impact.py select` reads the branch's diff against `stable` and prints the groups that diff can reach, `1` for the whole suite, or `none`. `artemis-labtest <tree> <ID> auto` runs that selection. It is for iterating on a branch. A merge into `stable` and every nightly still run the whole suite.
+
+The answer comes from `tools/test-impact-map.json`, a measured map. A coverage build (`PERF_COVERAGE=1 tools/perflab.sh`) runs the whole suite once and writes each group's counters to a slice of their own (`Coverage.mark`). Then every bench loop does the same. `tools/test-impact-map.sh` does all of that and rewrites the map from the commit it is on. Regenerate the map after big merges. `select` warns once the map is 50 commits behind.
+
+A changed line selects the groups that ran its function. Blank lines, comments and lone closing brackets select nothing. A line a nested closure starts or ends on also counts as part of the function around it. A line changed since the map was made is placed by the unchanged lines either side of it. If the map is newer than the whole change, its new code selects the functions it sits inside. The whole suite runs in these cases:
+
+- a line the map still can't place;
+- code that only runs at launch;
+- the project, `Info.plist`, entitlements or `tools/perflab.sh`;
+- a file neither the map nor any mapped code names;
+- a selection over half the groups.
+
+A line outside every function, such as a stored property, selects every group that ran a function of its type. At the top level of a file it selects the whole file. New `private` members and new types select nothing until a changed line uses them. A new `override` or `@objc` member selects every group that ran its type, because AppKit calls it without any changed caller. A Swift file with no functions, or a resource such as `Readability.js`, takes the groups of the code that names it. In `SelfTest.swift`, a changed table entry or `test…` function selects its own group. A helper added there selects nothing until a changed test calls it.
+
+### The perf check before hand-off
+
+`tools/bench-gate.sh` is the standard perf check for a merge. A lane runs it on its finished branch before handing the branch over, and puts the verdict lines in the hand-off.
+
+```sh
+tools/bench-gate.sh                  # the loops the change reaches, 3 runs an arm, against stable
+tools/bench-gate.sh tab,space 12     # named loops, 12 runs an arm
+BASE=<sha> tools/bench-gate.sh       # against another base
+```
+
+- **Base.** `stable`, or `BASE=<ref>`. The base's Release lab is built once per sha and kept in `~/.cache/artemis/bench-stable`. The branch's lab is built from the tree as it stands, so commit first.
+- **Loops.** With no argument, `test-impact.py select --perf` names the loops the diff reaches: `tab`, `tab2`, `space`, `sidebar`, `bar`, `newtab`, `load`, `idle`. If it names none, the gate passes at once.
+- **Runs.** Each loop runs both arms interleaved, 60 s a run, the two arms taking turns going first. Run the gate directly, not inside `heavy-job`. It takes `heavy-job --both` for each block of 3 runs, then the screen lock with `lockf -t 0`, and gives both back while someone else has the screen. Before each run it waits up to 5 minutes for the 1-minute load to fall under 8. A run that still starts at 8 or more is dropped and counted in the report.
+- **Verdict.** Per loop: `ok` or `FAIL`, the two medians of main-thread busy per step, the change, the loop's band, a permutation `p` and the runs per arm. A loop fails when the branch's median is above the base's by more than its band, a percent of the base's median, measured by `--aa` (the table in the script). Exit status 1 means some loop failed or had no result.
+- **A close call.** If a loop fails with `p` above 0.05, run that loop again with 12 runs before acting on it. The raw runs of the last gate are in `/private/tmp/artemis-perf/bench-gate-runs.txt`.
+
+`tools/bench-gate.sh --aa [runs]` runs the base against itself on every loop to measure the bands. Measure them again after `Bench.swift` changes. Both arms of a comparison must run the same `Bench.swift`, so a base from before a harness change is not comparable.
+
 Test pages use `.example` and `.test` hosts, never `.local`. A `.local` name is looked up on the local network, which makes macOS ask every new lab copy for Local Network access.
 
 **Where its data goes:** a build from source keeps its data in `~/Library/Application Support/Artemis`. The released app uses `~/Library/Application Support/app.artemisbrowser.Artemis`, so the suite never touches the browser you use day to day.

@@ -15,11 +15,10 @@ enum WebExtensionRuntime {
         let configuration: WKWebExtensionController.Configuration =
             profile == Profile.defaultID ? .default() : .init(identifier: profile)
         configuration.defaultWebsiteDataStore = ProfileStore.dataStore(for: profile)
-        if ExtensionLab.isRequested {
-            let webViews = configuration.webViewConfiguration ?? WKWebViewConfiguration()
-            ExtensionLab.quiet(webViews.preferences)
-            configuration.webViewConfiguration = webViews
-        }
+        let webViews = configuration.webViewConfiguration ?? WKWebViewConfiguration()
+        ExtensionLab.quiet(webViews.preferences)
+        FingerprintNoise.hideInstalledFonts(from: webViews.preferences)
+        configuration.webViewConfiguration = webViews
         let controller = WKWebExtensionController(configuration: configuration)
         controller.delegate = ExtensionManager.shared
         controllers[profile] = controller
@@ -574,8 +573,8 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
     @MainActor
     func isVisitedPrivately(_ url: URL) -> Bool {
         (tabManager?.allTabs ?? []).contains { tab in
-            let list = tab.webView.backForwardList
-            return tab.isPrivate && (tab.url == url
+            guard tab.isPrivate, let list = tab.madeWebView?.backForwardList else { return false }
+            return (tab.url == url
                 || ([list.currentItem].compactMap { $0 } + list.backList + list.forwardList).contains { $0.url == url })
         }
     }
