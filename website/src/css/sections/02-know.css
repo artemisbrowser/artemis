@@ -339,7 +339,13 @@
   .active .pills {
     gap: 10px;
     padding-inline: 40px;
-    overflow-x: hidden;
+  }
+  /* on touch screens the row keeps its scroller while open, as an overflow flip re-creates its layers
+     on iOS; touch-action below stops the pan there */
+  @media (hover: hover) and (pointer: fine) {
+    .active .pills {
+      overflow-x: hidden;
+    }
   }
   /* room to bring the last card to the middle while the pills still have their closed widths */
   .active .pills::after {
@@ -361,11 +367,14 @@
     --shot-y: 48.4%;
     --shot-w: 109%;
   }
+  /* none, not 0 0, so opening starts no transform transition on the stage */
   .active .stage {
-    translate: 0 0;
+    translate: none;
   }
-  /* sideways drags on an open card are know.js swipes; vertical ones still scroll the page */
-  .viewer.active {
+  /* sideways drags on an open card are know.js swipes; vertical ones still scroll the page.
+     The row is a scroll container, so it needs its own. */
+  .viewer.active,
+  .active .pills {
     touch-action: pan-y pinch-zoom;
   }
   /* the steps are bare chevrons centred on the 30px of neighbouring pill at each edge;
