@@ -5,6 +5,16 @@
     <!-- items -->
     <item>
       <title>Artemis 1.1.0</title>
+      <pubDate>Mon, 23 Nov 2026 08:27:58 +0000</pubDate>
+      <sparkle:version>1010002.26112308</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<style>:root{color-scheme:light dark}body{font:13px -apple-system,system-ui;line-height:1.45;margin:4px 2px}p{margin:0 0 9px}ul{margin:0 0 9px;padding-left:18px}li{margin:0 0 4px}h2{font-size:15px;margin:14px 0 6px}h3{font-size:13px;margin:10px 0 4px}</style><p>New since <a href="https://github.com/artemisbrowser/artemis/releases/tag/v1.1.0-nightly.26111917">Artemis 1.1.0-nightly.26111917</a>.</p><p>I. Am. Speed. (Well, halfway there.)</p><h2>Refined</h2><ul><li><b>29% less memory</b> with 48 tabs open (3.2 → 2.3 GB)</li><li><b>Idle CPU with 48 tabs is down from 4.4% to 0.8%</b> of one core</li><li><b>New tabs paint 26% faster</b>, and the first new tab after launch no longer flashes blank</li><li><b>Pages paint 27% sooner</b> on average across 5 real sites</li><li><b>Artemis opens 11% quicker</b> to its window</li><li><b>Speedometer 3.1 is up 11%</b></li><li><b>The sidebar slides more smoothly</b>, with about a third less work per open and close</li><li><b>The ⌘T bar opens, closes and answers ↵ sooner</b></li><li><b>Tabs sleep sooner</b>, and a woken tab keeps its last look until it has loaded</li></ul><h2>Fixed</h2><ul><li>A fresh ⌘T bar no longer drops the first keys you type</li><li>Suggested strong passwords now always rate as strong</li></ul><p>*Measured on a MacBook M1 Pro against the last nightly.*</p>]]></description>
+      <sparkle:channel>nightly</sparkle:channel>
+      <enclosure url="https://github.com/artemisbrowser/artemis/releases/download/v1.1.0-nightly.26112308/Artemis-1.1.0-nightly.26112308.dmg" type="application/octet-stream" sparkle:edSignature="wvsWHoBXUllEi5M0Tvx2DTVjIjImoQY80TTNwawb2EvMJ7pA6C8xYIvrx0c8QRaynzG1iPaf+f08jSp7iEj+Ag==" length="30238542" />
+    </item>
+    <item>
+      <title>Artemis 1.1.0</title>
       <pubDate>Thu, 19 Nov 2026 17:53:11 +0000</pubDate>
       <sparkle:version>1010002.26111917</sparkle:version>
       <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
