@@ -11,6 +11,17 @@ export const mq = {
   phone: matchMedia("(max-width: 734px)"),
 };
 
+// Position of a damped spring released at rest, 0 to 1, t in seconds.
+export const spring = (zeta, omega) => (t) => {
+  if (t <= 0) return 0;
+  const wd = omega * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * omega * t) * (Math.cos(wd * t) + ((zeta * omega) / wd) * Math.sin(wd * t));
+};
+export const mix = (a, b, u) => a + (b - a) * u;
+// Keyframes of fn(seconds) at 60 a second; `sampled` is the timing that plays them in real time.
+export const frames = (fn) => Array.from({ length: 103 }, (_, k) => fn(k / 60));
+export const sampled = { duration: 1700, easing: "linear" };
+
 // Also moves focus to the section's heading. Skipped content-visibility sections resize mid-flight, so a
 // jump that ran its course (the reader did not take over) is re-aimed once on landing.
 export function go(id) {

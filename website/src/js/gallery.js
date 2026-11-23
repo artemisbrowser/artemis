@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import { mq } from "./core.js";
+import { mq, spring, mix, frames, sampled } from "./core.js";
 
-// Position of a damped spring released at rest, 0 to 1, t in seconds.
-const spring = (zeta, omega) => (t) => {
-  if (t <= 0) return 0;
-  const wd = omega * Math.sqrt(1 - zeta * zeta);
-  return 1 - Math.exp(-zeta * omega * t) * (Math.cos(wd * t) + ((zeta * omega) / wd) * Math.sin(wd * t));
-};
 const rise = spring(0.42, 10.5);
 const grow = spring(0.52, 10.5);
 const out = (u) => 1 - (1 - Math.min(1, Math.max(0, u))) ** 2;
-const mix = (a, b, u) => a + (b - a) * u;
 // cubic-bezier(0.4, 0, 0.55, 1)
 function glideEase(u) {
   let t = u;
@@ -139,10 +132,8 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     const p = play.getBoundingClientRect();
     const mid = c.left + c.width / 2 - (n.left + n.width / 2);
     const away = c.left + c.width / 2 - 20 - (p.left + p.width / 2);
-    const opt = { duration: 1700, easing: "linear" };
-    const frames = (fn) => Array.from({ length: 103 }, (_, k) => fn(k / 60));
     const late = (duration, delay, easing) => ({ duration, delay, easing, fill: "backwards" });
-    ctl.animate(frames((t) => ({ translate: `0 ${180 * (1 - rise(t))}px` })), opt);
+    ctl.animate(frames((t) => ({ translate: `0 ${180 * (1 - rise(t))}px` })), sampled);
     nav.animate(
       frames((t) => {
         const shrink = out((t - 0.25) / 0.18);
@@ -152,15 +143,15 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
           translate: `calc(-50% + ${mid * (1 - out((t - 0.44) / 0.6))}px) -50%`,
         };
       }),
-      { ...opt, pseudoElement: "::before" },
+      { ...sampled, pseudoElement: "::before" },
     );
-    play.animate(frames((t) => ({ translate: `${away * (1 - out((t - 0.5) / 0.6))}px 0` })), opt);
+    play.animate(frames((t) => ({ translate: `${away * (1 - out((t - 0.5) / 0.6))}px 0` })), sampled);
     play.animate(
       frames((t) => ({
         width: `${(p.width / 56) * (50 * out((t - 0.5) / 0.25) + 6 * Math.min(1, Math.max(0, (t - 0.95) / 0.35)))}px`,
         height: `${p.height * Math.min(1, Math.max(0, (t - 0.5) / 0.47))}px`,
       })),
-      { ...opt, pseudoElement: "::before" },
+      { ...sampled, pseudoElement: "::before" },
     );
     const glass = getComputedStyle(nav, "::before").backgroundColor;
     const solid = { backgroundColor: [glass.replace(/[\d.]+\)$/, "1)"), glass] };
