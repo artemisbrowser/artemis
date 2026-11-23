@@ -367,8 +367,8 @@
   .viewer.active {
     touch-action: pan-y pinch-zoom;
   }
-  /* the steps are bare chevrons over the neighbouring pills, 40 by 88px
-     along the foot of the card, each chevron mid-box and clear of the screen edge */
+  /* the steps are bare chevrons centred on the 30px of neighbouring pill at each edge;
+     each 44 by 88px hit box reaches 14px past that pill, away from the screen edge */
   .steps {
     top: auto;
     right: 0;
@@ -385,7 +385,7 @@
     display: flex;
     align-items: flex-end;
     justify-content: center;
-    width: 40px;
+    width: 44px;
     height: 88px;
     padding-bottom: 16.75px;
     border-radius: 0;
@@ -400,6 +400,12 @@
   .active .step {
     opacity: 1;
     transition: opacity 200ms var(--ease-in-out);
+  }
+  .step[data-step="-1"] {
+    padding-right: 14px;
+  }
+  .step[data-step="1"] {
+    padding-left: 14px;
   }
   .step:disabled {
     opacity: 0;
