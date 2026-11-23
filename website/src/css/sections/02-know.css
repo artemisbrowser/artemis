@@ -314,8 +314,9 @@
     letter-spacing: -0.016em;
     transition: opacity 300ms var(--ease-out-flat) 200ms;
   }
-  .pills button[aria-expanded] span {
-    transition: none;
+  /* the open pill's label fades with the others rather than vanishing, so it keeps its size */
+  .pills .open button[aria-expanded] span {
+    scale: none;
   }
   .pills p {
     --rise: 24px;
@@ -340,10 +341,10 @@
     padding-inline: 40px;
     overflow-x: hidden;
   }
-  /* room to bring the last card to the middle */
+  /* room to bring the last card to the middle while the pills still have their closed widths */
   .active .pills::after {
     content: "";
-    flex: 0 0 100%;
+    flex: 0 0 500%;
   }
   .active .pills li {
     width: var(--card-w);
