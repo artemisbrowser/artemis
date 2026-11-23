@@ -20,4 +20,4 @@ export const HOSTS = {
 
 // Fin's note in the closing section, in his words; it may name Arc in either build.
 export const NOTE =
-  "Arc felt like heaven. Since it stopped development, I’ve been itching for something better, and more than ever now that Arc is officially being sunset. So I made my own. It has a familiar Arc feel, with a Liquid Glass redesign, extra features and a WebKit base. I think you’ll love it.";
+  "Since Arc stopped development, I’ve been itching for something better, and more than ever now that it is officially being sunset. So I made my own. It has a familiar Arc feel, with a Liquid Glass redesign, extra features and a WebKit base. I think you’ll love it.";
