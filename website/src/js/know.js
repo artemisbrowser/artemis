@@ -167,16 +167,4 @@ for (const v of document.querySelectorAll("[data-viewer]")) {
   v.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && cur >= 0) show(-1, true);
   });
-  // temporary: ?tapdebug=1 outlines the steps' hit boxes and prints where each touch lands
-  if (new URLSearchParams(location.search).get("tapdebug") === "1") {
-    const out = document.body.appendChild(document.createElement("pre"));
-    out.style.cssText = "position:fixed;z-index:99;inset:60px 8px auto;margin:0;padding:6px;font:11px/1.35 ui-monospace,monospace;color:#7f7;background:rgb(0 0 0/.8);white-space:pre-wrap;pointer-events:none";
-    const name = (el) => (el ? el.tagName.toLowerCase() + [...el.classList].map((c) => "." + c).join("") + (el.dataset?.step ? `[${el.dataset.step}]` : "") : "none");
-    for (const t of ["touchstart", "touchend", "touchcancel", "click"])
-      addEventListener(t, (e) => {
-        const p = e.changedTouches?.[0] ?? e;
-        out.textContent = `${t} ${Math.round(p.clientX)},${Math.round(p.clientY)} ${name(e.target)} top:${name(document.elementFromPoint(p.clientX, p.clientY))} cur:${cur}\n${out.textContent}`.slice(0, 900);
-      }, { capture: true, passive: true });
-    for (const b of [up, down]) b.style.outline = "1px solid magenta";
-  }
 }
