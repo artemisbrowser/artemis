@@ -46,7 +46,7 @@ const reveals = new IntersectionObserver(
     const shown = entries.filter((e) => e.isIntersecting);
     // d1/d2 stagger only reveals that arrive together; one arriving alone, as in a stacked phone column, starts at once
     for (const { target } of shown) {
-      target.classList.add("in", ...(shown.length === 1 ? ["solo"] : []));
+      target.classList.add("in", ...(shown.length === 1 ? ["lone"] : []));
       reveals.unobserve(target);
     }
   },
