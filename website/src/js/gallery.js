@@ -96,8 +96,8 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
       settle();
       fill?.cancel();
     }
-    const [icon, label] = { play: ["pause", "Pause"], end: ["replay", "Replay"] }[m] ?? ["play", "Play"];
-    play.querySelector("use").setAttribute("href", `#i-${icon}`);
+    const [icon, label] = { play: ["#i-pause", "Pause"], end: ["#i-replay", "Replay"] }[m] ?? ["#i-play", "Play"];
+    play.querySelector("use").setAttribute("href", icon);
     play.setAttribute("aria-label", `${label} the highlights`);
   }
   function sync() {

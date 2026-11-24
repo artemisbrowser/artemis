@@ -366,6 +366,10 @@ export async function check(out) {
   }
   for (const [, ref] of css.matchAll(/url\("?(\/[^")]+)"?\)/g))
     if (!exists(ref.slice(1))) fail("links", `css: ${ref} is not in the build`);
+  // a glyph a script swaps in is named whole, so it is checked like the markup's
+  for (const f of js)
+    for (const [, id] of fs.readFileSync(f, "utf8").matchAll(/["'`]#(i-[\w-]+)/g))
+      if (!ids.has(id)) fail("links", `${rel(f)}: no sprite symbol #${id}`);
 
   // invented demo hosts are gone for good; every real host is in the build, and the home page credits its shots
   const home = fs.readFileSync(path.join(out, "index.html"), "utf8").replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
