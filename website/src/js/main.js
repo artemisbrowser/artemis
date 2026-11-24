@@ -54,6 +54,21 @@ const reveals = new IntersectionObserver(
 );
 for (const el of document.querySelectorAll(".reveal")) reveals.observe(el);
 
+/* ---------- the Arc-to-Artemis sidebars move once 3/4 of them, or of a short viewport, is on screen ---------- */
+const moveArt = document.querySelector(".move-art");
+if (moveArt) {
+  const t = Math.min(0.75, (innerHeight * 0.75) / moveArt.offsetHeight);
+  const play = new IntersectionObserver(
+    ([e]) => {
+      if (e.intersectionRatio < t) return;
+      moveArt.classList.add("play");
+      play.disconnect();
+    },
+    { threshold: t },
+  );
+  play.observe(moveArt);
+}
+
 /* ---------- the nav marks the section crossing mid-viewport; on phones its links drop from a chevron ---------- */
 const links = [...nav.querySelectorAll('.localnav-links a[href^="#"]')];
 const menu = nav.querySelector("[data-nav-menu]");

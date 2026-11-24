@@ -277,11 +277,11 @@
   --at: calc(700ms + var(--n, 0) * 160ms);
 }
 @media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
-  .move-card:not(.in) .move-art .side:not(.to) .it {
+  .move-art:not(.play) .side:not(.to) .it {
     opacity: 1;
   }
-  .move-card:not(.in) .move-art .side:not(.to) .sb::before,
-  .move-card:not(.in) .move-art .side:not(.to) .sb::after {
+  .move-art:not(.play) .side:not(.to) .sb::before,
+  .move-art:not(.play) .side:not(.to) .sb::after {
     opacity: 0;
   }
   /* each twin goes while its group, still covering it, lifts */
@@ -293,16 +293,16 @@
   .move-art .side:not(.to) .sb::after {
     transition: opacity 1100ms var(--ease-in-out) 750ms;
   }
-  .move-card:not(.in) .move-art .to .it {
+  .move-art:not(.play) .to .it {
     translate: var(--off) 0;
   }
-  .move-card.in .move-art .to .it {
+  .move-art.play .to .it {
     position: relative;
     animation:
       move-x 820ms var(--ease-in-out) var(--at) both,
       move-pop 1320ms linear var(--at) both;
   }
-  .move-card.in .move-art .to .it::before {
+  .move-art.play .to .it::before {
     content: "";
     position: absolute;
     inset: 0;
@@ -313,12 +313,12 @@
   }
 }
 @media (scripting: enabled) and (prefers-reduced-motion: reduce) {
-  .move-card:not(.in) .move-art .side:not(.to) .it {
+  .move-art:not(.play) .side:not(.to) .it {
     opacity: 1;
   }
-  .move-card:not(.in) .move-art .side:not(.to) .sb::before,
-  .move-card:not(.in) .move-art .side:not(.to) .sb::after,
-  .move-card:not(.in) .move-art .to .it {
+  .move-art:not(.play) .side:not(.to) .sb::before,
+  .move-art:not(.play) .side:not(.to) .sb::after,
+  .move-art:not(.play) .to .it {
     opacity: 0;
   }
   .move-art .side:not(.to) .sb::before,
