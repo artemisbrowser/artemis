@@ -37,7 +37,7 @@ const STOPS = {
   S01: ["", 0],
   S02: ["", "#know"],
   S03: ["peek=spaces", "#know"],
-  S04: ["", "#more"],
+  S04: ["", "#blocking"],
   S05: ["", ".stats"],
   S06: ["", "#move-in"],
   S07: ["", "#fin"],

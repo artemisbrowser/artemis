@@ -28,7 +28,6 @@ const SECTIONS = [
   ["01-hero", "top", "Overview"],
   ["07-arc", "move-in", null],
   ["02-know", "know", "Every tab"],
-  ["03-more", "more", "More"],
   ["03-blocking", "blocking", "Blocking"],
   ["05-measured", "measured", "Measured"],
   ["04-values", "private", "Private and open"],
