@@ -246,8 +246,10 @@
   transition: translate var(--dur-pill) var(--spring-pill);
 }
 /* below 1440 wide the open card would cover the screen, so the picture steps aside */
-.active .stage {
-  translate: min(12vw, max(0px, (1440px - 100vw) * 0.35)) 0;
+@media (min-width: 834px) {
+  .active .stage {
+    translate: min(12vw, max(0px, (1440px - 100vw) * 0.35)) 0;
+  }
 }
 .stage img {
   position: absolute;
@@ -366,10 +368,6 @@
     --shot-x: 50%;
     --shot-y: 48.4%;
     --shot-w: 109%;
-  }
-  /* none, not 0 0, so opening starts no transform transition on the stage */
-  .active .stage {
-    translate: none;
   }
   /* sideways drags on an open card are know.js swipes; vertical ones still scroll the page.
      The row is a scroll container, so it needs its own. */
