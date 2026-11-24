@@ -1,15 +1,23 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
+.ai {
+  text-align: center;
+}
 .ai-shot {
-  margin-top: 48px;
-  padding: clamp(16px, 5vw, 64px);
-  overflow: hidden;
-  border-radius: 28px;
-  background: light-dark(#f5f5f7, #161617);
+  width: min(1200px, 100% - 2 * var(--gutter));
+  margin: 64px auto 0;
 }
 .ai-shot img {
-  width: min(100%, 960px);
+  width: min(100%, 1000px);
   height: auto;
   margin-inline: auto;
+}
+.ai-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 32px 56px;
+  max-width: 980px;
+  margin-top: 40px;
+  text-align: left;
 }

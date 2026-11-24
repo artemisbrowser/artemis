@@ -1,5 +1,74 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
+<template id="peek-spaces">
+  <h2 id="peek-title">Spaces.</h2>
+  <div class="panel"><p><b>Room for everything.</b> Each space keeps its own pinned sites, folders and tabs, so work stays at work.</p>
+    <img src="/assets/img/know-spaces.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
+  <div class="panel"><p><b>Swipe between them.</b> Two fingers on the trackpad move you to the next space, with its colour sliding in behind.</p></div>
+  <div class="panel"><p><b>Separate sign-ins.</b> Give a space its own profile and it keeps its own sign-ins, cookies and history. Incognito windows keep nothing when you close them, and can lock with Touch ID.</p></div>
+</template>
+<template id="peek-tabs">
+  <h2 id="peek-title">Recent tabs.</h2>
+  <div class="panel"><p><b>Hold ⌃⇥.</b> Your last tabs fan out as previews. Let go on the one you want.</p></div>
+  <div class="panel"><p><b>Peek.</b> ⇧-click a link and it opens over the page you’re on. Read it, then close it or keep it as a tab.</p></div>
+  <div class="panel"><p><b>Mini player.</b> Video keeps playing in a small window that floats above the rest.</p></div>
+</template>
+<template id="peek-themes">
+  <h2 id="peek-title">Themes.</h2>
+  <div class="panel"><p><b>Every space, its own colour.</b> Pick a solid colour, a gradient or glass, and set how bright it sits behind the sidebar.</p>
+    <img src="/assets/img/know-themes.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
+  <div class="panel"><p><b>Icons too.</b> Mark each space with an emoji or a symbol, and pick one of eleven colours for the app icon.</p></div>
+  <div class="panel"><p><b>Liquid Glass throughout.</b> Made for macOS 26, light or dark.</p></div>
+</template>
+<template id="peek-mac">
+  <h2 id="peek-title">Private by default.</h2>
+  <ul class="peek-list">
+    <li>There’s no account and no telemetry.</li>
+    <li>
+      History and tabs stay on this Mac. Passwords, passkeys and codes live in
+      its keychain.
+    </li>
+    <li>
+      Handoff can show the page you’re reading on your other Apple devices that
+      use the same Apple Account.
+    </li>
+    <li>
+      Besides the pages you open and the Live Folders you set up, Artemis goes
+      online only to update its filter lists and extensions, to add uBlock
+      Origin Lite on first launch, to check for its own updates every 4 hours,
+      and to fetch a site’s icon from Google’s icon service when the site has
+      none.
+    </li>
+    <li>
+      Search suggestions, error reports and the leaked-password check stay off
+      until you turn them on.
+    </li>
+    <li>
+      Ask about this page is off until you turn it on, and it needs Apple
+      Intelligence. The agent in the side panel goes online through your own
+      account, and it’s off until you set it up.
+    </li>
+  </ul>
+</template>
+
+<template id="peek-extensions">
+  <h2 id="peek-title">Extensions.</h2>
+  <div class="panel"><p><b>Add to Artemis.</b> Install extensions straight from their store pages, where the button reads Add to Artemis.</p></div>
+  <div class="panel"><p><b>Bitwarden works.</b> It’s one of the suggestions in Settings › Extensions.</p></div>
+  <div class="panel"><p><b>Many work today.</b> Some don’t yet.</p></div>
+</template>
+<template id="peek-passwords">
+  <h2 id="peek-title">Passwords.</h2>
+  <div class="panel"><p><b>In your keychain.</b> Artemis saves passwords in your Mac’s keychain and suggests strong ones.</p></div>
+  <div class="panel"><p><b>Passkeys and codes.</b> Passkeys and one-time codes are built in.</p></div>
+  <div class="panel"><p><b>Leaked-password check.</b> It stays off until you turn it on.</p></div>
+</template>
+<template id="peek-import">
+  <h2 id="peek-title">From your old browser.</h2>
+  <div class="panel"><p><b>More than twenty browsers.</b> Bring tabs, bookmarks and history from any of them, and sign-ins and passwords from many of them.</p></div>
+  <div class="panel"><p><b>Password managers too.</b> Bitwarden and 1Password exports work.</p></div>
+  <div class="panel"><p><b>One menu.</b> Choose File › Import from Browser.</p></div>
+</template>
 <template id="peek-licence">
   <h2 id="peek-title">Open source.</h2>
   <ul class="peek-list">

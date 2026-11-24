@@ -3,6 +3,7 @@
 
 import { root, params, mq } from "./core.js";
 import { openPeek } from "./peek.js";
+import "./gallery.js";
 import "./know.js";
 
 const cls = root.classList;

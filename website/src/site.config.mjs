@@ -21,3 +21,11 @@ export const HOSTS = {
 // Fin's note in the closing section, in his words; it may name Arc in either build.
 export const NOTE =
   "Since Arc stopped development, I’ve been itching for something better, and more than ever now that it is officially being sunset. So I made my own. It has a familiar Arc feel, with a Liquid Glass redesign, extra features and a WebKit base. I think you’ll love it.";
+
+// the measured section's medians in ms, each bench drawn fastest first; the date and machine fill its method line.
+export const MEASURED = {
+  on: "24 November 2026",
+  machine: "M1 Pro",
+  launch: { Artemis: 487, Search: 509, Ardia: 603, Helium: 770 },
+  newTab: { Helium: 44, Artemis: 63, Ardia: 90, Search: 137 },
+};

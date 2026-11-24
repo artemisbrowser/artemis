@@ -1,0 +1,228 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+.more {
+  text-align: center;
+}
+/* without scroll timelines the scene is three pictures in a row, each over its caption */
+.scene {
+  margin-top: 64px;
+}
+.scene-set {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  width: min(1200px, 100% - 2 * var(--gutter));
+  margin-inline: auto;
+}
+.scene-set figure {
+  margin: 0;
+}
+.scene-set img {
+  width: 100%;
+  height: auto;
+}
+.scene-set figcaption {
+  max-width: 560px;
+  margin: 24px auto 0;
+}
+.more .wrap > .lead {
+  margin: 56px auto 0;
+}
+@media (max-width: 734px) {
+  .scene-set {
+    grid-template-columns: 1fr;
+    gap: 48px;
+  }
+}
+/* the laptop holds under the nav while its screen changes twice, pushes in until the screen covers the pin, fades, and the facts
+   take its place. The screen is 69% of the picture's width and 45.42% of that width tall, centred 43.8% down; --cap is the
+   caption's margin and reserved height, so the push can centre the screen whatever the caption wraps to */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .scene {
+      --push: contain 42.5% contain 53%;
+      --leave: contain 72.5% contain 80%;
+      --facts: contain 81% contain 95%;
+      --cap: 98px;
+      --w: min(79vw, (100svh - var(--nav-h) - var(--cap) - 52px) * 1.655);
+      --fit-w: atan2(100vw, var(--w) * 0.69);
+      --fit-h: atan2(100svh - var(--nav-h), var(--w) * 0.4542);
+      --zoom: calc(1.01 * max(tan(var(--fit-w)), tan(var(--fit-h))));
+      height: 350vh;
+      margin-top: 0;
+      view-timeline: --scene block;
+      view-timeline-inset: var(--nav-h) 0px;
+    }
+    .scene-pin {
+      position: sticky;
+      top: var(--nav-h);
+      height: calc(100svh - var(--nav-h));
+      display: grid;
+      place-content: center;
+      place-items: center;
+      overflow: clip;
+    }
+    .scene-set,
+    .scene-facts {
+      grid-area: 1 / 1;
+    }
+    .scene-set {
+      grid-template-columns: var(--w);
+      gap: 0;
+      width: auto;
+    }
+    /* the covered screens go once the last is fully in, so only one picture shows through the fade */
+    .scene-set figure {
+      grid-area: 1 / 1;
+      animation: gone step-end both;
+      animation-timeline: --scene;
+      animation-range: contain 30% contain 31%;
+    }
+    .scene-set figure:last-child {
+      animation-name: leave;
+      animation-timing-function: linear;
+      animation-range: var(--leave);
+    }
+    .scene-set img {
+      transform-origin: 50% 43.8%;
+      animation: push cubic-bezier(0.42, 0, 1, 1) both;
+      animation-timeline: --scene;
+      animation-range: var(--push);
+    }
+    .scene-set figure + figure img {
+      animation-name: push, appear;
+      animation-timing-function: cubic-bezier(0.42, 0, 1, 1), linear;
+      animation-timeline: --scene, --scene;
+      animation-range:
+        var(--push),
+        contain 13% contain 16%;
+    }
+    .scene-set figure + figure + figure img {
+      animation-range:
+        var(--push),
+        contain 27% contain 30%;
+    }
+    .scene-set figcaption {
+      max-width: min(560px, 100vw - 2 * var(--gutter));
+      height: calc(var(--cap) - 40px);
+      margin-top: 40px;
+      animation: cap-1 linear both;
+      animation-timeline: --scene;
+      animation-range: contain;
+    }
+    .scene-set figure + figure figcaption {
+      animation-name: cap-2;
+    }
+    .scene-set figure + figure + figure figcaption {
+      animation-name: cap-3;
+    }
+    .scene-facts {
+      width: min(980px, 100vw - 2 * var(--gutter));
+      animation: facts ease-in-out both;
+      animation-timeline: --scene;
+      animation-range: var(--facts);
+    }
+    .more .scene-facts > .lead {
+      margin-top: 0;
+    }
+    @media (max-width: 734px) {
+      .scene {
+        --push: contain 40% contain 55%;
+        --leave: contain 75% contain 85%;
+        --facts: contain 93% exit 20%;
+        --cap: 115px;
+        --w: min(117vw, (100svh - var(--nav-h) - var(--cap) - 40px) * 1.655);
+        height: 320vh;
+      }
+      .scene-facts .stats {
+        gap: 28px;
+        margin-top: 40px;
+      }
+    }
+  }
+}
+/* WebKit takes tan(atan2()) of viewport lengths as radians unless the angle passes through a registered property */
+@property --fit-w {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 45deg;
+}
+@property --fit-h {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 45deg;
+}
+@keyframes push {
+  to {
+    scale: var(--zoom);
+    translate: 0 calc(6.2% + var(--cap) / 2);
+  }
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes gone {
+  to {
+    visibility: hidden;
+  }
+}
+@keyframes leave {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes facts {
+  from {
+    opacity: 0;
+    scale: 0.92;
+  }
+}
+@keyframes cap-1 {
+  0%,
+  11% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  14%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}
+@keyframes cap-2 {
+  0%,
+  15% {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  18%,
+  25% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  28%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}
+@keyframes cap-3 {
+  0%,
+  29% {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  32%,
+  37% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  40%,
+  100% {
+    opacity: 0;
+    translate: 0 -12px;
+  }
+}

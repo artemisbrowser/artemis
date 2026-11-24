@@ -73,3 +73,26 @@
   width: 2.2em;
   text-align: right;
 }
+.figures {
+  text-align: center;
+}
+.figures .num {
+  font-size: clamp(44px, 5vw, 72px);
+  color: var(--accent);
+}
+.figures li:last-child .num {
+  color: var(--ink);
+}
+.figures sup,
+.bench-method sup {
+  margin-left: 2px;
+  font-size: 0.32em;
+  vertical-align: super;
+}
+.bench-method sup {
+  font-size: 0.8em;
+}
+.figures sup a {
+  text-decoration: none;
+  color: var(--ink-3);
+}

@@ -28,6 +28,7 @@ const SECTIONS = [
   ["01-hero", "top", "Overview"],
   ["07-arc", "move-in", null],
   ["02-know", "know", "Every tab"],
+  ["03-more", "more", "More"],
   ["03-blocking", "blocking", "Blocking"],
   ["05-measured", "measured", "Measured"],
   ["04-values", "private", "Private and open"],
@@ -368,8 +369,21 @@ export async function build(out) {
     });
   // "v1.1.0-2" in the release URL reads as "Version 1.1"
   const version = cfg.DOWNLOAD_URL?.match(/\/v(\d+(?:\.\d+)*)/)?.[1].replace(/\.0$/, "");
+  const bench = (times) => {
+    const max = Math.max(...Object.values(times));
+    return Object.entries(times)
+      .sort((a, b) => a[1] - b[1])
+      .map(([name, ms]) => `<tr${name === "Artemis" ? ' class="us"' : ""}><th scope="row">${name}</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="${+((ms / max) * 100).toFixed(1)}%" height="12" rx="6" /></svg><span>${ms}</span></td></tr>`)
+      .join("\n");
+  };
+  const measured = (key, field) => {
+    const v = cfg.MEASURED?.[key];
+    if (v == null) return (errors.push(`MEASURED.${key} is not in site.config.mjs`), "");
+    return field === "bench" ? bench(v) : field === "us" ? v.Artemis : field === "count" ? Object.keys(v).length : v;
+  };
   const priced = (text) =>
     text
+      .replace(/<!-- @measured (\w+)(?: (bench|us|count))? -->/g, (m, key, field) => measured(key, field))
       .replace(/<!-- @version -->/g, () => (version ? `Version ${version} for ` : ""))
       .replace(/<!-- @price -->/g, () => (cfg.PRICE ? ` ${cfg.PRICE}.` : ""))
       .replace(/<!-- @stage -->/g, () =>
