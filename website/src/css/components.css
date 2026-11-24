@@ -33,35 +33,6 @@
   mask-composite: exclude;
   pointer-events: none;
 }
-html.pin .track .g {
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  background: var(--g-chrome-tint-flat);
-}
-.g.lit,
-html.pin .track .g.lit {
-  background: var(--g-lit);
-}
-.g.half {
-  opacity: 0.5;
-}
-.g-text {
-  background: var(--g-text-bg);
-  -webkit-backdrop-filter: var(--g-text-filter);
-  backdrop-filter: var(--g-text-filter);
-  border: 0.5px solid rgb(255 255 255 / 0.16);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2);
-}
-.g-cap {
-  background: var(--g-cap-bg);
-  -webkit-backdrop-filter: var(--g-cap-filter);
-  backdrop-filter: var(--g-cap-filter);
-  border: 0.5px solid rgb(255 255 255 / 0.16);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.2),
-    var(--sh-capsule);
-  color: #fff;
-}
 .surface {
   background: var(--surface-1);
   box-shadow:
@@ -82,15 +53,6 @@ html.pin .track .g.lit {
 }
 
 /* ---------- download pill and fine print ---------- */
-.get-block {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-.get-block.c {
-  align-items: center;
-  text-align: center;
-}
 .get {
   display: inline-flex;
   align-items: center;
@@ -106,10 +68,6 @@ html.pin .track .g.lit {
   transition:
     scale var(--dur-press) var(--ease-in-out),
     background-color var(--dur-fade) var(--ease-in-out);
-}
-.get-well img {
-  width: 44px;
-  height: 44px;
 }
 .get.sm {
   height: 36px;
@@ -132,57 +90,6 @@ html.pin .track .g.lit {
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
   color: var(--ink-2);
-}
-.stage-tag {
-  margin-right: 2px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-text) 14%, transparent);
-  font-weight: 600;
-  color: var(--accent-text);
-  white-space: nowrap;
-}
-
-/* ---------- keycaps: neutral Mac keys; a pressed key sinks 1 px and takes Rigel ---------- */
-.kc {
-  display: inline-grid;
-  place-items: center;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
-  border-radius: 5px;
-  background: var(--kc-face);
-  color: var(--kc-glyph);
-  font: 500 13px/1 var(--font);
-  letter-spacing: 0;
-  vertical-align: 0.1em;
-  box-shadow:
-    0 0 0 0.5px var(--kc-ring),
-    0 1px 0 var(--kc-edge);
-  transition:
-    translate 80ms ease-out,
-    box-shadow 80ms ease-out,
-    background-color 80ms ease-out,
-    color 80ms ease-out;
-}
-.kc + .kc {
-  margin-left: 4px;
-}
-.kc.down {
-  translate: 0 1px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: 0 0 0 0.5px var(--accent);
-}
-.kc.sm {
-  min-width: 19px;
-  height: 19px;
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.kc.sm + .kc.sm {
-  margin-left: 3px;
 }
 
 /* ---------- Peek ---------- */
@@ -255,45 +162,11 @@ html.peek-open {
   line-height: 1.125;
   letter-spacing: 0.004em;
 }
-.peek-content h2 + p,
-.peek-lede {
+.peek-content h2 + p {
   margin-top: 12px;
   font-size: var(--t-intro);
   line-height: var(--lh-intro);
   color: var(--ink-2);
-}
-.keys {
-  width: 100%;
-  margin-top: 28px;
-  border-collapse: collapse;
-}
-.keys td {
-  padding: 10px 0;
-  border-bottom: 1px solid var(--hairline);
-  font-size: 15px;
-  vertical-align: middle;
-}
-.keys td:first-child {
-  width: 1%;
-  padding-right: 40px;
-  white-space: nowrap;
-}
-.keys .to {
-  margin: 0 4px;
-  font-size: 13px;
-  color: var(--ink-3);
-}
-/* phones give each of a row's two shortcuts its own line */
-@media (max-width: 734px) {
-  .keys td:first-child {
-    padding-right: 16px;
-  }
-  .keys .nw {
-    display: block;
-  }
-  .keys .nw + .nw {
-    margin-top: 6px;
-  }
 }
 .peek-list {
   margin-top: 24px;
@@ -439,10 +312,6 @@ button.ctl:active {
 .sec {
   position: relative;
   padding-block: var(--section-pad);
-}
-.sec.cv {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 900px;
 }
 .wrap {
   width: var(--content);
@@ -774,16 +643,14 @@ button.ctl:active {
 .peek-content .steps li:not(.on) {
   visibility: hidden;
 }
-.step-tabs,
-.sh-tabs {
+.step-tabs {
   display: flex;
   margin-top: 24px;
   padding: 2px;
   border-radius: 9px;
   background: var(--seg-track);
 }
-.step-tabs button,
-.sh-tabs label {
+.step-tabs button {
   flex: 1;
   height: 32px;
   border-radius: 7px;
@@ -796,20 +663,17 @@ button.ctl:active {
   font-variant-numeric: tabular-nums;
   color: var(--ink-3);
 }
-.step-tabs [aria-selected="true"],
-.sh-tabs label:has(:checked) {
+.step-tabs [aria-selected="true"] {
   background: var(--seg-thumb);
   box-shadow: var(--seg-lift);
   color: var(--ink);
 }
-.step-tabs button:focus-visible,
-.sh-tabs label:has(:focus-visible) {
+.step-tabs button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 @media (hover: hover) and (pointer: fine) {
-  .step-tabs button:hover,
-  .sh-tabs label:hover {
+  .step-tabs button:hover {
     color: var(--ink);
   }
 }
@@ -826,9 +690,7 @@ button.ctl:active {
 @supports not (
   (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
 ) {
-  .g,
-  .g-text,
-  .g-cap {
+  .g {
     background: #1c1c1c;
   }
   .localnav {
@@ -837,15 +699,11 @@ button.ctl:active {
 }
 @media (inverted-colors: inverted) or (prefers-contrast: more) or (prefers-reduced-transparency: reduce) {
   .g,
-  .g-text,
-  .g-cap,
   .localnav {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-  .g,
-  .g-text,
-  .g-cap {
+  .g {
     border: 1px solid rgb(255 255 255 / 0.4);
     background: var(--g-text-bg);
   }
@@ -856,8 +714,6 @@ button.ctl:active {
 }
 @media (forced-colors: active) {
   .g,
-  .g-text,
-  .g-cap,
   .localnav,
   .surface {
     background: Canvas;
@@ -898,9 +754,6 @@ button.ctl:active {
 .lead b {
   font-weight: 600;
   color: var(--ink);
-}
-.center {
-  text-align: center;
 }
 /* a reveal waits for main.js to add .in; without script it is simply shown, with reduced motion it only fades.
    Keyframes, not transitions: Discord's in-app browser runs no transitions here. */

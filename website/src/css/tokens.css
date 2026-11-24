@@ -124,26 +124,14 @@
   /* the replica's card behind a page; [data-accent] inside a window sets the look's own */
   --card-base: #0d214c;
 
-  /* Mac keys: neutral caps on a 1 px lower edge; a pressed key sinks and takes Rigel */
-  --kc-face: light-dark(#ffffff, #262626);
-  --kc-glyph: light-dark(#1d1d1d, #ebebeb);
-  --kc-ring: light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.1));
-  --kc-edge: light-dark(rgb(0 0 0 / 0.16), rgb(0 0 0 / 0.6));
-
   /* shadows: neutral light from above, never tinted */
-  --sh-capsule: 0 12px 32px rgb(0 0 0 / 0.24);
   --hl-top: inset 0 1px 0 rgb(255 255 255 / 0.1);
 
   /* glass parameters (recipes live in components.css) */
   --g-nav-blur: blur(20px) saturate(180%);
   --g-chrome-tint: rgb(255 255 255 / 0.1);
-  --g-chrome-tint-flat: rgb(255 255 255 / 0.12);
   --g-chrome-filter: blur(14px) saturate(140%) brightness(1.06);
-  --g-lit: rgb(255 255 255 / 0.16);
   --g-text-bg: rgb(24 24 24 / 0.74);
-  --g-text-filter: blur(30px) saturate(160%);
-  --g-cap-bg: rgb(20 20 20 / 0.76);
-  --g-cap-filter: blur(40px) saturate(160%);
   --g-rim:
     inset 0 1px 0 rgb(255 255 255 / 0.28),
     inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
@@ -443,9 +431,7 @@
   :root {
     --nav-bg: var(--void);
     --g-chrome-tint: #2c2c2c;
-    --g-chrome-tint-flat: #2c2c2c;
     --g-text-bg: #1c1c1c;
-    --g-cap-bg: #1c1c1c;
     --ink-3: var(--ink-2);
   }
 }
