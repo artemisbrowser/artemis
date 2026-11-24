@@ -915,6 +915,9 @@ button.ctl:active {
     opacity: 1;
     translate: 0 0;
   }
+  .reveal.solo {
+    --rd: 0ms;
+  }
   .d1 {
     --rd: 133ms;
   }

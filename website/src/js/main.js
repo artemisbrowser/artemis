@@ -43,11 +43,12 @@ addEventListener("pageshow", syncGet);
 /* ---------- reveals fire once, the first time an element enters from either edge ---------- */
 const reveals = new IntersectionObserver(
   (entries) => {
-    for (const e of entries)
-      if (e.isIntersecting) {
-        e.target.classList.add("in");
-        reveals.unobserve(e.target);
-      }
+    const shown = entries.filter((e) => e.isIntersecting);
+    // d1/d2 stagger only reveals that arrive together; one arriving alone, as in a stacked phone column, starts at once
+    for (const { target } of shown) {
+      target.classList.add("in", ...(shown.length === 1 ? ["solo"] : []));
+      reveals.unobserve(target);
+    }
   },
   { rootMargin: "0px 0px -15% 0px" },
 );
