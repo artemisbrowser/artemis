@@ -274,7 +274,9 @@ export async function build(out) {
       visit(target(rel, m[2]), [...trail, rel]);
     order.push(rel);
   };
-  let bundle = "const __m={};\n";
+  // WebKit can run this module before a slower stylesheet applies, and the modules measure layout as they load
+  let bundle =
+    'await Promise.all([...document.querySelectorAll("link[rel=stylesheet]")].filter((l)=>!l.sheet).map((l)=>new Promise((r)=>l.onload=l.onerror=r)));\nconst __m={};\n';
   try {
     visit("main.js");
     for (const [file] of SECTIONS)
