@@ -1,11 +1,45 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
+/* six figures: 1, 2, 3 or 6 across, never a ragged last row */
+.measured .stats {
+  max-width: none;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 40px 24px;
+}
 .benches {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: 1fr;
   gap: 20px;
   margin-top: 48px;
+}
+@media (max-width: 379px) {
+  .measured .stats {
+    grid-template-columns: 1fr;
+  }
+}
+@media (min-width: 735px) {
+  .measured .stats,
+  .benches {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .measured .stats li {
+    padding-top: 20px;
+    border-top: 1px solid var(--hairline-2);
+  }
+}
+@media (min-width: 735px) and (max-width: 1068px) {
+  .benches {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (min-width: 1200px) {
+  .measured .stats {
+    grid-template-columns: repeat(6, 1fr);
+  }
+  .measured .figures .num {
+    font-size: 48px;
+  }
 }
 .bench {
   padding: clamp(28px, 3.4vw, 48px);
@@ -79,9 +113,6 @@
 .figures .num {
   font-size: clamp(44px, 5vw, 72px);
   color: var(--accent);
-}
-.figures li:last-child .num {
-  color: var(--ink);
 }
 .figures sup,
 .bench-method sup {
