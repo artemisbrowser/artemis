@@ -51,24 +51,42 @@
 }
 /* rows and tiles follow the app's sidebar metrics at about 0.72 scale */
 .move-art .sb {
-  --sb: light-dark(#ededef, #242426);
   --well: light-dark(rgb(0 0 0 / 0.05), rgb(255 255 255 / 0.07));
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px;
-  overflow: hidden;
   border: 1px solid var(--hairline);
   border-radius: var(--r-card);
   background: var(--sb);
   box-shadow: 0 12px 32px light-dark(rgb(0 0 0 / 0.07), rgb(0 0 0 / 0.4));
   font-size: 11.5px;
   line-height: 16px;
-  color: var(--ink-3);
 }
-.move-art .to .sb {
+.move-art .sb {
   --sb: color-mix(in srgb, var(--accent) 11%, var(--surface-1));
   color: var(--ink);
+}
+.move-art .side:not(.to) .sb {
+  position: relative;
+  isolation: isolate;
+}
+.move-art .side:not(.to) .sb::before,
+.move-art .side:not(.to) .sb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.move-art .side:not(.to) .sb::before {
+  background: light-dark(rgb(255 255 255 / 0.35), rgb(0 0 0 / 0.3));
+}
+/* a grey saturation layer: at full opacity the side underneath reads in greyscale */
+.move-art .side:not(.to) .sb::after {
+  background: #888;
+  mix-blend-mode: saturation;
 }
 .move-art .sb p {
   display: flex;
@@ -102,7 +120,7 @@
 .move-art .pins { --n: 2; }
 .move-art .tabs { --n: 3; }
 .move-art .side:not(.to) .it {
-  opacity: 0.4;
+  opacity: 0.25;
 }
 .move-art .tb {
   display: flex;
@@ -164,7 +182,7 @@
 .move-art .space {
   font-weight: 700;
 }
-.move-art .to .space .ico {
+.move-art .space .ico {
   color: var(--accent);
 }
 .move-art .pins,
@@ -212,18 +230,18 @@
 .move-art .dock span i:first-child {
   opacity: 1;
 }
-.move-art .to .tb i:nth-child(1) { background: #ff5f57; }
-.move-art .to .tb i:nth-child(2) { background: #febc2e; }
-.move-art .to .tb i:nth-child(3) { background: #28c840; }
-.move-art .to .favs i:nth-child(1) { --fav: #2a75c5; }
-.move-art .to .favs i:nth-child(2) { --fav: #3c9a5f; }
-.move-art .to .favs i:nth-child(3) { --fav: #c2385a; }
-.move-art .to .favs i:nth-child(4) { --fav: var(--ink-3); }
-.move-art .to .pins p:nth-child(1) i { --fav: #2a75c5; }
-.move-art .to .pins p:nth-child(2) i { --fav: #c2385a; }
-.move-art .to .tabs p:nth-child(1) i { --fav: #d9702a; }
-.move-art .to .tabs p:nth-child(2) i { --fav: #3c9a5f; }
-.move-art .to .tabs p:nth-child(3) i { --fav: #b8921f; }
+.move-art .tb i:nth-child(1) { background: #ff5f57; }
+.move-art .tb i:nth-child(2) { background: #febc2e; }
+.move-art .tb i:nth-child(3) { background: #28c840; }
+.move-art .favs i:nth-child(1) { --fav: #2a75c5; }
+.move-art .favs i:nth-child(2) { --fav: #3c9a5f; }
+.move-art .favs i:nth-child(3) { --fav: #c2385a; }
+.move-art .favs i:nth-child(4) { --fav: var(--ink-3); }
+.move-art .pins p:nth-child(1) i { --fav: #2a75c5; }
+.move-art .pins p:nth-child(2) i { --fav: #c2385a; }
+.move-art .tabs p:nth-child(1) i { --fav: #d9702a; }
+.move-art .tabs p:nth-child(2) i { --fav: #3c9a5f; }
+.move-art .tabs p:nth-child(3) i { --fav: #b8921f; }
 @media (max-width: 734px) {
   .move-art {
     --g: 8px;
@@ -255,48 +273,98 @@
     display: none;
   }
 }
+.move-art .it {
+  --at: calc(700ms + var(--n, 0) * 160ms);
+}
 @media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
-  .move-art .it {
-    --at: calc(700ms + var(--n, 0) * 160ms);
-  }
   .move-card:not(.in) .move-art .side:not(.to) .it {
     opacity: 1;
   }
+  .move-card:not(.in) .move-art .side:not(.to) .sb::before,
+  .move-card:not(.in) .move-art .side:not(.to) .sb::after {
+    opacity: 0;
+  }
+  /* each twin goes while its group, still covering it, lifts */
   .move-art .side:not(.to) .it {
-    transition: opacity 500ms var(--ease-in-out) calc(var(--at) + 200ms);
+    transition: opacity 300ms var(--ease-in-out) var(--at);
+  }
+  /* Arc's colour drains across the four departures */
+  .move-art .side:not(.to) .sb::before,
+  .move-art .side:not(.to) .sb::after {
+    transition: opacity 1100ms var(--ease-in-out) 750ms;
   }
   .move-card:not(.in) .move-art .to .it {
     translate: var(--off) 0;
   }
   .move-card.in .move-art .to .it {
     position: relative;
-    animation: move-glide 1000ms var(--ease-in-out) var(--at) both;
+    animation:
+      move-x 820ms var(--ease-in-out) var(--at) both,
+      move-pop 1320ms linear var(--at) both;
   }
   .move-card.in .move-art .to .it::before {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    box-shadow: var(--g-drop);
+    box-shadow: 0 18px 36px rgb(0 0 0 / 0.16), 0 4px 10px rgb(0 0 0 / 0.08);
     opacity: 0;
-    animation: move-lift 1000ms var(--ease-in-out) var(--at);
+    animation: move-shadow 1320ms linear var(--at);
   }
 }
-@keyframes move-glide {
+@media (scripting: enabled) and (prefers-reduced-motion: reduce) {
+  .move-card:not(.in) .move-art .side:not(.to) .it {
+    opacity: 1;
+  }
+  .move-card:not(.in) .move-art .side:not(.to) .sb::before,
+  .move-card:not(.in) .move-art .side:not(.to) .sb::after,
+  .move-card:not(.in) .move-art .to .it {
+    opacity: 0;
+  }
+  .move-art .side:not(.to) .sb::before,
+  .move-art .side:not(.to) .sb::after,
+  .move-art .it {
+    transition: opacity 600ms var(--ease-in-out) var(--at, 700ms);
+  }
+}
+@keyframes move-x {
   from {
     translate: var(--off) 0;
-  }
-  50% {
-    translate: calc(var(--off) / 2) -10px;
-    scale: 1.04;
   }
   to {
     translate: 0 0;
   }
 }
-@keyframes move-lift {
-  50% {
+/* lifts toward the viewer, rides an arc, then springs back into the sidebar's plane */
+@keyframes move-pop {
+  0% {
+    transform: perspective(700px) translate3d(0, 0, 0);
+    animation-timing-function: var(--ease-out-flat);
+  }
+  24% {
+    transform: perspective(700px) translate3d(0, -12px, 64px);
+    animation-timing-function: var(--ease-in-out);
+  }
+  62% {
+    transform: perspective(700px) translate3d(0, -4px, 56px);
+    animation-timing-function: var(--spring-pop);
+  }
+  100% {
+    transform: perspective(700px) translate3d(0, 0, 0);
+  }
+}
+@keyframes move-shadow {
+  0% {
+    opacity: 0;
+    animation-timing-function: var(--ease-out-flat);
+  }
+  24%,
+  62% {
     opacity: 1;
+    animation-timing-function: var(--ease-in-out);
+  }
+  100% {
+    opacity: 0;
   }
 }
 @media (max-width: 734px) {
