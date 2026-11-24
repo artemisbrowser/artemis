@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|above]
-// Puts a window capture on a backdrop at the laptop's screen size, renders it on the laptop from tools/3d and writes
-// src/img/framed/<name>.webp. A capture already the screen's shape is used as is. Needs Playwright, Blender and cwebp.
+// node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|above] [--desk]
+// Renders a window capture, on a backdrop at the laptop's screen size, on the tools/3d laptop as src/img/framed/<name>.webp.
+// A screen-shaped capture is used as is; a --desk one fills the screen under the menu bar. Needs Playwright, Blender, cwebp.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,7 +18,7 @@ const pwDir = process.env.PLAYWRIGHT_BROWSERS_PATH
 const args = process.argv.slice(2);
 const [input, name] = args;
 const opt = (k, d) => (args.includes("--" + k) ? args[args.indexOf("--" + k) + 1] : d);
-if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px] [--shot front|above]");
+if (!input || !name) throw new Error("usage: node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width px] [--shot front|above] [--desk]");
 
 const BLENDER = process.env.BLENDER || "/Applications/Blender.app/Contents/MacOS/Blender";
 const GLB = process.env.LAPTOP_GLB || path.join(os.homedir(), ".cache/artemis/3d-render/mbp14.glb");
@@ -31,7 +31,8 @@ const size = (f) => execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight
 
 let screen = path.resolve(input);
 const [iw, ih] = size(screen);
-if (Math.abs(iw / ih - W / H) > 0.01) {
+const desk = args.includes("--desk");
+if (desk || Math.abs(iw / ih - W / H) > 0.01) {
   const { chromium } = await import("playwright").catch(
     () => import(path.join(pwDir, "node_modules/playwright/index.mjs")),
   );
@@ -62,6 +63,7 @@ if (Math.abs(iw / ih - W / H) > 0.01) {
   await page.setContent(`<style>
     body { margin: 0; height: 100vh; box-sizing: border-box; padding-top: 37px; display: grid; place-items: center; background: url(${dataUrl(backdrop)}) center / cover; }
     img { width: ${iw * k}px; height: ${ih * k}px; border-radius: ${32 * k}px; filter: drop-shadow(0 22px 40px rgb(0 0 0 / 0.45)); }
+    ${desk ? `img { width: 100vw; height: calc(100vh - 37px); object-fit: cover; border-radius: 0; filter: none; }` : ""}
     header { position: fixed; inset: 0 0 auto; height: 37px; display: flex; align-items: center; gap: 21px; padding: 0 21px 0 20px;
       background: rgb(255 255 255 / 0.1); backdrop-filter: blur(24px) saturate(150%);
       font: 500 13.5px system-ui; color: #fff; text-shadow: 0 0 4px rgb(0 0 0 / 0.12); }
