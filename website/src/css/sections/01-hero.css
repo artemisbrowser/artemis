@@ -107,7 +107,7 @@
   left: 48px;
   top: 44px;
 }
-.slide h2 {
+.slide :is(h2, h3) {
   font-size: var(--t-section);
   line-height: var(--lh-section);
   letter-spacing: var(--tr-section);
