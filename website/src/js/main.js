@@ -40,11 +40,11 @@ function syncGet() {
 new IntersectionObserver(syncGet).observe(heroGet);
 addEventListener("pageshow", syncGet);
 
-/* ---------- reveals fire once on entry; anything already above the viewport shows at once ---------- */
+/* ---------- reveals fire once, the first time an element enters from either edge ---------- */
 const reveals = new IntersectionObserver(
   (entries) => {
     for (const e of entries)
-      if (e.isIntersecting || e.boundingClientRect.top < 0) {
+      if (e.isIntersecting) {
         e.target.classList.add("in");
         reveals.unobserve(e.target);
       }
