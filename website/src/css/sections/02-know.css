@@ -2,12 +2,12 @@
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
 /* the headline lines up with the pills inside the card */
-.know {
+.tour {
   --pv-pad: clamp(48px, 6.25vw, 90px);
   --pv-w: min(1440px, 100%);
   --pv-h: 760px;
 }
-.know h2 {
+.tour h2 {
   width: var(--pv-w);
   margin: 0 auto 48px;
   padding-inline: var(--pv-pad);
@@ -251,7 +251,7 @@
     translate: min(12vw, max(0px, (1440px - 100vw) * 0.35)) 0;
   }
 }
-.stage img {
+.stage > * {
   position: absolute;
   top: var(--shot-y);
   left: var(--shot-x);
@@ -272,14 +272,14 @@
   }
 }
 @media (max-width: 1068px) {
-  .know {
+  .tour {
     --pv-h: 720px;
   }
 }
 /* phone: pictures fill a 640px viewer and one sideways row of pills lies along its foot.
    Open, every pill is a card-wide slot, so the neighbours show at the edges under the steps. */
 @media (max-width: 833px) {
-  .know {
+  .tour {
     --pv-pad: 24px;
     --pv-h: 640px;
   }

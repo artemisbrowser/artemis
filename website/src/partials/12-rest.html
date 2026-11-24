@@ -1,101 +1,94 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<section class="sec rest" id="rest" data-name="And the rest" aria-labelledby="rest-h">
-  <div class="wrap">
-    <h2 class="reveal" id="rest-h">And the rest.</h2>
-  </div>
-  <div class="gallery reveal" data-gallery>
-    <ul class="gallery-track" aria-label="And the rest">
-      <li class="slide a-oxygen">
-        <div class="slide-copy">
-          <h3>Scout</h3>
-          <p>Links from other apps open in a window of their own, so your spaces stay as you left them.</p>
+<section class="sec tour rest" id="rest" data-name="And the rest" aria-labelledby="rest-h">
+  <h2 class="reveal" id="rest-h">And the rest.</h2>
+  <div class="viewer" data-viewer>
+    <div class="viewer-in">
+      <div class="dock">
+        <div class="steps" aria-label="Features">
+          <button class="step" type="button" data-step="-1" aria-label="Previous feature"><svg class="ico up" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
+          <button class="step" type="button" data-step="1" aria-label="Next feature"><svg class="ico down" aria-hidden="true"><use href="#i-chev-l" /></svg></button>
         </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-open" /></svg>
-      </li>
-      <li class="slide a-betel">
-        <div class="slide-copy">
-          <h3>Archive</h3>
-          <p>Tabs you haven’t used for 12 hours, or a time you choose, tidy themselves away. Pinned tabs and favourites stay.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-archive" /></svg>
-      </li>
-      <li class="slide a-rigel">
-        <div class="slide-copy">
-          <h3>Rules</h3>
-          <p>Send a site to the space it belongs in, every time.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-spaces" /></svg>
-      </li>
-      <li class="slide a-io">
-        <div class="slide-copy">
-          <h3>Live Folders</h3>
-          <p>Your pull requests, issues and feeds, kept fresh in the sidebar.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg>
-      </li>
-      <li class="slide a-halpha">
-        <div class="slide-copy">
-          <h3>Mini player</h3>
-          <p>Video keeps playing in a small window that floats above the rest.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-play" /></svg>
-      </li>
-      <li class="slide a-aurora">
-        <div class="slide-copy">
-          <h3>Profiles</h3>
-          <p>Give a space its own sign-ins, cookies and history.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-person" /></svg>
-      </li>
-      <li class="slide a-oxygen">
-        <div class="slide-copy">
-          <h3>Incognito windows</h3>
-          <p>Nothing kept when you close them, and a Touch ID lock if you want one.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-shield" /></svg>
-      </li>
-      <li class="slide a-betel">
-        <div class="slide-copy">
-          <h3>Link shortcuts</h3>
-          <p>⇧-click to Peek, ⌘-click to open behind, ⌥-click to split.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-link" /></svg>
-      </li>
-      <li class="slide a-rigel">
-        <div class="slide-copy">
-          <h3>Clean links</h3>
-          <p>Copy Page Link drops the tracking tags from the address.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-check" /></svg>
-      </li>
-      <li class="slide a-io">
-        <div class="slide-copy">
-          <h3>Web Inspector</h3>
-          <p>Press ⌥⌘I to look inside any page.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-code" /></svg>
-      </li>
-      <li class="slide a-halpha">
-        <div class="slide-copy">
-          <h3>AppleScript</h3>
-          <p>Script your tabs and windows.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-doc" /></svg>
-      </li>
-      <li class="slide a-aurora">
-        <div class="slide-copy">
-          <h3>Eleven icon colours</h3>
-          <p>Pick the app icon that suits your Dock.</p>
-        </div>
-        <svg class="ico" aria-hidden="true"><use href="#i-star" /></svg>
-      </li>
-    </ul>
-    <div class="gallery-ctl">
-      <div class="dotnav"><ul class="dots" role="tablist" aria-label="And the rest"></ul></div>
-      <button class="playpause" type="button" aria-label="Pause the highlights">
-        <svg class="ico" aria-hidden="true"><use href="#i-pause" /></svg>
-      </button>
+        <ul class="pills">
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-scout"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Scout</span></button>
+            <p id="r-scout" tabindex="-1" hidden><b>Scout.</b> Links from other apps open in a window of their own, so your spaces stay as you left them.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-archive"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Archive</span></button>
+            <p id="r-archive" tabindex="-1" hidden><b>Archive.</b> Tabs you haven’t used for 12 hours, or a time you choose, tidy themselves away. Pinned tabs and favourites stay.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-rules"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Rules</span></button>
+            <p id="r-rules" tabindex="-1" hidden><b>Rules.</b> Send a site to the space it belongs in, every time.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-folders"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Live Folders</span></button>
+            <p id="r-folders" tabindex="-1" hidden><b>Live Folders.</b> Your pull requests, issues and feeds, kept fresh in the sidebar.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-mini"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Mini player</span></button>
+            <p id="r-mini" tabindex="-1" hidden><b>Mini player.</b> Video keeps playing in a small window that floats above the rest.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-profiles"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Profiles</span></button>
+            <p id="r-profiles" tabindex="-1" hidden><b>Profiles.</b> Give a space its own sign-ins, cookies and history.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-incognito"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Incognito windows</span></button>
+            <p id="r-incognito" tabindex="-1" hidden><b>Incognito windows.</b> Nothing kept when you close them, and a Touch ID lock if you want one.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-links"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Link shortcuts</span></button>
+            <p id="r-links" tabindex="-1" hidden><b>Link shortcuts.</b> ⇧-click to Peek, ⌘-click to open behind, ⌥-click to split.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-clean"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Clean links</span></button>
+            <p id="r-clean" tabindex="-1" hidden><b>Clean links.</b> Copy Page Link drops the tracking tags from the address.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-inspector"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Web Inspector</span></button>
+            <p id="r-inspector" tabindex="-1" hidden><b>Web Inspector.</b> Press ⌥⌘I to look inside any page.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-script"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>AppleScript</span></button>
+            <p id="r-script" tabindex="-1" hidden><b>AppleScript.</b> Script your tabs and windows.</p>
+          </li>
+          <li>
+            <button type="button" aria-expanded="false" aria-controls="r-colours"><svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg><span>Eleven icon colours</span></button>
+            <p id="r-colours" tabindex="-1" hidden><b>Eleven icon colours.</b> Pick the app icon that suits your Dock.</p>
+          </li>
+        </ul>
+      </div>
+      <button class="shut" type="button" aria-label="Close"><svg class="ico" aria-hidden="true"><use href="#i-xmark" /></svg></button>
+    </div>
+    <div class="stage" aria-hidden="true">
+      <div class="all on">
+        <svg class="ico a-oxygen"><use href="#i-open" /></svg>
+        <svg class="ico a-betel"><use href="#i-archive" /></svg>
+        <svg class="ico a-rigel"><use href="#i-spaces" /></svg>
+        <svg class="ico a-io"><use href="#i-folder" /></svg>
+        <svg class="ico a-halpha"><use href="#i-play" /></svg>
+        <svg class="ico a-aurora"><use href="#i-person" /></svg>
+        <svg class="ico a-oxygen"><use href="#i-shield" /></svg>
+        <svg class="ico a-betel"><use href="#i-link" /></svg>
+        <svg class="ico a-rigel"><use href="#i-check" /></svg>
+        <svg class="ico a-io"><use href="#i-code" /></svg>
+        <svg class="ico a-halpha"><use href="#i-doc" /></svg>
+        <svg class="ico a-aurora"><use href="#i-star" /></svg>
+      </div>
+      <svg class="ico a-oxygen"><use href="#i-open" /></svg>
+      <svg class="ico a-betel"><use href="#i-archive" /></svg>
+      <svg class="ico a-rigel"><use href="#i-spaces" /></svg>
+      <svg class="ico a-io"><use href="#i-folder" /></svg>
+      <svg class="ico a-halpha"><use href="#i-play" /></svg>
+      <svg class="ico a-aurora"><use href="#i-person" /></svg>
+      <svg class="ico a-oxygen"><use href="#i-shield" /></svg>
+      <svg class="ico a-betel"><use href="#i-link" /></svg>
+      <svg class="ico a-rigel"><use href="#i-check" /></svg>
+      <svg class="ico a-io"><use href="#i-code" /></svg>
+      <svg class="ico a-halpha"><use href="#i-doc" /></svg>
+      <svg class="ico a-aurora"><use href="#i-star" /></svg>
     </div>
   </div>
 </section>

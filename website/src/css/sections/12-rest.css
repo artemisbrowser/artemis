@@ -1,42 +1,42 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-.rest .gallery {
-  margin-top: 48px;
+/* tall enough for the column of twelve with one card open, so opening never moves the page */
+@media (min-width: 834px) {
+  .rest {
+    --pv-h: 1000px;
+  }
 }
-.rest .slide {
-  height: clamp(420px, 36vw, 520px);
+.rest .stage {
+  --shot-x: 68%;
+  --shot-y: 50%;
+  --shot-w: min(520px, 42vw);
 }
-.rest .slide-copy {
-  z-index: 1;
-  max-width: min(30em, 46%);
+.rest .stage > * {
+  aspect-ratio: 1;
+  translate: -50% -50%;
 }
-/* the glyph is the card's art: drawn large in the accent and running off the bottom right corner */
-.rest .slide .ico {
-  position: absolute;
-  right: 4%;
-  bottom: -18%;
-  width: auto;
-  height: min(118%, 38vw);
+.rest .stage > .ico {
+  color: var(--accent);
+  stroke-width: 0.8;
+}
+.rest .all {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  place-content: center;
+  gap: calc(var(--shot-w) / 10);
+}
+.rest .all .ico {
+  width: 100%;
+  height: auto;
   aspect-ratio: 1;
   color: var(--accent);
-  stroke-width: 0.7;
+  stroke-width: 1.4;
 }
-@media (max-width: 734px) {
-  .rest .slide {
-    height: 480px;
-  }
-  .rest .slide-copy {
-    right: 24px;
-    max-width: none;
-  }
-  .rest .slide .ico {
-    right: -14%;
-    bottom: -12%;
-    height: auto;
-    width: 92%;
-  }
-  .rest .dotnav {
-    --dot-gap: 9px;
+@media (max-width: 833px) {
+  .rest .stage {
+    --shot-x: 50%;
+    --shot-y: 36%;
+    --shot-w: min(300px, 66vw);
   }
 }
