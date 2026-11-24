@@ -3,7 +3,6 @@
 
 import { root, params, mq } from "./core.js";
 import { openPeek } from "./peek.js";
-import "./gallery.js";
 import "./know.js";
 
 const cls = root.classList;
@@ -54,7 +53,7 @@ const reveals = new IntersectionObserver(
 for (const el of document.querySelectorAll(".reveal")) reveals.observe(el);
 
 /* ---------- the nav marks the section crossing mid-viewport; on phones its links drop from a chevron ---------- */
-const links = [...nav.querySelectorAll(".localnav-links a")];
+const links = [...nav.querySelectorAll('.localnav-links a[href^="#"]')];
 const menu = nav.querySelector("[data-nav-menu]");
 const current = new IntersectionObserver(
   (entries) => {
