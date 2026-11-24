@@ -41,18 +41,23 @@ new IntersectionObserver(syncGet).observe(heroGet);
 addEventListener("pageshow", syncGet);
 
 /* ---------- reveals fire once, the first time an element enters from either edge ---------- */
+const hidden = new Set(document.querySelectorAll(".reveal"));
 const reveals = new IntersectionObserver(
   (entries) => {
-    const shown = entries.filter((e) => e.isIntersecting);
+    const shown = entries.filter((e) => e.isIntersecting).map((e) => e.target);
     // d1/d2 stagger only reveals that arrive together; one arriving alone, as in a stacked phone column, starts at once
-    for (const { target } of shown) {
-      target.classList.add("in", ...(shown.length === 1 ? ["lone"] : []));
-      reveals.unobserve(target);
+    for (const el of shown) el.classList.add("in", ...(shown.length === 1 ? ["lone"] : []));
+    // a fling or a restored scroll can carry reveals past the line unseen; they are shown with the next arrivals
+    const passed = [...hidden].filter((el) => !shown.includes(el) && el.getBoundingClientRect().bottom < 0);
+    for (const el of passed) el.classList.add("in", "lone");
+    for (const el of [...shown, ...passed]) {
+      hidden.delete(el);
+      reveals.unobserve(el);
     }
   },
   { rootMargin: "0px 0px -15% 0px" },
 );
-for (const el of document.querySelectorAll(".reveal")) reveals.observe(el);
+for (const el of hidden) reveals.observe(el);
 
 /* ---------- the Arc-to-Artemis sidebars move once 3/4 of them, or of a short viewport, is on screen ---------- */
 const moveArt = document.querySelector(".move-art");
