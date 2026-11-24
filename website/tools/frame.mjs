@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 // node tools/frame.mjs <capture.png> <name> [--backdrop img] [--width 2000] [--shot front|above] [--desk]
-// Renders a window capture, on a backdrop at the laptop's screen size, on the tools/3d laptop as src/img/framed/<name>.webp.
+// Renders a window capture, on a backdrop at the laptop's screen size, on the tools/3d laptop as src/img/framed/<name>.webp,
+// with <name>-1000.webp and -1500.webp (and -2000.webp above 2000 wide) for srcset.
 // A screen-shaped capture is used as is; a --desk one fills the screen under the menu bar. Needs Playwright, Blender, cwebp.
 import fs from "node:fs";
 import os from "node:os";
@@ -86,6 +87,9 @@ execFileSync(BLENDER, ["-b", "--factory-startup", "-P", path.join(ROOT, "tools/3
   "--backdrop", stage, "--hinge", "10.5655", "0.8922"], { stdio: "ignore" });
 const dest = path.join(ROOT, "src/img/framed", `${name}.webp`);
 fs.mkdirSync(path.dirname(dest), { recursive: true });
-execFileSync("cwebp", ["-quiet", "-q", "82", "-alpha_q", "100", path.join(tmp, `${shot}.png`), "-o", dest]);
+const webp = (out, ...resize) => execFileSync("cwebp", ["-quiet", "-q", "82", "-alpha_q", "100", "-m", "6", ...resize, path.join(tmp, `${shot}.png`), "-o", out]);
+webp(dest);
+// the narrower copies a page's srcset offers phones; each <img> lists the ones that exist
+for (const w of [1000, 1500, 2000].filter((w) => w < width)) webp(dest.replace(/\.webp$/, `-${w}.webp`), "-resize", String(w), "0");
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(path.relative(process.cwd(), dest));
