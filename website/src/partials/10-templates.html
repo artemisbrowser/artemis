@@ -1,51 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<template id="peek-spaces">
-  <h2 id="peek-title">Spaces.</h2>
-  <div class="panel"><p><b>Room for everything.</b> Each space keeps its own pinned sites, folders and tabs, so work stays at work.</p>
-    <img src="/assets/img/know-spaces.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
-  <div class="panel"><p><b>Swipe between them.</b> Two fingers on the trackpad move you to the next space, with its colour sliding in behind.</p></div>
-  <div class="panel"><p><b>Separate sign-ins.</b> Give a space its own profile and it keeps its own cookies, history and accounts. An incognito space forgets everything when you close it.</p></div>
-</template>
-<template id="peek-tabs">
-  <h2 id="peek-title">Recent tabs.</h2>
-  <div class="panel"><p><b>Hold ⌃⇥.</b> Your last tabs fan out as previews. Let go on the one you want.</p></div>
-  <div class="panel"><p><b>Peek.</b> Shift-click a link to read it over the page, without leaving it.</p></div>
-  <div class="panel"><p><b>Mini player.</b> Videos keep playing in a small window that floats above the rest.</p></div>
-</template>
-<template id="peek-themes">
-  <h2 id="peek-title">Themes.</h2>
-  <div class="panel"><p><b>Every space, its own colour.</b> Pick a solid colour, a gradient or glass, and set how bright it sits behind the sidebar.</p>
-    <img src="/assets/img/know-themes.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
-  <div class="panel"><p><b>Icons too.</b> Mark each space with an emoji or a symbol, and pick one of ten colours for the app icon.</p></div>
-  <div class="panel"><p><b>Liquid Glass throughout.</b> Made for macOS 26, light or dark.</p></div>
-</template>
-<template id="peek-mac">
-  <h2 id="peek-title">Private by default.</h2>
-  <ul class="peek-list">
-    <li>There’s no account and no telemetry.</li>
-    <li>
-      Your history and tabs stay on your Mac. Passwords, passkeys and codes
-      live in its keychain.
-    </li>
-    <li>
-      Handoff can show the page you’re reading on your other Apple devices that
-      use the same Apple Account.
-    </li>
-    <li>
-      Artemis goes online to load the pages you open, to update its filter
-      lists and to check for its own updates every 4 hours. When a site has no
-      icon, Google’s icon service supplies one.
-      Search suggestions and the leaked-password check also go online, and
-      both are off until you turn them on.
-    </li>
-    <li>
-      On-device intelligence is off until you turn it on, and it needs Apple
-      Intelligence.
-    </li>
-  </ul>
-</template>
-
 <template id="peek-licence">
   <h2 id="peek-title">Open source.</h2>
   <ul class="peek-list">
@@ -84,6 +38,10 @@
       Moon images from science.nasa.gov.
     </li>
   </ul>
+</template>
+<template id="peek-install">
+  <h2 id="peek-title">Opening Artemis the first time</h2>
+  <!-- @include _install -->
 </template>
 <!-- @if DOWNLOAD_URL -->
 <template id="peek-get">

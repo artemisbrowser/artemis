@@ -1,9 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-.hero {
-  padding-bottom: var(--section-pad);
-}
 /* one screen: the headline, the lid under it, the keys running out under the docked download */
 .hero-stage {
   position: relative;
@@ -26,7 +23,7 @@
   letter-spacing: -0.02em;
 }
 .hero-tag {
-  max-width: 17em;
+  max-width: 24em;
   margin-top: 8px;
   font-size: var(--t-card);
   line-height: var(--lh-card);
@@ -93,79 +90,6 @@
   font-size: 14px;
   font-weight: 600;
 }
-.slide {
-  position: relative;
-  width: min(1260px, 100vw - 2 * var(--gutter));
-  height: clamp(480px, 42.5vw, 612px);
-  overflow: hidden;
-  border-radius: 28px;
-  color: var(--ink);
-  background: light-dark(#f5f5f7, #1d1d1f);
-}
-.slide-copy {
-  position: absolute;
-  left: 48px;
-  top: 44px;
-}
-.slide h2 {
-  font-size: var(--t-section);
-  line-height: var(--lh-section);
-  letter-spacing: var(--tr-section);
-  color: var(--accent);
-}
-.slide-copy p {
-  margin-top: 6px;
-  font-size: clamp(19px, 2vw, 24px);
-  font-weight: 600;
-}
-.slide .more {
-  position: absolute;
-  right: 48px;
-  top: 52px;
-  height: 44px;
-  padding: 0 22px;
-  border-radius: 980px;
-  background: light-dark(rgb(232 232 237 / 0.72), rgb(66 66 69 / 0.72));
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
-  color: var(--ink);
-  font-size: 17px;
-  font-weight: 600;
-}
-/* --d is the slide's distance from the one in view, in slides; --o fades it out over that distance */
-@media (prefers-reduced-motion: no-preference) {
-  .slide-copy,
-  .slide .more {
-    translate: calc(var(--d, 0) * 162px) 0;
-    opacity: var(--o, 1);
-  }
-}
-/* the Spaces slide shows the capture in the page's appearance */
-.slide .dark {
-  display: none;
-}
-:root[data-theme="dark"] .slide .light {
-  display: none;
-}
-:root[data-theme="dark"] .slide .dark {
-  display: block;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .slide .light {
-    display: none;
-  }
-  :root:not([data-theme="light"]) .slide .dark {
-    display: block;
-  }
-}
-.slide img {
-  position: absolute;
-  left: 50%;
-  bottom: -4%;
-  width: min(60%, 756px);
-  height: auto;
-  translate: -50% 0;
-}
 @media (max-width: 734px) {
   .hero-stage {
     display: block;
@@ -196,22 +120,5 @@
     height: 36px;
     padding: 0 15px;
     font-size: 14px;
-  }
-  .slide {
-    width: calc(100vw - 2 * var(--gutter) - 21px);
-    height: 480px;
-  }
-  .slide-copy {
-    left: 24px;
-    top: 28px;
-  }
-  .slide .more {
-    top: 116px;
-    right: auto;
-    left: 24px;
-  }
-  .slide img {
-    bottom: 12px;
-    width: 100%;
   }
 }
