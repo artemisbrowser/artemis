@@ -27,6 +27,7 @@ export const sampled = { duration: 1700, easing: "linear" };
 export function go(id) {
   const s = document.getElementById(id);
   if (!s) return;
+  if (s.open === false) s.open = true;
   const behavior = mq.reduce.matches ? "auto" : "smooth";
   const off = () =>
     s.getBoundingClientRect().top -

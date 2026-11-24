@@ -1,0 +1,42 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
+<section class="sec measured" id="measured" data-measured data-name="Measured" aria-labelledby="measured-h">
+  <div class="wrap">
+    <div class="head">
+      <h2 class="reveal" id="measured-h">A new tab in 63 milliseconds.</h2>
+      <p class="lead reveal d1">
+        <b>We timed four browsers on the same Mac.</b> On new tabs
+        Artemis is level with Helium, and on launch it’s level with Search and
+        Ardia.
+      </p>
+    </div>
+    <div class="benches">
+      <figure class="bench reveal">
+        <figcaption><h3>New tab to first paint</h3><p>Milliseconds, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Milliseconds</th></tr></thead>
+          <tbody>
+            <tr class="us"><th scope="row">Artemis</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="28.1%" height="12" rx="6" /></svg><span>63</span></td></tr>
+            <tr><th scope="row">Helium</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="29.5%" height="12" rx="6" /></svg><span>66</span></td></tr>
+            <tr><th scope="row">Ardia</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="45.1%" height="12" rx="6" /></svg><span>101</span></td></tr>
+            <tr><th scope="row">Search</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="100%" height="12" rx="6" /></svg><span>224</span></td></tr>
+          </tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>Launch to window</h3><p>Milliseconds, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Milliseconds</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Search</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="68.4%" height="12" rx="6" /></svg><span>535</span></td></tr>
+            <tr class="us"><th scope="row">Artemis</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="69.2%" height="12" rx="6" /></svg><span>541</span></td></tr>
+            <tr><th scope="row">Ardia</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="70.7%" height="12" rx="6" /></svg><span>553</span></td></tr>
+            <tr><th scope="row">Helium</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="100%" height="12" rx="6" /></svg><span>782</span></td></tr>
+          </tbody>
+        </table>
+      </figure>
+      <!-- Speedometer 3.1 and memory go here, every browser in each, once they are measured again. -->
+    </div>
+    <p class="bench-method">Medians on one Mac with M1 Pro, measured 23 November 2026.</p>
+  </div>
+</section>
