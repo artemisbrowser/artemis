@@ -11,6 +11,16 @@ const modes = () => ["fine", "coarse"].forEach((k) => cls.toggle(k, mq[k].matche
 modes();
 for (const k of ["fine", "coarse"]) mq[k].addEventListener("change", modes);
 
+/* ---------- lazy shots take their srcset once the page has a width ---------- */
+// WebKit never loads a lazy srcset image whose source was picked while a background view was zero wide
+function widen() {
+  if (!innerWidth) return;
+  removeEventListener("resize", widen);
+  for (const img of document.querySelectorAll("img[data-srcset]")) img.srcset = img.dataset.srcset;
+}
+addEventListener("resize", widen);
+widen();
+
 /* ---------- appearance: the toggle overrides the system for this visit only ---------- */
 const sys = matchMedia("(prefers-color-scheme: dark)");
 const toggle = document.querySelector("[data-theme-toggle]");

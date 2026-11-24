@@ -359,7 +359,7 @@ export async function check(out) {
       )
         fail("links", `${p}: ${ref} is not in the build`);
     }
-    for (const [, set] of html.matchAll(/\ssrcset="([^"]+)"/g))
+    for (const [, set] of html.matchAll(/\s(?:data-)?srcset="([^"]+)"/g))
       for (const part of set.split(","))
         if (!exists(part.trim().split(/\s/)[0].slice(1)))
           fail("links", `${p}: srcset ${part.trim()} is not in the build`);
