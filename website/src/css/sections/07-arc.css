@@ -144,7 +144,17 @@
     translate: var(--off) 0;
   }
   .move-card.in .move-art .to .it {
+    position: relative;
     animation: move-glide 1000ms var(--ease-in-out) var(--at) both;
+  }
+  .move-card.in .move-art .to .it::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: var(--g-drop);
+    opacity: 0;
+    animation: move-lift 1000ms var(--ease-in-out) var(--at);
   }
 }
 @keyframes move-glide {
@@ -154,10 +164,14 @@
   50% {
     translate: calc(var(--off) / 2) -10px;
     scale: 1.04;
-    box-shadow: var(--g-drop);
   }
   to {
     translate: 0 0;
+  }
+}
+@keyframes move-lift {
+  50% {
+    opacity: 1;
   }
 }
 @media (max-width: 734px) {
