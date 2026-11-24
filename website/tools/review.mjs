@@ -6,6 +6,7 @@
 // One browser per run in a machine-wide render slot; full Chromium paints backdrop-filter.
 import fs from "node:fs";
 import path from "node:path";
+import { takeSlot } from "./slot.mjs";
 
 const pwDir = process.env.PLAYWRIGHT_BROWSERS_PATH
   ? path.dirname(process.env.PLAYWRIGHT_BROWSERS_PATH)
@@ -34,55 +35,20 @@ const extra = opt("q", "");
 // [name, query, target]; a target is [track, p], an element selector to put under the nav, or "bottom"
 const STOPS = {
   S01: ["", 0],
-  S02: ["", ["oow", 0.28]],
-  S03: ["", ["oow", 0.37]],
-  S04: ["", ["oow", 0.52]],
-  S05: ["", ["oow", 0.66]],
-  S06: ["", ["oow", 0.82]],
-  S07: ["hold=open", ["oow", 0.9]],
-  S08: ["hold=pinned", ["oow", 0.9]],
-  S09: ["", "#native"],
-  S10: ["", ["spaces", 0]],
-  S11: ["", ["spaces", 0.3]],
-  S12: ["", ["spaces", 0.54]],
-  S13: ["", ["spaces", 0.82]],
-  S14: ["cmd=typed", ".cmd-island"],
-  S15: ["cmd=done", ".cmd-island"],
-  S16: ["split=3", "#split-view"],
-  S17: ["split=3&peek=shortcuts", "#split-view"],
-  S18: ["", "#privacy"],
-  S19: ["arc=keychain", "#arc"],
-  S20: ["dock=betelgeuse", "#fin"],
-  S21: ["", "bottom"],
-  S22: ["", "#privacy"],
+  S02: ["", "#know"],
+  S03: ["peek=spaces", "#know"],
+  S04: ["", "#blocking"],
+  S05: ["", ".stats"],
+  S06: ["", "#move-in"],
+  S07: ["", "#fin"],
+  S08: ["", "bottom"],
 };
 const want = opt("stops", "");
 const stops = want === "all" ? Object.keys(STOPS) : want ? want.split(",") : [];
 const steps = +opt("steps", 0);
 fs.mkdirSync(outDir, { recursive: true });
 
-const locks = path.join(pwDir, "locks");
-fs.mkdirSync(locks, { recursive: true });
-const slot = await (async () => {
-  for (;;) {
-    for (let i = 0; i < +(process.env.SHOT_SLOTS || 2); i++) {
-      const p = path.join(locks, `slot${i}`);
-      try {
-        fs.mkdirSync(p);
-        fs.writeFileSync(path.join(p, "pid"), String(process.pid));
-        return p;
-      } catch {
-        try {
-          process.kill(+fs.readFileSync(path.join(p, "pid"), "utf8"), 0);
-        } catch {
-          fs.rmSync(p, { recursive: true, force: true });
-        }
-      }
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-})();
-process.on("exit", () => fs.rmSync(slot, { recursive: true, force: true }));
+await takeSlot(pwDir);
 
 const browser = await (engine === "webkit"
   ? webkit.launch()

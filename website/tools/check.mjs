@@ -42,20 +42,23 @@ const jpgSize = (buf) => {
   return null;
 };
 
-// The <section data-arc> block, matched across nested sections.
-function withoutArc(html) {
-  const start = html.search(/<section\b[^>]*\bdata-arc\b/);
-  if (start < 0) return html;
+// The page without its first <section attr> block, and that block, matched across nested sections.
+function split(html, attr) {
+  const start = html.search(new RegExp(`<section\\b[^>]*\\b${attr}\\b`));
+  if (start < 0) return [html, ""];
   const re = /<(\/?)section\b/g;
   re.lastIndex = start;
   let depth = 0;
   for (let m; (m = re.exec(html));) {
     depth += m[1] ? -1 : 1;
-    if (!depth)
-      return html.slice(0, start) + html.slice(html.indexOf(">", m.index) + 1);
+    if (!depth) {
+      const end = html.indexOf(">", m.index) + 1;
+      return [html.slice(0, start) + html.slice(end), html.slice(start, end)];
+    }
   }
-  return html.slice(0, start);
+  return [html.slice(0, start), html.slice(start)];
 }
+const withoutArc = (html) => split(html, "data-arc")[0];
 
 const VOICE = [
   [/[—–]/, "em or en dash"],
@@ -68,11 +71,13 @@ const VOICE = [
   [/look no further|say goodbye/i, "hype phrase"],
   [/\b(color|favorite|organiz|center|gray\b)/i, "American spelling"],
   [/(?<!Public )\blicense\b/i, "licence is the noun"],
-  [/\bfast\b|notari[sz]|\bsync|apple silicon/i, "claim the site never makes"],
-  [
-    /\b(iPhone|iPad|Intel|Safari|Chrome|Chromium|Firefox|Brave|Opera|Vivaldi|Edge(?! thickness)|Dia)\b/,
-    "product or browser name",
-  ],
+  [/\bfast(est)?\b|\bquickest\b|notari[sz]|\bsync|apple silicon/i, "claim the site never makes"],
+  [/\b(iPhone|iPad|Intel)\b/, "product name"],
+];
+// the <section data-measured> block may name the browsers it measured, and nothing else may
+const NAMES = [
+  /\b(Safari|Chrome|Chromium|Firefox|Brave|Opera|Vivaldi|Edge(?! thickness)|Dia|Helium|Ardia|Orion)\b/,
+  "browser name",
 ];
 
 export async function check(out) {
@@ -104,11 +109,8 @@ export async function check(out) {
   const js = files.filter((f) => rel(f).startsWith("assets/js/"));
 
   // 1. voice, over every text node and every attribute a person reads or hears
-  for (const p of pages.filter(exists)) {
-    const html = read(p)
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, "");
-    const strings = [
+  const readable = (html) =>
+    [
       ...[...html.matchAll(/>([^<]+)</g)].map((m) => m[1]),
       ...[
         ...html.matchAll(
@@ -116,8 +118,22 @@ export async function check(out) {
         ),
       ].map((m) => m[1]),
     ].map((s) => decode(s).replace(/\s+/g, " ").trim());
-    for (const s of strings) {
-      for (const [re, why] of VOICE)
+  for (const p of pages.filter(exists)) {
+    const [rest, measured] = split(
+      read(p)
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ""),
+      "data-measured",
+    );
+    // a number on the page names its method: medians, the machine and the date
+    if (measured && !/\bmedians?\b[^<]*\bM\d[^<]*\b20\d\d\b/i.test(measured))
+      fail("voice", `${p}: the measured section lacks its method line`);
+    const strings = [
+      ...readable(rest).map((s) => [s, [...VOICE, NAMES]]),
+      ...readable(measured).map((s) => [s, VOICE]),
+    ];
+    for (const [s, rules] of strings) {
+      for (const [re, why] of rules)
         if (re.test(s)) fail("voice", `${why} in ${p}: “${s.slice(0, 90)}”`);
       if (!cfg.PRICE && /\bfree\b/i.test(s))
         fail("voice", `“free” without a PRICE in ${p}: “${s.slice(0, 90)}”`);
@@ -350,6 +366,10 @@ export async function check(out) {
   }
   for (const [, ref] of css.matchAll(/url\("?(\/[^")]+)"?\)/g))
     if (!exists(ref.slice(1))) fail("links", `css: ${ref} is not in the build`);
+  // a glyph a script swaps in is named whole, so it is checked like the markup's
+  for (const f of js)
+    for (const [, id] of fs.readFileSync(f, "utf8").matchAll(/["'`]#(i-[\w-]+)/g))
+      if (!ids.has(id)) fail("links", `${rel(f)}: no sprite symbol #${id}`);
 
   // invented demo hosts are gone for good; every real host is in the build, and the home page credits its shots
   const home = fs.readFileSync(path.join(out, "index.html"), "utf8").replace(/<[^>]+>/g, "").replace(/\s+/g, " ");

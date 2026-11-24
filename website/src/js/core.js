@@ -9,38 +9,25 @@ export const mq = {
   fine: matchMedia("(hover: hover) and (pointer: fine)"),
   coarse: matchMedia("(hover: none) and (pointer: coarse)"),
   phone: matchMedia("(max-width: 734px)"),
-  pin: matchMedia(
-    "(prefers-reduced-motion: no-preference) and (min-width: 735px) and (min-height: 600px)",
-  ),
 };
 
-// Repeats are announced because the text is cleared first.
-export function say(text) {
-  const live = document.getElementById("live");
-  live.textContent = "";
-  setTimeout(() => (live.textContent = text), 30);
-}
-
-// "/" and ⌘K are offered to these first; a handler returns true when it took the key.
-export const keyHandlers = [];
-export const registerKeys = (fn) => keyHandlers.push(fn);
-
-// main.js takes over the queue once it starts watching; registrations before that wait in it.
-let onReplica = null;
-const replicas = [];
-export function registerReplica(rig, lookOf) {
-  onReplica ? onReplica(rig, lookOf) : replicas.push([rig, lookOf]);
-}
-export function watchReplicas(fn) {
-  onReplica = fn;
-  for (const r of replicas.splice(0)) fn(...r);
-}
+// Position of a damped spring released at rest, 0 to 1, t in seconds.
+export const spring = (zeta, omega) => (t) => {
+  if (t <= 0) return 0;
+  const wd = omega * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * omega * t) * (Math.cos(wd * t) + ((zeta * omega) / wd) * Math.sin(wd * t));
+};
+export const mix = (a, b, u) => a + (b - a) * u;
+// Keyframes of fn(seconds) at 60 a second; `sampled` is the timing that plays them in real time.
+export const frames = (fn) => Array.from({ length: 103 }, (_, k) => fn(k / 60));
+export const sampled = { duration: 1700, easing: "linear" };
 
 // Also moves focus to the section's heading. Skipped content-visibility sections resize mid-flight, so a
 // jump that ran its course (the reader did not take over) is re-aimed once on landing.
 export function go(id) {
   const s = document.getElementById(id);
   if (!s) return;
+  if (s.open === false) s.open = true;
   const behavior = mq.reduce.matches ? "auto" : "smooth";
   const off = () =>
     s.getBoundingClientRect().top -

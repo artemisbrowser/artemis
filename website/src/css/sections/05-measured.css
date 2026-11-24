@@ -1,0 +1,129 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+/* six figures: 1, 2, 3 or 6 across, never a ragged last row */
+.measured .stats {
+  max-width: none;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 40px 24px;
+}
+.benches {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  margin-top: 48px;
+}
+@media (max-width: 379px) {
+  .measured .stats {
+    grid-template-columns: 1fr;
+  }
+}
+@media (min-width: 735px) {
+  .measured .stats,
+  .benches {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .measured .stats li {
+    padding-top: 20px;
+    border-top: 1px solid var(--hairline-2);
+  }
+}
+@media (min-width: 735px) and (max-width: 1068px) {
+  .benches {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (min-width: 1200px) {
+  .measured .stats {
+    grid-template-columns: repeat(6, 1fr);
+  }
+  .measured .figures .num {
+    font-size: 48px;
+  }
+}
+.bench {
+  padding: clamp(28px, 3.4vw, 48px);
+  border-radius: 28px;
+  background: light-dark(#f5f5f7, #161617);
+}
+.bench figcaption p {
+  margin-top: 4px;
+  font-size: var(--t-small);
+  line-height: var(--lh-small);
+  color: var(--ink-3);
+}
+.bench table {
+  width: 100%;
+  margin-top: 28px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.bench th[scope="row"] {
+  width: 6.5em;
+  padding: 8px 0;
+  font-weight: 500;
+  text-align: left;
+  color: var(--ink-2);
+}
+.bench td {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  color: var(--ink-2);
+}
+.bench svg {
+  flex: 1;
+  min-width: 0;
+}
+.bench rect {
+  fill: var(--hairline-2);
+}
+.bench .us th,
+.bench .us td {
+  font-weight: 600;
+  color: var(--ink);
+}
+.bench .us rect {
+  fill: var(--accent);
+}
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .bench rect {
+    transform-box: fill-box;
+    transform-origin: 0 50%;
+    transition: scale 900ms var(--ease-reveal) 300ms;
+  }
+  .bench:not(.in) rect {
+    scale: 0 1;
+  }
+}
+.bench-method {
+  margin-top: 24px;
+  font-size: var(--t-small);
+  line-height: var(--lh-small);
+  color: var(--ink-3);
+}
+.bench td span {
+  width: 2.2em;
+  text-align: right;
+}
+.figures {
+  text-align: center;
+}
+.figures .num {
+  font-size: clamp(44px, 5vw, 72px);
+  color: var(--accent);
+}
+.figures sup,
+.bench-method sup {
+  margin-left: 2px;
+  font-size: 0.32em;
+  vertical-align: super;
+}
+.bench-method sup {
+  font-size: 0.8em;
+}
+.figures sup a {
+  text-decoration: none;
+  color: var(--ink-3);
+}

@@ -1,146 +1,217 @@
 /* SPDX-License-Identifier: GPL-3.0-only
    Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
 
-/* Hero: the copy, then a MacBook whose 1352 × 878 pt screen is one point per --mu. Pinned, the MacBook
-   sits under the nav with a caption's room below. */
-.track-oow {
-  --mac-w: min(100vw - 2 * var(--gutter), (100svh - 180px) * 1606 / 968, 1280px);
-  --u: calc(var(--mac-w) / 1606);
+.hero {
+  padding-bottom: var(--section-pad);
+}
+/* one screen: the headline, the lid under it, the keys running out under the docked download */
+.hero-stage {
   position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: max(640px, 100svh - var(--nav-h));
+  margin-bottom: 64px;
+  padding-top: clamp(40px, min(4vw, 6svh), 56px);
 }
-
-.hero-copy {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 48px;
-  box-sizing: border-box;
-  width: var(--mac-w);
-  margin-inline: auto;
-  padding-top: calc(var(--nav-bottom) + 64 * var(--s));
-}
-.hero-copy h1 {
-  flex: none;
-  margin: 0;
-  font: 600 max(40px, calc(68 * var(--s))) / var(--lh-display) var(--font);
-  letter-spacing: var(--tr-display);
-}
-.hero-copy h1 span {
-  display: block;
-}
-.hero-side {
-  max-width: calc(480 * var(--s));
-}
-.hero-side .lede {
-  margin: 0;
-  font-size: max(16px, calc(19 * var(--s)));
-  font-weight: 500;
-  line-height: 1.4;
-  letter-spacing: var(--tr-intro);
-  color: var(--ink-2);
-  text-wrap: pretty;
-}
-.hero-side .get-block {
-  margin-top: calc(24 * var(--s));
-}
-.hero-side .get {
-  height: max(56px, calc(56 * var(--s)));
-  gap: max(10px, calc(10 * var(--s)));
-  padding: 0 max(26px, calc(26 * var(--s))) 0 max(6px, calc(6 * var(--s)));
-  font-size: max(17px, calc(17 * var(--s)));
-}
-.hero-side .get-well img {
-  width: max(44px, calc(44 * var(--s)));
-  height: max(44px, calc(44 * var(--s)));
-}
-.hero-side .fine {
-  margin: 12px 0 0;
-  font-size: max(12px, calc(12.5 * var(--s)));
-  line-height: 1.4;
-}
-
-.track-oow .stage {
+.hero-head {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 40px;
+  margin-bottom: 16px;
+  text-align: center;
 }
-html.pin .track-oow .stage {
-  position: sticky;
-  top: 0;
-  box-sizing: border-box;
-  height: 100svh;
-  padding-top: calc(var(--nav-bottom) + 12px);
+.hero h1 {
+  font-size: clamp(56px, 6.67vw, 96px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
 }
-
-.track-oow .rig {
+.hero-tag {
+  max-width: 24em;
+  margin-top: 8px;
+  font-size: var(--t-card);
+  line-height: var(--lh-card);
+  font-weight: 600;
+  color: var(--ink-2);
+  text-wrap: balance;
+}
+.hero-film {
+  position: relative;
+  container-type: size;
+  align-self: center;
+  width: min(1260px, 100vw - 2 * var(--gutter));
+  height: calc(100% - 12px);
+  max-height: min(709px, (100vw - 2 * var(--gutter)) * 0.534);
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 28px;
+  background: #000;
+}
+.hero-film img {
   position: absolute;
-  inset: calc(29 * var(--u)) 0 0;
+  top: 0;
+  left: 50%;
+  /* the lid spans 64% of the picture, 8% to 52% down it: 300cqh keeps the first key row in a short box */
+  width: min(118cqw, 300cqh);
+  height: auto;
+  translate: -50% -5.4%;
+  mask-image: linear-gradient(#000 63%, #0000 80%);
 }
-
-/* the hero's meshes come from the 110×74 renders, so the H1 stays the largest paint (LCP) */
-.track-oow [data-look="nebula"] {
-  --look-img: url("/assets/spaces/space-nebula-110x74.png");
+.hero-film::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 80px;
+  background: linear-gradient(#0000, #000);
 }
-.track-oow [data-look="ember"] {
-  --look-img: url("/assets/spaces/space-ember-110x74.png");
-}
-.track-oow [data-look="tide"] {
-  --look-img: url("/assets/spaces/space-tide-110x74.png");
-}
-.track-oow [data-look="aurora"] {
-  --look-img: url("/assets/spaces/space-aurora-110x74.png");
-}
-.track-oow [data-look="sunset"] {
-  --look-img: url("/assets/spaces/space-sunset-110x74.png");
-}
-.track-oow [data-look="bloom"] {
-  --look-img: url("/assets/spaces/space-bloom-110x74.png");
-}
-
-/* The page is laid out at the card's sidebar-hidden width from the card's left edge, so hiding the sidebar
-   moves no box; with the sidebar shown it is centred on the card by translate. */
-.track-oow .page {
-  right: auto;
-  width: calc(100cqw - 2 * var(--edge) * var(--u));
-  translate: calc((var(--edge) - var(--grip) - 250) / 2 * var(--u)) 0;
-  transition: translate var(--dur-sidebar) var(--spring-sidebar);
-}
-.track-oow .win[data-sidebar="hidden"] .page {
-  translate: 0 0;
-}
-.track-oow .shot {
-  transition: background-position var(--dur-sidebar) var(--spring-sidebar);
-}
-
-@media (max-width: 1023px) {
-  .hero-copy {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 20px;
+@media (prefers-reduced-motion: no-preference) {
+  .hero-film img {
+    animation: hero-in 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
-  .hero-side {
-    max-width: 34em;
+}
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    scale: 1.06;
   }
+}
+.hero-get {
+  position: absolute;
+  inset: auto 0 36px;
+  width: fit-content;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 10px 10px 10px 24px;
+  border-radius: 32px;
+  background: #242426;
+  white-space: nowrap;
+}
+.hero-get .fine {
+  margin: 0;
+  color: #f5f5f7;
+  font-size: 14px;
+  font-weight: 600;
+}
+.slide {
+  position: relative;
+  width: min(1260px, 100vw - 2 * var(--gutter));
+  height: clamp(480px, 42.5vw, 612px);
+  overflow: hidden;
+  border-radius: 28px;
+  color: var(--ink);
+  background: light-dark(#f5f5f7, #1d1d1f);
+}
+.slide-copy {
+  position: absolute;
+  left: 48px;
+  top: 44px;
+}
+.slide h2 {
+  font-size: var(--t-section);
+  line-height: var(--lh-section);
+  letter-spacing: var(--tr-section);
+  color: var(--accent);
+}
+.slide-copy p {
+  margin-top: 6px;
+  font-size: clamp(19px, 2vw, 24px);
+  font-weight: 600;
+}
+.slide .more {
+  position: absolute;
+  right: 48px;
+  top: 52px;
+  height: 44px;
+  padding: 0 22px;
+  border-radius: 980px;
+  background: light-dark(rgb(232 232 237 / 0.72), rgb(66 66 69 / 0.72));
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 600;
+}
+/* --d is the slide's distance from the one in view, in slides; --o fades it out over that distance */
+@media (prefers-reduced-motion: no-preference) {
+  .slide-copy,
+  .slide .more {
+    translate: calc(var(--d, 0) * 162px) 0;
+    opacity: var(--o, 1);
+  }
+}
+/* the Spaces slide shows the capture in the page's appearance */
+.slide .dark {
+  display: none;
+}
+:root[data-theme="dark"] .slide .light {
+  display: none;
+}
+:root[data-theme="dark"] .slide .dark {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .slide .light {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .slide .dark {
+    display: block;
+  }
+}
+.slide img {
+  position: absolute;
+  left: 50%;
+  bottom: -4%;
+  width: min(60%, 756px);
+  height: auto;
+  translate: -50% 0;
 }
 @media (max-width: 734px) {
-  .hero-copy {
+  .hero-stage {
+    display: block;
+    height: auto;
+    margin-bottom: 48px;
+  }
+  .hero-film {
+    height: auto;
+    max-height: none;
+    aspect-ratio: 16 / 9;
+  }
+  .hero-film img {
+    width: 135cqw;
+  }
+  .hero-get {
+    position: static;
     width: auto;
-    padding: 92px var(--gutter) 0;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px var(--gutter) 0;
+    background: none;
+    white-space: normal;
   }
-  .hero-copy h1 {
-    font-size: min(44px, 11.25vw);
-    line-height: 1.07;
+  .hero-get .fine {
+    color: var(--ink-2);
   }
-  .hero-side .lede {
-    font-size: 17px;
-    line-height: 1.47;
+  .hero-get .pill {
+    height: 36px;
+    padding: 0 15px;
+    font-size: 14px;
   }
-  .track-oow .stage {
-    padding-top: 32px;
+  .slide {
+    width: calc(100vw - 2 * var(--gutter) - 21px);
+    height: 480px;
   }
-  /* the page starts left of the card by its translate, so the shot starts that far in */
-  .track-oow .win:not([data-sidebar="hidden"]) .shot {
-    background-position-x: calc((250 + var(--grip) - var(--edge)) / 2 * var(--u));
+  .slide-copy {
+    left: 24px;
+    top: 28px;
+  }
+  .slide .more {
+    top: 116px;
+    right: auto;
+    left: 24px;
+  }
+  .slide img {
+    bottom: 12px;
+    width: 100%;
   }
 }

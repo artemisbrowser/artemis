@@ -1,0 +1,445 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+/* the headline lines up with the pills inside the card */
+.tour {
+  --pv-pad: clamp(48px, 6.25vw, 90px);
+  --pv-w: min(1440px, 100%);
+  --pv-h: 760px;
+}
+.tour h2 {
+  width: var(--pv-w);
+  margin: 0 auto 48px;
+  padding-inline: var(--pv-pad);
+  font-size: var(--t-section);
+  line-height: var(--lh-section);
+  letter-spacing: var(--tr-section);
+}
+/* full-bleed up to 1440 wide, then a card with radius 28 */
+.viewer {
+  position: relative;
+  width: var(--pv-w);
+  min-height: var(--pv-h);
+  margin-inline: auto;
+  overflow: clip;
+  border-radius: 28px;
+  background: light-dark(#f5f5f7, #000);
+  color: light-dark(var(--ink), #f5f5f7);
+}
+/* the pill stack is centred, so it re-centres as a card grows */
+.viewer-in {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  min-height: inherit;
+  padding: 40px var(--pv-pad);
+}
+.dock {
+  display: contents;
+}
+.pills {
+  --card-w: min(423px, 100vw - 2 * var(--pv-pad));
+  position: relative;
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pills li {
+  position: relative;
+  overflow: clip;
+  border-radius: 28px;
+  background: light-dark(rgb(255 255 255 / 0.8), rgb(42 42 45 / 0.72));
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .pills:not(.in) > li {
+    opacity: 0;
+  }
+}
+/* label and card text share the top left corner; whichever is not showing leaves the flow */
+.pills button[aria-expanded] {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 32px 0 14px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+  color: inherit;
+  outline-offset: -4px;
+  transition: opacity 400ms var(--ease-in-out) 350ms;
+}
+.pills button[aria-expanded] .ico {
+  width: 24px;
+  height: 24px;
+  padding: 3.25px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  stroke-width: 2.48;
+}
+.pills .open button[aria-expanded] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: none;
+}
+.pills p {
+  --rise: 28px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--card-w);
+  padding: var(--rise);
+  font-size: 17px;
+  line-height: 24px;
+  letter-spacing: -0.022em;
+  text-wrap: wrap;
+  outline: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 300ms var(--ease-in-out),
+    visibility 0s 300ms;
+}
+.pills .open p {
+  position: static;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 600ms var(--ease-in-out) 250ms;
+}
+.pills b {
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pills button[aria-expanded] span {
+    transform-origin: 0 50%;
+    transition: scale 400ms var(--ease-in-out) 350ms;
+  }
+  .pills .open button[aria-expanded] span {
+    scale: 0.8;
+    transition: none;
+  }
+  .pills p {
+    translate: 0 var(--rise);
+    transition:
+      opacity 300ms var(--ease-in-out),
+      translate 400ms var(--ease-in-out),
+      visibility 0s 300ms;
+  }
+  .pills .open p {
+    translate: 0 0;
+    transition:
+      opacity 600ms var(--ease-in-out) 250ms,
+      translate 400ms var(--ease-in-out);
+  }
+}
+
+/* 36px circles with a 44px hit area; the steps stay at the middle of the viewer */
+.steps,
+.shut {
+  position: absolute;
+  visibility: hidden;
+}
+.steps {
+  z-index: 1;
+  top: 50%;
+  left: calc(var(--pv-pad) / 2 - 18px);
+  display: grid;
+  gap: 28px;
+  translate: 0 -50%;
+  transition: visibility 0s 150ms;
+}
+.shut {
+  top: 20px;
+  right: 20px;
+  transition:
+    scale 150ms var(--ease-in-flat),
+    visibility 0s 150ms;
+}
+.active .steps,
+.active .shut {
+  visibility: visible;
+}
+.active .steps {
+  transition: none;
+}
+.step,
+.shut {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: light-dark(rgb(255 255 255 / 0.8), rgb(42 42 45 / 0.72));
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  color: inherit;
+  scale: 0;
+}
+.step {
+  position: relative;
+  transition: scale 150ms var(--ease-in-flat);
+}
+.step::after,
+.shut::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+.active .step,
+.active .shut {
+  scale: 1;
+  transition: scale var(--dur-pop) var(--spring-pop);
+}
+@media (prefers-reduced-motion: no-preference) and (min-width: 834px) {
+  .shut {
+    translate: 0 120px;
+    transition:
+      scale 150ms var(--ease-in-flat),
+      translate 0s 150ms,
+      visibility 0s 150ms;
+  }
+  .active .shut {
+    translate: 0 0;
+    transition:
+      scale var(--dur-pop) var(--spring-pop),
+      translate var(--dur-pill) var(--spring-pill);
+  }
+}
+.step .ico {
+  width: 22.5px;
+  height: 22.5px;
+  stroke-width: 2.35;
+}
+.shut .ico {
+  width: 21.33px;
+  height: 21.33px;
+  stroke-width: 2.25;
+}
+.step .up {
+  rotate: 90deg;
+}
+.step .down {
+  rotate: -90deg;
+}
+.step:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+/* pictures fill the viewer; --shot-x and --shot-y place the middle of the laptop, 51.5% down its picture */
+.stage {
+  --shot-x: 59.2%;
+  --shot-y: calc(50% - 13px);
+  --shot-w: 67.8%;
+  position: absolute;
+  inset: 0;
+  transition: translate var(--dur-pill) var(--spring-pill);
+}
+/* below 1440 wide the open card would cover the screen, so the picture steps aside */
+@media (min-width: 834px) {
+  .active .stage {
+    translate: min(12vw, max(0px, (1440px - 100vw) * 0.35)) 0;
+  }
+}
+.stage > * {
+  position: absolute;
+  top: var(--shot-y);
+  left: var(--shot-x);
+  width: var(--shot-w);
+  max-width: none;
+  height: auto;
+  translate: -50% -51.5%;
+  opacity: 0;
+  transition: opacity 200ms var(--ease-in-out);
+}
+.stage .on {
+  opacity: 1;
+}
+
+@media (max-width: 1440px) {
+  .viewer {
+    border-radius: 0;
+  }
+}
+@media (max-width: 1068px) {
+  .tour {
+    --pv-h: 720px;
+  }
+}
+/* phone: pictures fill a 640px viewer and one sideways row of pills lies along its foot.
+   Open, every pill is a card-wide slot, so the neighbours show at the edges under the steps. */
+@media (max-width: 833px) {
+  .tour {
+    --pv-pad: 24px;
+    --pv-h: 640px;
+  }
+  .viewer-in {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0 0 20px;
+  }
+  /* the row rides the foot of the screen, at most 208px down the viewer, until the viewer's own foot arrives */
+  .dock {
+    position: sticky;
+    bottom: 20px;
+    display: block;
+    margin-top: 208px;
+  }
+  /* the block padding is room for the arriving blob, which is taller than the row */
+  .pills {
+    --card-w: calc(100vw - 80px);
+    display: flex;
+    align-items: flex-end;
+    margin-block: -24px;
+    padding: 24px var(--pv-pad);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .pills li {
+    flex: none;
+  }
+  .pills button[aria-expanded] {
+    padding-left: 16px;
+    font-size: 14px;
+    letter-spacing: -0.016em;
+    transition: opacity 300ms var(--ease-out-flat) 200ms;
+  }
+  /* the open pill's label fades with the others rather than vanishing, so it keeps its size */
+  .pills .open button[aria-expanded] span {
+    scale: none;
+  }
+  .pills p {
+    --rise: 24px;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: -0.016em;
+    transition:
+      opacity 200ms var(--ease-out-flat),
+      translate 300ms var(--ease-out-flat),
+      visibility 0s 200ms;
+  }
+  .pills .open p {
+    transition:
+      opacity 420ms var(--ease-out-flat) 200ms,
+      translate 420ms var(--ease-out-flat);
+  }
+  .swap .pills .open p {
+    transition-delay: 0s;
+  }
+  .active .pills {
+    gap: 10px;
+    padding-inline: 40px;
+  }
+  /* on touch screens the row keeps its scroller while open, as an overflow flip re-creates its layers
+     on iOS; touch-action below stops the pan there */
+  @media (hover: hover) and (pointer: fine) {
+    .active .pills {
+      overflow-x: hidden;
+    }
+  }
+  /* room to bring the last card to the middle while the pills still have their closed widths */
+  .active .pills::after {
+    content: "";
+    flex: 0 0 500%;
+  }
+  .active .pills li {
+    width: var(--card-w);
+  }
+  .active .pills button[aria-expanded] {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 200ms var(--ease-out-flat),
+      visibility 0s 200ms;
+  }
+  .stage {
+    --shot-x: 50%;
+    --shot-y: 48.4%;
+    --shot-w: 109%;
+  }
+  /* sideways drags on an open card are know.js swipes; vertical ones still scroll the page.
+     The row is a scroll container, so it needs its own. */
+  .viewer.active,
+  .active .pills {
+    touch-action: pan-y pinch-zoom;
+  }
+  /* the steps are bare chevrons centred on the 30px of neighbouring pill at each edge;
+     each 44 by 88px hit box reaches 14px past that pill, away from the screen edge */
+  .steps {
+    top: auto;
+    right: 0;
+    transition: visibility 0s 100ms;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    justify-content: space-between;
+    translate: 0 0;
+    pointer-events: none;
+  }
+  .step,
+  .active .step {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    width: 44px;
+    height: 88px;
+    padding-bottom: 16.75px;
+    border-radius: 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    scale: 1;
+    opacity: 0;
+    pointer-events: auto;
+    transition: opacity 100ms var(--ease-in-out);
+  }
+  .active .step {
+    opacity: 1;
+    transition: opacity 200ms var(--ease-in-out);
+  }
+  .step[data-step="-1"] {
+    padding-right: 14px;
+  }
+  .step[data-step="1"] {
+    padding-left: 14px;
+  }
+  .step:disabled {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 200ms var(--ease-in-out),
+      visibility 0s 200ms;
+  }
+  .step::after {
+    content: none;
+  }
+  .step .up {
+    rotate: 0deg;
+  }
+  .step .down {
+    rotate: 180deg;
+  }
+  /* in flow so it can stick under the bar while the viewer scrolls past */
+  .shut {
+    position: sticky;
+    top: calc(var(--nav-h) + 16px);
+    order: -1;
+    align-self: flex-end;
+    margin: 16px 20px auto 0;
+  }
+  .active .shut {
+    transition: scale var(--dur-pill) var(--spring-pill);
+  }
+}

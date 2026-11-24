@@ -1,295 +1,93 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<section
-  class="sec arc cv"
-  id="arc"
-  data-arc
-  data-name="Moving in"
-  aria-labelledby="arc-h"
->
-  <div class="wrap arc-grid">
-    <div class="arc-text">
-      <header class="head" data-peek-summary>
-        <h2 id="arc-h">Move in from anything.</h2>
-        <p class="lede">
-          Bookmarks, history and passwords come across from the other browsers
-          on your Mac. Some only hand over passwords as a file you export. From Arc, the whole setup
-          moves in: spaces, profiles, tabs, folders, favourites and archived
-          tabs, your cookies, your newest 4,000 history pages and, if you tick
-          them, your passwords.
-        </p>
-      </header>
-      <p class="arc-p">
-        macOS asks for Arc’s key before cookies and passwords come across. Arc
-        is only read, and nothing there changes. Arc’s spaces arrive beside
-        yours. Artemis offers the move when it first opens, and it’s always in
-        <b>File › Import from Arc</b>. Extensions, Boosts and Easels don’t come
-        across.
-      </p>
-      <ol class="arc-rail">
-        <li>
-          <time datetime="2026-10-22">22 October 2026</time>
-          <span>No new Arc accounts.</span>
-        </li>
-        <li>
-          <time datetime="2026-12-22">22 December 2026</time>
-          <span>Arc stops working.</span>
-        </li>
-      </ol>
-      <p class="arc-end">
-        <a href="#peek-shortcuts" data-peek="shortcuts"
-          >⌘T, ⌘S, ⌘D and ⌃1 to ⌃9</a
-        >
-        work just as they did in Arc.
+<section class="sec move-in" id="move-in" data-arc aria-labelledby="move-h">
+  <div class="wrap move-card reveal">
+    <div class="copy">
+      <h2 class="a-mars" id="move-h">Leaving Arc? Bring it all with you.</h2>
+      <p class="lead">
+        <b>Arc stops working on 22 December.</b> Artemis reads your Arc
+        sidebar and rebuilds it, with your spaces, pinned tabs, folders,
+        favourites and recent history where you left them. Your sign-ins come
+        too, and your passwords if you tick them.
       </p>
     </div>
-    <div class="arc-stage">
-      <div
-        class="arc-island"
-        data-phase="sum"
-        data-landed
-        data-shut
-        data-fill
-        aria-hidden="true"
-        inert
-      >
-        <div class="rig" data-rig="arc">
-          <div class="win-shadow"></div>
-          <div
-            class="win"
-            data-space="3"
-            data-accent="ember"
-            aria-hidden="true"
-            inert
-          >
-            <div class="win-bd" data-host>
-              <i class="lk" data-look="ember" data-top></i><i class="lk"></i>
-            </div>
-            <div class="sb">
-              <div class="sb-pin">
-                <div class="toprow">
-                  <span class="lights"
-                    ><i class="tl c"></i><i class="tl m"></i><i class="tl z"></i
-                  ></span>
-                  <span class="g circ toggle"
-                    ><svg class="gl s14 b"><use href="#i-sidebar" /></svg
-                  ></span>
-                  <span class="g circ back"
-                    ><svg class="gl s14"><use href="#i-chev-l" /></svg
-                  ></span>
-                  <span class="g circ reload"
-                    ><svg class="gl s14 b"><use href="#i-reload" /></svg
-                  ></span>
-                </div>
-                <div class="g url">
-                  <span class="dom"
-                    ><span>en.wikipedia.org</span><span>www.openstreetmap.org</span
-                    ><span>github.com</span><span>en.wikipedia.org</span></span
-                  >
-                </div>
-                <!-- @include _win/favs -->
-                <div class="pager">
-                  <div class="strip">
-                    <!-- @include _win/panel-personal -->
-                    <div class="panel" data-accent="tide">
-                      <div class="shead">
-                        <svg class="sicon"><use href="#i-leaf" /></svg><span>Skye</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-gmail"></i><span class="t">Gmail</span>
-                      </div>
-                      <hr class="pin-line" />
-                      <div class="row new">
-                        <svg class="gl b"><use href="#i-plus" /></svg><span class="t">New Tab</span>
-                      </div>
-                      <div class="row g lit">
-                        <i class="fi fi-osm"></i><span class="t">OpenStreetMap</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-wikipedia"></i><span class="t">Isle of Skye - Wikipedia</span>
-                      </div>
-                    </div>
-                    <div class="panel" data-accent="charcoal">
-                      <div class="shead">
-                        <svg class="sicon"><use href="#i-case" /></svg><span>Work</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-slack"></i><span class="t">Slack</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-linear"></i><span class="t">Linear</span>
-                      </div>
-                      <hr class="pin-line" />
-                      <div class="row new">
-                        <svg class="gl b"><use href="#i-plus" /></svg><span class="t">New Tab</span>
-                      </div>
-                      <div class="row g lit">
-                        <i class="fi fi-github"></i><span class="t">artemisbrowser/artemis</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-figma"></i><span class="t">Figma</span>
-                      </div>
-                    </div>
-                    <div class="panel" data-accent="ember">
-                      <div class="shead">
-                        <svg class="sicon"><use href="#i-loaf" /></svg><span>Kitchen</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-notion"></i><span class="t">Notion</span>
-                      </div>
-                      <hr class="pin-line" />
-                      <div class="row new">
-                        <svg class="gl b"><use href="#i-plus" /></svg><span class="t">New Tab</span>
-                      </div>
-                      <div class="row g lit">
-                        <i class="fi fi-wikipedia"></i><span class="t">Sourdough - Wikipedia</span>
-                      </div>
-                      <div class="row">
-                        <i class="fi fi-youtube"></i><span class="t">YouTube</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="bottombar">
-                  <span class="g circ lib"
-                    ><svg class="gl s15"><use href="#i-library" /></svg
-                  ></span>
-                  <span class="g switcher"
-                    ><i class="dot"></i><i class="dot" data-i="1"></i
-                    ><i class="dot" data-i="2"></i><i class="dot" data-i="3"></i
-                  ></span>
-                  <span class="g circ prof"
-                    ><svg class="gl s16"><use href="#i-person" /></svg
-                  ></span>
-                </div>
-              </div>
-            </div>
-            <div class="card-e">
-              <div class="card">
-                <div class="page">
-                  <article class="pg shot" data-page="wp-orion"></article>
-                  <article class="pg shot" data-page="osm-skye"></article>
-                  <article class="pg shot" data-page="gh-artemis"></article>
-                  <article class="pg shot" data-page="wp-sourdough"></article>
-                </div>
-              </div>
-            </div>
-            <div class="arc-sheet">
-              <div class="arc-pick">
-                <p class="arc-h">Import from Another Browser</p>
-                <p class="arc-br">
-                  <i class="arc-app"></i>Arc<svg class="gl b"><use href="#i-check" /></svg>
-                </p>
-                <hr />
-                <div class="arc-chosen">
-                  <p class="arc-note">
-                    Nothing in Arc changes. A password saved here for the same
-                    site and username takes Arc’s.
-                  </p>
-                  <p class="arc-prof">
-                    <span><b>Personal</b><small>3 spaces · 41 tabs · 6 folders</small></span
-                    ><span class="arc-into"
-                      >Personal<svg class="gl b"><use href="#i-updown" /></svg
-                    ></span>
-                  </p>
-                  <ul class="arc-rows">
-                    <li class="on">
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-stack" /></svg>Spaces &amp; tabs</b
-                        ><small>3 spaces · 41 tabs · 6 folders</small></span
-                      >
-                    </li>
-                    <li class="on">
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-star" /></svg>Favourites</b
-                        ><small>5 tabs pinned to the top</small></span
-                      >
-                    </li>
-                    <li class="on">
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-archive" /></svg>Archive</b
-                        ><small>212 tabs Arc archived</small></span
-                      >
-                    </li>
-                    <li class="on">
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-clock" /></svg>History</b
-                        ><small>18,406 pages. The newest 4,000 per profile come across.</small></span
-                      >
-                    </li>
-                    <li class="on">
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-person" /></svg>Cookies</b
-                        ><small>1,240 cookies, so you stay signed in</small></span
-                      >
-                    </li>
-                    <li>
-                      <i class="arc-tk"><svg class="gl b"><use href="#i-check" /></svg></i
-                      ><span
-                        ><b><svg class="gl"><use href="#i-key" /></svg>Passwords</b
-                        ><small>86 logins, into Artemis Passwords</small></span
-                      >
-                    </li>
-                  </ul>
-                  <p class="arc-note">
-                    macOS will ask for Arc’s key to read what it keeps sealed.
-                  </p>
-                </div>
-                <div class="arc-foot">
-                  <span>Not Now</span><span class="arc-go">Import</span>
-                </div>
-              </div>
-              <div class="arc-work">
-                <p class="arc-h">Importing from Arc</p>
-                <p class="arc-step"><i class="arc-spin"></i><span>History…</span></p>
-              </div>
-              <div class="arc-sum">
-                <p class="arc-h">Imported</p>
-                <ul>
-                  <li><svg class="gl b"><use href="#i-check" /></svg>1,240 cookies, so you stay signed in</li>
-                  <li><svg class="gl b"><use href="#i-check" /></svg>3 spaces, 41 tabs</li>
-                  <li><svg class="gl b"><use href="#i-check" /></svg>5 favourites</li>
-                  <li><svg class="gl b"><use href="#i-check" /></svg>212 archived tabs</li>
-                  <li><svg class="gl b"><use href="#i-check" /></svg>4,000 pages of history</li>
-                </ul>
-                <div class="arc-foot"><span class="arc-go">Done</span></div>
-              </div>
-            </div>
-            <div class="arc-ask">
-              <svg class="arc-lock" viewBox="0 0 24 24">
-                <rect x="4.5" y="10.5" width="15" height="10.5" rx="2.6" />
-                <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
-              </svg>
-              <p>
-                <b
-                  >Artemis wants to use your confidential information stored in
-                  “Arc&nbsp;Safe&nbsp;Storage” in your keychain.</b
-                >
-                To allow this, enter the “login” keychain password.
-              </p>
-              <span class="arc-pw"></span>
-              <span class="arc-btns"
-                ><span>Always Allow</span><span>Deny</span><span>Allow</span></span
-              >
-            </div>
-            <svg class="arc-ptr" viewBox="0 0 15 22">
-              <path d="M1.5 1.5V18l3.8-3.6 2.6 6 2.5-1.1-2.5-5.9h5.2Z" />
-            </svg>
+    <figure
+      class="move-art a-mars"
+      role="img"
+      aria-label="Favourites, a space, its pinned tabs and folders, and today's tabs moving from Arc's sidebar into the Artemis sidebar"
+    >
+      <div class="side">
+        <p class="who">Arc</p>
+        <div class="sb">
+          <div class="tb"><i></i><i></i><i></i><svg class="ico"><use href="#i-sidebar" /></svg><span></span><svg class="ico nb"><use href="#i-chev-l" /></svg><svg class="ico nb"><use href="#i-reload" /></svg></div>
+          <div class="url"><span>recipes.example</span><svg class="ico"><use href="#i-link" /></svg><svg class="ico"><use href="#i-tune" /></svg></div>
+          <div class="it favs"><i></i><i></i><i></i><i></i></div>
+          <p class="it space"><svg class="ico"><use href="#i-leaf" /></svg><b>Personal</b></p>
+          <div class="it pins">
+            <p><i></i>Mail</p>
+            <p><i></i>Calendar</p>
+            <p><svg class="ico"><use href="#i-folder" /></svg>Reading</p>
           </div>
+          <hr />
+          <p class="new"><svg class="ico"><use href="#i-plus" /></svg>New Tab</p>
+          <div class="it tabs">
+            <p class="on"><i></i>Recipes</p>
+            <p><i></i>Trip plans</p>
+            <p><i></i>Notes</p>
+          </div>
+          <div class="dock"><svg class="ico"><use href="#i-library" /></svg><span><i></i><i></i><i></i></span><svg class="ico"><use href="#i-person" /></svg></div>
         </div>
       </div>
-      <button
-        class="btn arc-replay"
-        type="button"
-        aria-label="Replay the Arc import"
-      >
-        Replay
-      </button>
-    </div>
+      <svg class="ico go" aria-hidden="true"><use href="#i-chev-l" /></svg>
+      <div class="side to">
+        <p class="who">Artemis</p>
+        <div class="sb">
+          <div class="tb"><i></i><i></i><i></i><svg class="ico"><use href="#i-sidebar" /></svg><span></span><svg class="ico nb"><use href="#i-chev-l" /></svg><svg class="ico nb"><use href="#i-reload" /></svg></div>
+          <div class="url"><span>recipes.example</span><svg class="ico"><use href="#i-link" /></svg><svg class="ico"><use href="#i-tune" /></svg></div>
+          <div class="it favs"><i></i><i></i><i></i><i></i></div>
+          <p class="it space"><svg class="ico"><use href="#i-leaf" /></svg><b>Personal</b></p>
+          <div class="it pins">
+            <p><i></i>Mail</p>
+            <p><i></i>Calendar</p>
+            <p><svg class="ico"><use href="#i-folder" /></svg>Reading</p>
+          </div>
+          <hr />
+          <p class="new"><svg class="ico"><use href="#i-plus" /></svg>New Tab</p>
+          <div class="it tabs">
+            <p class="on"><i></i>Recipes</p>
+            <p><i></i>Trip plans</p>
+            <p><i></i>Notes</p>
+          </div>
+          <div class="dock"><svg class="ico"><use href="#i-library" /></svg><span><i></i><i></i><i></i></span><svg class="ico"><use href="#i-person" /></svg></div>
+        </div>
+      </div>
+    </figure>
+  </div>
+  <div class="wrap move-more">
+    <ul class="cards">
+      <li class="reveal">
+        <h3>Same names</h3>
+        <p>Spaces, pinned tabs, folders, favourites, Peek, split view, the command bar on ⌘T, recent tabs on ⌃⇥ and Archive.</p>
+      </li>
+      <li class="reveal d1">
+        <h3>New names</h3>
+        <p>Little Arc is Scout. Air Traffic Control is Rules, in Settings › Links. Each Arc profile becomes an Artemis profile.</p>
+      </li>
+      <li class="reveal d2">
+        <h3>Stays in Arc</h3>
+        <p>Boosts, easels, notes and extensions. Add your extensions again from their store pages.</p>
+      </li>
+    </ul>
+    <h3 class="move-steps-h reveal">Three steps</h3>
+    <ol class="move-steps">
+      <li class="reveal">Download Artemis and open it.</li>
+      <li class="reveal d1">Choose File › Import from Arc, tick what you want and click Import.</li>
+      <li class="reveal d2">Make Artemis your default browser in Settings › General.</li>
+    </ol>
+    <p class="move-note reveal">
+      Arc is left as it was, and nothing leaves your Mac. macOS asks once
+      before Artemis reads Arc’s sign-ins and passwords. Artemis isn’t made by
+      or connected to The Browser Company.
+    </p>
   </div>
 </section>

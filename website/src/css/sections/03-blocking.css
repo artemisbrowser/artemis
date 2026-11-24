@@ -1,0 +1,137 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+   Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. */
+
+/* a drawn window whose ads fold away once it is in view; without motion it shows the page already clean */
+.clean {
+  --ad: light-dark(#e8e8ed, #2a2a2d);
+  --ln: light-dark(#dcdce1, #333336);
+  width: min(880px, 100%);
+  margin: 64px auto 0;
+  overflow: hidden;
+  border-radius: 20px;
+  background: light-dark(#fff, #1d1d1f);
+  box-shadow:
+    0 0 0 1px var(--hairline),
+    0 30px 60px -20px light-dark(rgb(0 0 0 / 0.18), rgb(0 0 0 / 0.6));
+}
+.clean-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+.clean-bar i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ln);
+}
+.clean-bar b {
+  width: min(320px, 50%);
+  height: 24px;
+  margin: 0 auto;
+  border-radius: 12px;
+  background: var(--ad);
+}
+.clean-bar .ico {
+  width: 20px;
+  height: 20px;
+  color: light-dark(#2f8f68, #57c89a);
+}
+/* a fixed height, so the text below the ads moves up into their place rather than the page shrinking */
+.clean-page {
+  height: clamp(300px, 32vw, 420px);
+  padding: clamp(20px, 4vw, 40px);
+  overflow: hidden;
+}
+.clean-main {
+  display: grid;
+  grid-template-columns: 1fr 0fr;
+  gap: 0;
+}
+.clean-text {
+  min-width: 0;
+}
+.ln {
+  height: 12px;
+  margin-top: 14px;
+  border-radius: 6px;
+  background: var(--ln);
+}
+.ln.h {
+  width: 55%;
+  height: 24px;
+  margin-top: 0;
+}
+.ln.s {
+  width: 70%;
+}
+.ad {
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+.ad-side {
+  height: auto;
+}
+.ad span {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: repeating-linear-gradient(135deg, var(--ad) 0 10px, transparent 10px 20px);
+  box-shadow: inset 0 0 0 1px var(--hairline-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .clean-main {
+    grid-template-columns: 1fr minmax(0, 26%);
+    gap: 24px;
+    transition:
+      grid-template-columns 700ms var(--ease-in-out) 1500ms,
+      gap 700ms var(--ease-in-out) 1500ms;
+  }
+  .ad {
+    opacity: 1;
+    transition:
+      height 600ms var(--ease-in-out) var(--at),
+      opacity 300ms linear var(--at),
+      margin 600ms var(--ease-in-out) var(--at);
+  }
+  .ad-top {
+    --at: 1100ms;
+    height: 72px;
+    margin-bottom: 24px;
+  }
+  .ad-mid {
+    --at: 1300ms;
+    height: 96px;
+    margin-top: 14px;
+  }
+  .ad-side {
+    --at: 1500ms;
+  }
+  .clean-bar .ico {
+    scale: 0;
+    transition: scale 450ms cubic-bezier(0.34, 1.3, 0.64, 1) 2100ms;
+  }
+  .clean.in .clean-main {
+    grid-template-columns: 1fr 0fr;
+    gap: 0;
+  }
+  .clean.in .ad {
+    height: 0;
+    opacity: 0;
+    margin: 0;
+  }
+  .clean.in .ad-side {
+    height: auto;
+  }
+  .clean.in .clean-bar .ico {
+    scale: 1;
+  }
+}

@@ -1,0 +1,66 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
+<section class="sec measured" id="measured" data-measured data-name="Measured" aria-labelledby="measured-h">
+  <div class="wrap">
+    <div class="head c">
+      <h2 class="statement reveal" id="measured-h">Nerdstats™</h2>
+      <p class="lead reveal d1">
+        <b>We timed four browsers on the same Mac.</b> Artemis opens a window
+        faster than every one of them.
+      </p>
+    </div>
+    <ul class="stats figures">
+      <li class="reveal"><p class="num"><!-- @measured launch us --> ms<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>from launch to a window</p></li>
+      <li class="reveal d1"><p class="num"><!-- @measured newTab us --> ms<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>from a new tab to its first paint</p></li>
+      <li class="reveal d2"><p class="num"><!-- @measured mem48 us --> GB<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>of memory with 48 tabs open</p></li>
+      <li class="reveal"><p class="num"><!-- @measured idle48 us -->%<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>of one core, idle with 48 tabs</p></li>
+      <li class="reveal d1"><p class="num"><!-- @measured mem1 us --> MB<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>of memory with one tab open</p></li>
+      <li class="reveal d2"><p class="num"><!-- @measured idle1 us -->%<sup><a href="#measured-note" aria-label="Note 1">1</a></sup></p><p>of one core, idle with one tab</p></li>
+    </ul>
+    <div class="benches">
+      <figure class="bench reveal">
+        <figcaption><h3>Launch to window</h3><p>Milliseconds, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Milliseconds</th></tr></thead>
+          <tbody><!-- @measured launch bench --></tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>New tab to first paint</h3><p>Milliseconds, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Milliseconds</th></tr></thead>
+          <tbody><!-- @measured newTab bench --></tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>Memory with 48 tabs</h3><p>Gigabytes, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Gigabytes</th></tr></thead>
+          <tbody><!-- @measured mem48 bench --></tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>Idle CPU with 48 tabs</h3><p>Percent of one core, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Percent of one core</th></tr></thead>
+          <tbody><!-- @measured idle48 bench --></tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>Memory with one tab</h3><p>Megabytes, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Megabytes</th></tr></thead>
+          <tbody><!-- @measured mem1 bench --></tbody>
+        </table>
+      </figure>
+      <figure class="bench reveal">
+        <figcaption><h3>Idle CPU with one tab</h3><p>Percent of one core, lower is better.</p></figcaption>
+        <table>
+          <thead class="sr-only"><tr><th scope="col">Browser</th><th scope="col">Percent of one core</th></tr></thead>
+          <tbody><!-- @measured idle1 bench --></tbody>
+        </table>
+      </figure>
+    </div>
+    <p class="bench-method reveal" id="measured-note"><sup>1</sup> Medians on one Mac with <!-- @measured machine -->, measured <!-- @measured on -->. Memory and CPU count every process a browser runs. The 48 tabs are real web pages.</p>
+  </div>
+</section>

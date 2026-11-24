@@ -1,205 +1,76 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only
      Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS. -->
-<template id="peek-shortcuts">
-  <h2 id="peek-title">Keyboard shortcuts</h2>
-  <p class="peek-lede">A few of the keys Artemis answers to.</p>
-  <table class="keys">
-    <thead class="sr-only">
-      <tr>
-        <th scope="col">Keys</th>
-        <th scope="col">Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="t">T</kbd>
-        </td>
-        <td>Command bar</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="l">L</kbd>
-        </td>
-        <td>Edit the address</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="s">S</kbd>
-        </td>
-        <td>Hide or show the sidebar</td>
-      </tr>
-      <tr>
-        <td>
-          <span class="nw"
-            ><kbd class="kc" data-k="ctrl">⌃</kbd
-            ><kbd class="kc" data-k="1">1</kbd> <span class="to">to</span></span
-          >
-          <span class="nw"
-            ><kbd class="kc" data-k="ctrl">⌃</kbd
-            ><kbd class="kc" data-k="9">9</kbd></span
-          >
-        </td>
-        <td>Go to a space</td>
-      </tr>
-      <tr>
-        <td>
-          <span class="nw"
-            ><kbd class="kc" data-k="alt">⌥</kbd
-            ><kbd class="kc" data-k="meta">⌘</kbd
-            ><kbd class="kc" data-k="left">←</kbd></span
-          >
-          <span class="nw"
-            ><kbd class="kc" data-k="alt">⌥</kbd
-            ><kbd class="kc" data-k="meta">⌘</kbd
-            ><kbd class="kc" data-k="right">→</kbd></span
-          >
-        </td>
-        <td>Previous or next space</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="e">E</kbd>
-        </td>
-        <td>New space</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="alt">⌥</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="v">V</kbd>
-        </td>
-        <td>Split view</td>
-      </tr>
-      <tr>
-        <td>
-          <span class="nw"
-            ><kbd class="kc" data-k="alt">⌥</kbd
-            ><kbd class="kc" data-k="meta">⌘</kbd
-            ><kbd class="kc" data-k="]">]</kbd></span
-          >
-          <span class="nw"
-            ><kbd class="kc" data-k="alt">⌥</kbd
-            ><kbd class="kc" data-k="meta">⌘</kbd
-            ><kbd class="kc" data-k="[">[</kbd></span
-          >
-        </td>
-        <td>Next or previous pane</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="d">D</kbd>
-        </td>
-        <td>Pin or unpin a tab</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="w">W</kbd>
-        </td>
-        <td>Close a tab</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="t">T</kbd>
-        </td>
-        <td>Reopen a closed tab</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="l">L</kbd>
-        </td>
-        <td>Library</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="d">D</kbd>
-        </td>
-        <td>Show or hide the toolbar</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="r">R</kbd>
-        </td>
-        <td>Reader</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="p">P</kbd>
-        </td>
-        <td>Picture in Picture</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="alt">⌥</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="n">N</kbd>
-        </td>
-        <td>Open anything, from any app</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="n">N</kbd>
-        </td>
-        <td>New window</td>
-      </tr>
-      <tr>
-        <td>
-          <kbd class="kc" data-k="shift">⇧</kbd
-          ><kbd class="kc" data-k="meta">⌘</kbd
-          ><kbd class="kc" data-k="n">N</kbd>
-        </td>
-        <td>Incognito window</td>
-      </tr>
-    </tbody>
-  </table>
+<template id="peek-spaces">
+  <h2 id="peek-title">Spaces.</h2>
+  <div class="panel"><p><b>Room for everything.</b> Each space keeps its own pinned sites, folders and tabs, so work stays at work.</p>
+    <img src="/assets/img/know-spaces.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
+  <div class="panel"><p><b>Swipe between them.</b> Two fingers on the trackpad move you to the next space, with its colour sliding in behind.</p></div>
+  <div class="panel"><p><b>Separate sign-ins.</b> Give a space its own profile and it keeps its own sign-ins, cookies and history. Incognito windows keep nothing when you close them, and can lock with Touch ID.</p></div>
 </template>
-
+<template id="peek-tabs">
+  <h2 id="peek-title">Recent tabs.</h2>
+  <div class="panel"><p><b>Hold ⌃⇥.</b> Your last tabs fan out as previews. Let go on the one you want.</p></div>
+  <div class="panel"><p><b>Peek.</b> ⇧-click a link and it opens over the page you’re on. Read it, then close it or keep it as a tab.</p></div>
+  <div class="panel"><p><b>Mini player.</b> Video keeps playing in a small window that floats above the rest.</p></div>
+</template>
+<template id="peek-themes">
+  <h2 id="peek-title">Themes.</h2>
+  <div class="panel"><p><b>Every space, its own colour.</b> Pick a solid colour, a gradient or glass, and set how bright it sits behind the sidebar.</p>
+    <img src="/assets/img/know-themes.webp" width="744" height="1100" alt="" loading="lazy" decoding="async" /></div>
+  <div class="panel"><p><b>Icons too.</b> Mark each space with an emoji or a symbol, and pick one of eleven colours for the app icon.</p></div>
+  <div class="panel"><p><b>Liquid Glass throughout.</b> Made for macOS 26, light or dark.</p></div>
+</template>
 <template id="peek-mac">
-  <h2 id="peek-title">What stays on your Mac</h2>
+  <h2 id="peek-title">Private by default.</h2>
   <ul class="peek-list">
     <li>There’s no account and no telemetry.</li>
     <li>
-      Your history and tabs stay on your Mac. Passwords, passkeys and codes
-      live in its keychain.
+      History and tabs stay on this Mac. Passwords, passkeys and codes live in
+      its keychain.
     </li>
     <li>
       Handoff can show the page you’re reading on your other Apple devices that
       use the same Apple Account.
     </li>
     <li>
-      Artemis goes online to load the pages you open, to update its filter
-      lists and to check for its own updates every 4 hours. When a site has no
-      icon, Google’s icon service supplies one.
-      Search suggestions and the leaked-password check also go online, and
-      both are off until you turn them on.
+      Besides the pages you open and the Live Folders you set up, Artemis goes
+      online only to update its filter lists and extensions, to add uBlock
+      Origin Lite on first launch, to check for its own updates every 4 hours,
+      and to fetch a site’s icon from Google’s icon service when the site has
+      none.
     </li>
     <li>
-      On-device intelligence is off until you turn it on, and it needs Apple
-      Intelligence.
+      Search suggestions, error reports and the leaked-password check stay off
+      until you turn them on.
+    </li>
+    <li>
+      Ask about this page is off until you turn it on, and it needs Apple
+      Intelligence. The agent in the side panel goes online through your own
+      account, and it’s off until you set it up.
     </li>
   </ul>
 </template>
 
+<template id="peek-extensions">
+  <h2 id="peek-title">Extensions.</h2>
+  <div class="panel"><p><b>Add to Artemis.</b> Install extensions straight from their store pages, where the button reads Add to Artemis.</p></div>
+  <div class="panel"><p><b>Bitwarden works.</b> It’s one of the suggestions in Settings › Extensions.</p></div>
+  <div class="panel"><p><b>Many work today.</b> Some don’t yet.</p></div>
+</template>
+<template id="peek-passwords">
+  <h2 id="peek-title">Passwords.</h2>
+  <div class="panel"><p><b>In your keychain.</b> Artemis saves passwords in your Mac’s keychain and suggests strong ones.</p></div>
+  <div class="panel"><p><b>Passkeys and codes.</b> Passkeys and one-time codes are built in.</p></div>
+  <div class="panel"><p><b>Leaked-password check.</b> It stays off until you turn it on.</p></div>
+</template>
+<template id="peek-import">
+  <h2 id="peek-title">From your old browser.</h2>
+  <div class="panel"><p><b>More than twenty browsers.</b> Bring tabs, bookmarks and history from any of them, and sign-ins and passwords from many of them.</p></div>
+  <div class="panel"><p><b>Password managers too.</b> Bitwarden and 1Password exports work.</p></div>
+  <div class="panel"><p><b>One menu.</b> Choose File › Import from Browser.</p></div>
+</template>
 <template id="peek-licence">
-  <h2 id="peek-title">The licence</h2>
+  <h2 id="peek-title">Open source.</h2>
   <ul class="peek-list">
     <li>Artemis is open source under the GNU General Public License 3.0.</li>
     <li>
@@ -217,35 +88,34 @@
   </ul>
 </template>
 <template id="peek-credits">
-  <h2 id="peek-title">Credits</h2>
+  <h2 id="peek-title">Credits.</h2>
   <ul class="peek-list">
     <li>
-      The pages in the window are real, captured Nov 2026 and cropped to fit.
+      The pages in the screenshots are real, captured in November 2026.
       Site names and icons belong to their owners, who don’t endorse Artemis.
     </li>
     <li>
       Wikipedia text under
       <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>
-      comes from the
-      <a href="https://en.wikipedia.org/wiki/Orion_(constellation)">Orion</a>,
-      <a href="https://en.wikipedia.org/wiki/Betelgeuse">Betelgeuse</a>,
-      <a href="https://en.wikipedia.org/wiki/Sourdough">Sourdough</a> and
-      <a href="https://en.wikipedia.org/wiki/Isle_of_Skye">Isle of Skye</a>
-      articles.
+      comes from articles such as
+      <a href="https://en.wikipedia.org/wiki/Iceland">Iceland</a> and
+      <a href="https://en.wikipedia.org/wiki/Reykjav%C3%ADk">Reykjavík</a>.
     </li>
     <li>
-      Map data ©
-      <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.
+      The Live Folder lists issue titles from
+      <a href="https://github.com/swiftlang/swift">swiftlang/swift</a> on GitHub.
     </li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Orion_IAU.svg">Orion chart</a> by IAU and Sky &amp; Telescope, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:OrionCC.jpg">Orion photo</a> by Till Credner, <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Orion_constellation_map.svg">Orion map</a> by Torsten Bronger and Kxx, <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Sourdough_bread_loaf.jpg">Sourdough loaf</a> by Nhall0901, <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Flag_of_the_Isle_of_Skye.svg">Skye flag</a> by Hogweard, public domain.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:A_misty_morning_in_Portree_-_geograph.org.uk_-_3986755_(cropped).jpg">Portree</a> by John Allan, <a href="https://creativecommons.org/licenses/by-sa/2.0/">CC BY-SA 2.0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Cattle_near_Neist_Point_Lighthouse.jpg">Cattle near Neist Point</a> by JoachimKohler-HB, <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>.</li>
-    <li><a href="https://commons.wikimedia.org/wiki/File:Isle_of_Skye_-_Old_Man_of_Storr_-_2020_-_by_Sanshiro_Kubota.jpg">Old Man of Storr</a> by Sanshiro Kubota, <a href="https://creativecommons.org/licenses/by/2.0/">CC BY 2.0</a>.</li>
+    <li>
+      <a href="https://peach.blender.org">Big Buck Bunny</a> by the Blender
+      Foundation,
+      <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.
+      Moon images from science.nasa.gov.
+    </li>
   </ul>
+</template>
+<template id="peek-install">
+  <h2 id="peek-title">Opening Artemis the first time</h2>
+  <!-- @include _install -->
 </template>
 <!-- @if DOWNLOAD_URL -->
 <template id="peek-get">

@@ -26,15 +26,16 @@ const kb = (n) => (n / 1024).toFixed(1) + " KB";
 // Page order. A missing partial becomes an empty stub; 07-arc never gets one (it is deletable).
 const SECTIONS = [
   ["01-hero", "top", "Overview"],
-  ["02-out-of-the-way", "native", "Native"],
-  ["06-privacy", "privacy", "Privacy"],
-  ["03-spaces", "spaces", "Spaces"],
-  ["04-command-bar", "command-bar", "Command bar"],
-  ["05-split-view", "split-view", "Split view"],
-  ["06-shape", "shape", "Make it yours"],
-  ["06-open-source", "open-source", "Open source"],
-  ["07-arc", "arc", null],
-  ["08-close", "fin", "Made by Fin"],
+  ["07-arc", "move-in", null],
+  ["02-know", "know", "Every tab"],
+  ["03-blocking", "blocking", "Blocking"],
+  ["05-measured", "measured", "Measured"],
+  ["04-values", "private", "Private and open"],
+  ["06-tools", "tools", "Your tools"],
+  ["11-ai", "ai", "Intelligence"],
+  ["12-rest", "rest", "And the rest"],
+  ["13-faq", "faq", "Questions"],
+  ["08-close", "fin", "Get Artemis"],
 ];
 const PAGES = {
   "index.html": {
@@ -226,7 +227,11 @@ export async function build(out) {
   };
   for (const f of walk(path.join(SRC, "img")))
     if (path.basename(f) !== "favicon-32.png")
-      plan(`/assets/img/${path.basename(f)}`, f, ROOT_FILES[path.basename(f)]);
+      plan(
+        `/assets/img/${path.relative(path.join(SRC, "img"), f).split(path.sep).join("/")}`,
+        f,
+        ROOT_FILES[path.basename(f)],
+      );
   for (const f of walk(path.join(SRC, "static")))
     plan(`/assets/static/${path.basename(f)}`, f, path.basename(f));
   for (const f of walk(path.join(SRC, "video")))
@@ -269,7 +274,9 @@ export async function build(out) {
       visit(target(rel, m[2]), [...trail, rel]);
     order.push(rel);
   };
-  let bundle = "const __m={};\n";
+  // WebKit can run this module before a slower stylesheet applies, and the modules measure layout as they load
+  let bundle =
+    'await Promise.all([...document.querySelectorAll("link[rel=stylesheet]")].filter((l)=>!l.sheet).map((l)=>new Promise((r)=>l.onload=l.onerror=r)));\nconst __m={};\n';
   try {
     visit("main.js");
     for (const [file] of SECTIONS)
@@ -326,7 +333,7 @@ export async function build(out) {
   }
 
   // CSS
-  const cssParts = ["tokens", "base", "components", "window", "pages"].map(
+  const cssParts = ["tokens", "base", "components"].map(
     (n) => `css/${n}.css`,
   );
   for (const f of fs.readdirSync(path.join(SRC, "css/sections")).sort())
@@ -361,8 +368,24 @@ export async function build(out) {
         );
       return (errors.push(`missing include ${name}`), "");
     });
+  // "v1.1.0-2" in the release URL reads as "Version 1.1"
+  const version = cfg.DOWNLOAD_URL?.match(/\/v(\d+(?:\.\d+)*)/)?.[1].replace(/\.0$/, "");
+  const bench = (times) => {
+    const max = Math.max(...Object.values(times));
+    return Object.entries(times)
+      .sort((a, b) => a[1] - b[1])
+      .map(([name, ms]) => `<tr${name === "Artemis" ? ' class="us"' : ""}><th scope="row">${name}</th><td><svg width="100%" height="12" aria-hidden="true"><rect width="${+((ms / max) * 100).toFixed(1)}%" height="12" rx="6" /></svg><span>${ms}</span></td></tr>`)
+      .join("\n");
+  };
+  const measured = (key, field) => {
+    const v = cfg.MEASURED?.[key];
+    if (v == null) return (errors.push(`MEASURED.${key} is not in site.config.mjs`), "");
+    return field === "bench" ? bench(v) : field === "us" ? v.Artemis : field === "count" ? Object.keys(v).length : v;
+  };
   const priced = (text) =>
     text
+      .replace(/<!-- @measured (\w+)(?: (bench|us|count))? -->/g, (m, key, field) => measured(key, field))
+      .replace(/<!-- @version -->/g, () => (version ? `Version ${version} for ` : ""))
       .replace(/<!-- @price -->/g, () => (cfg.PRICE ? ` ${cfg.PRICE}.` : ""))
       .replace(/<!-- @stage -->/g, () =>
         cfg.STAGE ? `<span class="stage-tag">${cfg.STAGE}</span> ` : "",
@@ -388,8 +411,6 @@ export async function build(out) {
     }
     if (fs.existsSync(partial(file))) {
       mainHtml += include(read(partial(file)), 1);
-      if (!fs.existsSync(path.join(SRC, `css/sections/${file}.css`)))
-        warnings.push(`missing css/sections/${file}.css, skipped`);
     } else {
       warnings.push(`missing section partial ${file}, stubbed`);
       mainHtml += `<section class="sec" id="${id}" data-name="${name}"></section>\n`;
@@ -427,20 +448,20 @@ export async function build(out) {
   const amount = free ? "0" : cfg.PRICE?.replace(/[^\d.]/g, "");
   const moveIn =
     "Bring your Arc spaces and tabs over before Arc stops working on 22 December.";
-  const about = `Artemis is a${free} native, private browser for macOS 26${stage}. Spaces, profiles and a sidebar, shaped how you like. Ads and trackers blocked out of the box. Open source, no account, no telemetry.`;
-  const share = `A${free} native, private Mac browser you can make your own${stage}.`;
+  const about = `Artemis is a${free} sidebar browser for macOS 26${stage}. Spaces, pinned tabs, Peek and split view, with ads and trackers blocked from the first page. Open source, no account, no telemetry.`;
+  const share = `A${free} sidebar browser for your Mac${stage}, with ads and trackers blocked from the first page.`;
   const home = {
     ...PAGES["index.html"],
-    title: `Artemis: a native, private Mac browser you can make your own${arc ? ". Move in from Arc." : ""}`,
+    title: `Artemis: a sidebar browser for your Mac${arc ? ". Move in from Arc." : ""}`,
     description: arc
-      ? `A${free} native, private browser for macOS 26${stage}. Spaces, profiles and a sidebar, shaped how you like. ${moveIn}`
+      ? `A${free} sidebar browser for macOS 26${stage}. Spaces, pinned tabs, Peek and split view, with ads and trackers blocked. ${moveIn}`
       : about,
     og: arc ? `${share} ${moveIn}` : share,
   };
   const og = assets.get("/assets/img/og-home.png");
   const ogImage = `https://${cfg.DOMAIN}/og/home.png${og ? "?v=" + hash(fs.readFileSync(og.file)) : ""}`;
   const ogAlt =
-    "A native, private Mac browser you can make your own. The Artemis window, with tabs down the side and a Wikipedia article open.";
+    "A sidebar browser for your Mac. The Artemis window, with tabs down the side and a Wikipedia article open.";
   // Discord shows this card in place of the Open Graph preview; it drops the whole card past 3000 bytes
   const discord = JSON.stringify({
     component: {
@@ -495,8 +516,9 @@ export async function build(out) {
           "Ad and tracker blocking",
           "Fingerprinting defence",
           "Copy Page Link drops tracking parameters",
+          "Peek",
           "Incognito windows that can lock with Touch ID",
-          "Built-in passwords",
+          "Built-in passwords, passkeys and one-time codes",
           "Import from other browsers",
           "Open source under GPL 3.0",
         ],
