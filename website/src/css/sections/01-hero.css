@@ -220,3 +220,10 @@
     width: 100%;
   }
 }
+/* Artemis on its own site: the download pill reads as a status */
+.pill.is-current,
+.pill.is-current:hover {
+  background: light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.1));
+  color: var(--ink);
+  cursor: default;
+}

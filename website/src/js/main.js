@@ -5,6 +5,7 @@ import { root, params, mq } from "./core.js";
 import { openPeek } from "./peek.js";
 import "./gallery.js";
 import "./know.js";
+import "./home.js";
 
 const cls = root.classList;
 const modes = () => ["fine", "coarse"].forEach((k) => cls.toggle(k, mq[k].matches));
@@ -116,7 +117,7 @@ for (const el of [nav.querySelector(".localnav-links"), nav.nextElementSibling])
 addEventListener("keydown", (e) => e.key === "Escape" && shut());
 
 /* ---------- phones get the link for later, never a Mac download ---------- */
-if (mq.coarse.matches)
+if (mq.coarse.matches && !root.dataset.artemis)
   for (const a of document.querySelectorAll("[data-get]")) {
     const label = a.querySelector(".get-label");
     if (label) label.textContent = "Send to my Mac";

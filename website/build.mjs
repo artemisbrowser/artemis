@@ -392,6 +392,7 @@ export async function build(out) {
     text
       .replace(/<!-- @measured (\w+)(?: (bench|us|count))? -->/g, (m, key, field) => measured(key, field))
       .replace(/<!-- @version -->/g, () => (version ? `Version ${version} for ` : ""))
+      .replace(/<!-- @latest -->/g, () => release ?? "")
       .replace(/<!-- @price -->/g, () => (cfg.PRICE ? ` ${cfg.PRICE}.` : ""))
       .replace(/<!-- @stage -->/g, () =>
         cfg.STAGE ? `<span class="stage-tag">${cfg.STAGE}</span> ` : "",
