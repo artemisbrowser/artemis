@@ -26,10 +26,10 @@ export const NOTE =
 export const MEASURED = {
   on: "24 November 2026",
   machine: "M1 Pro",
-  launch: { Artemis: 487, Search: 509, Ardia: 603, Helium: 770 },
-  newTab: { Helium: 44, Artemis: 63, Ardia: 90, Search: 137 },
-  mem48: { Artemis: 1.9, Helium: 2.9, Ardia: 3.1, Search: 8.6 },
-  idle48: { Artemis: 1.4, Helium: 3.6, Ardia: 4.6, Search: 82.4 },
-  mem1: { Search: 102, Artemis: 105, Ardia: 251, Helium: 382 },
-  idle1: { Artemis: 0.3, Search: 0.3, Ardia: 0.4, Helium: 0.5 },
+  launch: { Artemis: 481, Search: 516, Ardia: 561, Helium: 790 },
+  newTab: { Helium: 42, Artemis: 62, Ardia: 84, Search: 127 },
+  mem48: { Artemis: 1.9, Search: 2.8, Helium: 2.9, Ardia: 3.1 },
+  idle48: { Artemis: 0.9, Search: 2.6, Helium: 2.9, Ardia: 4.8 },
+  mem1: { Search: 103, Artemis: 108, Ardia: 253, Helium: 383 },
+  idle1: { Search: 0.26, Artemis: 0.28, Ardia: 0.43, Helium: 0.68 },
 };
