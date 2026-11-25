@@ -44,7 +44,6 @@
   margin: 0 auto;
   overflow: hidden;
   border-radius: 28px;
-  background: #000;
 }
 .hero-film img {
   position: absolute;
@@ -61,7 +60,7 @@
   position: absolute;
   inset: auto 0 0;
   height: 80px;
-  background: linear-gradient(#0000, #000);
+  background: linear-gradient(#0000, var(--void));
 }
 @media (prefers-reduced-motion: no-preference) {
   .hero-film img {
@@ -84,12 +83,15 @@
   gap: 28px;
   padding: 10px 10px 10px 24px;
   border-radius: 32px;
-  background: #242426;
+  background: light-dark(rgb(255 255 255 / 0.72), #242426);
+  box-shadow: 0 0 0 0.5px light-dark(rgb(0 0 0 / 0.1), #0000);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
   white-space: nowrap;
 }
 .hero-get .fine {
   margin: 0;
-  color: #f5f5f7;
+  color: light-dark(var(--ink), #f5f5f7);
   font-size: 14px;
   font-weight: 600;
 }
@@ -140,21 +142,21 @@
     opacity: var(--o, 1);
   }
 }
-/* the Spaces slide shows the capture in the page's appearance */
-.slide .dark {
+/* the hero and the Spaces slide show the capture in the page's appearance */
+:is(.hero-film, .slide) .dark {
   display: none;
 }
-:root[data-theme="dark"] .slide .light {
+:root[data-theme="dark"] :is(.hero-film, .slide) .light {
   display: none;
 }
-:root[data-theme="dark"] .slide .dark {
+:root[data-theme="dark"] :is(.hero-film, .slide) .dark {
   display: block;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .slide .light {
+  :root:not([data-theme="light"]) :is(.hero-film, .slide) .light {
     display: none;
   }
-  :root:not([data-theme="light"]) .slide .dark {
+  :root:not([data-theme="light"]) :is(.hero-film, .slide) .dark {
     display: block;
   }
 }
@@ -187,6 +189,9 @@
     gap: 16px;
     padding: 18px var(--gutter) 0;
     background: none;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     white-space: normal;
   }
   .hero-get .fine {
