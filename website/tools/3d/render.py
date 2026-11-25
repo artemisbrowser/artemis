@@ -50,6 +50,7 @@ SHOTS = {
     "deck": ("black", 2, dict(lid=110, glow=0.5, az=-0.3, el=0.75, dist=95, y=1.2, z=-1, fov=11)),
     "front": ("black", 2000 / 1208, dict(lid=92, glow=0.5, az=0, el=0.03, dist=124, y=10.4, z=-9, fov=12)),
     "above": ("black", 16 / 9, dict(lid=92, glow=6, az=0, el=0.98, dist=125, y=5, z=-10, fov=13.8, dark=True)),
+    "above-light": ("silver", 16 / 9, dict(lid=92, glow=0.5, az=0, el=0.98, dist=125, y=5, z=-10, fov=13.8)),
 }
 
 lerp = lambda a, b, t: a + (b - a) * t

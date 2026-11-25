@@ -429,16 +429,19 @@ export async function build(out) {
     fs.existsSync(partial(n)) ? include(read(partial(n)), 1) : "";
 
   const preloads = [];
-  // the hero paints Personal's mesh from the small render (01-hero.css); the nav brand lands with the first paint
-  if (assets.has("/assets/spaces/space-tide-110x74.png"))
-    preloads.push(
-      `<link rel="preload" as="image" href="${url("/assets/spaces/space-tide-110x74.png")}" />`,
-    );
-  for (const scheme of ["dark", "light"])
+  // the nav brand and the hero's shot land with the first paint; the hero's <img>s are lazy, so only the shown one loads
+  for (const [scheme, hero] of [["dark", "hero"], ["light", "hero-light"]]) {
     if (assets.has(`/assets/img/icon-rigel-${scheme}-64.png`))
       preloads.push(
         `<link rel="preload" as="image" href="${url(`/assets/img/icon-rigel-${scheme}-64.png`)}" media="(prefers-color-scheme: ${scheme})" />`,
       );
+    const set = [1000, 1500, 2000]
+      .map((w) => `${url(`/assets/img/framed/${hero}-${w}.webp`)} ${w}w`)
+      .concat(`${url(`/assets/img/framed/${hero}.webp`)} 2560w`);
+    preloads.push(
+      `<link rel="preload" as="image" imagesrcset="${set.join(", ")}" imagesizes="(max-width: 734px) 125vw, min(115vw, 1570px)" fetchpriority="high" media="(prefers-color-scheme: ${scheme})" />`,
+    );
+  }
 
   // Arc may be named only in the index head and only while its block ships (tools/check.mjs rule 2).
   const arc = cfg.ARC_BLOCK && fs.existsSync(partial("07-arc"));
