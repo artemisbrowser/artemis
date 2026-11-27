@@ -23,10 +23,3 @@
   width: 100%;
   height: auto;
 }
-.ai-shot figcaption {
-  padding-right: 9%;
-  text-align: right;
-  font-size: 14px;
-  line-height: 1.43;
-  color: var(--ink-3);
-}
