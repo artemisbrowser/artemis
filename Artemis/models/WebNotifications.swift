@@ -82,7 +82,7 @@ final class WebNotifications: NSObject, WKScriptMessageHandler, UNUserNotificati
             origin.protocol == "https"
             || (origin.protocol == "http" && ["localhost", "127.0.0.1"].contains(origin.host))
         let decision =
-            SitePermissionStore.shared.decision(for: site, .notifications, ephemeral: false)
+            tab.sitePermissions?.decision(for: site, .notifications, ephemeral: false)
             ?? pageAnswers[tab.id].flatMap { $0.origin == site ? $0.decision : nil }
         let permission =
             !isSecure || tab.isPrivate

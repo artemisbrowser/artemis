@@ -63,7 +63,7 @@ enum WhatsNew {
 
     /// the colour of an update that names none: fixed by its build, and the next icon colour for the next nightly
     static func accent(for build: String) -> AppIconChoice {
-        let all = AppIconChoice.allCases
+        let all = AppIconChoice.allCases.filter { $0 != .home }
         return all[build.unicodeScalars.reduce(0) { $0 + Int($1.value) } % all.count]
     }
 

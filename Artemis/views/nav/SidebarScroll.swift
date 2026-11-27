@@ -172,11 +172,14 @@ struct ScrollViewProbe: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            // a leaving probe can be put back in its window once more; only a new list may claim the scroll
             if window != nil, let view = enclosingScrollView {
+                guard view !== attached else { return }
                 attached = view
                 scroll.attach(view, for: self)
             } else if let attached {
                 scroll.detach(attached, for: self)
+                self.attached = nil
             }
         }
     }

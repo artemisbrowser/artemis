@@ -20,9 +20,11 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 heavy-job "test-scope: coverage build $id" env PERF_ID=$id PERF_CONFIG=Debug PERF_COVERAGE=1 tools/perflab.sh >/dev/null || { echo "BUILD FAILED"; exit 1; }
 rm -rf $out && mkdir -p $out/suite
 
-# waits for the app to quit, or for the self-test's done line
+# waits for the app to quit, or for the self-test's done line; the 2400 s leave out what $3's pause lines total.
+# a paused suite leaves $4; moving it away holds the pause while the slots are lent
 wait_app='exe=$1 log=$2; seen=0 SECONDS=0
-	while (( SECONDS < 2400 )); do
+	while (( SECONDS < 2400 )) || (( SECONDS - $(fin-away --paused ${3:-$log}) < 2400 )); do
+		[[ -e $4 ]] && ! fin-away && mv $4 $4.lent 2>/dev/null && { heavy-job --lend fin-away --wait; mv $4.lent $4; }
 		[[ -n $log ]] && grep -q "^done" $log 2>/dev/null && { sleep 3; pkill -f "^$exe"; break; }
 		if pgrep -qf "^$exe"; then seen=1; elif (( seen || SECONDS > 60 )); then break; fi
 		sleep 2
@@ -31,22 +33,24 @@ fg=tools/.perflab-fg-$id.sh
 sed 's/open -g -n/open -n/' tools/perflab.sh > $fg
 screen=~/.cache/artemis/foreground.lock
 suite='id=$1 fg=$2 out=$3 log=$4 exe=$5 wait_app=$6
+	fin-away || exit 75
 	rm -f $log
-	PERF_ID=$id zsh $fg --run ARTEMIS_SELFTEST=1 ARTEMIS_COVERAGE_DIR=$out/suite LLVM_PROFILE_FILE=$out/exit-%p.profraw
-	zsh -c $wait_app _ $exe $log'
+	PERF_ID=$id zsh $fg --run ARTEMIS_SELFTEST=1 ARTEMIS_PAUSE_FILE=$out/paused ARTEMIS_COVERAGE_DIR=$out/suite LLVM_PROFILE_FILE=$out/exit-%p.profraw
+	zsh -c $wait_app _ $exe $log $log $out/paused'
 bench='id=$1 fg=$2 out=$3 exe=$4 wait_app=$5; shift 5
 	for loop; do
+		heavy-job --lend fin-away --wait
 		mkdir -p $out/$loop
 		PERF_ID=$id zsh $fg --run ARTEMIS_BENCH=1 ARTEMIS_BENCH_LOOP=$loop ARTEMIS_BENCH_LABEL=coverage-$id-$loop \
 			ARTEMIS_COVERAGE_DIR=$out/$loop LLVM_PROFILE_FILE=$out/exit-%p.profraw
-		zsh -c $wait_app _ $exe ""
+		zsh -c $wait_app _ $exe "" /private/tmp/artemis-perf/artemis-bench-coverage-$id-$loop.log
 		mv $out/$loop/loop-$loop.profraw $out/suite/
 	done'
-# the suite, then the loops, each a ticket that takes the screen (and the self-test lock) only if free:
-# lockf's 75 hands the slots back and retries
-until heavy-job --both "lab $id: self-test coverage" lockf -t 0 $screen lockf -t 0 -k ~/.cache/artemis-ce-selftest.lock \
+# the suite, then the loops, each a ticket that takes the screen (and the self-test lock) only if free
+# and Fin is away: a 75 hands the slots back and retries
+until fin-away --wait; heavy-job --both "lab $id: self-test coverage" lockf -t 0 $screen lockf -t 0 -k ~/.cache/artemis-ce-selftest.lock \
 	zsh -c $suite _ $id $fg $out $log $exe $wait_app; (( $? != 75 )); do sleep 60; done
-until heavy-job --both "lab $id: bench loop coverage" lockf -t 0 $screen \
+until fin-away --wait; heavy-job --both "lab $id: bench loop coverage" lockf -t 0 $screen \
 	zsh -c $bench _ $id $fg $out $exe $wait_app $loops; (( $? != 75 )); do sleep 60; done
 rm -f $fg
 grep -E '^FAIL|passed, ' $log

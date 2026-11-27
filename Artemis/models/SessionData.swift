@@ -17,6 +17,9 @@ nonisolated struct BrowsingSession: Codable {
     /// false in a file from a build that kept typed names by url: it drops this key
     /// with the names on the records, so `TabNameStore` hands its names over again
     var namesOnTabs = true
+    /// false in a file from a build that missed where pinned pages land: a pinned row with
+    /// no landing there is at home, wherever it is
+    var landingsKnown = true
 
     init(
         profiles: [ProfileData] = [], spaces: [SpaceData] = [], essentialURLs: [String] = [],
@@ -36,6 +39,13 @@ nonisolated struct BrowsingSession: Codable {
         essentialURLs = try c.decodeIfPresent([String].self, forKey: .essentialURLs) ?? []
         selectedSpaceID = try c.decodeIfPresent(UUID.self, forKey: .selectedSpaceID)
         namesOnTabs = try c.decodeIfPresent(Bool.self, forKey: .namesOnTabs) ?? false
+        if try c.decodeIfPresent(Bool.self, forKey: .landingsKnown) != true {
+            for s in spaces.indices {
+                for t in spaces[s].tabs.indices where spaces[s].tabs[t].isPinned && spaces[s].tabs[t].landing == nil {
+                    spaces[s].tabs[t].landing = spaces[s].tabs[t].url
+                }
+            }
+        }
         migrateToProfiles()
     }
 
@@ -79,6 +89,8 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     /// pinned tabs and favourites only: the home the tab returns to, which it can
     /// navigate away from without losing it
     var pinnedURL: String?
+    /// where the home page moved itself on loading, which reads as home too
+    var landing: String?
     var isPinned: Bool
     /// drives the auto-archive clock
     var lastAccessed: Date
@@ -87,12 +99,13 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     var name: String?
 
     init(
-        id: UUID = UUID(), url: String, pinnedURL: String? = nil, isPinned: Bool = false,
+        id: UUID = UUID(), url: String, pinnedURL: String? = nil, landing: String? = nil, isPinned: Bool = false,
         lastAccessed: Date = Date(), keepsLoaded: Bool = false, name: String? = nil
     ) {
         self.id = id
         self.url = url
         self.pinnedURL = pinnedURL
+        self.landing = landing
         self.isPinned = isPinned
         self.lastAccessed = lastAccessed
         self.keepsLoaded = keepsLoaded
@@ -104,6 +117,7 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         url = try c.decode(String.self, forKey: .url)
         pinnedURL = try c.decodeIfPresent(String.self, forKey: .pinnedURL)
+        landing = try? c.decodeIfPresent(String.self, forKey: .landing)
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         lastAccessed = try c.decodeIfPresent(Date.self, forKey: .lastAccessed) ?? Date()
         keepsLoaded = try c.decodeIfPresent(Bool.self, forKey: .keepsLoaded) ?? false
@@ -111,7 +125,7 @@ nonisolated struct TabRecord: Codable, Identifiable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, url, pinnedURL, isPinned, lastAccessed, keepsLoaded, name
+        case id, url, pinnedURL, landing, isPinned, lastAccessed, keepsLoaded, name
     }
 }
 

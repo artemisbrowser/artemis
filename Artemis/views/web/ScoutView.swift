@@ -6,7 +6,7 @@ import SwiftUI
 import WebKit
 
 /// how the Scout frame paints itself
-enum ScoutBarStyle: String, CaseIterable, Identifiable {
+enum ScoutBarStyle: String, Codable, CaseIterable, Identifiable {
     /// a fixed solid colour the user picks
     case solid
     /// a fixed gradient the user designs (reuses the space mesh editor)
@@ -80,6 +80,9 @@ struct ScoutView: View {
     @State private var sampledStops: [Color]?
     @State private var isSampling = false
     private static let stopCount = 12
+    /// a collapsed app's toolbar, shown while the pointer is at the top edge or on it
+    @State private var revealed = false
+    @State private var hideReveal: Task<Void, Never>?
 
     /// the browser window a promoted page lands in
     private var browser: TabManager? { BrowserWindows.shared.browserScope }
@@ -91,12 +94,16 @@ struct ScoutView: View {
             ?? tabManager.spaces.first { $0.id == tabManager.core.persistedSpaceID } ?? tabManager.spaces[0]
     }
 
-    private var barStyle: ScoutBarStyle { ScoutBarStyle(rawValue: barStyleRaw) ?? .fallback }
-    private var rim: CGFloat { CGFloat(edgeInset) }
+    /// the installed app this window shows, whose settings win over Scout's
+    private var app: WebApp? { tabManager.webApp }
+    private var collapsed: Bool { app?.collapsed == true }
+    private var barStyle: ScoutBarStyle { app?.look ?? ScoutBarStyle(rawValue: barStyleRaw) ?? .fallback }
+    private var rim: CGFloat { CGFloat(app?.edgeInset ?? edgeInset) }
+    private var headerHeight: CGFloat { BrowserToolbar.top + BrowserToolbar.height + toolbarGap }
     /// the main window's toolbar gap: the page keeps its rim but never touches the row
     private var toolbarGap: CGFloat { max(rim, BrowserToolbar.top) }
 
-    private var customAppearance: SpaceAppearance { ScoutBarAppearanceStore.load(customAppearanceJSON) }
+    private var customAppearance: SpaceAppearance { app?.appearance ?? ScoutBarAppearanceStore.load(customAppearanceJSON) }
 
     /// the adaptive colours sampled left→right, falling back to the declared
     /// theme-color, else nil (no sample yet)
@@ -134,13 +141,29 @@ struct ScoutView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let hidden = collapsed && !revealed
+        ZStack(alignment: .top) {
+            card
+                .padding(.top, collapsed ? rim : headerHeight)
+                .padding([.horizontal, .bottom], rim)
+            if collapsed {
+                EdgeWatcher { reveal() }
+                    .frame(height: max(rim, 4))
+                    .background { if rim > 0 { WindowDragStrip() } }
+            }
             header
                 .padding(.top, BrowserToolbar.top)
                 .padding(.bottom, toolbarGap)
-            card
-                .padding([.horizontal, .bottom], rim)
+                .background {
+                    if collapsed { RevealBackdrop(paint: barPaint).shadow(color: .black.opacity(0.25), radius: 8, y: 2) }
+                }
+                .offset(y: hidden ? -headerHeight : 0)
+                .opacity(hidden ? 0 : 1)
         }
+        .animation(Motion.pop, value: hidden)
+        .animation(Motion.panel, value: collapsed)
+        .animation(Motion.panel, value: rim)
+        .background { if collapsed && rim == 0 { PageDragBand() } }
         .background { ScoutBackdrop(paint: barPaint).ignoresSafeArea() }
         .environment(\.chromeInk, ink)
         .frame(minWidth: 480, minHeight: 360)
@@ -154,6 +177,10 @@ struct ScoutView: View {
         )
         .onAppear {
             watchScroll()
+            if let app = tabManager.webApp {
+                targetSpace = app.space(in: tabManager.spaces)
+                pickedManually = true
+            }
             if targetSpace == nil, let url = tab?.url ?? tab?.lastAttemptedURL {
                 targetSpace = (browser ?? BrowserWindows.shared.seed)?.preferredSpace(for: url, in: tabManager.currentSpace.profileID)
             }
@@ -177,6 +204,9 @@ struct ScoutView: View {
             scheduleSample()
         }
         .onChange(of: tab?.pageScrollY) { sampleTopColor() }
+        .onChange(of: tab?.title, initial: true) { _, title in
+            if let app, let title { WebApps.shared.titleChanged(title, for: app) }
+        }
         .onDisappear { watchScroll(false) }
         .onChange(of: target.appearance.accent, initial: true) { _, accent in
             tabManager.tooltipState.accent = accent
@@ -217,6 +247,22 @@ struct ScoutView: View {
             if rim == 0 { Rectangle().fill(ink.opacity(0.12)).frame(height: 1) }
         }
         .shadow(color: .black.opacity(rim > 0 ? 0.3 : 0), radius: 12, y: 3)
+    }
+
+    /// shows a collapsed app's toolbar until the pointer has left it and its settings are closed
+    private func reveal() {
+        revealed = true
+        hideReveal?.cancel()
+        hideReveal = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let window = BrowserWindows.shared.window(of: tabManager) else { break }
+                let point = window.mouseLocationOutsideOfEventStream
+                let over = point.y >= window.frame.height - headerHeight - 4 && (0...window.frame.width).contains(point.x)
+                if !over, !tabManager.isSidebarPopoverOpen { break }
+            }
+            if !Task.isCancelled { revealed = false }
+        }
     }
 
     // arms the page's scroll reports while the bar is dynamic; false quiets them
@@ -260,10 +306,12 @@ struct ScoutView: View {
                 TrafficLightMount()
                     .frame(width: TrafficLightMount.width, height: TrafficLightMount.height)
                     .padding(.leading, 3)
-                NavigationControls()
+                if app?.showsNavigation != false { NavigationControls() }
             }
             HStack(spacing: 6) {
-                if let tab {
+                if let tab, let app {
+                    AppPill(tab: tab, app: app)
+                } else if let tab {
                     ScoutUrlField(tab: tab)
                     PageActions(tab: tab)
                 }
@@ -321,13 +369,10 @@ struct ScoutView: View {
         else { return }
         isPromoting = true
         Task {
-            var destination = browser
-            if destination == nil { destination = await Scripting.openWindow(incognito: false, on: space.id) }
-            guard let destination else {
+            guard await TabManager.openInBrowser(url, into: space) else {
                 isPromoting = false
                 return
             }
-            destination.adoptIntoBrowser(url, into: space)
             tab?.stopLoading()
             onClose()
         }
@@ -395,11 +440,11 @@ private struct ScoutGlass: View {
     var body: some View {
         ZStack {
             VisualEffectView(material: .hudWindow, blending: .behindWindow)
+            // a gradient-painted stroke rasterises a window-sized bitmap; a masked plain one draws none
             RoundedRectangle(cornerRadius: WindowChrome.outerWindowRadius, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.35), .white.opacity(0.06), .clear],
-                        startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1)
+                .strokeBorder(.white, lineWidth: 1)
+                .mask(LinearGradient(colors: [.white.opacity(0.35), .white.opacity(0.06), .clear],
+                    startPoint: .top, endPoint: .bottom))
                 .allowsHitTesting(false)
         }
     }
@@ -485,7 +530,7 @@ private struct AnimatableVector: VectorArithmetic {
 
 /// one row in the space picker — icon left, name right, with the hover highlight
 /// used across the rest of the chrome; a checkmark marks the current target
-private struct SpaceMenuRow: View {
+struct SpaceMenuRow: View {
     let space: Space
     let isTarget: Bool
     let action: () -> Void
@@ -520,6 +565,88 @@ private struct SpaceMenuRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+    }
+}
+
+/// an app window's middle: the page's icon and title, opening the app's settings
+private struct AppPill: View {
+    @Environment(TabManager.self) private var tabManager
+    @Environment(\.chromeInk) private var ink
+    let tab: BrowserTab
+    let app: WebApp
+    @State private var isHovering = false
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing.toggle() } label: {
+            HStack(spacing: 8) {
+                if let icon = tab.favicon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 16, height: 16)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                Text(tab.displayTitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ink.opacity(isHovering ? 1 : 0.9))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(ink.opacity(isHovering || showing ? 0.7 : 0.35))
+            }
+            .padding(.horizontal, 14)
+            .frame(height: BrowserToolbar.height)
+            .background(Capsule().fill(ink.opacity(isHovering ? 0.1 : 0)))
+            .contentShape(.capsule)
+            .animation(Motion.hover, value: isHovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .chromeGlass(in: .capsule)
+        .tooltip("\(app.name) settings")
+        .popover(isPresented: $showing, arrowEdge: .bottom) { WebAppPanel(id: app.id, tab: tab) }
+        .onChange(of: showing) { _, open in tabManager.isSidebarPopoverOpen = open }
+    }
+}
+
+/// a collapsed app's toolbar over the page: glass blurs the page under it, not the desktop
+private struct RevealBackdrop: View {
+    let paint: ScoutBarPaint
+
+    var body: some View {
+        if case .glass = paint {
+            VisualEffectView(material: .hudWindow, blending: .withinWindow)
+        } else {
+            ScoutBackdrop(paint: paint)
+        }
+    }
+}
+
+/// calls `onEnter` when the pointer crosses it, without taking a click from what's beneath
+private struct EdgeWatcher: NSViewRepresentable {
+    let onEnter: () -> Void
+
+    func makeNSView(context: Context) -> Watcher {
+        let view = Watcher()
+        view.onEnter = onEnter
+        return view
+    }
+
+    func updateNSView(_ view: Watcher, context: Context) { view.onEnter = onEnter }
+
+    final class Watcher: NSView {
+        var onEnter: () -> Void = {}
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        }
+
+        override func mouseEntered(with event: NSEvent) { onEnter() }
     }
 }
 
@@ -594,6 +721,7 @@ private struct ScoutUrlField: View {
                     .textContentType(.URL)
                 } else {
                     Text(UrlField.displayText(for: tab))
+                        .truncationMode(.head)
                         .foregroundStyle(ink.opacity(tab.url == nil ? 0.45 : 0.9))
                 }
             }
@@ -723,7 +851,25 @@ struct ScoutBarEditor: View {
     @AppStorage(ScoutBarAppearanceStore.key) private var json = ""
     @State private var appearance = ScoutBarAppearanceStore.fallback
 
-    private var style: ScoutBarStyle { ScoutBarStyle(rawValue: styleRaw) ?? .fallback }
+    var body: some View {
+        FrameEditor(
+            style: Binding(
+                get: { ScoutBarStyle(rawValue: styleRaw) ?? .fallback }, set: { styleRaw = $0.rawValue }),
+            appearance: $appearance,
+            spaceInfo: "The frame wears the colours of the space the page would open in."
+        )
+        .padding(16)
+        .frame(width: 340)
+        .onAppear { appearance = ScoutBarAppearanceStore.load(json) }
+        .onChange(of: appearance) { _, new in json = ScoutBarAppearanceStore.encode(new) }
+    }
+}
+
+/// a frame's style picker over the editor for that style: Scout's, or an installed app's
+struct FrameEditor: View {
+    @Binding var style: ScoutBarStyle
+    @Binding var appearance: SpaceAppearance
+    let spaceInfo: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -749,7 +895,7 @@ struct ScoutBarEditor: View {
                 Text("The frame takes the open page's colours and follows them as you scroll.")
                     .font(.system(size: 12)).foregroundStyle(.primary.opacity(0.55))
             case .space:
-                Text("The frame wears the colours of the space the page would open in.")
+                Text(spaceInfo)
                     .font(.system(size: 12)).foregroundStyle(.primary.opacity(0.55))
             }
 
@@ -772,10 +918,6 @@ struct ScoutBarEditor: View {
                 .scrollIndicators(.hidden)
             }
         }
-        .padding(16)
-        .frame(width: 340)
-        .onAppear { appearance = ScoutBarAppearanceStore.load(json) }
-        .onChange(of: appearance) { _, new in json = ScoutBarAppearanceStore.encode(new) }
     }
 
     /// solid and gradient seed colours so their editor has something to work with
@@ -798,7 +940,7 @@ struct ScoutBarEditor: View {
                 case .glass, .dynamic, .space:
                     break
                 }
-                styleRaw = newStyle.rawValue
+                style = newStyle
             })
     }
 
@@ -816,7 +958,7 @@ struct ScoutBarEditor: View {
     /// a preset carries its own fill; adopt it and flip the style to match
     private func applyPreset(_ preset: SpaceAppearance) {
         appearance = preset
-        styleRaw = (preset.fill == .solid ? ScoutBarStyle.solid : .gradient).rawValue
+        style = preset.fill == .solid ? .solid : .gradient
     }
 }
 

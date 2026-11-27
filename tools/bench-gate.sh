@@ -44,14 +44,17 @@ if (( ! aa )); then
 fi
 out=/private/tmp/artemis-perf
 mkdir -p $out
-# one 60 s loop: launch, wait for the bench to quit, print main busy per step in ms
+# one 60 s loop: launch once Fin is away (the slots are lent while it waits), wait for the bench to quit, print main busy per step in ms.
+# the 240 s leave out the time the bench sat hidden for him
 arm='app=$1 loop=$2 label=$3 out=$4
 	exe="$app/Contents/MacOS/${${app:t}%.app}"
 	rm -f $out/artemis-bench-$label.log
+	PERF_ID=${exe:t:s/Artemis /} tools/perflab.sh --lists >/dev/null
+	heavy-job --lend fin-away --wait
 	open -n --env ARTEMIS_DIAG=perf --env ARTEMIS_BENCH_DIR=$out --env ARTEMIS_BENCH=1 \
 		--env ARTEMIS_BENCH_LOOP=$loop --env ARTEMIS_BENCH_LABEL=$label $app
 	SECONDS=0 seen=0
-	while (( SECONDS < 240 )); do
+	while (( SECONDS < 240 )) || (( SECONDS - $(fin-away --paused $out/artemis-bench-$label.log) < 240 )); do
 		if pgrep -qf "^$exe"; then seen=1; elif (( seen || SECONDS > 30 )); then break; fi
 		sleep 1
 	done
@@ -67,11 +70,12 @@ wipe() { until lockf -t 0 ~/.cache/artemis/foreground.lock zsh -c '
 			~/Library/Preferences/dev.findles.Artemis.$bid.plist ~/Library/"Saved Application State"/dev.findles.Artemis.$bid.savedState
 	done'; (( $? != 75 )); do sleep 5; done; }
 wipe
-# a ticket per 3 reps keeps each foreground block short; a busy screen (lockf 75) hands the slots back and retries
+# a ticket per 3 reps keeps each foreground block short; a busy screen (lockf 75) or Fin at the Mac hands the slots back and retries
 results=$(for loop in $loops; do for first in $(seq 1 3 $reps); do
 	last=$(( first + 2 < reps ? first + 2 : reps ))
-	until heavy-job --both "bench-gate: $loop $first-$last of $reps" lockf -t 0 ~/.cache/artemis/foreground.lock zsh -c '
+	until fin-away --wait; heavy-job --both "bench-gate: $loop $first-$last of $reps" lockf -t 0 ~/.cache/artemis/foreground.lock zsh -c '
 		arm=$1 a=$2 b=$3 out=$4 first=$5 last=$6 loop=$7
+		fin-away || exit 75
 		# 1-min load at launch, after waiting up to 5 min for it to fall under 8
 		calm() { for t in {1..10}; do l=$(sysctl -n vm.loadavg | cut -d" " -f2); (( l < 8 )) && break; sleep 30; done; echo $l; }
 		for i in $(seq $first $last); do

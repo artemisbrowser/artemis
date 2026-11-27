@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
-import Foundation
+import AppKit
 
 /// `Artemis mcp`: the stdio MCP server a coding agent launches. It answers the
 /// handshake and the tool catalog itself and relays each `tools/call` to the
@@ -35,7 +35,8 @@ enum AgentStdio {
                     replies.append(contentsOf: chunk[0..<n])
                     for line in replies.takeLines() { relayReply(line) }
                 } else {
-                    disconnect("Artemis closed the connection. Ask again once it's running with agents allowed.")
+                    disconnect(
+                        "Artemis closed the connection before answering: it quit, or the user turned agents off or disconnected this agent. Call the tool again; if Artemis can't take it, the reply says what to ask the user.")
                 }
             }
             if fds[0].revents != 0 {
@@ -90,8 +91,7 @@ enum AgentStdio {
     private static func forward(_ id: Any, _ name: String, _ arguments: [String: Any], use: String?) {
         if socket < 0 {
             guard let fd = AgentSocket.connect() else {
-                reply(id, failure(
-                    "Artemis isn't reachable. Open Artemis, then turn on Settings › Intelligence › “Allow coding agents to use Artemis”."))
+                reply(id, failure(unreachable(String(cString: strerror(errno)))))
                 return
             }
             socket = fd
@@ -129,6 +129,18 @@ enum AgentStdio {
         pending = [:]
     }
 
+    /// why nothing took the connection: the app closed, its agents switched off, or a broken socket
+    private static func unreachable(_ reason: String) -> String {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .contains { $0.processIdentifier != getpid() }
+        guard running else {
+            return "Artemis isn't running. The Artemis tools work only while the Artemis app is open. Ask the user to open Artemis, then call this tool again."
+        }
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        guard UserDefaults.standard.bool(forKey: AgentBridge.enabledKey) else { return AgentBridge.agentsOff }
+        return "Artemis is open with coding agents allowed, but its agent connection failed (\(reason)). Ask the user to look at Artemis › Settings › Intelligence, which shows the problem, or to quit and reopen Artemis. Then call this tool again."
+    }
+
     private static func parentPath() -> String? {
         var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
         guard proc_pidpath(getppid(), &buffer, UInt32(buffer.count)) > 0 else { return nil }
@@ -150,10 +162,14 @@ enum AgentStdio {
     // MARK: - Catalog
 
     private static let instructions = """
-        Artemis is the user's own browser: its tabs are real and signed in. Work in tabs \
+        Artemis is the user's own browser: its tabs are real and signed in. The tools work only while \
+        the Artemis app is open; if a reply says it isn't, ask the user to open it. Work in tabs \
         you open with open_tab where you can, and leave the user's tabs as they are unless asked. \
         Call take_snapshot before click/fill/hover; uids come from the latest snapshot. Input is \
-        synthesized DOM events, so a few sites may ignore it. Passwords, card details and one-time codes are never typed by agents.
+        synthesized DOM events, so a few sites may ignore it. Passwords, card details and one-time codes are never typed by agents. \
+        Downloads, site permissions, page dialogs and file pickers wait for the user, and agents can't answer them. \
+        When a reply says Artemis is waiting for the user, that is a safety prompt, not a block to work around: \
+        tell the user what to click, then call wait_for on the tab, which returns once they have answered.
         """
 
     private static let tab: [String: Any] = ["type": "string", "description": "Tab id from list_tabs or open_tab."]
@@ -176,7 +192,8 @@ enum AgentStdio {
     private static let tools: [[String: Any]] = [
         tool("list_spaces", "List the Artemis spaces the user has shared with agents."),
         tool(
-            "list_tabs", "List tabs (id, space, title, url, isPinned, selected) in shared spaces.",
+            "list_tabs",
+            "List tabs (id, space, title, url, isPinned, selected) in shared spaces. waitingForUser names a prompt on the tab only the user can answer.",
             ["space": string("Only this space (id or name).")]),
         tool(
             "open_tab", "Open an http(s) URL in a new tab. Opens in the background unless show is true.",
@@ -222,7 +239,8 @@ enum AgentStdio {
             required: ["tab"]),
         tool("screenshot", "PNG of the tab's viewport, at most 1600px wide.", ["tab": tab], required: ["tab"]),
         tool(
-            "wait_for", "Wait until text appears on the page, or until it finishes loading when text is omitted.",
+            "wait_for",
+            "Wait until text appears on the page, or until it finishes loading when text is omitted. Also waits while Artemis is asking the user about the tab (a download, a permission, a page dialog), and says so if they haven't answered by the timeout.",
             ["tab": tab, "text": string("Text to wait for."),
              "timeout_ms": ["type": "integer", "description": "Default 10000, at most 60000."]],
             required: ["tab"]),

@@ -178,7 +178,7 @@ final class AutofillStore {
 
     /// the self-test swaps in its own
     static var shared = AutofillStore(
-        file: AppStorageLocation.file("autofill.json"), vault: .keychain("\(Keychain.owner) Cards"))
+        file: AppStorageLocation.file("autofill.json"), vault: .keychain(Keychain.cards))
 
     private nonisolated static let queue = DispatchQueue(label: "Artemis.Cards")
 

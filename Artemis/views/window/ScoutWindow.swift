@@ -5,15 +5,19 @@ import AppKit
 import SwiftUI
 import WebKit
 
-/// the compact single-page window, for a link glanced at from another app or a
-/// page's sign-in popup: one page in a private space, under its own `TabManager`
+/// the compact single-page window, for a link glanced at from another app, a page's
+/// sign-in popup or an installed app: one page in a private space, under its own `TabManager`
 @MainActor
 enum ScoutWindow {
     /// windows are held until they close — an `NSWindow` with no owner is
     /// released out from under its content
     private static var open: [NSWindow] = []
+    /// the installed app each app window shows
+    private static var apps: [ObjectIdentifier: UUID] = [:]
 
     static var isShowing: Bool { !open.isEmpty }
+
+    static func window(showing app: UUID) -> NSWindow? { open.first { apps[ObjectIdentifier($0)] == app } }
 
     /// a link, opened for a look; from a page, in its `opener` space's profile
     @discardableResult
@@ -27,6 +31,17 @@ enum ScoutWindow {
         let window = present(manager, size: glanceSize(), centred: true, activates: true)
         returnTo[ObjectIdentifier(window)] = from
         return window
+    }
+
+    /// an installed app's page, in the jar of the space it was installed from
+    static func open(_ app: WebApp) {
+        let manager = TabManager(kind: .scout)
+        guard let space = app.space(in: manager.spaces) else { return }
+        manager.webAppID = app.id
+        manager.openScoutSpace(on: app.url, like: space)
+        let window = present(
+            manager, size: glanceSize(), centred: true, activates: true, title: app.name, autosave: "app-\(app.id)")
+        apps[ObjectIdentifier(window)] = app.id
     }
 
     /// `window.open`: the web view must come back synchronously and already belong
@@ -47,7 +62,10 @@ enum ScoutWindow {
     }
 
     @discardableResult
-    private static func present(_ manager: TabManager, size: NSSize, centred: Bool, activates: Bool) -> NSWindow {
+    private static func present(
+        _ manager: TabManager, size: NSSize, centred: Bool, activates: Bool, title: String = "Scout",
+        autosave: String? = nil
+    ) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
@@ -58,7 +76,7 @@ enum ScoutWindow {
             .environment(ExtensionManager.shared)
             .background(WindowBinder(manager: manager))
         window.contentViewController = NSHostingController(rootView: root)
-        window.title = "Scout"
+        window.title = title
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         // a clear backing, so the frame's glass samples the desktop, not flat grey
@@ -73,6 +91,10 @@ enum ScoutWindow {
             window.center()
         } else {
             window.setFrameOrigin(offsetFromFrontmost(size: size))
+        }
+        if let autosave {
+            window.setFrameUsingName(autosave)
+            window.setFrameAutosaveName(autosave)
         }
         window.contentView?.wantsLayer = true
         window.alphaValue = 0
@@ -168,7 +190,9 @@ enum ScoutWindow {
         private var leaving: Set<ObjectIdentifier> = []
 
         func windowWillClose(_ notification: Notification) {
-            ScoutWindow.open.removeAll { $0 === notification.object as? NSWindow }
+            guard let window = notification.object as? NSWindow else { return }
+            ScoutWindow.open.removeAll { $0 === window }
+            if let app = ScoutWindow.apps.removeValue(forKey: ObjectIdentifier(window)) { WebApps.shared.windowClosed(app) }
         }
 
         /// a Scout a link brought forward hands the focus back to the link's app first, so

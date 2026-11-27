@@ -4,13 +4,14 @@
 import SwiftUI
 
 /// where links open: rules sending a site to a space, links handed over by
-/// other apps, and the Peek and Scout previews. A rule is a glob over
+/// other apps, the Peek and Scout previews, and installed apps. A rule is a glob over
 /// `host/path`, and the first one that matches wins, so the list is reorderable.
 struct LinksSettings: View {
     @Environment(TabManager.self) private var tabManager
     @AppStorage("externalLinkRouting") private var externalRaw = ExternalLinkRouting.scout.rawValue
     @AppStorage(PeekControlsCorner.storageKey) private var peekControlsCornerRaw = PeekControlsCorner.topTrailing.rawValue
     @State private var routing = RoutingStore.shared
+    @State private var webApps = WebApps.shared
     @State private var draftPattern = ""
     @State private var draftSpaceID: UUID?
     @State private var sentence = ""
@@ -84,6 +85,22 @@ struct LinksSettings: View {
                 }
                 .pickerStyle(.radioGroup)
                 .settingsAnchor(.externalLinks)
+            }
+
+            Section {
+                if webApps.apps.isEmpty {
+                    Text("No apps yet. File › Install as App… gives the site you're on a window of its own.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .settingsAnchor(.webApps)
+                }
+                ForEach(webApps.apps) { app in
+                    appRow(app).settingsAnchor(app.id == webApps.apps.first?.id ? .webApps : nil)
+                }
+            } header: {
+                InfoLabel(
+                    "Apps",
+                    info: "An app signs in as the space it was installed from, and opens links to other sites here. Drag its launcher from Applications › Artemis Apps to the Dock to keep it there.")
             }
 
             Section("Peek") {
@@ -200,6 +217,52 @@ struct LinksSettings: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Remove rule")
             .foregroundStyle(.secondary)
+        }
+    }
+
+    private func appRow(_ app: WebApp) -> some View {
+        HStack(spacing: 10) {
+            Group {
+                if let icon = FaviconStore.shared.icon(for: app.url.host()) {
+                    Image(nsImage: icon).resizable().scaledToFit()
+                } else {
+                    Image(systemName: "globe")
+                }
+            }
+            .frame(width: 16, height: 16)
+            Text(app.name).lineLimit(1)
+            Text(app.url.host() ?? "")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if let space = app.space(in: tabManager.spaces) {
+                SpaceGlyph(icon: space.icon, size: 12)
+                    .foregroundStyle(space.appearance.accent)
+                Text(space.name)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Profile deleted", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .labelStyle(.titleAndIcon)
+            }
+            Button("Open") { webApps.open(app) }
+                .disabled(app.space(in: tabManager.spaces) == nil)
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([webApps.launcher(of: app)])
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .tooltip("Show launcher in Finder")
+            Button {
+                webApps.remove(app)
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .tooltip("Remove app")
         }
     }
 

@@ -30,11 +30,10 @@ struct BrowserShell<Sidebar: View, Content: View, Panel: View>: NSViewRepresenta
         var panelWidth: CGFloat = 0
     }
 
-    /// the state whose changes pick the motion: pinning, peeking, and the Library's rail
+    /// the state whose changes pick the motion: pinning, peeking, and the agent panel
     struct Cause: Equatable {
         var collapsed: Bool
         var overlayVisible: Bool
-        var libraryOpen: Bool
         var panelOpen: Bool
     }
 
@@ -67,8 +66,6 @@ struct BrowserShell<Sidebar: View, Content: View, Panel: View>: NSViewRepresenta
             spring = cause.overlayVisible ? nil : Motion.sidebarSpring
         } else if cause.overlayVisible != last.overlayVisible {
             spring = cause.collapsed ? Motion.sidebarRevealSpring(duration: revealDuration) : nil
-        } else if cause.libraryOpen != last.libraryOpen {
-            spring = Motion.panelSpring
         } else if cause.panelOpen != last.panelOpen {
             spring = Motion.sidebarSpring
         }
@@ -190,13 +187,14 @@ final class ShellView<Sidebar: View, Content: View, Panel: View>: NSView {
         // a host whose frame moves re-lays out its whole graph that frame
         let sidebar = rect(x: sidebarX.target, width: sidebarWidth.target)
         let slide = rect(x: sidebarX.value(at: now), width: sidebarWidth.value(at: now)).minX - sidebar.minX
-        sidebarHost.layer?.setAffineTransform(CGAffineTransform(translationX: slide, y: 0))
         let x = contentX.value(at: now)
         let content = rect(x: x, width: max(bounds.width - x - contentTrailing.value(at: now), 0))
         let panel = rect(x: bounds.width - panelInset.value(at: now), width: panelWidth)
         if sidebarHost.frame != sidebar { sidebarHost.frame = sidebar }
         if contentHost.frame != content { contentHost.frame = content }
         if panelHost.frame != panel { panelHost.frame = panel }
+        // after the frames: a frame change can reset the layer's transform
+        sidebarHost.layer?.setAffineTransform(CGAffineTransform(translationX: slide, y: 0))
     }
 }
 
@@ -206,6 +204,8 @@ final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
     var passTrailing: CGFloat = 0
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // hits follow the drawn pixels, which a slide's layer transform moves off the frame
+        let point = NSPoint(x: point.x - (layer?.affineTransform().tx ?? 0), y: point.y)
         let x = convert(point, from: superview).x
         guard x >= passLeading, x <= bounds.width - passTrailing else { return nil }
         return super.hitTest(point)

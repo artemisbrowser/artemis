@@ -18,6 +18,7 @@ extension BackupArchive {
         SplitOrientation.defaultKey,
         PinnedSeparationKeep.storageKey,
         PinnedSeparationDestination.storageKey,
+        TabManager.pinnedLinksPeekKey,
         PeekControlsCorner.storageKey,
         MiniPlayer.cornerRadiusKey,
         MiniPlayer.skipSecondsKey,

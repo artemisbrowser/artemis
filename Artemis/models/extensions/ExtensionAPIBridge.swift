@@ -17,6 +17,8 @@ final class ExtensionAPIBridge {
     private var sidePanelObservers: [String: any NSObjectProtocol] = [:]
     private var pushPorts: [String: [WKWebExtension.MessagePort]] = [:]
     private var liveNotifications: [String: Set<String>] = [:]
+    /// per instance: the shim's tab id → the tab its capture plays into, once access was checked
+    private var capturedTabs: [String: NSMapTable<NSNumber, BrowserTab>] = [:]
     private var panelSettings: [String: PanelSettings] =
         UserDefaults.standard.data(forKey: ExtensionAPIBridge.panelSettingsKey)
         .flatMap { try? JSONDecoder().decode([String: PanelSettings].self, from: $0) } ?? [:]
@@ -43,7 +45,7 @@ final class ExtensionAPIBridge {
                 return ["error": "Only a single offscreen document may be created."]
             }
             guard let url = (message["url"] as? String).flatMap(URL.init(string:)),
-                Self.isResource(url, of: context), let configuration = context.webViewConfiguration
+                Self.isResource(url, of: context), let configuration = context.pageConfiguration
             else { return ["error": "The offscreen document must be a page of this extension."] }
             configuration.mediaTypesRequiringUserActionForPlayback = []
             let document = OffscreenDocument(url: url, configuration: configuration)
@@ -203,10 +205,101 @@ final class ExtensionAPIBridge {
             NSPasteboard.general.setString(text, forType: .string)
             return ["ok": true]
 
+        case "tabCapture.apply":
+            guard let tabID = (message["tabId"] as? Int).map(NSNumber.init(value:)) else { return [:] }
+            let chain = message["chain"] as? [[String: Any]] ?? []
+            let captured = capturedTabs[id] ?? .strongToWeakObjects()
+            capturedTabs[id] = captured
+            var tab = captured.object(forKey: tabID)
+            if tab == nil {
+                let candidates = context.openTabs.compactMap { $0 as? BrowserTab }
+                    .filter { $0.url(for: context)?.absoluteString == message["url"] as? String }
+                tab = candidates.first {
+                    $0.indexInWindow(for: context) == message["index"] as? Int && $0.title == message["title"] as? String
+                } ?? candidates.first
+            }
+            // checked on every call: the tab may have moved to a site the extension can't reach
+            guard let found = tab, let url = found.url(for: context), context.hasAccess(to: url, in: found)
+            else { return ["error": "Cannot capture this tab."] }
+            if chain.isEmpty { captured.removeObject(forKey: tabID) } else { captured.setObject(tab, forKey: tabID) }
+            guard let webView = tab?.madeWebView else { return ["ok": false] }
+            do {
+                _ = try await webView.callAsyncJavaScript(
+                    Self.tabAudio, arguments: ["chain": chain], contentWorld: Self.tabAudioWorld)
+                return ["ok": true]
+            } catch {
+                return ["error": error.localizedDescription]
+            }
+
         default:
             return await handleBrowserData(type, message, for: context)
         }
     }
+
+    private static let tabAudioWorld = WKContentWorld.world(name: "Artemis.TabCapture")
+
+    /// a tab capture's gain and filter chain, replayed on the page's media elements. an element
+    /// is routed through Web Audio only while that can't silence it (same-origin or CORS media,
+    /// no EME keys, a running context); any other gets the chain's gain, capped at 1, as volume
+    private static let tabAudio = """
+        const s = (window.__tabAudio ??= { routed: new WeakSet(), base: new WeakMap(), nodes: [] });
+        s.chain = chain;
+        const neutral = (n) => n.kind === "gain" ? n.gain === 1
+          : ["peaking", "lowshelf", "highshelf"].includes(n.type) ? n.gain === 0
+          : n.type === "highpass" ? n.frequency <= 0 : n.type === "allpass";
+        s.boosted = !chain.every(neutral);
+        s.level = chain.reduce((level, n) => n.kind === "gain" ? level * n.gain : level, 1);
+        if (s.boosted && !s.context) {
+          s.context = new AudioContext();
+          s.input = s.context.createGain();
+          s.context.onstatechange = () => document.querySelectorAll("audio, video").forEach(s.apply);
+        }
+        if (s.context) {
+          // a hidden tab's context stays suspended until shown, its resume pending till then
+          await Promise.race([s.context.resume().catch(() => {}), new Promise((r) => setTimeout(r, 250))]);
+          if (s.nodes.length !== chain.length
+            || s.nodes.some((node, i) => (node instanceof GainNode) !== (chain[i].kind === "gain"))) {
+            s.input.disconnect();
+            s.nodes = chain.map((n) => n.kind === "gain" ? s.context.createGain() : s.context.createBiquadFilter());
+            [s.input, ...s.nodes].reduce((from, to) => (from.connect(to), to)).connect(s.context.destination);
+          }
+          s.nodes.forEach((node, i) => {
+            const n = chain[i];
+            if (n.kind === "gain") return void (node.gain.value = n.gain);
+            node.type = n.type;
+            node.frequency.value = n.frequency;
+            node.Q.value = n.Q;
+            node.gain.value = n.gain;
+          });
+        }
+        const routable = (el) => {
+          if (s.context?.state !== "running" || el.mediaKeys || el.webkitKeys) return false;
+          const src = el.currentSrc || el.src;
+          if (!src || /^(blob|data|mediastream):/i.test(src) || el.crossOrigin != null) return true;
+          try { return new URL(src, location.href).origin === location.origin; } catch (e) { return false; }
+        };
+        s.apply = (el) => {
+          if (s.routed.has(el)) return;
+          if (s.boosted && routable(el)) {
+            try {
+              s.context.createMediaElementSource(el).connect(s.input);
+              s.routed.add(el);
+              if (s.base.has(el)) el.volume = s.base.get(el);
+              return;
+            } catch (e) {}
+          }
+          if (!s.base.has(el)) {
+            if (s.level === 1) return;
+            s.base.set(el, el.volume);
+          }
+          el.volume = Math.min(1, s.level) * s.base.get(el);
+        };
+        if (!s.listening) {
+          s.listening = true;
+          document.addEventListener("playing", (e) => e.target instanceof HTMLMediaElement && s.apply(e.target), true);
+        }
+        document.querySelectorAll("audio, video").forEach(s.apply);
+        """
 
     /// the manifest permission or host access each bridged type needs, as Chrome asks it of the
     /// caller; the browser-data types gate themselves, and a type not named is open to all
@@ -215,7 +308,7 @@ final class ExtensionAPIBridge {
     ) -> Bool {
         let namespace = String(type.prefix { $0 != "." })
         switch namespace {
-        case "downloads", "notifications", "search", "identity", "offscreen", "sidePanel", "idle":
+        case "downloads", "notifications", "search", "identity", "offscreen", "sidePanel", "idle", "tabCapture":
             return ExtensionData.declares(namespace, context)
         case "setting":
             return ExtensionData.declares(message["name"] as? String == "proxy" ? "proxy" : "privacy", context)
@@ -241,7 +334,7 @@ final class ExtensionAPIBridge {
     }
 
     /// the profile an extension instance runs in: each profile has its own controller
-    private static func profile(of context: WKWebExtensionContext) -> UUID {
+    static func profile(of context: WKWebExtensionContext) -> UUID {
         context.webExtensionController.flatMap(WebExtensionRuntime.profile(of:)) ?? Profile.defaultID
     }
 
@@ -334,7 +427,7 @@ final class ExtensionAPIBridge {
             return true
         }
         // never the key window: from a popup's button that is the popover's own
-        guard let configuration = context.webViewConfiguration,
+        guard let configuration = context.pageConfiguration,
             let parent = BrowserWindows.shared.browserScope.flatMap(BrowserWindows.shared.window(of:))
                 ?? NSApp.mainWindow.flatMap({ Lobby.isLobby($0) ? nil : $0 })
         else { return false }
@@ -429,11 +522,11 @@ final class ExtensionAPIBridge {
 /// `identity.launchWebAuthFlow`: the provider's page in the calling extension's profile, stopped
 /// at the first navigation to the redirect host. the window appears only once a load finishes
 /// without reaching it
-private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
+final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private let url: URL
     private let redirectHost: String
     private let title: String
-    private let webView: WKWebView
+    let webView: WKWebView
     private var window: NSWindow?
     private var interactive = false
     private var continuation: CheckedContinuation<URL?, Never>?
@@ -462,13 +555,19 @@ private final class AuthFlow: NSObject, WKNavigationDelegate, NSWindowDelegate {
         }
     }
 
+    /// its controller holds every site's rule lists, so each page gets only its own site's, as in a tab
     func webView(
-        _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction
-    ) async -> WKNavigationActionPolicy {
-        guard let target = navigationAction.request.url, target.host()?.lowercased() == redirectHost
-        else { return .allow }
-        finish(target)
-        return .cancel
+        _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences
+    ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        let target = navigationAction.request.url
+        if let target, target.host()?.lowercased() == redirectHost {
+            finish(target)
+            return (.cancel, preferences)
+        }
+        if navigationAction.targetFrame?.isMainFrame == true {
+            ContentBlocker.shared.gate(preferences, for: target, ephemeral: !webView.configuration.websiteDataStore.isPersistent)
+        }
+        return (.allow, preferences)
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

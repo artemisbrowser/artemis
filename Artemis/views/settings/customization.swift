@@ -7,6 +7,7 @@ import SwiftUI
 struct AppearanceSettings: View {
     @AppStorage(WindowChrome.edgeInsetKey) private var edgeInset = WindowChrome.defaultEdgeInset
     @AppStorage(AppIconChoice.storageKey) private var appIconRaw = AppIconChoice.bundled.rawValue
+    @AppStorage(HomeEgg.unlockedKey) private var homeUnlocked = false
 
     var body: some View {
         Form {
@@ -33,9 +34,13 @@ struct AppearanceSettings: View {
             Section {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 5), spacing: 10) {
                     ForEach(AppIconChoice.allCases) { choice in
-                        AppIconTile(choice: choice, isSelected: appIconRaw == choice.rawValue) {
-                            Binding(get: { appIconRaw }, set: { appIconRaw = $0; AppIconChoice.apply() })
-                                .undoable("App Icon").wrappedValue = choice.rawValue
+                        if choice == .home && !homeUnlocked {
+                            LockedIconTile()
+                        } else {
+                            AppIconTile(choice: choice, isSelected: appIconRaw == choice.rawValue) {
+                                Binding(get: { appIconRaw }, set: { appIconRaw = $0; AppIconChoice.apply() })
+                                    .undoable("App Icon").wrappedValue = choice.rawValue
+                            }
                         }
                     }
                 }
@@ -238,18 +243,36 @@ struct SidebarSettings: View {
 struct TabsSettings: View {
     @AppStorage(PinnedSeparationKeep.storageKey) private var pinnedSeparationKeepRaw = PinnedSeparationKeep.pinnedStays.rawValue
     @AppStorage(PinnedSeparationDestination.storageKey) private var pinnedSeparationDestinationRaw = PinnedSeparationDestination.todayBottom.rawValue
+    @AppStorage(TabManager.pinnedLinksPeekKey) private var pinnedLinksPeek = true
     @AppStorage(SplitOrientation.defaultKey) private var defaultSplitOrientationRaw = SplitOrientation.columns.rawValue
     @AppStorage("dimInactivePanes") private var dimInactivePanes = false
     @AppStorage("autoResizeSplitOnDrag") private var autoResizeSplitOnDrag = true
     @AppStorage("defaultSplitLinked") private var defaultSplitLinked = false
     @AppStorage("showSplitDropGuides") private var showSplitDropGuides = true
     @AppStorage(TabPreviewCard.enabledKey) private var showsPreviews = true
+    @AppStorage(TabManager.newTabOpensPageKey) private var newTabOpensPage = false
     @AppStorage(TabManager.hibernateAfterMinutesKey) private var hibernateAfterMinutes =
         TabManager.defaultHibernateAfterMinutes
 
     var body: some View {
         Form {
+            Section("New Tabs") {
+                Toggle(isOn: $newTabOpensPage.undoable("New Tab Page")) {
+                    InfoLabel(
+                        "Open new tabs as a page",
+                        info: "⌘T opens a blank page with the address ready to type, instead of the search bar. An extension's new tab page shows there when one is on.")
+                }
+                .settingsAnchor(.newTabPage)
+            }
+
             Section {
+                Toggle(isOn: $pinnedLinksPeek.undoable("Other Sites in Peek")) {
+                    InfoLabel(
+                        "Open other sites in Peek",
+                        info: "A link to another site from a favourite or pinned tab opens in Peek. The tab stays on its page.")
+                }
+                .settingsAnchor(.pinnedLinksPeek)
+
                 Picker(selection: $pinnedSeparationKeepRaw.undoable("Pinned Separation")) {
                     ForEach(PinnedSeparationKeep.allCases) { keep in
                         Text(keep.label).tag(keep.rawValue)
@@ -411,6 +434,27 @@ private struct AppIconTile: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private struct LockedIconTile: View {
+    var body: some View {
+        VStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.quaternary)
+                .overlay(Image(systemName: "lock.fill").font(.title3).foregroundStyle(.secondary))
+                .frame(width: 50, height: 50)
+                .frame(width: 64, height: 64)
+            Text("Locked")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .tooltip("Visit artemisbrowser.app in Artemis to unlock")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Locked icon. Visit artemisbrowser.app in Artemis to unlock")
     }
 }
 

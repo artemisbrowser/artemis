@@ -4,14 +4,14 @@
 import Foundation
 import WebKit
 
-/// per-site noise in canvas readback, the WebGL GPU strings, Web Audio data and `hardwareConcurrency`:
-/// one answer per site within a controller (a profile, or its incognito pages) for the launch, different
-/// across sites, controllers and launches. the seed is drawn per controller and never persisted
 /// private WKPreferences SPI, via `unsafeBitCast`; KVC can't reach an underscored setter
 @objc private protocol WKPreferencesFontsSPI {
     func _setShouldAllowUserInstalledFonts(_ allow: Bool)
 }
 
+/// per-site noise in canvas readback, the WebGL GPU strings, Web Audio data and `hardwareConcurrency`:
+/// one answer per site within a controller (a profile, or its incognito pages) for the launch, different
+/// across sites, controllers and launches. the seed is drawn per controller and never persisted
 enum FingerprintNoise {
     static let enabledKey = "fingerprintDefence"
 
@@ -58,14 +58,24 @@ enum FingerprintNoise {
           const offsets = [];
           for (let i = 0; i < 32; i++) offsets.push(rand());
 
+          // at most one flip per 64 pixels: a read smaller than that is exact.
+          // flips go in offset order, each to the next unflipped pixel with alpha at or after
+          // its own, wrapping; a pixel with alpha 0 is never touched
+          const order = offsets.map((_, i) => i).sort((a, b) => offsets[a] - offsets[b]);
           const perturb = (data) => {
             const pixels = data.length >>> 2;
-            if (!pixels) return;
-            for (let i = 0; i < offsets.length; i++) {
-              const p = Math.floor(offsets[i] * pixels) * 4;
-              // flip the bottom bit of one channel: a change of 1/255, which no
-              // eye and no layout can see, and no hash can survive
-              data[p + (i % 3)] ^= 1;
+            const flips = Math.min(offsets.length, pixels >>> 6);
+            const taken = new Set();
+            let at = 0, lap = 0;
+            for (const i of order) {
+              if (i >= flips) continue;
+              if (!lap) at = Math.max(at, Math.floor(offsets[i] * pixels));
+              while (lap < 2 && (!data[at * 4 + 3] || taken.has(at))) {
+                if (++at === pixels) { at = 0; lap++; }
+              }
+              if (lap === 2) return;
+              taken.add(at);
+              data[at * 4 + (i % 3)] ^= 1;
             }
           };
 
@@ -112,11 +122,12 @@ enum FingerprintNoise {
               context.putImageData(context.getImageData(0, 0, width, height), 0, 0);
               return copy;
             }
-            // the pixels perturb() flips over the whole image, in its order
+            // perturb()'s starting pixels over the whole image; one with alpha 0 loses its flip
             for (let i = 0; i < offsets.length; i++) {
               const at = Math.floor(offsets[i] * width * height);
               const x = at % width, y = Math.floor(at / width);
               const pixel = readPixels.call(context, x, y, 1, 1);
+              if (!pixel.data[3]) continue;
               pixel.data[i % 3] ^= 1;
               context.putImageData(pixel, x, y);
             }
@@ -126,7 +137,7 @@ enum FingerprintNoise {
           const CANVAS = window.HTMLCanvasElement && HTMLCanvasElement.prototype;
           wrap(CANVAS, "toDataURL", (original) => function (...args) {
             try {
-              if (this.width && this.height) {
+              if (this.width * this.height >= 64) {
                 return original.apply(noisyCopy(this), args);
               }
             } catch (e) {}
@@ -134,7 +145,7 @@ enum FingerprintNoise {
           });
           wrap(CANVAS, "toBlob", (original) => function (...args) {
             try {
-              if (this.width && this.height) {
+              if (this.width * this.height >= 64) {
                 return original.apply(noisyCopy(this), args);
               }
             } catch (e) {}

@@ -112,7 +112,7 @@ struct SidebarResizeHandle: NSViewRepresentable {
             guard let start, let width else { return }
             let travel = Double(event.locationInWindow.x - start.x)
             let asked = start.width + (mirrored ? -travel : travel)
-            width.wrappedValue = min(max(asked, range.lowerBound), range.upperBound)
+            width.wrappedValue = min(max(asked, range.lowerBound), range.upperBound).rounded()
         }
     }
 }

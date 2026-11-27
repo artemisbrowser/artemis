@@ -5,12 +5,37 @@ import ContentBlockerConverter
 import CryptoKit
 import WebKit
 
+/// what a site can switch on or off for itself. each kind compiles into rule lists of its own,
+/// identified `artemis-block-<kind>-<hash>`
+nonisolated enum BlockingKind: String, CaseIterable, Identifiable, Sendable {
+    case trackers, ads, cookies
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .trackers: "Block trackers"
+        case .ads: "Block ads"
+        case .cookies: "Hide cookie banners"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .trackers: "eye.slash"
+        case .ads: "rectangle.slash"
+        case .cookies: "checklist"
+        }
+    }
+}
+
 /// one subscribable filter list
 struct Blocklist: Identifiable, Hashable {
     let id: String
     let name: String
     let detail: String
     let url: URL
+    var kind = BlockingKind.ads
     /// a plain host list, compiled as one rule that blocks pages on those hosts
     var blocksPages = false
 
@@ -35,7 +60,7 @@ final class ContentBlocker {
             url: URL(string: "https://easylist.to/easylist/easylist.txt")!),
         Blocklist(
             id: "easyprivacy", name: "EasyPrivacy", detail: "",
-            url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!),
+            url: URL(string: "https://easylist.to/easylist/easyprivacy.txt")!, kind: .trackers),
         Blocklist(
             id: "popupads", name: "HaGeZi Pop-Up Ads", detail: "",
             url: URL(string: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/popupads.txt")!,
@@ -47,11 +72,11 @@ final class ContentBlocker {
         Blocklist(
             id: "cookies", name: "Hide Cookie Banners",
             detail: "Hides cookie banners and consent walls. Your cookie choices stay unanswered.",
-            url: URL(string: "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt")!),
+            url: URL(string: "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt")!, kind: .cookies),
         Blocklist(
             id: "annoyances", name: "Hide Page Clutter",
             detail: "Hides newsletter pop-ups, share buttons and notification prompts. Includes cookie banners.",
-            url: URL(string: "https://easylist.to/easylist/fanboy-annoyance.txt")!),
+            url: URL(string: "https://easylist.to/easylist/fanboy-annoyance.txt")!, kind: .cookies),
     ]
 
     /// never blocked: `isAdult` reads it to keep these hosts out of history
@@ -77,7 +102,7 @@ final class ContentBlocker {
     }()
     /// bump when the output changes without a converter version: a vendored patch, a dependency
     /// pin or `FilterConverter` itself
-    private static let converterRevision = 4
+    private static let converterRevision = 5
     /// how often a running app looks for lists past their expiry, in seconds; no list is asked for sooner
     private static let refreshPeriod: TimeInterval = 3 * 3600
     /// how long a copy stays current when its list states no expiry
@@ -101,6 +126,12 @@ final class ContentBlocker {
     /// ids of the `catalog` lists switched on
     private(set) var switchedOn: Set<String>
     func isOn(_ list: Blocklist) -> Bool { switchedOn.contains(list.id) }
+
+    private static let siteChoicesKey = "siteBlockingV1"
+    /// per site (registrable domain), the kinds it turned on or off against the global switches
+    private(set) var siteChoices: [String: [BlockingKind: Bool]]
+    /// incognito choices, which never reach disk and are read before `siteChoices`
+    private var ephemeralChoices: [String: [BlockingKind: Bool]] = [:]
 
     var isActive: Bool { !enabledLists.isEmpty }
 
@@ -131,6 +162,8 @@ final class ContentBlocker {
             defaults.removeObject(forKey: "blocklist.social.enabled")
         }
         switchedOn = Set(Self.catalog.filter { defaults.bool(forKey: $0.enabledKey) }.map(\.id))
+        siteChoices = (defaults.dictionary(forKey: Self.siteChoicesKey) as? [String: [String: Bool]] ?? [:])
+            .mapValues { Dictionary(uniqueKeysWithValues: $0.compactMap { k, v in BlockingKind(rawValue: k).map { ($0, v) } }) }
         try? FileManager.default.createDirectory(
             at: cacheDirectory, withIntermediateDirectories: true)
         lastUpdated = enabledLists.compactMap(checked).max()
@@ -143,7 +176,7 @@ final class ContentBlocker {
 
     /// one-line summary under the Settings toggle
     var statusLine: String {
-        guard isActive else { return "Blocking is off. Pages load with their ads and trackers." }
+        guard isEnabled || !switchedOn.isEmpty else { return "Blocking is off. Pages load with their ads and trackers." }
         if let lastError { return "Couldn't update: \(lastError)" }
         guard ruleCount > 0 else { return "Preparing blocklists…" }
         let updated = lastUpdated.map {
@@ -154,10 +187,80 @@ final class ContentBlocker {
         return "\(ruleCount.formatted()) rules active, updated \(updated)\(dropped)\(over)."
     }
 
+    /// the global switches' lists, plus the lists of any kind a site turned on for itself
     private var enabledLists: [Blocklist] {
         let extras = Self.catalog.filter(isOn)
-        return (isEnabled ? Self.adLists : [])
-            + (extras.count > 1 ? extras.filter { $0.id == "annoyances" } : extras)
+        let banners = extras.count > 1 ? extras.filter { $0.id == "annoyances" } : extras
+        return Self.adLists.filter { isEnabled || anySiteTurnsOn($0.kind) }
+            + (banners.isEmpty && anySiteTurnsOn(.cookies) ? [Self.catalog[0]] : banners)
+    }
+
+    private func anySiteTurnsOn(_ kind: BlockingKind) -> Bool {
+        [siteChoices, ephemeralChoices].contains { $0.values.contains { $0[kind] == true } }
+    }
+
+    // MARK: - Per-site choices
+
+    func blocksGlobally(_ kind: BlockingKind) -> Bool {
+        kind == .cookies ? !switchedOn.isEmpty : isEnabled
+    }
+
+    nonisolated static func site(of host: String) -> String {
+        let host = host.lowercased()
+        return PasswordStore.registrableDomain(host) ?? host
+    }
+
+    func blocks(_ kind: BlockingKind, on host: String, ephemeral: Bool) -> Bool {
+        let site = Self.site(of: host)
+        return (ephemeral ? ephemeralChoices[site]?[kind] : nil) ?? siteChoices[site]?[kind] ?? blocksGlobally(kind)
+    }
+
+    /// a choice that matches what the site would get anyway is stored as no choice
+    func setBlocks(_ kind: BlockingKind, _ on: Bool, on host: String, ephemeral: Bool) {
+        let site = Self.site(of: host), before = enabledLists
+        let saved = siteChoices[site]?[kind]
+        if ephemeral {
+            ephemeralChoices[site, default: [:]][kind] = on == (saved ?? blocksGlobally(kind)) ? nil : on
+            if ephemeralChoices[site]?.isEmpty == true { ephemeralChoices[site] = nil }
+        } else {
+            siteChoices[site, default: [:]][kind] = on == blocksGlobally(kind) ? nil : on
+            if siteChoices[site]?.isEmpty == true { siteChoices[site] = nil }
+            saveSiteChoices()
+        }
+        if enabledLists != before { resubscribe() }
+    }
+
+    func forgetSite(_ site: String) {
+        let before = enabledLists
+        siteChoices[site] = nil
+        ephemeralChoices[site] = nil
+        saveSiteChoices()
+        if enabledLists != before { resubscribe() }
+    }
+
+    /// the last incognito window closed: its choices go with it
+    func forgetEphemeral() {
+        let before = enabledLists
+        ephemeralChoices = [:]
+        if enabledLists != before { resubscribe() }
+    }
+
+    private func saveSiteChoices() {
+        UserDefaults.standard.set(
+            siteChoices.mapValues { Dictionary(uniqueKeysWithValues: $0.map { ($0.key.rawValue, $0.value) }) },
+            forKey: Self.siteChoicesKey)
+    }
+
+    /// switches off, for this main-frame navigation, the installed lists of every kind its site turned off.
+    /// every request and hide the page makes follows the navigation's choice
+    func gate(_ preferences: WKWebpagePreferences, for url: URL?, ephemeral: Bool) {
+        let selector = NSSelectorFromString("_setContentRuleListsEnabled:exceptions:")
+        guard preferences.responds(to: selector) else { return }
+        let host = url?.host() ?? ""
+        let off = BlockingKind.allCases.filter { !blocks($0, on: host, ephemeral: ephemeral) }
+        let identifiers = installed.map(\.identifier).filter { id in off.contains { id.hasPrefix(Self.prefix($0)) } }
+        typealias Setter = @convention(c) (NSObject, Selector, Bool, NSSet) -> Void
+        unsafeBitCast(preferences.method(for: selector), to: Setter.self)(preferences, selector, true, Set(identifiers) as NSSet)
     }
 
     func setList(_ list: Blocklist, enabled: Bool) {
@@ -251,8 +354,21 @@ final class ContentBlocker {
     private static func reloadLoadedTabs() {
         guard let manager = ExtensionManager.shared.tabManager else { return }
         for tab in manager.allTabs where !tab.isHibernated && tab.url != nil {
-            tab.webView.reload()
+            tab.reloadWhenShown()
         }
+    }
+
+    /// false until launch has a rule list in, or knows it wants none
+    @ObservationIgnored private var rulesSettled = false
+
+    /// main-frame navigations wait here, so no page loads before the first rule list
+    func untilRulesSettled() async {
+        guard !rulesSettled else { return }
+        let start = ContinuousClock.now
+        while !rulesSettled, ContinuousClock.now - start < .seconds(2) {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        debugLog("blocklists: waited \((ContinuousClock.now - start).formatted(.units(allowed: [.milliseconds]))) to settle")
     }
 
     /// install (or remove) the compiled lists on the shared user-content
@@ -282,18 +398,20 @@ final class ContentBlocker {
                 }
             }
         }
-        await loadAdultHosts()
-        guard isActive else { return uninstall() }
         let hadCache = enabledLists.contains {
             (try? cacheURL($0).checkResourceIsReachable()) == true
         }
-        if installed.isEmpty {
+        if !isActive {
+            uninstall()
+        } else if installed.isEmpty {
             await rebuild()
         } else {
             for ucc in SharedWebContent.all { for list in installed { ucc.add(list) } }
         }
+        rulesSettled = true
+        await loadAdultHosts()
         // a self-test or lab launch asks no host: a record that needs the lists fetches them
-        guard !AppStorageLocation.isTestRun else { return }
+        guard isActive, !AppStorageLocation.isTestRun else { return }
         // with cached rules already in, a newer download reaches pages as they
         // next load; with only the starter list in, open pages run again
         await refreshIfStaleLocked(reloadTabs: !hadCache)
@@ -340,25 +458,36 @@ final class ContentBlocker {
         defer { isUpdating = false }
         guard !enabledLists.isEmpty else { return await removeLists(reloadTabs: reloadTabs) }
 
-        var sources: [String] = []
-        var pages: String?
+        var sources: [BlockingKind: Sources] = [:]
         var changed = false
         for list in enabledLists {
             if let (text, isNew) = await fetch(list, force: force) {
-                if list.blocksPages { pages = text } else { sources.append(text) }
+                await gather(list, text, into: &sources)
                 changed = changed || isNew
-                if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
             }
         }
-        guard !sources.isEmpty else {
+        guard sources.values.contains(where: { !$0.lists.isEmpty }) else {
             lastError = lastError ?? "no lists available offline"
-            await install(sources: [Self.starterList], pages: pages, reloadTabs: reloadTabs)
+            await install([.ads: Sources(lists: [Self.starterList], pages: sources[.ads]?.pages)], reloadTabs: reloadTabs)
             return
         }
         lastUpdated = enabledLists.compactMap(checked).max()
         let resubscribed = UserDefaults.standard.object(forKey: Self.compiledIdentifiersKey) == nil
         guard changed || installed.isEmpty || resubscribed else { return }
-        await install(sources: sources, pages: pages, reloadTabs: reloadTabs)
+        await install(sources, reloadTabs: reloadTabs)
+    }
+
+    /// one kind's filter lists, and the host list whose pages it blocks whole
+    private nonisolated struct Sources: Sendable {
+        var lists: [String] = []
+        var pages: String?
+    }
+
+    private func gather(_ list: Blocklist, _ text: String, into sources: inout [BlockingKind: Sources]) async {
+        if list.blocksPages { sources[list.kind, default: Sources()].pages = text } else {
+            sources[list.kind, default: Sources()].lists.append(text)
+        }
+        if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
     }
 
     /// one list from its host, or from the cached copy while that is current or the host fails. the host is
@@ -392,36 +521,43 @@ final class ContentBlocker {
         }
     }
 
-    /// convert, compile and install, converting off the main actor. `pages` is the host list
-    /// whose pages are blocked whole, in a rule list of its own
-    private func install(sources: [String], pages: String?, reloadTabs: Bool) async {
+    /// convert, compile and install each kind on its own, converting off the main actor. a kind's
+    /// `pages` host list is blocked whole, in a rule list of its own
+    private func install(_ sources: [BlockingKind: Sources], reloadTabs: Bool) async {
         let fixes = Self.siteFixes
         let qos: QualityOfService = reloadTabs ? .userInitiated : .utility
-        let built = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
-            Self.builtByHelper(sources, pages: pages, qos: qos)
-        }.value
-
+        let priority: TaskPriority = reloadTabs ? .userInitiated : .utility
         var compiled: [WKContentRuleList] = []
-        let converted: FilterConverter.Result
-        if let built, let lists = await Self.storedLists(built.identifiers) {
-            converted = built.counts
-            compiled = lists
-        } else {
-            let (result, pageRule) = await Task.detached(priority: reloadTabs ? .userInitiated : .utility) {
-                (FilterConverter.convert(sources, extraExceptions: fixes), pages.flatMap(FilterConverter.pageBlock))
+        var converted = FilterConverter.Result()
+        for kind in BlockingKind.allCases {
+            guard let part = sources[kind] else { continue }
+            let built = await Task.detached(priority: priority) {
+                Self.builtByHelper(part.lists, pages: part.pages, kind: kind, qos: qos)
             }.value
-            converted = result
-            for json in [result.json, pageRule].compactMap(\.self) {
-                if let list = await compile(json) { compiled.append(list) }
+            let result: FilterConverter.Result
+            if let built, let lists = await Self.storedLists(built.identifiers) {
+                result = built.counts
+                compiled += lists
+            } else {
+                let (fresh, pageRule) = await Task.detached(priority: priority) {
+                    (FilterConverter.convert(part.lists, extraExceptions: fixes), part.pages.flatMap(FilterConverter.pageBlock))
+                }.value
+                result = fresh
+                for json in [result.json, pageRule].compactMap(\.self) {
+                    if let list = await compile(json, kind) { compiled.append(list) }
+                }
             }
+            converted.ruleCount += result.ruleCount
+            converted.droppedCount += result.droppedCount
+            converted.overCeilingCount += result.overCeilingCount
         }
         if converted.overCeilingCount > 0 {
             Diagnostics.record(
                 area: "blocker", message: "over WebKit's rule ceiling: \(converted.overCeilingCount) rules dropped")
         }
         guard !compiled.isEmpty else {
-            if installed.isEmpty, sources != [Self.starterList] {
-                await install(sources: [Self.starterList], pages: nil, reloadTabs: reloadTabs)
+            if installed.isEmpty, sources[.ads]?.lists != [Self.starterList] {
+                await install([.ads: Sources(lists: [Self.starterList])], reloadTabs: reloadTabs)
             }
             return
         }
@@ -439,12 +575,12 @@ final class ContentBlocker {
         UserDefaults.standard.set(
             [converted.ruleCount, converted.droppedCount, converted.overCeilingCount], forKey: Self.compiledStatsKey)
         await pruneStaleCompiledLists(keeping: Set(compiled.map(\.identifier)))
-        debugLog("blocklists installed: \(converted.ruleCount) rules")
+        debugLog("blocklists installed: \(converted.ruleCount) rules in \(compiled.count) lists")
     }
 
-    private func compile(_ json: String) async -> WKContentRuleList? {
+    private func compile(_ json: String, _ kind: BlockingKind) async -> WKContentRuleList? {
         do {
-            return try await Self.compiled(json)
+            return try await Self.compiled(json, kind)
         } catch {
             // WebKit puts the parser's own message in the help anchor; the
             // localized description is only "compile failed"
@@ -462,17 +598,25 @@ final class ContentBlocker {
     private func rebuild() async {
         guard !enabledLists.isEmpty else { return await removeLists(reloadTabs: false) }
         if await installPreviouslyCompiled() { return }
+        await installStarter()
 
-        var sources: [String] = []
-        var pages: String?
+        var sources: [BlockingKind: Sources] = [:]
         for list in enabledLists {
             if let text = try? String(contentsOf: cacheURL(list), encoding: .utf8), !text.isEmpty {
-                if list.blocksPages { pages = text } else { sources.append(text) }
-                if list.id == "easyprivacy" { await rememberTrackerHosts(from: text) }
+                await gather(list, text, into: &sources)
             }
         }
-        await install(
-            sources: sources.isEmpty ? [Self.starterList] : sources, pages: pages, reloadTabs: true)
+        guard sources.values.contains(where: { !$0.lists.isEmpty }) else { return }
+        await install(sources, reloadTabs: true)
+    }
+
+    /// the built-in list, converted in-process: small enough for held pages to wait on
+    private func installStarter() async {
+        let starter = FilterConverter.convert([Self.starterList], extraExceptions: Self.siteFixes)
+        guard let list = await compile(starter.json, .ads) else { return }
+        replaceInstalled(with: [list])
+        rulesSettled = true
+        ruleCount = starter.ruleCount
     }
 
     /// look the last build's lists up by identifier and install them as-is.
@@ -500,6 +644,7 @@ final class ContentBlocker {
         }
 
         replaceInstalled(with: lists)
+        rulesSettled = true
         if let stats = defaults.array(forKey: Self.compiledStatsKey) as? [Int], stats.count == 3 {
             ruleCount = stats[0]
             droppedCount = stats[1]
@@ -555,12 +700,14 @@ final class ContentBlocker {
         }
     }
 
-    static func identifier(of json: String) -> String { "artemis-block-\(digest(json))" }
+    private static func prefix(_ kind: BlockingKind) -> String { "artemis-block-\(kind.rawValue)-" }
 
-    private static func compiled(_ json: String) async throws -> WKContentRuleList? {
-        let store = WKContentRuleListStore.default()
-        if let existing = try? await store?.contentRuleList(forIdentifier: identifier(of: json)) { return existing }
-        return try await store?.compileContentRuleList(forIdentifier: identifier(of: json), encodedContentRuleList: json)
+    static func identifier(of json: String, _ kind: BlockingKind) -> String { prefix(kind) + digest(json) }
+
+    private static func compiled(_ json: String, _ kind: BlockingKind) async throws -> WKContentRuleList? {
+        let store = WKContentRuleListStore.default(), id = identifier(of: json, kind)
+        if let existing = try? await store?.contentRuleList(forIdentifier: id) { return existing }
+        return try await store?.compileContentRuleList(forIdentifier: id, encodedContentRuleList: json)
     }
 
     private static func storedLists(_ identifiers: [String]) async -> [WKContentRuleList]? {
@@ -577,10 +724,11 @@ final class ContentBlocker {
 
     nonisolated static let helperArgument = "convert-blocklists"
 
-    /// `Artemis convert-blocklists`: lists on stdin, then a NUL and the page-block hosts, compiled into the
-    /// shared store; stdout is "identifier rules dropped overCeiling [pageIdentifier]".
+    /// `Artemis convert-blocklists <kind>`: lists on stdin, then a NUL and the page-block hosts, compiled into
+    /// the shared store; stdout is "identifier rules dropped overCeiling [pageIdentifier]".
     /// The converter's and compiler's heap dies with it
     static func runHelper() -> Never {
+        let kind = CommandLine.arguments.dropFirst(2).first.flatMap(BlockingKind.init(rawValue:)) ?? .ads
         // the converter's Debug logging prints, so only this descriptor reaches the parent
         let out = FileHandle(fileDescriptor: dup(STDOUT_FILENO), closeOnDealloc: true)
         dup2(open("/dev/null", O_WRONLY), STDOUT_FILENO)
@@ -589,11 +737,11 @@ final class ContentBlocker {
         let result = FilterConverter.convert([String(decoding: parts[0], as: UTF8.self)], extraExceptions: siteFixes)
         let pageRule = parts.count > 1 ? FilterConverter.pageBlock(String(decoding: parts[1], as: UTF8.self)) : nil
         Task {
-            var reply = "\(identifier(of: result.json)) \(result.ruleCount) \(result.droppedCount) \(result.overCeilingCount)"
+            var reply = "\(identifier(of: result.json, kind)) \(result.ruleCount) \(result.droppedCount) \(result.overCeilingCount)"
             for json in [result.json, pageRule].compactMap(\.self) {
-                guard (try? await compiled(json)) != nil else { exit(1) }
+                guard (try? await compiled(json, kind)) != nil else { exit(1) }
             }
-            if let pageRule { reply += " \(identifier(of: pageRule))" }
+            if let pageRule { reply += " \(identifier(of: pageRule, kind))" }
             out.write(Data((reply + "\n").utf8))
             exit(0)
         }
@@ -604,12 +752,12 @@ final class ContentBlocker {
     /// the helper's compiled lists (page block last) and counts, nil when it fails. It reads stdin
     /// to its end before writing, so writing everything first can't deadlock
     nonisolated static func builtByHelper(
-        _ sources: [String], pages: String?, qos: QualityOfService
+        _ sources: [String], pages: String?, kind: BlockingKind, qos: QualityOfService
     ) -> (identifiers: [String], counts: FilterConverter.Result)? {
         guard let binary = Bundle.main.executableURL else { return nil }
         let process = Process(), input = Pipe(), output = Pipe()
         process.executableURL = binary
-        process.arguments = [helperArgument]
+        process.arguments = [helperArgument, kind.rawValue]
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

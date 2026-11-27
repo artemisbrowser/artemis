@@ -12,7 +12,7 @@ enum ExternalSchemes {
     private static let internallyHandled: Set<String> = [
         "http", "https", "about", "data", "blob", "javascript", "file",
         // extension pages resolve inside web views built from the extension runtime
-        "webkit-extension", "safari-web-extension", "chrome-extension", "moz-extension",
+        "webkit-extension", "safari-web-extension", "chrome-extension", "moz-extension", SandboxPages.scheme,
     ]
 
     /// schemes never handed out, whatever the user clicks
@@ -77,10 +77,10 @@ enum ExternalSchemes {
         save()
     }
 
-    /// clears every remembered answer; part of Clear Browsing Data
-    static func forgetAll() {
-        allowed = []
-        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(file))
+    /// clears every remembered answer in `profile`
+    static func forgetAll(in profile: UUID) {
+        let prefix = "\(profile.uuidString)|"
+        allowed = allowed.filter { !$0.hasPrefix(prefix) }
         save(keepsBackup: false)
     }
 

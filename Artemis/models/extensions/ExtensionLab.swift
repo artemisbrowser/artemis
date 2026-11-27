@@ -333,13 +333,18 @@ enum ExtensionLab {
 
     // MARK: - Driven by hand
 
-    /// `ARTEMIS_EXTLAB_DRIVE=1`: one command per drive/in/*.json, taken in name order, answered in
-    /// drive/out/ under the same name. a tab is named by its id; `popup` is the open action popup
+    /// `ARTEMIS_EXTLAB_DRIVE=1`: one command per drive/in/*.json (under the run's folder), taken in name
+    /// order, answered in drive/out/ under the same name; `=name` uses drive-name/. a tab is named by its id;
+    /// `popup` is the open action popup. `ARTEMIS_EXTLAB_KEEP=1` keeps what the last drive installed
     private static func drive(manager: TabManager) async {
         let fm = FileManager.default
-        let inbox = root.appending(path: "drive/in"), outbox = root.appending(path: "drive/out")
+        let value = ProcessInfo.processInfo.environment["ARTEMIS_EXTLAB_DRIVE"] ?? "1"
+        let folder = output.appending(path: value == "1" ? "drive" : "drive-" + value)
+        let inbox = folder.appending(path: "in"), outbox = folder.appending(path: "out")
         for dir in [inbox, outbox] { try? fm.createDirectory(at: dir, withIntermediateDirectories: true) }
-        for ext in ExtensionManager.shared.installed { ExtensionManager.shared.remove(ext) }
+        if ProcessInfo.processInfo.environment["ARTEMIS_EXTLAB_KEEP"] == nil {
+            for ext in ExtensionManager.shared.installed { ExtensionManager.shared.remove(ext) }
+        }
         for tab in manager.allTabs where !tab.isEssential { discard(tab, from: manager) }
         while true {
             let names = ((try? fm.contentsOfDirectory(atPath: inbox.path())) ?? []).filter { $0.hasSuffix(".json") }.sorted()
@@ -360,6 +365,11 @@ enum ExtensionLab {
 
     private static var popup: (webView: WKWebView, close: () -> Void)?
 
+    /// the profile context the extension runs in, which the lab's background window may not be showing
+    private static func live(_ ext: InstalledExtension) -> WKWebExtensionContext {
+        ext.contexts.values.first(where: \.isLoaded) ?? ext.context
+    }
+
     private static func perform(_ command: [String: Any], manager: TabManager) async -> [String: Any] {
         let em = ExtensionManager.shared
         let tab = (command["tab"] as? String).flatMap { id in manager.allTabs.first { $0.id.uuidString == id } }
@@ -377,7 +387,7 @@ enum ExtensionLab {
         case "open":
             guard let url else { break }
             let opened = manager.newTab(
-                url: url, configuration: command["extension"] as? Bool == true ? ext?.context.webViewConfiguration : nil)
+                url: url, configuration: command["extension"] as? Bool == true ? ext?.context.pageConfiguration : nil)
             await settle(opened, timeout: 20)
             return ["tab": opened.id.uuidString, "url": opened.url?.absoluteString ?? ""]
         case "tabs":
@@ -438,11 +448,11 @@ enum ExtensionLab {
             em.performAction(for: ext)
             var shown: WKWebView?
             for _ in 0..<20 where shown == nil {
-                shown = action.popupWebView
+                shown = action.loadedPopupWebView
                 if shown == nil { try? await Task.sleep(for: .milliseconds(150)) }
             }
             guard let shown else { return ["error": "popupWebView nil"] }
-            for _ in 0..<10 where shown.window == nil { try? await Task.sleep(for: .milliseconds(150)) }
+            for _ in 0..<40 where shown.window == nil { try? await Task.sleep(for: .milliseconds(150)) }
             let host = shown.window == nil ? backgroundWindow(hosting: shown, size: CGSize(width: 400, height: 600)) : nil
             popup = (shown, { action.closePopup(); em.pendingPopup = nil; host?.orderOut(nil) })
             try? await Task.sleep(for: .seconds(2))
@@ -451,13 +461,68 @@ enum ExtensionLab {
             popup?.close()
             popup = nil
             return ["ok": true]
+        case "click":
+            // x, y: a point in the web view from its top left. events go straight to the view, not the screen
+            guard let webView, let window = webView.window, let x = command["x"] as? Double, let y = command["y"] as? Double
+            else { break }
+            let point = webView.convert(CGPoint(x: x, y: webView.isFlipped ? y : webView.bounds.height - y), to: nil)
+            for type in [NSEvent.EventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                    pressure: type == .leftMouseDown ? 1 : 0)
+                else { continue }
+                switch type {
+                case .mouseMoved: webView.mouseMoved(with: event)
+                case .leftMouseDown: webView.mouseDown(with: event)
+                default: webView.mouseUp(with: event)
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            return ["ok": true]
         case "shot":
             guard let webView else { break }
             return ["shot": await snapshot(webView, name: "drive", part: command["name"] as? String ?? "shot") ?? ""]
+        case "installed":
+            return ["installed": em.installed.map {
+                ["ext": $0.id, "name": $0.name, "loaded": live($0).isLoaded, "errors": live($0).errors.map(describe)]
+            }]
+        case "injects":
+            guard let ext, let url else { break }
+            return ["injects": live(ext).hasInjectedContent(for: url)]
+        case "action":
+            guard let ext, let action = em.action(for: ext) else { return ["error": "no action"] }
+            return ["badge": action.badgeText, "label": action.label, "enabled": action.isEnabled,
+                    "popup": action.presentsPopup]
+        case "commands", "command":
+            guard let ext else { break }
+            let context = live(ext)
+            let commands = context.commands
+            guard command["op"] as? String == "command" else {
+                return ["commands": commands.map { ["id": $0.id, "title": $0.title, "key": $0.activationKey ?? "",
+                                                    "mods": $0.modifierFlags.rawValue] }]
+            }
+            guard let wanted = commands.first(where: { $0.id == command["id"] as? String }) else {
+                return ["error": "no command"]
+            }
+            // the key path, as the app's monitor sees it, when the command has a shortcut
+            if let key = wanted.activationKey, let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: wanted.modifierFlags, timestamp: 0,
+                windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key,
+                isARepeat: false, keyCode: 0)
+            {
+                return ["byKey": context.performCommand(for: event)]
+            }
+            context.performCommand(wanted)
+            return ["byKey": false]
+        case "remove":
+            guard let ext else { break }
+            em.remove(ext)
+            return ["ok": true]
         case "log":
             guard let ext else { break }
             return ["log": (reports.removeValue(forKey: ext.context.uniqueIdentifier) ?? []).map { "[\($0.level)] \($0.text)" },
-                    "errors": ext.context.errors.map(describe)]
+                    "errors": live(ext).errors.map(describe)]
         default:
             break
         }
@@ -583,7 +648,7 @@ enum ExtensionLab {
         em.performAction(for: ext)
         var webView: WKWebView?
         for _ in 0..<20 where webView == nil {
-            webView = action.popupWebView
+            webView = action.loadedPopupWebView
             if webView == nil { try? await Task.sleep(for: .milliseconds(150)) }
         }
         guard let webView else { return ["error": "popupWebView nil"] }
@@ -625,7 +690,7 @@ enum ExtensionLab {
         for ext: InstalledExtension, key: String, manager: TabManager
     ) async -> [String: Any]? {
         guard let url = ext.context.optionsPageURL else { return nil }
-        let tab = manager.newTab(url: url, configuration: ext.context.webViewConfiguration)
+        let tab = manager.newTab(url: url, configuration: ext.context.pageConfiguration)
         defer { discard(tab, from: manager) }
         await settle(tab, timeout: 8)
         var state = await evaluateState(in: tab.webView)

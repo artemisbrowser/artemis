@@ -21,7 +21,6 @@ final class WebHostView: NSView {
         // the page may outgrow this view mid-resize (see `layout()`)
         clipsToBounds = true
         still.imageScaling = .scaleProportionallyUpOrDown
-        still.autoresizingMask = [.width, .height]
         still.isHidden = true
         addSubview(still)
         let center = NotificationCenter.default
@@ -61,7 +60,7 @@ final class WebHostView: NSView {
         // Animation as a number; a display's ICC profile is re-parsed per surface
         if window?.colorSpace != .displayP3 { window?.colorSpace = .displayP3 }
         webView.removeFromSuperview()
-        webView.frame = bounds
+        setPageFrame(webView, size: bounds.size)
         // the page's frame is managed in `layout()`
         webView.autoresizingMask = []
         addSubview(webView, positioned: .below, relativeTo: still)
@@ -92,14 +91,12 @@ final class WebHostView: NSView {
     /// mini-player's slot stays empty
     fileprivate func showStill() {
         still.image = tab?.isMiniPlayerActive == true ? nil : tab?.stillFrame
-        still.frame = bounds
         still.isHidden = still.image == nil
     }
 
     /// over the live page, the still it slept with until it has loaded
     fileprivate func coverWake() {
         still.image = tab?.wakeStill
-        still.frame = bounds
         still.isHidden = still.image == nil
     }
 
@@ -135,15 +132,14 @@ final class WebHostView: NSView {
     /// never grows past the host, which would clamp its scroll; a hidden one waits for the settle
     override func layout() {
         super.layout()
+        still.frame = pageFrame(size: bounds.size)
         guard let webView = subviews.first(where: { $0 is WKWebView }) as? WKWebView else { return }
-        guard PerfFlags.settlesPageResize else {
-            if webView.frame != bounds { webView.frame = bounds }
-            return
-        }
+        guard PerfFlags.settlesPageResize else { return setPageFrame(webView, size: bounds.size) }
 
         if !isHiddenOrHasHiddenAncestor {
             let page = webView.frame.size
-            let covers = isResizing && page.width >= bounds.width && page.height >= bounds.height
+            let covers =
+                isResizing && page.width >= bounds.width.rounded(.down) && page.height >= bounds.height.rounded(.down)
             setPageFrame(webView, size: covers ? page : bounds.size)
         }
 
@@ -159,11 +155,15 @@ final class WebHostView: NSView {
         }
     }
 
-    /// anchored top-left in AppKit's bottom-left space, so a tall page overhangs the bottom
+    /// anchored top-left in AppKit's bottom-left space, so a tall page overhangs the bottom.
+    /// whole points: WebKit shows a swipe's snapshot only when it is the page's truncated size
+    private func pageFrame(size: CGSize) -> CGRect {
+        let size = CGSize(width: size.width.rounded(.down), height: size.height.rounded(.down))
+        return CGRect(x: bounds.minX, y: bounds.maxY - size.height, width: size.width, height: size.height)
+    }
+
     private func setPageFrame(_ webView: WKWebView, size: CGSize) {
-        let frame = CGRect(
-            x: bounds.minX, y: bounds.maxY - size.height,
-            width: size.width, height: size.height)
+        let frame = pageFrame(size: size)
         guard webView.frame != frame else { return }
         webView.frame = frame
     }
@@ -396,6 +396,10 @@ final class PageStackView: NSView {
 
     override func layout() {
         super.layout()
+        if !bounds.isEmpty {
+            BrowserWindows.shared.manager(for: window)?.pageSize = CGSize(
+                width: floor(bounds.width), height: floor(bounds.height))
+        }
         for (host, _) in hosts.values where host.frame != bounds {
             host.frame = bounds
             host.needsLayout = true

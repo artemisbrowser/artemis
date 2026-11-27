@@ -3,8 +3,8 @@
 
 import WebKit
 
-/// what a clear touches. history, site data, cache, archive, page text, autofill and agent chats are
-/// the chosen profile's; the downloads list, zoom and permissions are shared by all.
+/// what a clear touches. the downloads list and zoom are shared by all profiles; the rest, certificate
+/// exceptions among the permissions, are the chosen profile's.
 struct ClearTargets: OptionSet {
     let rawValue: Int
 
@@ -21,7 +21,7 @@ struct ClearTargets: OptionSet {
     static let agentChats = ClearTargets(rawValue: 1 << 9)
 
     /// what belongs to every profile at once
-    static let shared: ClearTargets = [.downloads, .zoom, .permissions]
+    static let shared: ClearTargets = [.downloads, .zoom]
 }
 
 /// how far back a clear reaches
@@ -110,9 +110,8 @@ enum PrivacyCleaner {
         if targets.contains(.downloads) { DownloadManager.shared.clearFinished() }
         if targets.contains(.zoom) { ZoomStore.shared.clear() }
         if targets.contains(.permissions) {
-            SitePermissionStore.shared.forgetAll()
-            ExternalSchemes.forgetAll()
-            CertificateTrust.forgetAll()
+            profile.forgetSites()
+            profile.certificateTrust.forgetAll()
         }
         if targets.contains(.pageText) { await profile.pageIndex.clear(since: since) }
         if targets.contains(.autofill) { AutofillStore.shared.deleteAll(in: profile.id, since: since) }

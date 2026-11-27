@@ -4,10 +4,14 @@
 // Artemis compatibility layer — injected at install by ExtensionCompat.
 (() => {
   "use strict";
-  const api = globalThis.browser ?? globalThis.chrome;
+  let api = globalThis.browser ?? globalThis.chrome;
   // taken now: sandboxes (LavaMoat) later make reading an undeclared global throw
   const { URL, location, navigator } = globalThis;
   if (!api || api.__artemisCompat) return;
+  // an extension page framed in a site runs in the site's process, where WebKit kills the
+  // page over any privileged call the shim would make: it gets WebKit's namespace as is
+  if (/-extension:$/.test(globalThis.location?.protocol || "")
+      && Array.from(globalThis.location.ancestorOrigins || []).some((origin) => !/-extension:/.test(origin))) return;
   // never let the shim itself be the thing that breaks an extension: a
   // throw here would abort this injection before the extension's own code
   // ran. every step below is individually guarded, and the whole body is
@@ -24,16 +28,19 @@
   try { Object.defineProperty(globalThis, "__artemisKept", { value: kept }); } catch (e) {}
   const keep = (object) => { kept.push(object); return object; };
 
-  // WebKit delivers events through the context's own `chrome`/`browser` globals, and
-  // with both replaced nothing arrives (Proton Pass locks them behind proxies)
-  try {
-    const real = globalThis.chrome;
-    if (real) {
-      Object.defineProperty(globalThis, "chrome", {
-        get: () => real, set: () => {}, enumerable: true, configurable: false,
+  // WebKit delivers events through the context's own `browser` (else `chrome`) global: `chrome`
+  // can't be replaced (Proton Pass proxies), nor a worker's `browser` scuttled (MetaMask's LavaMoat);
+  // a page's may stay configurable, as its later scripts may declare their own
+  let view = null;
+  for (const name of typeof importScripts === "function" ? ["chrome", "browser"] : ["chrome"]) {
+    try {
+      let value = globalThis[name];
+      if (value) Object.defineProperty(globalThis, name, {
+        get: () => (name === "chrome" && view) || value,
+        set: (assigned) => { if (name === "browser") value = assigned; }, enumerable: true, configurable: false,
       });
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
 
   try {
 
@@ -98,7 +105,27 @@
       }
     }
   };
+  // an event's listener methods that run each listener only when `admit(args)`, which may edit them, holds
+  const admitting = (event, admit) => {
+    const { addListener, removeListener, hasListener } = event;
+    const wrapped = new WeakMap();
+    const wrap = (fn) => {
+      if (typeof fn !== "function") return fn;
+      if (!wrapped.has(fn)) wrapped.set(fn, function (...args) {
+        return admit(args) ? fn.apply(this, args) : undefined;
+      });
+      return wrapped.get(fn);
+    };
+    return {
+      addListener: (fn, ...rest) => addListener.call(event, wrap(fn), ...rest),
+      removeListener: (fn) => removeListener.call(event, wrapped.get(fn) || fn),
+      hasListener: (fn) => hasListener.call(event, wrapped.get(fn) || fn),
+    };
+  };
   const boundCache = new WeakMap();  // instance -> Map(prop -> bound fn)
+  // runtime.lastError reads this while a shim callback runs, as in WebKit's own callbacks
+  let failing = null;
+  const REAL = Symbol("real namespace");
   const stabilizeNamespaces = () => {
     for (const key of keysOf(api)) {
       if (skipKeys.has(key)) continue;
@@ -117,8 +144,10 @@
       // own wrappers) lives in this overlay, so a later instance swap
       // can't silently un-fill detectLanguage & co.
       const overlay = new Map();
-      const proxy = new Proxy({}, {
+      const handler = {
         get(_, prop) {
+          if (failing && key === "runtime" && prop === "lastError") return failing;
+          if (prop === REAL) return fresh();
           if (overlay.has(prop)) return overlay.get(prop);
           const target = fresh();
           let v;
@@ -148,12 +177,13 @@
           if (overlay.has(prop)) return true;
           try { return prop in fresh(); } catch (e) { return false; }
         },
+        // every member is own and enumerable, as in Chrome, so `{ ...chrome.alarms }` copies
+        // events WebKit keeps hidden and methods it keeps on the prototype
         ownKeys() {
-          try {
-            const keys = Reflect.ownKeys(fresh());
-            for (const k of overlay.keys()) if (!keys.includes(k)) keys.push(k);
-            return keys;
-          } catch (e) { return Array.from(overlay.keys()); }
+          const keys = new Set(overlay.keys());
+          try { for (const k of Reflect.ownKeys(fresh())) keys.add(k); } catch (e) {}
+          try { for (const k of keysOf(fresh())) if (k !== "constructor") keys.add(k); } catch (e) {}
+          return [...keys];
         },
         getOwnPropertyDescriptor(_, prop) {
           if (overlay.has(prop)) {
@@ -161,19 +191,43 @@
                      enumerable: true, configurable: true };
           }
           try {
-            const d = Object.getOwnPropertyDescriptor(fresh(), prop);
-            if (d) d.configurable = true;
-            return d;
+            const target = fresh();
+            const d = Object.getOwnPropertyDescriptor(target, prop);
+            if (d) { d.configurable = true; d.enumerable = true; return d; }
+            if (prop === "constructor" || !(prop in target) || prop in objectProto) return undefined;
+            return { value: handler.get(_, prop), writable: true, enumerable: true, configurable: true };
           } catch (e) { return undefined; }
         },
-      });
-      try {
-        Object.defineProperty(api, key,
-          { value: proxy, writable: true, configurable: true, enumerable: true });
-      } catch (e) {}
+      };
+      views.set(key, new Proxy({}, handler));
     }
   };
-  try { stabilizeNamespaces(); } catch (e) {}
+  // WebKit's namespaces are read-only and ignore defineProperty, so the shim patches these
+  // views of them: `chrome` and the shim read the views, `browser` stays WebKit's for delivery
+  const views = new Map();
+  try {
+    stabilizeNamespaces();
+    const real = api;
+    view = api = new Proxy({}, {
+      get: (_, key) => (views.has(key) ? views.get(key) : real[key]),
+      set: (_, key, value) => { views.set(key, value); try { real[key] = value; } catch (e) {} return true; },
+      defineProperty: (_, key, d) => {
+        if (d.configurable === false) return false;
+        if ("value" in d) views.set(key, d.value); else views.delete(key);
+        try { Object.defineProperty(real, key, d); } catch (e) {}
+        return true;
+      },
+      deleteProperty: (_, key) => { views.delete(key); try { delete real[key]; } catch (e) {} return true; },
+      has: (_, key) => views.has(key) || key in real,
+      ownKeys: () => [...new Set([...Reflect.ownKeys(real), ...views.keys()])],
+      getOwnPropertyDescriptor: (_, key) => {
+        if (views.has(key)) return { value: views.get(key), writable: true, enumerable: true, configurable: true };
+        const d = Object.getOwnPropertyDescriptor(real, key);
+        if (d) d.configurable = true;
+        return d;
+      },
+    });
+  } catch (e) {}
 
   // === 2. missing-API fills ============================================
   // chrome.i18n.detectLanguage isn't implemented by WebKit. Report "not
@@ -209,13 +263,14 @@
     globalThis.cancelIdleCallback = (id) => clearTimeout(id);
   }
 
-  // Chrome takes a callback after the alarm info; WebKit reads a third argument as a bad info
+  // Chrome takes a callback after the alarm info, or returns a promise; WebKit reads a third
+  // argument as a bad info, and returns nothing
   if (api.alarms && typeof api.alarms.create === "function") {
     const create = api.alarms.create;
     api.alarms.create = (...args) => {
       const cb = typeof args[args.length - 1] === "function" ? args.pop() : null;
       const created = create.apply(api.alarms, args);
-      if (!cb) return created;
+      if (!cb) return Promise.resolve(created);
       Promise.resolve(created).then(() => cb(), () => cb());
     };
   }
@@ -324,6 +379,12 @@
     }
   }
 
+  // Chrome tells a context without storage.session (a content script) nothing of its changes
+  if (api.storage && !api.storage.session) {
+    hookEvents("storage", (name, event) => (name === "onChanged" && typeof event.addListener === "function"
+      ? admitting(event, (args) => args[1] !== "session") : null));
+  }
+
   // === sendMessage failures ===============================================
   // reported, since an extension's own RPC layer may swallow them; a message
   // to another extension, unreachable here, fails asynchronously as in Chrome
@@ -387,11 +448,16 @@
     };
   };
 
+  const failWith = (message, fn) => {
+    failing = { message: String(message) };
+    try { fn(); } finally { failing = null; }
+  };
+
   // callback form or promise form, as the caller chose; a failure reaches a
-  // callback with no arguments, which is how Chrome reports one there
+  // callback with no arguments and runtime.lastError set, as in Chrome
   const settle = (cb, promise) => {
     if (typeof cb !== "function") return promise;
-    promise.then((value) => cb(value), () => cb());
+    promise.then((value) => cb(value), (error) => failWith((error && error.message) || error, () => cb()));
   };
 
   // storage.managed is enterprise policy, which Artemis never sets: an empty
@@ -407,7 +473,8 @@
   }
 
   // a port whose real counterpart arrives later: messages queue until then
-  const pendingPort = (name, open) => {
+  // a port that never connects disconnects with runtime.lastError set to `failure`
+  const pendingPort = (name, open, failure) => {
     const onMessage = makeEvent(), onDisconnect = makeEvent();
     const queue = [];
     let real = null, closed = false;
@@ -418,7 +485,7 @@
     };
     open((connected) => {
       if (closed) { if (connected) connected.disconnect(); return; }
-      if (!connected) { closed = true; onDisconnect._fire(port); return; }
+      if (!connected) { closed = true; failWith(failure, () => onDisconnect._fire(port)); return; }
       real = connected;
       real.onMessage.addListener((message) => onMessage._fire(message, port));
       real.onDisconnect.addListener(() => { closed = true; onDisconnect._fire(port); });
@@ -435,12 +502,13 @@
     const notReady = (error) => /onConnect listeners/.test(String(error && error.message));
     // another extension is unreachable here; Chrome hands back a port that disconnects
     const elsewhere = (error) => /cross-extension messaging/.test(String(error && error.message));
+    const unreachable = "Could not establish connection. Receiving end does not exist.";
     api.runtime.connect = (...args) => {
       try {
         return connect(...args);
       } catch (error) {
         if (elsewhere(error)) {
-          return pendingPort("", (deliver) => setTimeout(() => deliver(null), 0));
+          return pendingPort("", (deliver) => setTimeout(() => deliver(null), 0), unreachable);
         }
         if (!notReady(error) || typeof setTimeout !== "function") throw error;
         const info = args.find((arg) => arg && typeof arg === "object") || {};
@@ -452,21 +520,17 @@
             }
           };
           setTimeout(attempt, 100);
-        });
+        }, unreachable);
       }
     };
   }
 
-  // a missing native host disconnects in Chrome; WebKit throws instead
+  // the shim's own channel is the only native host; Chrome disconnects a port to any other
   if (api.runtime && typeof api.runtime.connectNative === "function") {
     const connectNative = api.runtime.connectNative;
-    api.runtime.connectNative = (application) => {
-      try {
-        return connectNative(application);
-      } catch (error) {
-        return pendingPort(String(application || ""), (deliver) => setTimeout(() => deliver(null), 0));
-      }
-    };
+    api.runtime.connectNative = (application) => application === NATIVE_ID ? connectNative(application)
+      : pendingPort(String(application || ""), (deliver) => setTimeout(() => deliver(null), 0),
+        "Specified native messaging host not found.");
   }
 
   // @content-cut: content scripts get everything above and the closing below.
@@ -501,6 +565,30 @@
   })();
   // required only: nothing grants an optional permission WebKit doesn't know
   const declared = manifest.permissions || [];
+
+  // a frame of a manifest sandbox page loads through Artemis's scheme, which sends the sandbox
+  // policy WebKit never applies; search and hash carry over
+  const sandboxPages = new Set(((manifest.sandbox || {}).pages || []).map((page) => String(page).replace(/^\//, "")));
+  if (sandboxPages.size && typeof HTMLIFrameElement === "function") {
+    const { Element, HTMLIFrameElement } = globalThis;
+    const sandboxed = (value) => {
+      try {
+        const url = new URL(String(value), location.href);
+        if (url.protocol === location.protocol && url.host === location.host
+            && sandboxPages.has(decodeURIComponent(url.pathname.slice(1))))
+          return "artemis-sandbox:" + url.href.slice(url.protocol.length);
+      } catch (e) {}
+      return value;
+    };
+    const { setAttribute } = Element.prototype;
+    Element.prototype.setAttribute = function (name, value) {
+      return setAttribute.call(this, name, this instanceof HTMLIFrameElement
+        && String(name).toLowerCase() === "src" ? sandboxed(value) : value);
+    };
+    const src = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "src");
+    Object.defineProperty(HTMLIFrameElement.prototype, "src",
+      { ...src, set(value) { src.set.call(this, sandboxed(value)); } });
+  }
 
   // === 6. chrome.idle — bridged to real system idle =====================
   // WebKit leaves chrome.idle undefined. Password managers use it for the
@@ -708,6 +796,119 @@
     }));
   }
 
+  // === tabCapture ==========================================================
+  // WebKit can't capture a tab: the stream is silent, and the gain and filter nodes
+  // it feeds are replayed on the tab's own media elements by native
+  if (declared.includes("tabCapture") && !(api.tabCapture && api.tabCapture.getMediaStreamId)) {
+    const prefix = "artemis-tab:";
+    const activeTab = () => Promise.resolve(api.tabs.query({ active: true, currentWindow: true }))
+      .then((tabs) => (tabs && tabs[0] ? tabs[0].id : Promise.reject(new Error("No active tab."))));
+    const streams = new WeakMap(), owner = new WeakMap(), next = new WeakMap();
+    const paramNode = new WeakMap(), written = new WeakMap(), sources = new Map(), queued = new Set();
+    const send = (tabId, chain) => Promise.resolve(api.tabs.get(tabId))
+      .then((tab) => call("tabCapture.apply", { tabId, url: tab.url, index: tab.index, title: tab.title, chain }))
+      .catch(() => {});
+    const read = (param) => (written.has(param) ? written.get(param) : param.value);
+    const sync = (tabId) => {
+      if (queued.has(tabId)) return;
+      queued.add(tabId);
+      setTimeout(() => {
+        queued.delete(tabId);
+        const chain = [], seen = new Set();
+        for (let node = sources.get(tabId); node && !seen.has(node); node = next.get(node)) {
+          seen.add(node);
+          if (node instanceof GainNode) chain.push({ kind: "gain", gain: read(node.gain) });
+          if (node instanceof BiquadFilterNode) {
+            chain.push({ kind: "filter", type: node.type, frequency: read(node.frequency), Q: read(node.Q), gain: read(node.gain) });
+          }
+        }
+        send(tabId, chain);
+      }, 30);
+    };
+    const silent = (tabId) => {
+      const stream = new AudioContext().createMediaStreamDestination().stream;
+      streams.set(stream, tabId);
+      return stream;
+    };
+    api.tabCapture = Object.assign(api.tabCapture || {}, {
+      getMediaStreamId: (options, cb) => {
+        if (typeof options === "function") [cb, options] = [options, null];
+        const target = options && options.targetTabId != null ? Promise.resolve(options.targetTabId) : activeTab();
+        return settle(cb, target.then((tabId) => prefix + tabId));
+      },
+    });
+    if (typeof AudioContext === "function") {
+      api.tabCapture.capture = (options, cb) => settle(cb, activeTab().then(silent));
+      let devices = navigator.mediaDevices;
+      if (!devices) {
+        devices = {};
+        try { Object.defineProperty(navigator, "mediaDevices", { value: devices, configurable: true }); } catch (e) {}
+      }
+      const getUserMedia = devices.getUserMedia && devices.getUserMedia.bind(devices);
+      devices.getUserMedia = (constraints) => {
+        const wanted = (constraints && constraints.audio && constraints.audio.mandatory) || {};
+        const id = String(wanted.chromeMediaSourceId || "");
+        if (id.startsWith(prefix)) return Promise.resolve(silent(Number(id.slice(prefix.length))));
+        return getUserMedia ? getUserMedia(constraints)
+          : Promise.reject(new DOMException("Media capture is not supported.", "NotSupportedError"));
+      };
+      const context = AudioContext.prototype, createSource = context.createMediaStreamSource, close = context.close;
+      context.createMediaStreamSource = function (stream) {
+        const node = createSource.call(this, stream);
+        if (streams.has(stream)) {
+          const tabId = streams.get(stream);
+          if (!sources.size) {
+            api.tabs.onUpdated.addListener((id, info) => info.status === "complete" && sources.has(id) && sync(id));
+          }
+          sources.set(tabId, node);
+          owner.set(node, tabId);
+          owner.set(this, tabId);
+        }
+        return node;
+      };
+      context.close = function () {
+        if (owner.has(this)) {
+          sources.delete(owner.get(this));
+          send(owner.get(this), []);
+        }
+        return close.call(this);
+      };
+      const connect = AudioNode.prototype.connect;
+      AudioNode.prototype.connect = function (to, ...rest) {
+        const result = connect.call(this, to, ...rest);
+        if (owner.has(this) && to instanceof AudioNode) {
+          next.set(this, to);
+          owner.set(to, owner.get(this));
+          for (const key of ["gain", "frequency", "Q"]) if (to[key] instanceof AudioParam) paramNode.set(to[key], to);
+          sync(owner.get(this));
+        }
+        return result;
+      };
+      const touched = (param, value) => {
+        const node = paramNode.get(param);
+        if (!node) return;
+        written.set(param, Number(value));
+        sync(owner.get(node));
+      };
+      const value = Object.getOwnPropertyDescriptor(AudioParam.prototype, "value");
+      Object.defineProperty(AudioParam.prototype, "value", Object.assign({}, value, {
+        set(v) { value.set.call(this, v); touched(this, v); },
+      }));
+      for (const name of ["setValueAtTime", "linearRampToValueAtTime", "exponentialRampToValueAtTime", "setTargetAtTime"]) {
+        const original = AudioParam.prototype[name];
+        AudioParam.prototype[name] = function (v, ...rest) {
+          const result = original.call(this, v, ...rest);
+          touched(this, v);
+          return result;
+        };
+      }
+      const type = Object.getOwnPropertyDescriptor(BiquadFilterNode.prototype, "type");
+      Object.defineProperty(BiquadFilterNode.prototype, "type", Object.assign({}, type, {
+        set(v) { type.set.call(this, v); if (owner.has(this)) sync(owner.get(this)); },
+      }));
+    }
+  }
+
   // === service worker ↔ extension pages ====================================
   // WebKit's extension worker lists no page among its clients and pages see no
   // controller: both ends meet on a BroadcastChannel, which only this origin shares
@@ -715,21 +916,46 @@
   if (workerScript && typeof BroadcastChannel === "function") {
     const channel = keep(new BroadcastChannel("__artemis_sw"));
     const Message = globalThis.ExtendableMessageEvent || MessageEvent;
-    const sourced = (target, data, source) => {
-      const event = new Message("message", { data });
+    // a MessagePort can't cross the channel: each end relays it under one id
+    const relays = new Map();
+    // a port's messages wait for `gate`, the post that carries it to the other end
+    const relay = (port, id, gate) => {
+      relays.set(id, port);
+      port.onmessage = ({ data }) => (gate || Promise.resolve()).then(() => channel.postMessage({ port: id, data }));
+    };
+    const sent = (transfer, gate) => [...((transfer && transfer.transfer) || transfer || [])].filter((p) => p instanceof MessagePort).map((port) => {
+      const id = crypto.randomUUID();
+      relay(port, id, gate);
+      return id;
+    });
+    const sourced = (target, data, source, ids) => {
+      const ports = (ids || []).map((id) => {
+        const { port1, port2 } = new MessageChannel();
+        relay(port2, id);
+        return port1;
+      });
+      const event = new Message("message", { data, ports });
       Object.defineProperty(event, "source", { value: source });
       target.dispatchEvent(event);
     };
+    const relayed = (m) => {
+      const port = m && typeof m.port === "string" && relays.get(m.port);
+      if (port) port.postMessage(m.data);
+      return !!port;
+    };
+    // a sandboxed page throws on reading serviceWorker
+    let container = null;
+    try { container = navigator && navigator.serviceWorker; } catch (e) {}
     if (typeof ServiceWorkerGlobalScope === "function" && globalThis instanceof ServiceWorkerGlobalScope) {
       const pages = new Map();
       channel.onmessage = ({ data: m }) => {
-        if (!m || typeof m.from !== "string") return;
+        if (relayed(m) || !m || typeof m.from !== "string") return;
         const page = pages.get(m.from) || { id: m.from, url: m.url, type: "window",
           frameType: "top-level", focused: false, visibilityState: "visible",
-          postMessage: (data) => channel.postMessage({ to: m.from, data }) };
+          postMessage: (data, transfer) => channel.postMessage({ to: m.from, data, ports: sent(transfer) }) };
         page.seen = Date.now();
         pages.set(m.from, page);
-        if ("data" in m) sourced(globalThis, m.data, page);
+        if ("data" in m) sourced(globalThis, m.data, page, m.ports);
       };
       const clients = globalThis.clients;
       const matchAll = clients.matchAll.bind(clients), get = clients.get.bind(clients);
@@ -743,22 +969,24 @@
         return found.concat([...pages.values()].filter((page) => page.seen >= since));
       };
       clients.get = async (id) => pages.get(id) || get(id);
-    } else if (navigator && navigator.serviceWorker && !navigator.serviceWorker.controller) {
-      const container = navigator.serviceWorker;
+    } else if (container && !container.controller) {
       const id = crypto.randomUUID();
       const send = (extra) => channel.postMessage(Object.assign({ from: id, url: location.href }, extra));
       // an idle worker is unloaded and hears no channel until something loads it
       let woken = Promise.resolve();
       const worker = Object.assign(new EventTarget(), {
         scriptURL: api.runtime.getURL(workerScript), state: "activated",
-        postMessage: (data) => {
+        postMessage: (data, transfer) => {
           const copy = structuredClone(data);
-          woken = woken.then(() => call("background.wake")).catch(() => {}).then(() => send({ data: copy }));
+          let ports;
+          woken = woken.then(() => call("background.wake")).catch(() => {}).then(() => send({ data: copy, ports }));
+          ports = sent(transfer, woken);
         },
       });
       channel.onmessage = ({ data: m }) => {
+        if (relayed(m)) return;
         if (m && m.who) send();
-        else if (m && m.to === id) sourced(container, m.data, worker);
+        else if (m && m.to === id) sourced(container, m.data, worker, m.ports);
       };
       const registration = { active: worker, installing: null, waiting: null, scope: api.runtime.getURL("") };
       Object.defineProperty(container, "controller", { get: () => worker, configurable: true });
@@ -876,6 +1104,55 @@
     }
   }
 
+  // === tabs zoom settings — Artemis zooms per site from 100%, as the user sets it ===
+  if (api.tabs && typeof api.tabs.getZoomSettings !== "function") {
+    const settings = { mode: "automatic", scope: "per-origin", defaultZoomFactor: 1 };
+    api.tabs.getZoomSettings = (tabId, cb) =>
+      settle(typeof tabId === "function" ? tabId : cb, Promise.resolve(Object.assign({}, settings)));
+    api.tabs.setZoomSettings = (...args) => {
+      const cb = typeof args[args.length - 1] === "function" ? args.pop() : undefined;
+      const asked = args.find((arg) => arg && typeof arg === "object") || {};
+      const same = (asked.mode || "automatic") === settings.mode && (asked.scope || "per-origin") === settings.scope;
+      return settle(cb, same ? Promise.resolve() : Promise.reject(new Error("Artemis keeps zoom per site.")));
+    };
+  }
+
+  // === favicon — Chrome's `_favicon/` resource, from icons of sites in this profile's history ===
+  // WebKit serves no such file: a fetch is answered here and an image's source swapped for the
+  // icon; with no icon for the site, both fail
+  if (declared.includes("favicon")) {
+    const isFavicon = (url) => { try { return new URL(url, location.href).href.startsWith(api.runtime.getURL("_favicon/")); } catch (e) { return false; } };
+    const icon = (url) => call("favicon.get", { pageUrl: new URL(url, location.href).searchParams.get("pageUrl") || "" })
+      .then((reply) => (reply && reply.url) || null, () => null);
+    const fetchOriginal = globalThis.fetch;
+    globalThis.fetch = function (input, init) {
+      const url = typeof input === "string" ? input : input && input.url;
+      if (!url || !isFavicon(url)) return fetchOriginal.apply(this, arguments);
+      return icon(url).then((data) => (data ? fetchOriginal(data) : new Response(null, { status: 404 })));
+    };
+    if (typeof document !== "undefined" && typeof MutationObserver === "function") {
+      const pixel = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+      const asked = new WeakMap();
+      const swap = (img) => {
+        const wanted = img.getAttribute("src");
+        if (!wanted || !isFavicon(wanted) || asked.get(img) === wanted) return;
+        asked.set(img, wanted);
+        img.src = pixel;
+        icon(wanted).then((data) => { if (img.getAttribute("src") === pixel) img.src = data || wanted; });
+      };
+      const scan = (node) => {
+        if (node.tagName === "IMG") swap(node);
+        if (node.querySelectorAll) node.querySelectorAll("img[src*='_favicon/']").forEach(swap);
+      };
+      new MutationObserver((records) => {
+        for (const record of records) {
+          if (record.type === "attributes") swap(record.target);
+          else record.addedNodes.forEach((node) => node.nodeType === 1 && scan(node));
+        }
+      }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["src"] });
+    }
+  }
+
   // === 12. management — this extension's own record =====================
   if (!api.management) {
     const localized = (value) => {
@@ -915,6 +1192,41 @@
       onUninstalled: makeEvent(),
       onEnabled: makeEvent(),
       onDisabled: makeEvent(),
+    };
+  }
+
+  // printing goes through the macOS print panel, which never asks an extension for printers
+  if (!api.printerProvider && declared.includes("printerProvider")) {
+    api.printerProvider = { onGetPrintersRequested: makeEvent(), onGetUsbPrinterInfoRequested: makeEvent(),
+      onGetCapabilityRequested: makeEvent(), onPrintRequested: makeEvent() };
+  }
+
+  // WebKit writes no MHTML: one part holding the page's markup, with a <base> so its links resolve
+  if (!api.pageCapture && declared.includes("pageCapture")) {
+    const snapshot = () => {
+      const base = document.querySelector("base") ? "" : `<base href="${location.href.replace(/"/g, "&quot;")}">`;
+      return [location.href, document.title,
+        "<!DOCTYPE html>" + document.documentElement.outerHTML.replace(/<head[^>]*>/i, (head) => head + base)];
+    };
+    const capture = (tabId) => api.scripting
+      ? api.scripting.executeScript({ target: { tabId }, func: snapshot }).then((results) => results[0].result)
+      : api.tabs.executeScript(tabId, { code: `(${snapshot})()` }).then((results) => results[0]);
+    const base64 = (text) => {
+      const bytes = new TextEncoder().encode(text);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return btoa(binary);
+    };
+    const mhtml = ([url, title, html]) => {
+      const boundary = `----MultipartBoundary--${crypto.randomUUID()}----`;
+      return new Blob([["From: <Saved by Artemis>", `Snapshot-Content-Location: ${url}`,
+        `Subject: =?utf-8?B?${base64(title.replace(/[\r\n]+/g, " "))}?=`, `Date: ${new Date().toUTCString()}`, "MIME-Version: 1.0",
+        `Content-Type: multipart/related; type="text/html"; boundary="${boundary}"`, "", `--${boundary}`,
+        "Content-Type: text/html; charset=utf-8", "Content-Transfer-Encoding: base64", `Content-Location: ${url}`, "",
+        base64(html).replace(/.{76}/g, "$&\r\n"), `--${boundary}--`, ""].join("\r\n")], { type: "multipart/related" });
+    };
+    api.pageCapture = {
+      saveAsMHTML: (details, cb) => settle(cb, Promise.resolve(details && details.tabId).then(capture).then(mhtml)),
     };
   }
 
@@ -1069,6 +1381,40 @@
     });
   } catch (e) {}
 
+  // a worker woken by a message gets it as soon as its script has run: one that adds onMessage
+  // after an await (Zotero) would miss it, so in its first 5 s a message waits up to 5 s for one
+  if (typeof ServiceWorkerGlobalScope === "function" && globalThis instanceof ServiceWorkerGlobalScope
+      && api.runtime.onMessage && typeof setTimeout === "function") {
+    const event = api.runtime.onMessage, { addListener, removeListener } = event;
+    const listeners = new Set(), waiting = [], started = Date.now();
+    hookEvents("runtime", (name) => name !== "onMessage" ? null : {
+      addListener: (fn, ...rest) => {
+        addListener.call(event, fn, ...rest);
+        if (typeof fn === "function") listeners.add(fn);
+        waiting.splice(0).forEach((deliver) => deliver());
+      },
+      removeListener: (fn) => { listeners.delete(fn); removeListener.call(event, fn); },
+    });
+    addListener.call(event, (message, sender) => {
+      if (listeners.size || Date.now() - started > 5000) return;
+      return new Promise((resolve) => {
+        const deliver = () => {
+          let pending = false;
+          for (const fn of [...listeners]) {
+            try {
+              const result = fn(message, sender, resolve);
+              if (result && typeof result.then === "function") result.then(resolve, () => resolve());
+              pending = pending || result === true || (result && typeof result.then === "function");
+            } catch (e) {}
+          }
+          if (!pending) resolve();
+        };
+        waiting.push(deliver);
+        setTimeout(() => { if (waiting.includes(deliver)) resolve(); }, 5000);
+      });
+    });
+  }
+
   // === 4. declarativeNetRequest =======================================
   // WebKit compiles every enabled ruleset into one content-rule-list and
   // fails the whole atomic batch over a single rule it can't translate.
@@ -1079,9 +1425,14 @@
     if (typeof dnr.getAvailableStaticRuleCount !== "function") {
       dnr.getAvailableStaticRuleCount = (cb) => settle(cb, Promise.resolve(30000));
     }
-    // Artemis never switches off single static rules
+    // Artemis never switches off single static rules, so re-enabling them is already done
     if (typeof dnr.getDisabledRuleIds !== "function") {
       dnr.getDisabledRuleIds = (options, cb) => settle(cb, Promise.resolve([]));
+    }
+    if (typeof dnr.updateStaticRules !== "function") {
+      dnr.updateStaticRules = (options, cb) => settle(cb, options && (options.disableRuleIds || []).length
+        ? Promise.reject(new Error("Artemis can't switch off a single static rule; disable its ruleset instead."))
+        : Promise.resolve());
     }
     const badRuleIndex = (error) => {
       const message = error && error.message ? error.message : String(error || "");
@@ -1135,9 +1486,23 @@
       } catch (e) { return null; }
     };
     const splittable = (id) => Number.isInteger(id) && id > 0 && id < (lastBase - splitBase) / splitMost;
+    // WebKit ignores requestDomains beside a regexFilter: a regex that matches any site
+    // would then fire on every site, so such a rule is left out
+    const everywhere = (condition) => {
+      if (typeof condition.regexFilter !== "string" || !(condition.requestDomains || []).length) return false;
+      try {
+        return new RegExp(condition.regexFilter, condition.isUrlFilterCaseSensitive ? "" : "i")
+          .test("https://artemis-probe.invalid/");
+      } catch (e) { return false; }
+    };
     const split = (options) => {
       if (!options || typeof options !== "object") return options;
-      const addRules = (options.addRules || []).flatMap((rule) => {
+      const kept = (options.addRules || []).filter((rule) => !rule || !rule.condition || !everywhere(rule.condition));
+      if (options.addRules && kept.length < options.addRules.length) {
+        report("dnr", "left out " + (options.addRules.length - kept.length)
+          + " rules whose regexFilter would match beyond their requestDomains");
+      }
+      const addRules = kept.flatMap((rule) => {
         if (!rule || !rule.condition) return [rule];
         const condition = Object.assign({}, rule.condition);
         const excludes = (condition.excludedRequestDomains || []).length > 0;
@@ -1295,23 +1660,66 @@
     return urls === filter.urls && types === filter.types ? filter
       : Object.assign({}, filter, { urls, types });
   };
-  const filtering = (addListener) => function (fn, filter, ...rest) {
+  // WebKit names every frame's document main_frame; outside frame 0 it is a sub_frame,
+  // so a listener sees that type and is asked for frame documents under either name
+  const frameListeners = new WeakMap();  // listener -> the one WebKit holds
+  const relabelling = (fn, types) => {
+    if (typeof fn !== "function") return fn;
+    if (!frameListeners.has(fn)) {
+      frameListeners.set(fn, function (details, ...rest) {
+        if (details && details.type === "main_frame" && details.frameId !== 0) {
+          details = Object.assign({}, details, { type: "sub_frame" });
+        }
+        if (types && details && !types.includes(details.type)) return;
+        return fn.call(this, details, ...rest);
+      });
+    }
+    return frameListeners.get(fn);
+  };
+  // WebKit sends no webRequest for its own extension's pages, so a tab that completes on one
+  // the package lacks (Acrobat's restored chrome-extension://id/https://… tabs) is reported then
+  const ownPageLoads = (fn, filter) => {
+    const origin = api.runtime && typeof api.runtime.getURL === "function" ? api.runtime.getURL("/") : null;
+    const patterns = (filter && Array.isArray(filter.urls) ? filter.urls : [])
+      .filter((pattern) => origin && pattern.startsWith(origin))
+      .map((pattern) => new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"));
+    if (!patterns.length || !api.tabs || !api.tabs.onUpdated) return;
+    api.tabs.onUpdated.addListener((tabId, change, tab) => {
+      const url = tab && tab.url;
+      if (change.status !== "complete" || !url || !patterns.some((re) => re.test(url))) return;
+      const timeStamp = Date.now();
+      fn({ tabId, url, frameId: 0, parentFrameId: -1, type: "main_frame", method: "GET",
+        requestId: "own-" + timeStamp, timeStamp });
+    });
+  };
+  const filtering = (addListener, own) => function (fn, filter, ...rest) {
     const parsable = parsableFilter(filter);
     if (parsable === null) return;
-    return addListener.call(this, fn, parsable, ...rest);
+    const types = parsable && Array.isArray(parsable.types) ? parsable.types : null;
+    const asked = types && types.includes("sub_frame") && !types.includes("main_frame")
+      ? Object.assign({}, parsable, { types: types.concat("main_frame") }) : parsable;
+    if (own && typeof fn === "function") ownPageLoads(fn, parsable);
+    return addListener.call(this, relabelling(fn, types), asked, ...rest);
   };
-  hookEvents("webRequest", (name, event) =>
-    typeof event.addListener === "function" ? { addListener: filtering(event.addListener) } : null);
+  const unwrapping = (method) => function (fn, ...rest) {
+    return method.call(this, frameListeners.get(fn) || fn, ...rest);
+  };
+  const listenerMethods = (event, own) => typeof event.addListener !== "function" ? null : {
+    addListener: filtering(event.addListener, own),
+    ...(typeof event.removeListener === "function" && { removeListener: unwrapping(event.removeListener) }),
+    ...(typeof event.hasListener === "function" && { hasListener: unwrapping(event.hasListener) }),
+  };
+  hookEvents("webRequest", (name, event) => listenerMethods(event, name === "onBeforeRequest"));
   // instances WebKit builds later have no own addListener and read the shared prototype
   try {
     // native events are accessors, not own values, so take one by name
     const sample = api.webRequest && api.webRequest.onBeforeRequest;
     const proto = sample && Object.getPrototypeOf(sample);
-    if (proto && proto !== Object.prototype && typeof proto.addListener === "function") {
-      // the prototype's methods are non-writable but configurable, so assignment throws
-      Object.defineProperty(keep(proto), "addListener", {
-        value: filtering(proto.addListener), writable: true, configurable: true,
-      });
+    const methods = proto && proto !== Object.prototype ? listenerMethods(proto) : null;
+    // the prototype's methods are non-writable but configurable, so assignment throws
+    if (methods) keep(proto);
+    for (const [name, value] of Object.entries(methods || {})) {
+      Object.defineProperty(proto, name, { value, writable: true, configurable: true });
     }
   } catch (e) {}
   if (api.webRequest && typeof api.webRequest.handlerBehaviorChanged !== "function") {
@@ -1403,6 +1811,12 @@
           throw error;
         }));
     }
+    // Chrome takes a filter without `url` (as {frameType}) as no filter; WebKit throws
+    hookEvents("webNavigation", (name, event) => typeof event.addListener !== "function" ? null : {
+      addListener: ((add) => function (fn, filter) {
+        return filter && typeof filter === "object" && !("url" in filter) ? add.call(this, fn) : add.apply(this, arguments);
+      })(event.addListener),
+    });
   }
 
   // === history, topSites, sessions — the current profile's, natively ======
@@ -1508,6 +1922,31 @@
     }
   }
 
+  // === contentSettings — the site permissions Artemis keeps; the rest are fixed ==
+  if (declared.includes("contentSettings")
+      && !(api.contentSettings && api.contentSettings.cookies && typeof api.contentSettings.cookies.get === "function")) {
+    const fixed = { autoVerify: "allow", clipboard: "ask", cookies: "allow", images: "allow",
+      javascript: "allow", plugins: "block", popups: "block", unsandboxedPlugins: "block" };
+    const kept = ["automaticDownloads", "camera", "location", "microphone", "notifications"];
+    api.contentSettings = api.contentSettings || {};
+    for (const type of [...kept, ...Object.keys(fixed)]) {
+      const ask = (op, details) => call("contentSettings." + op, Object.assign({}, details, { type }));
+      const pick = (details, cb) => (typeof details === "function" ? details : cb);
+      api.contentSettings[type] = {
+        get: (details, cb) => settle(cb, type in fixed ? Promise.resolve({ setting: fixed[type] })
+          : ask("get", details).then((reply) => {
+            if (reply && reply.ok === false) throw new Error(reply.error || "Failed to get the content setting.");
+            return { setting: (reply && reply.setting) || "ask" };
+          })),
+        set: (details, cb) => settle(cb, ask("set", details)
+          .then((reply) => expect(reply, "Failed to set the content setting."))),
+        clear: (details, cb) => settle(pick(details, cb), type in fixed ? Promise.resolve()
+          : ask("clear", details).then((reply) => expect(reply, "Failed to clear the content setting."))),
+        getResourceIdentifiers: (cb) => settle(cb, Promise.resolve(undefined)),
+      };
+    }
+  }
+
   // === fontSettings — the Mac's installed font families ====================
   if (!api.fontSettings && declared.includes("fontSettings")) {
     const generic = (details) => ({ fontId: "", levelOfControl: "not_controllable" });
@@ -1592,22 +2031,43 @@
     api.runtime.requestUpdateCheck = (cb) => settle(cb, Promise.resolve({ status: "no_update" }));
   }
 
-  // === contentScripts.register (Firefox) — onto scripting's registry ======
-  if (gecko && !api.contentScripts && api.scripting
-    && typeof api.scripting.registerContentScripts === "function") {
-    let counter = 0;
-    const files = (list) => (list || []).filter((entry) => entry && entry.file).map((entry) => entry.file);
+  // a script's code behind its include and exclude globs
+  const globSource = (pattern) => "^" + String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  const wrap = (script, code) => {
+    const include = (script.includeGlobs || []).map(globSource);
+    const exclude = (script.excludeGlobs || []).map(globSource);
+    const lines = ["artemisUserScript: {"];
+    if (include.length) {
+      lines.push("if (!" + JSON.stringify(include) + ".some((g) => new RegExp(g).test(location.href))) break artemisUserScript;");
+    }
+    if (exclude.length) {
+      lines.push("if (" + JSON.stringify(exclude) + ".some((g) => new RegExp(g).test(location.href))) break artemisUserScript;");
+    }
+    lines.push(code, "}");
+    return lines.join("\n");
+  };
+  const source = async (entry) => (entry.code !== undefined ? String(entry.code)
+    : (await fetch(api.runtime.getURL(entry.file))).text());
+
+  // === contentScripts — Firefox's runtime registration, run natively while the extension runs ===
+  if (!api.contentScripts && manifest.manifest_version === 2) {
+    let next = 0;
+    const style = (css) => "(() => { const s = document.createElement('style'); s.textContent = "
+      + JSON.stringify(css) + "; (document.head || document.documentElement).appendChild(s); })();";
     api.contentScripts = {
-      register: (options, cb) => settle(cb, (async () => {
+      register: async (options) => {
         const o = options || {};
-        const id = "artemis-content-" + (++counter);
-        await api.scripting.registerContentScripts([{
-          id, matches: o.matches || [], excludeMatches: o.excludeMatches, js: files(o.js),
-          css: files(o.css), allFrames: !!o.allFrames, runAt: o.runAt || "document_idle",
-          matchOriginAsFallback: !!o.matchAboutBlank, persistAcrossSessions: false,
-        }]);
-        return { unregister: () => api.scripting.unregisterContentScripts({ ids: [id] }) };
-      })()),
+        const parts = [];
+        for (const entry of o.css || []) parts.push(style(await source(entry)));
+        for (const entry of o.js || []) parts.push(await source(entry));
+        const id = "cs-" + (++next) + "-" + Date.now();
+        expect(await call("contentScripts.register", { id, code: wrap(o, parts.join("\n;\n")),
+          matches: o.matches || [], excludeMatches: o.excludeMatches || [], allFrames: !!o.allFrames,
+          runAt: o.runAt || "document_idle", world: o.world === "MAIN" ? "MAIN" : "ISOLATED" }),
+          "Couldn't register the content script.");
+        return { unregister: () => call("contentScripts.unregister", { id }).then(() => {}) };
+      },
     };
   }
 
@@ -1626,23 +2086,6 @@
       turn = run.catch(() => {});
       return run;
     };
-    const globSource = (pattern) => "^" + String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&")
-      .replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
-    const wrap = (script, code) => {
-      const include = (script.includeGlobs || []).map(globSource);
-      const exclude = (script.excludeGlobs || []).map(globSource);
-      const lines = ["artemisUserScript: {"];
-      if (include.length) {
-        lines.push("if (!" + JSON.stringify(include) + ".some((g) => new RegExp(g).test(location.href))) break artemisUserScript;");
-      }
-      if (exclude.length) {
-        lines.push("if (" + JSON.stringify(exclude) + ".some((g) => new RegExp(g).test(location.href))) break artemisUserScript;");
-      }
-      lines.push(code, "}");
-      return lines.join("\n");
-    };
-    const source = async (entry) => (entry.code !== undefined ? String(entry.code)
-      : (await fetch(api.runtime.getURL(entry.file))).text());
     // WebKit keeps serving a content-script path's first contents: changed code needs a new name
     const digest = (text) => {
       let hash = 0x811c9dc5;
@@ -1974,48 +2417,56 @@
       if (!(name in ns)) ns[name] = inertEvent();
     }
   }
-  // WebKit reports an empty url for a blank tab (about:blank is outside every host
-  // permission); Chrome says "about:blank" to an extension that may see tab URLs
-  if (api.tabs && (declared.includes("tabs") || (manifest.host_permissions || []).length
-      || declared.some((p) => p.includes("://") || p === "<all_urls>"))) {
-    const blank = (tab) => {
-      if (tab && typeof tab === "object" && tab.url === "") tab.url = "about:blank";
-      return tab;
-    };
-    const proto = Object.getPrototypeOf(api.tabs);
-    for (const [name, fix] of [["query", (tabs) => (Array.isArray(tabs) ? tabs.map(blank) : tabs)],
-      ["get", blank], ["getCurrent", blank]]) {
+  // WebKit reports an empty url for a blank tab or frame (about:blank is outside every host
+  // permission); Chrome says "about:blank" to an extension that may see their URLs
+  const blank = (tab) => {
+    if (tab && typeof tab === "object" && tab.url === "") tab.url = "about:blank";
+    return tab;
+  };
+  const blanks = (list) => (Array.isArray(list) ? list.map(blank) : list);
+  const refine = (view, fixes) => {
+    const ns = view[REAL] || view;
+    const proto = Object.getPrototypeOf(ns);
+    for (const [name, fix, prepare] of fixes) {
       const original = proto && proto[name];
       if (typeof original !== "function") continue;
       const fixed = function (...args) {
         const cb = typeof args[args.length - 1] === "function" ? args.pop() : null;
+        if (prepare) prepare(args);
         return settle(cb, Promise.resolve(original.apply(this, args)).then(fix));
       };
       try {
         Object.defineProperty(keep(proto), name, { value: fixed, writable: true, configurable: true });
       } catch (e) {}
       // the detached-method fix put a bound copy of the original on the instance
-      if (Object.prototype.hasOwnProperty.call(api.tabs, name)) api.tabs[name] = fixed.bind(api.tabs);
+      if (Object.prototype.hasOwnProperty.call(ns, name)) view[name] = fixed.bind(ns);
     }
+  };
+  // a frame's url is hidden as "" without host access, so only an all-sites extension's "" is blank
+  if (api.webNavigation && [...declared, ...(manifest.host_permissions || [])]
+    .some((p) => p === "<all_urls>" || /^(\*|https?):\/\/\*\//.test(p))) {
+    refine(api.webNavigation, [["getAllFrames", blanks], ["getFrame", blank]]);
+  }
+  if (api.tabs && (declared.includes("tabs") || (manifest.host_permissions || []).length
+      || declared.some((p) => p.includes("://") || p === "<all_urls>"))) {
+    refine(api.tabs, [["query", blanks], ["get", blank], ["getCurrent", blank]]);
     const tabArg = { onCreated: 0, onUpdated: 2 };
     hookEvents("tabs", (name, event) => {
       if (!(name in tabArg) || typeof event.addListener !== "function") return null;
-      const { addListener, removeListener, hasListener } = event;
-      const wrapped = new WeakMap();
-      const wrap = (fn) => {
-        if (typeof fn !== "function") return fn;
-        if (!wrapped.has(fn)) wrapped.set(fn, function (...args) {
-          blank(args[tabArg[name]]);
-          return fn.apply(this, args);
-        });
-        return wrapped.get(fn);
-      };
-      return {
-        addListener: (fn, ...rest) => addListener.call(event, wrap(fn), ...rest),
-        removeListener: (fn) => removeListener.call(event, wrapped.get(fn) || fn),
-        hasListener: (fn) => hasListener.call(event, wrapped.get(fn) || fn),
-      };
+      return admitting(event, (args) => (blank(args[tabArg[name]]), true));
     });
+  }
+  // Chrome takes a file as this extension's own URL as well as a path; WebKit finds only paths
+  const own = api.runtime && typeof api.runtime.getURL === "function" ? api.runtime.getURL("") : "";
+  const relative = (file) => (own && typeof file === "string" && file.startsWith(own) ? file.slice(own.length) : file);
+  const ownFiles = (args) => {
+    const details = args.find((arg) => arg && typeof arg === "object");
+    if (details && Array.isArray(details.files)) details.files = details.files.map(relative);
+    if (details && typeof details.file === "string") details.file = relative(details.file);
+  };
+  const same = (value) => value;
+  for (const key of ["scripting", "tabs"]) {
+    if (api[key]) refine(api[key], ["executeScript", "insertCSS", "removeCSS"].map((name) => [name, same, ownFiles]));
   }
   // Chrome and Firefox give a popup or a background no current tab; WebKit hands them the
   // active one (Proton Pass lays its popup out as a full tab when it gets one)

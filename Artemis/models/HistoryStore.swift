@@ -249,11 +249,11 @@ final class HistoryStore {
         scheduleSave()
     }
 
-    /// drop everything visited since `date`; `.distantPast` wipes the lot
-    func clear(since date: Date) {
-        if date == .distantPast { AppStorageLocation.discardUnreadable(of: fileURL) }
+    /// drop everything visited from `date` up to `end`; `.distantPast` alone wipes the lot
+    func clear(since date: Date, until end: Date = .distantFuture) {
+        if date == .distantPast, end == .distantFuture { AppStorageLocation.discardUnreadable(of: fileURL) }
         let before = entries.count
-        entries.removeAll { $0.lastVisited >= date }
+        entries.removeAll { $0.lastVisited >= date && $0.lastVisited < end }
         guard entries.count != before else { return }
         saveNow(keepsBackup: false)
     }

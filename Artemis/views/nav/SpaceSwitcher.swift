@@ -585,7 +585,7 @@ private func suggestIcons(for name: String, _ deliver: ([String]) -> Void) async
 /// text-field chrome matching a sidebar row: 10pt continuous corners over the
 /// sidebar's faint ink fill, so editor fields read like the rest of the app
 /// rather than system rounded-border boxes
-private struct EditorField: ViewModifier {
+struct EditorField: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 10)

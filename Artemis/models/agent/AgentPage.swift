@@ -367,7 +367,9 @@ enum AgentPage {
             // the focused element when `id` is empty
             describe: (id, enters) => {
               const el = id ? element(id) : active() ?? document.body;
-              return describe(el) + '\n' + leads(el, enters);
+              // Enter in a form's input sends it as its first submit button would, so it is named by that button
+              const sends = enters && el.localName === 'input' && [...el.form?.elements ?? []].find(e => ['submit', 'image'].includes(e.type));
+              return describe(el) + (sends ? `, which presses ${describe(sends)}` : '') + '\n' + leads(el, enters);
             },
           };
         })();

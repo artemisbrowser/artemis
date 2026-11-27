@@ -14,17 +14,14 @@ struct PageDialogPanel: View {
     @State private var text = ""
     @State private var secondary = ""
     @State private var checked = false
+    /// an app offer's Open and Trust stay dead for `PermissionPrompt.armDelay`
+    @State private var armed = false
     @FocusState private var fieldFocused: Bool
     /// VoiceOver's cursor, moved onto the question: an overlay isn't a window it notices opening
     @AccessibilityFocusState private var titleFocused: Bool
 
-    /// a long host is cut in the labels before its registrable domain, which stays whole
     private var site: String {
-        let host = request.host
-        guard !host.isEmpty else { return "This page" }
-        let domain = PasswordStore.registrableDomain(host) ?? host
-        let lead = host.dropLast(domain.count + 1), room = max(6, 38 - domain.count)
-        return host.count > 40 && lead.count > room ? "\(lead.prefix(room))….\(domain)" : host
+        request.host.isEmpty ? "This page" : UrlField.keepingDomain(request.host)
     }
 
     private var title: String {
@@ -43,9 +40,9 @@ struct PageDialogPanel: View {
         case .leaveConfirm: "Changes you made may not be saved."
         case .openExternal(let scheme, let appName):
             "\(site) wants to open \(appName) with a “\(scheme):” link."
-        case .httpAuth(let realm):
-            // the realm is the server's name for what it protects
-            realm.map { "The server says: \($0)" } ?? "This server is asking for a username and password."
+        case .httpAuth:
+            request.url?.scheme == "http"
+                ? "Your password would be sent unencrypted." : "This site is asking for a username and password."
         default: request.message
         }
     }
@@ -126,9 +123,11 @@ struct PageDialogPanel: View {
                                 Button("Trust \(site) to open all apps") { answer(true, trustEveryApp: true) }
                             }
                             .fixedSize()
+                            .disabled(!armed)
                         }
                         Spacer(minLength: 0)
                         Button(confirmLabel) { answer(true) }
+                            .disabled(!armed)
                         Button("Cancel") { answer(false) }
                             .keyboardShortcut(.defaultAction)
                             .background(
@@ -160,6 +159,10 @@ struct PageDialogPanel: View {
         .accessibilityHidden(!isShown)
         .onAppear {
             if case .prompt(let defaultText) = request.kind { text = defaultText }
+        }
+        .task {
+            try? await Task.sleep(for: PermissionPrompt.armDelay)
+            armed = !Task.isCancelled
         }
         .onChange(of: isShown, initial: true) {
             guard isShown else { return }

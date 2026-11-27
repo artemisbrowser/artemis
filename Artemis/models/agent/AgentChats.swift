@@ -24,6 +24,7 @@ final class AgentChats {
 
     static func folder(_ profile: Profile) -> URL {
         let folder = profile.file("AgentChats")
+        guard !profile.isDiscarded else { return folder }
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return folder
     }
@@ -78,6 +79,7 @@ final class AgentChats {
         revision += 1
         let files = gone.map { Self.file($0, in: profile) }
         AppStorageLocation.enqueueDurable {
+            AppStorageLocation.forgetUnsaved(files)
             for file in files {
                 try? FileManager.default.removeItem(at: file)
                 try? FileManager.default.removeItem(at: file.appendingPathExtension("bak"))

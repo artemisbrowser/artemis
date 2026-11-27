@@ -49,7 +49,7 @@ private struct ExtensionActionButton: View {
         .contextMenu { contextMenu }
         .popover(isPresented: $showPopup, arrowEdge: .bottom) {
             if let popupAction {
-                ExtensionPopupContainer(action: popupAction)
+                ExtensionPopupContainer(action: popupAction) { showPopup = false }
             }
         }
         // closing the popover must close the popup page, or its web view and any
@@ -149,17 +149,18 @@ private struct ExtensionActionButton: View {
 
 // MARK: - Popup host
 
-/// an action's popup, behind a real-sized placeholder until WebKit builds its web
-/// view (an unsized popover opens as an empty blob). WebKit sends no notice of
-/// the build, so this polls
+/// an action's popup, behind a real-sized placeholder until WebKit has laid its page
+/// out (an unsized popover opens as an empty blob). WebKit sends no notice of that, so
+/// this polls. `onClose` runs when the extension closes the popup itself
 struct ExtensionPopupContainer: View {
     let action: WKWebExtension.Action
+    let onClose: () -> Void
     @State private var webView: WKWebView?
     @State private var failed = false
 
     var body: some View {
         if let webView {
-            ExtensionPopupView(webView: webView)
+            ExtensionPopupView(webView: webView, owner: action.webExtensionContext?.uniqueIdentifier, onClose: onClose)
         } else if failed {
             Text("This extension's popup didn't open.")
                 .foregroundStyle(.secondary)
@@ -169,11 +170,9 @@ struct ExtensionPopupContainer: View {
                 .controlSize(.small)
                 .frame(width: 360, height: 460)
                 .task {
-                    for _ in 0..<100 {
-                        // an unloaded extension's popup has no configuration, and
-                        // WebKit throws building a web view without one
+                    for poll in 0..<100 {
                         guard action.webExtensionContext?.isLoaded == true else { break }
-                        if let view = action.popupWebView {
+                        if let view = action.loadedPopupWebView, poll >= 20 || PopupWebViewHost.isLaidOut(view) {
                             webView = view
                             return
                         }
@@ -185,24 +184,21 @@ struct ExtensionPopupContainer: View {
     }
 }
 
-/// an extension action's popup web view, sized to the content WebKit reports,
-/// within `clamp`'s bounds
+/// an extension action's popup web view at the size its content asks for
 private struct ExtensionPopupView: View {
     let webView: WKWebView
-    @State private var size = ExtensionPopupView.clamp(.zero)
+    let owner: String?
+    let onClose: () -> Void
+    @State private var closeWatch: PopupCloseWatch?
 
     var body: some View {
         PopupWebViewHost(webView: webView)
-            .frame(width: size.width, height: size.height)
-            // WebKit keeps resizing the web view to the popup's content, well
-            // after load too; tracked live, or the popover clips at its first size
-            .onReceive(
-                NotificationCenter.default.publisher(
-                    for: NSView.frameDidChangeNotification, object: webView)
-            ) { _ in resize() }
+            // as in Chrome, a popup belongs to the tab it opened on
+            .onChange(of: ExtensionManager.shared.actionTab?.id) { onClose() }
+            .onDisappear { owner.map { _ = ExtensionManager.shared.shownPopups.remove($0) } }
             .onAppear {
-                webView.postsFrameChangedNotifications = true
-                resize()
+                owner.map { _ = ExtensionManager.shared.shownPopups.insert($0) }
+                closeWatch = PopupCloseWatch(webView, onClose: onClose)
                 // first responder so a popup's text field takes typing without a
                 // click; deferred, as the popover's window doesn't exist at onAppear
                 DispatchQueue.main.async {
@@ -210,30 +206,56 @@ private struct ExtensionPopupView: View {
                 }
             }
     }
-
-    private func resize() {
-        let intrinsic = webView.intrinsicContentSize
-        let reported = CGSize(
-            width: intrinsic.width > 1 ? intrinsic.width : webView.frame.width,
-            height: intrinsic.height > 1 ? intrinsic.height : webView.frame.height)
-        let clamped = Self.clamp(reported)
-        if clamped != size { size = clamped }
-    }
-
-    /// popup bounds: at most Chrome's own 800×600, so a popup written for Chrome
-    /// fits whole
-    private static func clamp(_ reported: CGSize) -> CGSize {
-        CGSize(
-            width: min(max(reported.width > 1 ? reported.width : 360, 250), 800),
-            height: min(max(reported.height > 1 ? reported.height : 460, 100), 600))
-    }
 }
 
+/// WebKit sizes a popup web view to its content within Chrome's 50×50…800×600 and
+/// invalidates its intrinsic size on every change, which re-asks `sizeThatFits`
 private struct PopupWebViewHost: NSViewRepresentable {
     let webView: WKWebView
 
     func makeNSView(context: Context) -> WKWebView { webView }
     func updateNSView(_ nsView: WKWebView, context: Context) {}
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WKWebView, context: Context) -> CGSize? {
+        let content = nsView.intrinsicContentSize
+        return CGSize(width: min(max(content.width, 50), 800), height: min(max(content.height, 50), 600))
+    }
+
+    static func isLaidOut(_ webView: WKWebView) -> Bool {
+        !webView.isLoading && webView.intrinsicContentSize.width >= 50 && webView.intrinsicContentSize.height >= 50
+    }
+}
+
+/// stands in as the popup's UI and navigation delegate, forwarding all to WebKit's own,
+/// to hear `window.close()` and a crashed page: WebKit then closes the web view but
+/// can't close the popover it doesn't own
+private final class PopupCloseWatch: NSObject, WKUIDelegate, WKNavigationDelegate {
+    private let inner: NSObject
+    private let onClose: () -> Void
+
+    init?(_ webView: WKWebView, onClose: @escaping () -> Void) {
+        guard let inner = webView.uiDelegate as? NSObject else { return nil }
+        self.inner = inner
+        self.onClose = onClose
+        super.init()
+        webView.uiDelegate = self
+        webView.navigationDelegate = self
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || inner.responds(to: aSelector)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? { inner }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        (inner as? WKUIDelegate)?.webViewDidClose?(webView)
+        onClose()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        (inner as? WKNavigationDelegate)?.webViewWebContentProcessDidTerminate?(webView)
+        onClose()
+    }
 }
 
 // MARK: - Pinned strip (lives in the url bar)

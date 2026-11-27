@@ -38,6 +38,8 @@ struct UrlField: View {
                 .font(.system(size: 13))
                 .foregroundStyle(ink.opacity(tab?.url == nil ? 0.45 : 0.9))
                 .lineLimit(1)
+                // a host cut short loses its start, never the registrable domain at its end
+                .truncationMode(inToolbar && showsFullURL ? .tail : .head)
                 .contentTransition(.opacity)
                 .frame(maxWidth: inToolbar ? nil : .infinity, alignment: .leading)
                 .accessibilityLabel("Address")
@@ -83,18 +85,39 @@ struct UrlField: View {
         .animation(Motion.fade, value: tabManager.addressBarOrigin == nil)
     }
 
-    /// the committed page's address, or one the user asked for that hasn't answered yet; never a
-    /// load the page started that hasn't committed
-    static func displayText(for tab: BrowserTab?, full: Bool = false) -> String {
+    /// the committed page's address, a sign-in's, or one the user asked for that hasn't answered
+    /// yet; never a load the page started that hasn't committed
+    static func shownURL(for tab: BrowserTab?) -> URL? {
         // attempted url keeps the pill honest when a load fails
-        let url = tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL
-        guard let url, let host = url.host() else {
-            return "Search or enter URL"
+        tab?.pendingDialog?.url ?? tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL
+    }
+
+    static func displayText(for tab: BrowserTab?, full: Bool = false) -> String {
+        // a popup's blank first page belongs to, and may be written by, the page that opened it
+        let page = shownURL(for: tab)
+        let opener = (page.map { $0.scheme == "about" } ?? true) ? tab?.openerOrigin.flatMap(URL.init(string:)) : nil
+        guard let url = opener ?? page else { return "Search or enter URL" }
+        // a blob: address is named by the origin that made it
+        let named = url.scheme == "blob" ? URL(string: String(url.absoluteString.dropFirst(5))) ?? url : url
+        guard let host = named.host() else { return "Search or enter URL" }
+        if full {
+            var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            parts?.user = nil
+            parts?.password = nil
+            let text = parts?.string ?? url.absoluteString
+            guard let range = text.range(of: host) else { return text }
+            return text.replacingCharacters(in: range, with: keepingDomain(host))
         }
-        if full { return url.absoluteString }
         let shown = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        guard let port = url.port, port != (url.scheme == "https" ? 443 : 80) else { return shown }
+        guard let port = named.port, port != (named.scheme == "https" ? 443 : 80) else { return shown }
         return "\(shown):\(port)"
+    }
+
+    /// a long host cut before its registrable domain, which stays whole
+    static func keepingDomain(_ host: String) -> String {
+        let domain = PasswordStore.registrableDomain(host) ?? host
+        let lead = host.dropLast(domain.count + 1), room = max(6, 38 - domain.count)
+        return host.count > 40 && lead.count > room ? "\(lead.prefix(room))….\(domain)" : host
     }
 }
 
@@ -580,7 +603,7 @@ private struct SiteSettingsButton: View {
         }
         .popover(isPresented: $showProgrammaticPopup, arrowEdge: .bottom) {
             if let programmaticPopup {
-                ExtensionPopupContainer(action: programmaticPopup)
+                ExtensionPopupContainer(action: programmaticPopup) { showProgrammaticPopup = false }
             }
         }
         // every window has one of these buttons; the focused window's presents
@@ -625,7 +648,7 @@ private struct SiteSettingsPanel: View {
 
     private var isTrustedManually: Bool {
         guard let tab, let host = tab.url?.host() else { return false }
-        return CertificateTrust.hasException(for: host, ephemeral: tab.isPrivate)
+        return tab.certificateTrust?.hasException(for: host, ephemeral: tab.isPrivate) == true
     }
 
     var body: some View {
@@ -636,8 +659,8 @@ private struct SiteSettingsPanel: View {
 
             connectionRow
 
-            if let tab, let origin = SitePermissionStore.originString(tab.url) {
-                SitePermissionRows(origin: origin, ephemeral: tab.isPrivate)
+            if let tab, let origin = SitePermissionStore.originString(tab.url), let store = tab.sitePermissions {
+                SitePermissionRows(origin: origin, store: store, ephemeral: tab.isPrivate)
             }
 
             if let tab, !tab.isPrivate, let host = tab.url?.host() {
@@ -647,6 +670,7 @@ private struct SiteSettingsPanel: View {
             if let tab, let url = tab.url, url.scheme == "https" || url.scheme == "http",
                 let host = url.host()
             {
+                SiteBlockingRows(tab: tab, host: host)
                 ChromeDisguiseRow(tab: tab, host: host)
             }
         }
@@ -714,8 +738,15 @@ private struct SiteSettingsPanel: View {
                     if let tab, let host = tab.url?.host(), isTrustedManually {
                         PopoverActionRow(title: "Stop Trusting This Certificate", icon: "xmark.shield") {
                             showActions = false
-                            CertificateTrust.forget(host)
+                            tab.certificateTrust?.forget(host)
                             tab.reload()
+                        }
+                    }
+                    if let tab, WebApps.canInstall(tab) {
+                        PopoverActionRow(title: "Install as App…", icon: "plus.app") {
+                            showActions = false
+                            // after the popover closes, so the alert isn't under it
+                            DispatchQueue.main.async { WebApps.shared.askToInstall(tab) }
                         }
                     }
                     PopoverActionRow(title: "Clear Cookies for This Site", icon: "trash") {
@@ -756,8 +787,8 @@ private struct SiteSettingsPanel: View {
 /// same store the page's prompts and Settings › Privacy & Security read
 private struct SitePermissionRows: View {
     let origin: String
+    let store: SitePermissionStore
     let ephemeral: Bool
-    private var store: SitePermissionStore { .shared }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -821,6 +852,42 @@ private struct TrustedAppRows: View {
         if scheme == ExternalSchemes.everyApp { return "Opens all apps" }
         let app = URL(string: "\(scheme):").flatMap(ExternalSchemes.handlerName)
         return "Opens \(app ?? "“\(scheme):” links")"
+    }
+}
+
+/// trackers, ads and cookie banners for this site, each following Settings until changed here; a change
+/// reloads the page, since a navigation picks its rule lists as it starts
+private struct SiteBlockingRows: View {
+    let tab: BrowserTab
+    let host: String
+    private var blocker: ContentBlocker { .shared }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(BlockingKind.allCases) { kind in
+                HStack {
+                    Label(kind.label, systemImage: kind.icon)
+                        .font(.system(size: 12))
+                    if kind == BlockingKind.allCases.first {
+                        InfoButton("For \(ContentBlocker.site(of: host)) only. Other sites follow Settings › Privacy & Security.")
+                            .font(.system(size: 11))
+                    }
+                    Spacer()
+                    Toggle(
+                        kind.label,
+                        isOn: Binding {
+                            blocker.blocks(kind, on: host, ephemeral: tab.isPrivate)
+                        } set: { on in
+                            blocker.setBlocks(kind, on, on: host, ephemeral: tab.isPrivate)
+                            tab.reload()
+                        }
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                }
+            }
+        }
     }
 }
 

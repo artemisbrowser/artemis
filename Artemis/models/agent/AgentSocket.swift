@@ -6,7 +6,12 @@ import Security
 
 struct AgentFailure: Error {
     let message: String
-    init(_ message: String) { self.message = message }
+    /// a pause for the user's answer, reported to the agent as a result, not an error
+    let waitsOnUser: Bool
+    init(_ message: String, waitsOnUser: Bool = false) {
+        self.message = message
+        self.waitsOnUser = waitsOnUser
+    }
 }
 
 /// the Unix socket the running app serves agent tool calls on, as newline-delimited
@@ -41,12 +46,14 @@ nonisolated enum AgentSocket {
         return fd
     }
 
-    /// a blocking connection to the app, or nil when nothing is listening
+    /// a blocking connection to the app, or nil with `errno` set when nothing is listening
     static func connect() -> Int32? {
         let fd = makeSocket()
         guard fd >= 0 else { return nil }
         guard withAddress({ Darwin.connect(fd, $0, $1) }) == 0 else {
+            let failed = errno
             close(fd)
+            errno = failed
             return nil
         }
         return fd

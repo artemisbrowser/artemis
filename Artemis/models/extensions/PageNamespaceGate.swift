@@ -5,23 +5,29 @@ import WebKit
 
 /// WebKit gives every web page a `browser.runtime`. Chrome shows one only where an extension is
 /// externally connectable and Firefox never does, and pages pick their messaging path by it
-/// (Proton's sign-in hand-off), so elsewhere `browser` is emptied before the page's scripts run
+/// (Proton's sign-in hand-off), so while an extension runs `browser` is emptied on every other page
 @MainActor
 enum PageNamespaceGate {
     private static let scripts = NSMapTable<WKUserContentController, WKUserScript>.weakToStrongObjects()
     private static let remove = NSSelectorFromString("_removeUserScript:")
 
-    /// `patterns`: the `externally_connectable.matches` of the extensions running behind `controller`
-    static func apply(_ patterns: [String], to controller: WKUserContentController) {
+    /// `patterns`: the `externally_connectable.matches` of the extensions running behind `controller`,
+    /// nil when none runs: pages then keep WebKit's namespace, as in Safari
+    static func apply(_ patterns: [String]?, to controller: WKUserContentController) {
         guard controller.responds(to: remove) else { return }
         if let old = scripts.object(forKey: controller) { controller.perform(remove, with: old) }
-        let sources = patterns.compactMap(regexSource)
-        guard let list = try? JSONSerialization.data(withJSONObject: sources),
+        scripts.removeObject(forKey: controller)
+        guard let sources = patterns?.compactMap(regexSource),
+            let list = try? JSONSerialization.data(withJSONObject: sources),
             let json = String(data: list, encoding: .utf8)
         else { return }
-        // an empty object, not a delete: WebKit puts its namespace back wherever `browser` isn't an object
+        // an empty object, not a delete: WebKit puts its namespace back wherever `browser` isn't an object.
+        // an extension's own page framed in a site (uBOL's zapper) keeps its full namespace
         let script = WKUserScript(
-            source: "if (!\(json).some((p) => new RegExp(p).test(location.href))) globalThis.browser = {};",
+            source: """
+                if (!location.protocol.endsWith("-extension:") && !\(json).some((p) => new RegExp(p).test(location.href)))
+                  globalThis.browser = {};
+                """,
             injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page)
         controller.addUserScript(script)
         scripts.setObject(script, forKey: controller)

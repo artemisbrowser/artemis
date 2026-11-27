@@ -62,15 +62,18 @@ struct PeekView: View {
     }
 
     private var panel: some View {
-        ZStack {
-            Color(white: 0.1)
-            WebViewContainer(tab: tab)
-                // a container rebuild (new web view, same tab) re-mounts the host
-                .id("\(tab.id)#\(tab.webViewGeneration)")
-                .opacity(tab.loadError == nil ? 1 : 0)
-            if tab.loadError != nil { ErrorPage(tab: tab) }
+        VStack(spacing: 0) {
+            origin
+            ZStack {
+                WebViewContainer(tab: tab)
+                    // a container rebuild (new web view, same tab) re-mounts the host
+                    .id("\(tab.id)#\(tab.webViewGeneration)")
+                    .opacity(tab.loadError == nil ? 1 : 0)
+                if tab.loadError != nil { ErrorPage(tab: tab) }
+            }
+            .pageDialog(for: tab)
         }
-        .pageDialog(for: tab)
+        .background(Color(white: 0.1))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
         .overlay(
@@ -81,6 +84,27 @@ struct PeekView: View {
         .overlay(alignment: corner.alignment) {
             controls.offset(controlsOffset)
         }
+    }
+
+    /// whose page this is, as the address pill would say it; drawn outside the page
+    private var origin: some View {
+        let url = UrlField.shownURL(for: tab)
+        let notSecure = url?.scheme == "http" || (url?.scheme == "https" && url == tab.url && !tab.isSecure)
+        let site = UrlField.displayText(for: tab)
+        return HStack(spacing: 4) {
+            if notSecure {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("Not Secure ·").fixedSize()
+            }
+            Text(site).lineLimit(1).truncationMode(.head)
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(.white.opacity(0.6))
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .frame(height: 26)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(notSecure ? "Not Secure, \(site)" : site)
     }
 
     private var controls: some View {

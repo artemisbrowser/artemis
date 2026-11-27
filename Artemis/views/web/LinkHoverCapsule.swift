@@ -97,15 +97,18 @@ struct LinkHoverCapsule: View {
         case .foregroundTab: place = "in a New Tab"
         case .split: place = "in Split View"
         case .scout: place = "in Scout"
-        case nil: return Text(verbatim: trimmed(url))
+        case nil: return Text(verbatim: Self.trimmed(url))
         }
-        let host = Text(verbatim: url.host() ?? trimmed(url)).foregroundStyle(.primary)
+        let host = Text(verbatim: url.host() ?? Self.trimmed(url)).foregroundStyle(.primary)
         return Text("Open \(host) \(place)")
     }
 
-    /// a tidy, length-capped form of the url: drop the scheme, ellipsise the middle
-    private func trimmed(_ url: URL) -> String {
-        var text = url.absoluteString
+    /// a tidy, length-capped form of the url: drop the scheme and any user and password, ellipsise the middle
+    static func trimmed(_ url: URL) -> String {
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.user = nil
+        parts?.password = nil
+        var text = parts?.string ?? url.absoluteString
         for prefix in ["https://", "http://"] where text.hasPrefix(prefix) {
             text.removeFirst(prefix.count)
         }

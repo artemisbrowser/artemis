@@ -322,10 +322,12 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             fillsCodes
             ? store.codeMatches(for: target.origin, in: tab.loginProfile)
             : isNew ? [] : store.matches(for: target.origin, in: tab.loginProfile)
-        let recipes = isNew ? store.recipes(in: tab.loginProfile).filter(\.isUsable) : []
+        let top = SitePermissionStore.originString(tab.webView.url) ?? target.origin
+        let recipes = isNew ? store.recipes(for: target.origin, under: top, in: tab.loginProfile) : []
         let passkeys = isNew || fillsCodes ? [] : PasskeyBridge.shared.offered(to: target.origin, in: tab)
         guard offersStrong || !logins.isEmpty || !recipes.isEmpty || !passkeys.isEmpty else { return closeSuggestions() }
         let host = URL(string: target.origin)?.host() ?? ""
+        let lookalike = recipes.isEmpty ? nil : store.lookalike(of: host, in: tab.loginProfile)
         let rules = PasswordRules(field: body["rules"] as? [String: Any] ?? [:], host: host)
         let number = { (key: String) in (box[key] as? Double) ?? 0 }
         var field = CGRect(x: number("x"), y: number("y"), width: number("width"), height: number("height"))
@@ -338,7 +340,7 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
             guard ticket == mine else { return }
             let list = LoginSuggestions(
                 logins: logins, origin: target.origin, offersStrongPassword: offersStrong, fillsCodes: fillsCodes,
-                recipes: recipes, rules: rules,
+                recipes: recipes, rules: rules, lookalike: lookalike,
                 pick: { login in
                     self.closeSuggestions()
                     Task {
@@ -438,7 +440,8 @@ final class PasswordAutofill: NSObject, WKScriptMessageHandler {
     func trackKeys(in frame: WKFrameInfo?, origin: String, of tab: BrowserTab, optional: Bool = false) async -> Bool {
         guard PasswordStore.shared.fillsFromSuggestions, tab.offersCredentials(to: origin) else { return false }
         // a new-password field has random passwords to offer outside incognito, else only a recipe's
-        let offersNew = !tab.isPrivate || PasswordStore.shared.recipes(in: tab.loginProfile).contains(where: \.isUsable)
+        let top = SitePermissionStore.originString(tab.webView.url) ?? origin
+        let offersNew = !tab.isPrivate || !PasswordStore.shared.recipes(for: origin, under: top, in: tab.loginProfile).isEmpty
         let tracked = try? await tab.webView.callAsyncJavaScript(
             "return globalThis.__artemisPasswords?.track(kinds, size, optional) ?? false",
             arguments: [
@@ -524,6 +527,8 @@ struct LoginSuggestions: View {
     let fillsCodes: Bool
     let recipes: [PasswordRecipe]
     let rules: PasswordRules
+    /// a saved site this one's name looks like, warned of above the list
+    var lookalike: String? = nil
     let pick: (SavedLogin) -> Void
     /// fills the first candidate the field's `pattern` accepts, else the first; `true` for a recipe's
     let generate: ([String], Bool) -> Void
@@ -575,6 +580,14 @@ struct LoginSuggestions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            if let lookalike {
+                SuggestionRow(
+                    icon: "exclamationmark.triangle.fill", title: "Did you mean \(lookalike)?",
+                    detail: "This site's name looks similar", action: nil
+                )
+                .foregroundStyle(.orange)
+                Divider().padding(.vertical, 2)
+            }
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 SuggestionRow(
                     icon: row.icon, title: row.title, detail: row.detail, isHighlighted: highlighted == index,

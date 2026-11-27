@@ -748,6 +748,13 @@ struct CommandBarEngine {
                 id: "pip", title: "Picture in Picture", symbol: "pip",
                 keywords: ["video", "float", "mini player"],
                 run: { manager.togglePictureInPicture() }))
+        if tab.isOffPinnedURL {
+            out.append(
+                CommandAction(
+                    id: "back-home", title: tab.isEssential ? "Back to Favourite's Page" : "Back to Pinned Page",
+                    symbol: "arrow.uturn.backward", keywords: ["pinned url", "reset", "home", "original page", "favorite"],
+                    run: { manager.returnToPinnedURL(tab) }))
+        }
         out.append(
             CommandAction(
                 id: "pin", title: tab.isPinned ? "Unpin Tab" : "Pin Tab", symbol: "pin",

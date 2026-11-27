@@ -35,7 +35,7 @@ final class ArtemisWebView: WKWebView {
     /// it (opening Peek, not Quick Look); anything else gets the system's (nil)
     @objc(_immediateActionAnimationControllerForHitTestResult:withType:userData:)
     func immediateActionController(_ hitTestResult: NSObject, type: Int, userData: AnyObject?) -> AnyObject? {
-        let url = hitTestResult.value(forKey: "absoluteLinkURL") as? URL
+        let url = hitTestResult.spiValue(forKey: "absoluteLinkURL") as? URL
         guard let url, url.scheme == "http" || url.scheme == "https" else {
             forcedLink = nil
             return nil

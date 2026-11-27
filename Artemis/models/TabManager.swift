@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
+import os
 import SwiftUI
 import WebKit
 
@@ -356,6 +357,11 @@ final class TabManager {
     /// two-finger swipes go back and forward, on unless turned off
     static let swipeNavigationKey = "swipeNavigation"
     static var swipesNavigate: Bool { UserDefaults.standard.object(forKey: swipeNavigationKey) as? Bool ?? true }
+    /// ⌘T opens a page with its address being edited rather than the command bar, off unless turned on
+    static let pinnedLinksPeekKey = "pinnedLinksOpenInPeek"
+    static var pinnedLinksPeek: Bool { UserDefaults.standard.object(forKey: pinnedLinksPeekKey) as? Bool ?? true }
+    static let newTabOpensPageKey = "newTabOpensPage"
+    static var newTabOpensPage: Bool { UserDefaults.standard.bool(forKey: newTabOpensPageKey) }
 
     static let defaultIcons = [
         "circle.fill", "star.fill", "bolt.fill", "leaf.fill",
@@ -420,6 +426,7 @@ final class TabManager {
         selectedSpaceID = selected
         core.persistedSpaceID = selected
         profiles = loadedProfiles
+        CertificateTrust.seedStrictHosts(into: profiles)
         spaces = loadedSpaces
         essentialBySpace = rememberedEssentials
 
@@ -428,20 +435,15 @@ final class TabManager {
             wire(tab)
             tab.prefetchFavicon()  // show the real icon before it's ever selected
         }
-        // rule lists only reach navigations started after they are installed, so
-        // the restored tab waits on the already-compiled list (~2ms warm; a
-        // cache miss returns at once and the rebuild reloads what is open)
+        // rule lists only reach navigations started after they are installed: the restored
+        // tab waits for the already-compiled list (~2ms warm) or, on a miss, the starter list
         Task { @MainActor in
-            if PerfFlags.startsLaunchPageEarly {
-                async let installed = ContentBlocker.shared.installPreviouslyCompiled()
-                await makeLaunchPageOnceVisible()
-                _ = await installed
-            } else {
-                await ContentBlocker.shared.installPreviouslyCompiled()
-            }
+            async let applied: Void = ContentBlocker.shared.apply()
+            if PerfFlags.startsLaunchPageEarly { await makeLaunchPageOnceVisible() }
+            await ContentBlocker.shared.untilRulesSettled()
             Bench.mark("launch page: rules installed")
             prepareCurrentSpace()
-            await ContentBlocker.shared.apply()
+            await applied
         }
         Bench.mark("TabManager: tabs wired")
         if !sessionUnreadable {
@@ -500,6 +502,7 @@ final class TabManager {
             PasskeyBridge.install(into: ucc)
             EditingFocusReporter.install(into: ucc)
             ScrollReporter.install(into: ucc)
+            HomeEgg.install(into: ucc)
         }
         mediaStateReporter = media
 
@@ -692,6 +695,10 @@ final class TabManager {
     /// other window lists it and nothing persists it
     private(set) var privateSpace: Space?
 
+    /// the installed app a Scout window shows; its links to other sites open in the browser
+    var webAppID: UUID?
+    var webApp: WebApp? { webAppID.flatMap(WebApps.shared.app) }
+
     /// an incognito window's jar: every page it opens browses in it, and it goes
     /// when the window does
     @ObservationIgnored private var incognitoStore: WKWebsiteDataStore?
@@ -741,6 +748,7 @@ final class TabManager {
         incognitoStore = ProfileStore.makePrivate(parent: parent.id)
         privateSpace = space
         selectedSpaceID = space.id
+        Diagnostics.privateWindows.withLock { $0 += 1 }
         ExtensionManager.shared.openPrivateWindow(of: self)
     }
 
@@ -752,6 +760,7 @@ final class TabManager {
             ExtensionManager.shared.tabDidClose(tab, windowIsClosing: tab.isPrivate)
             abandonQuestions(of: tab)
             miniPlayer.exitIfActive(for: tab)
+            tab.retire()
             tab.stopLoading()
             core.windowLocal.remove(tab)
         }
@@ -762,10 +771,14 @@ final class TabManager {
         let anyIncognitoLeft = BrowserWindows.shared.allManagers.contains {
             $0 !== self && $0.kind == .incognito
         }
+        if kind == .incognito { Diagnostics.privateWindows.withLock { $0 -= 1 } }
         if kind == .incognito, !anyIncognitoLeft {
-            SitePermissionStore.shared.forgetEphemeral()
+            for profile in core.profiles {
+                profile.sitePermissions.forgetEphemeral()
+                profile.certificateTrust.forgetEphemeral()
+            }
             ChromeDisguise.forgetEphemeral()
-            CertificateTrust.forgetEphemeral()
+            ContentBlocker.shared.forgetEphemeral()
         }
     }
 
@@ -921,21 +934,33 @@ final class TabManager {
             Task { await SpaceLock.shared.unlock(space) }
             return
         }
-        if isCommandBarVisible {
+        if isCommandBarVisible, !Self.newTabOpensPage {
             addressBarOrigin = nil
             isCommandBarVisible = false
         } else {
-            openNewTabBar()
+            openNewTab()
         }
     }
 
-    /// the command bar, empty, for a new tab: ⌘T or the sidebar's New Tab row
+    /// a new tab as the owner chose: the command bar, or a page (an extension's new tab
+    /// page when one is on) with its address being edited
+    func openNewTab() {
+        guard Self.newTabOpensPage, kind != .scout else { return openNewTabBar() }
+        let page = ExtensionManager.shared.newTabPage(for: self)
+        newTab(url: page?.url, configuration: page?.configuration, opensBar: false)
+        editAddress()
+    }
+
+    /// the command bar, empty, for a new tab
     func openNewTabBar() {
         guard kind != .scout else { return }
         addressBarOrigin = nil
         commandBarEditsAddress = false
         isCommandBarVisible = true
         BrowserTab.prewarmWebProcess()
+        let store = dataStore(for: currentSpace)
+        // the bar shows first; its new tab starts in this page's process
+        DispatchQueue.main.async { BrowserTab.warmPage(in: store) }
     }
 
     /// an address being edited belongs to the page it was opened on
@@ -970,7 +995,8 @@ final class TabManager {
         url: URL? = nil,
         configuration: WKWebViewConfiguration? = nil,
         select: Bool = true,
-        in space: Space? = nil
+        in space: Space? = nil,
+        opensBar: Bool = true
     ) -> BrowserTab {
         let space = space ?? currentSpace
         // a passed-in configuration comes from window.open / target=_blank and
@@ -984,7 +1010,7 @@ final class TabManager {
         if let url {
             // a page shown at once mounts first and loads after; a popup's load is WebKit's own
             tab.load(url, afterMount: select && configuration == nil && space.id == currentSpace.id && showsPagesNow)
-        } else if select, configuration == nil {
+        } else if select, configuration == nil, opensBar {
             openNewTabBar()
         }
         return tab
@@ -1558,27 +1584,22 @@ final class TabManager {
 
     // MARK: - Site permissions
 
-    /// the first queued question from a page this window owns; the queue is
-    /// shared by every window
+    /// the first queued question from a page this window has on screen; a background
+    /// tab's waits until it is shown. the queue is shared by every window
     var currentPermissionRequest: PermissionRequest? {
-        permissionQueue.first { owns($0.tabID) }
+        permissionQueue.first { shows($0.tabID) }
     }
 
-    /// is `id` a page this window is responsible for
-    private func owns(_ id: BrowserTab.ID?) -> Bool {
-        guard let id else { return kind == .main }
-        if onScreenTabIDs.contains(id) { return true }
-        guard kind == .main else { return false }
-        return spaces.contains { $0.tabs.contains { $0.id == id } }
-            || core.allEssentials.contains { $0.id == id }
+    private func shows(_ id: BrowserTab.ID?) -> Bool {
+        id.map(onScreenTabIDs.contains) ?? (kind == .main)
     }
 
     /// the remembered answer to all of `permissions`; one "no" is a no, so a page that asked
     /// for camera *and* microphone doesn't get half of it
     private static func remembered(
-        _ permissions: [SitePermission], origin: String, ephemeral: Bool
+        _ permissions: [SitePermission], origin: String, in store: SitePermissionStore, ephemeral: Bool
     ) -> PermissionDecision? {
-        let decisions = permissions.map { SitePermissionStore.shared.decision(for: origin, $0, ephemeral: ephemeral) }
+        let decisions = permissions.map { store.decision(for: origin, $0, ephemeral: ephemeral) }
         guard decisions.allSatisfy({ $0 != nil }) else { return nil }
         return decisions.contains(.deny) ? .deny : .allow
     }
@@ -1591,10 +1612,11 @@ final class TabManager {
         decide: @escaping (PermissionDecision) -> Void
     ) {
         let isEphemeral = tab?.isPrivate ?? false
-        if let decision = Self.remembered(permissions, origin: origin, ephemeral: isEphemeral) {
+        let store = tab?.sitePermissions ?? currentProfile.sitePermissions
+        if let decision = Self.remembered(permissions, origin: origin, in: store, ephemeral: isEphemeral) {
             return decide(decision)
         }
-        if let tab, let task = AgentBridge.shared.task(of: tab.id) {
+        if let tab, let task = AgentBridge.shared.task(of: tab.id), task.isWorking, task.turnTabs.contains(tab.id) {
             let what = permissions.map(\.request).formatted(.list(type: .and))
             Task { decide(await task.permit(what, from: origin) ? .allow : .deny) }
             return
@@ -1606,26 +1628,26 @@ final class TabManager {
         }
         permissionQueue.append(
             PermissionRequest(
-                origin: origin, permissions: permissions, tabID: tab?.id,
+                origin: origin, permissions: permissions, tabID: tab?.id, store: store,
                 isEphemeral: isEphemeral, respond: decide))
     }
 
     /// answer the question on screen. `remember` is the "don't ask again for
     /// this site" case — an unremembered answer covers this request only
     func answerPermission(_ decision: PermissionDecision, remember: Bool) {
-        guard let index = permissionQueue.firstIndex(where: { owns($0.tabID) }) else { return }
+        guard let index = permissionQueue.firstIndex(where: { shows($0.tabID) }) else { return }
         let request = permissionQueue.remove(at: index)
         if remember {
             for permission in request.permissions {
-                SitePermissionStore.shared.set(
-                    decision, for: request.origin, permission, ephemeral: request.isEphemeral)
+                request.store.set(decision, for: request.origin, permission, ephemeral: request.isEphemeral)
             }
         }
         request.answer(decision)
         guard remember else { return }
         // the site's other waiting questions that this answer now settles
         let settled = permissionQueue.compactMap { queued in
-            Self.remembered(queued.permissions, origin: queued.origin, ephemeral: queued.isEphemeral).map { (queued, $0) }
+            Self.remembered(queued.permissions, origin: queued.origin, in: queued.store, ephemeral: queued.isEphemeral)
+                .map { (queued, $0) }
         }
         permissionQueue.removeAll { queued in settled.contains { $0.0 === queued } }
         for (queued, decision) in settled { queued.answer(decision) }
@@ -1636,9 +1658,7 @@ final class TabManager {
     func letGo(of tab: BrowserTab) {
         abandonQuestions(of: tab)
         miniPlayer.exitIfActive(for: tab)
-        // a closed page can outlive its tab (a view still fading out holds it): it must fall silent now
-        tab.webView.pauseAllMediaPlayback(completionHandler: nil)
-        tab.webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
+        tab.retire()
         tab.stopLoading()
         TabStateStore.remove(tab.id)
         ExtensionManager.shared.tabDidClose(tab)
@@ -1649,11 +1669,16 @@ final class TabManager {
     /// a page going away takes its unanswered questions and its notifications with
     /// it — WebKit is still holding a handler for each question, and it has to be called
     private func abandonQuestions(of tab: BrowserTab) {
+        denyPermissions(of: tab)
+        WebNotifications.shared.forgetPage(in: tab.id)
+        tab.abandonDialog()
+    }
+
+    /// the document that asked is gone: a new main-frame page never inherits its questions
+    func denyPermissions(of tab: BrowserTab) {
         let doomed = permissionQueue.filter { $0.tabID == tab.id }
         permissionQueue.removeAll { $0.tabID == tab.id }
         for request in doomed { request.abandon() }
-        WebNotifications.shared.forgetPage(in: tab.id)
-        tab.abandonDialog()
     }
 
     // MARK: - Peek / Glance
@@ -1676,10 +1701,11 @@ final class TabManager {
         peekTab = tab
     }
 
-    /// dismiss the Peek preview, stopping its web view so nothing keeps playing
+    /// dismiss the Peek preview; its page falls silent and closes
     func closePeek() {
         guard let peek = peekTab else { return }
         abandonQuestions(of: peek)
+        peek.retire()
         peek.stopLoading()
         ExtensionManager.shared.tabDidClose(peek)
         core.windowLocal.remove(peek)
@@ -1734,6 +1760,7 @@ final class TabManager {
 
     /// a link clicked with modifiers held
     private func openLink(_ url: URL, as click: LinkClick, from tab: BrowserTab?) {
+        guard tab?.mayOpen(url) != false else { return }
         switch destination(of: click, isPrivate: tab?.isPrivate == true) {
         case nil:
             tab?.load(url)
@@ -1781,6 +1808,15 @@ final class TabManager {
         revealTab(newTab(url: url))
     }
 
+    /// `adoptIntoBrowser` in the front browser window, else one opened on `space`; false when none comes
+    @discardableResult
+    static func openInBrowser(_ url: URL, into space: Space) async -> Bool {
+        var browser = BrowserWindows.shared.browserScope
+        if browser == nil { browser = await Scripting.openWindow(incognito: false, on: space.id) }
+        browser?.adoptIntoBrowser(url, into: space)
+        return browser != nil
+    }
+
     /// the space that best fits `url`: a routing rule's, else one already holding
     /// a tab on the same base domain, else the current space. `profile` keeps the
     /// choice among its own spaces, the first standing in for a current one outside it
@@ -1810,7 +1846,7 @@ final class TabManager {
 
     /// the registrable domain, so subdomains group together (`docs.github.com` →
     /// `github.com`, `bbc.co.uk` stays whole); the host itself for an IP or a bare name
-    private static func baseDomain(of url: URL) -> String? {
+    static func baseDomain(of url: URL) -> String? {
         guard let host = url.host()?.lowercased() else { return nil }
         return PasswordStore.registrableDomain(host) ?? host
     }
@@ -2182,13 +2218,25 @@ final class TabManager {
         selectedTabID = space.tabs[next].id
     }
 
+    /// whole points of the page area this window's card last laid out; a web view in no window has it
+    @ObservationIgnored var pageSize = BrowserTab.unseenSize
+
     /// every callback acts on `tab.manager` when it fires: a shared tab's window
     /// is whichever has it then, not the one that made it
     func wire(_ tab: BrowserTab) {
         tab.maker = self
         tab.isShared = kind == .main
+        if let view = tab.madeWebView, view.window == nil { view.setFrameSize(pageSize) }
         tab.onRequestNewTab = { [weak tab] configuration, features in
             guard let tab, let owner = tab.manager else { return nil }
+            // an app's plain new-tab link is a tab in the browser, in the app's jar
+            if let app = owner.webApp, !ScoutWindow.wantsOwnWindow(features),
+                let browser = BrowserWindows.shared.browserScope
+            {
+                let opened = browser.newTab(configuration: configuration, in: app.space(in: browser.spaces))
+                browser.revealTab(opened)
+                return opened.webView
+            }
             // a page that asked for a sized window (a sign-in flow) gets one, and
             // so does anything opened from a Scout window — it has no tab strip
             // to put a second page in. the configuration carries the opener's jar
@@ -2957,12 +3005,8 @@ final class TabManager {
         AutofillStore.shared.deleteAll(in: profile.id)
         // before the jar goes: an extension controller still holding it keeps it on disk
         ExtensionManager.shared.profileDeleted(profile.id)
-        let id = profile.id
-        Task {
-            await profile.pageIndex.close()
-            try? FileManager.default.removeItem(at: Profile.directory(for: id))
-        }
-        ProfileStore.destroy(id)
+        profile.discardFiles()
+        ProfileStore.destroy(profile.id)
         // what ⌘Z holds could name its tabs and jar
         clearAllUndo()
         scheduleSave()
@@ -3458,10 +3502,15 @@ final class TabManager {
         }
     }
 
-    /// route a plain link click from a split's link-source pane into its chosen
-    /// target pane instead of navigating in place. returns true when it consumed
-    /// the navigation (the caller cancels the in-pane load)
+    /// route a plain link click off an app's site to the browser, or from a split's
+    /// link-source pane into its target pane. returns true when it consumed the
+    /// navigation (the caller cancels the in-pane load)
     func routeLinkedNavigation(from tab: BrowserTab, to url: URL) -> Bool {
+        guard tab.mayOpen(url) else { return false }
+        if let webApp, !webApp.keepsLinks, !webApp.covers(url), let space = webApp.space(in: spaces) {
+            Task { await Self.openInBrowser(url, into: space) }
+            return true
+        }
         guard let space = space(of: tab), let group = space.splitGroup(containing: tab.id),
             group.isLinked, group.linkSourceID == tab.id,
             let targetID = group.linkTargetID,
@@ -4011,6 +4060,7 @@ final class TabManager {
         for tab in old {
             abandonQuestions(of: tab)
             ExtensionManager.shared.tabDidClose(tab)
+            tab.retire()
             tab.stopLoading()
         }
 
@@ -4085,6 +4135,7 @@ final class TabManager {
             return TabRecord(
                 id: tab.id, url: url,
                 pinnedURL: tab.isPinned ? (tab.pinnedURL?.absoluteString ?? url) : nil,
+                landing: tab.isPinned ? tab.homeLanding?.absoluteString : nil,
                 isPinned: tab.isPinned, lastAccessed: tab.lastAccessed,
                 keepsLoaded: tab.keepsLoaded, name: tab.customName)
         }
@@ -4146,7 +4197,7 @@ final class TabManager {
                         tabURL(tab).map { url in
                             TabRecord(
                                 id: tab.id, url: url, pinnedURL: tab.pinnedURL?.absoluteString ?? url,
-                                lastAccessed: tab.lastAccessed, keepsLoaded: tab.keepsLoaded, name: tab.customName)
+                                landing: tab.homeLanding?.absoluteString, lastAccessed: tab.lastAccessed, keepsLoaded: tab.keepsLoaded, name: tab.customName)
                         }
                     },
                     searchEngine: profile.isDefault ? nil : profile.searchEngine.rawValue,
@@ -4201,6 +4252,7 @@ final class TabManager {
                 dataStore: profile.dataStore)
             tab.isEssential = true
             tab.pinnedURL = record.pinnedURL.flatMap(URL.init(string:)) ?? url
+            tab.homeLanding = record.landing.flatMap(URL.init(string:))
             tab.keepsLoaded = record.keepsLoaded
             tab.customName = record.name
             return tab
@@ -4220,6 +4272,7 @@ final class TabManager {
                 id: record.id, restoring: url, pinned: record.isPinned,
                 pinnedURL: record.pinnedURL.flatMap(URL.init(string:)),
                 lastAccessed: record.lastAccessed, dataStore: store)
+            if record.isPinned { tab.homeLanding = record.landing.flatMap(URL.init(string:)) }
             tab.keepsLoaded = record.keepsLoaded
             tab.customName = record.name
             return tab
@@ -4299,17 +4352,19 @@ final class PermissionRequest: Identifiable {
     let origin: String
     let permissions: [SitePermission]
     let tabID: BrowserTab.ID?
+    let store: SitePermissionStore
     /// asked from incognito: the answer is remembered in memory only
     let isEphemeral: Bool
     private var respond: ((PermissionDecision) -> Void)?
 
     init(
-        origin: String, permissions: [SitePermission], tabID: BrowserTab.ID?,
+        origin: String, permissions: [SitePermission], tabID: BrowserTab.ID?, store: SitePermissionStore,
         isEphemeral: Bool, respond: @escaping (PermissionDecision) -> Void
     ) {
         self.origin = origin
         self.permissions = permissions
         self.tabID = tabID
+        self.store = store
         self.isEphemeral = isEphemeral
         self.respond = respond
     }

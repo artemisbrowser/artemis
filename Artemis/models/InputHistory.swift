@@ -15,13 +15,18 @@ final class InputHistory {
 
     private static let maxQueries = 2000
 
-    init(fileURL: URL) {
+    /// `saved` from `read(_:)` skips the load, so a caller can decode off main
+    init(fileURL: URL, saved: Snapshot? = nil) {
         self.fileURL = fileURL
-        if let saved = AppStorageLocation.loadDurable(Snapshot.self, from: fileURL) {
+        if let saved = saved ?? Self.read(fileURL) {
             counts = saved.counts
             lastDecay = saved.lastDecay
         }
         decayIfDue()
+    }
+
+    nonisolated static func read(_ url: URL) -> Snapshot? {
+        AppStorageLocation.loadDurable(Snapshot.self, from: url)
     }
 
     /// boost per target key for this input; scans every query, so call it once per
@@ -94,7 +99,7 @@ final class InputHistory {
 
     // MARK: - Persistence
 
-    private nonisolated struct Snapshot: Codable {
+    nonisolated struct Snapshot: Codable {
         var counts: [String: [String: Double]]
         var lastDecay: Date
     }

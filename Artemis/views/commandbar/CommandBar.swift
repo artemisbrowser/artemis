@@ -233,7 +233,9 @@ struct CommandBar: View {
         scope = nil
         // the address the pill shows: a tab waking or mid-load has no committed url yet
         let tab = tabManager.displayedContentTab
-        query = (tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL ?? tab?.pendingURL)?.absoluteString ?? ""
+        let url = tab?.requestedURL ?? tab?.url ?? tab?.lastAttemptedURL ?? tab?.pendingURL
+        // an extension's new tab page reads as the empty address of a blank tab
+        query = url == ExtensionManager.shared.newTabPage(for: tabManager)?.url ? "" : url?.absoluteString ?? ""
         // centred, the whole address is selected so typing replaces it
         if !grown { selection = TextSelection(range: query.startIndex..<query.endIndex) }
     }
@@ -327,12 +329,14 @@ struct CommandBar: View {
     }
 
     private func submit(_ modifiers: EventModifiers) {
-        // pasted or expanded text can arrive with its ↵ before onChange(of: query) reads it
+        // pasted or expanded text can arrive with its ↵ before onChange(of: query) reads it;
+        // otherwise the rows already match, and a state write here re-renders the closing bar
+        // inside the new tab's insert
         if query != typed + (fill?.completion ?? "") {
             typed = query
             fill = nil
+            refresh()
         }
-        refresh()
         executeSelected(launch: engine.launch(for: modifiers, address: address))
     }
 

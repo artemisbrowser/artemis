@@ -58,7 +58,8 @@ enum Motion {
 
     /// the backdrop colour settling after a swipe release. no bounce: an
     /// overshoot would blend in a third space's colour
-    static var spaceColorSettle: Animation { .easeOut(duration: reduceMotion ? 0.2 : 0.42) }
+    static var spaceColorSettle: Animation { .easeOut(duration: spaceColorSettleDuration) }
+    static var spaceColorSettleDuration: Double { reduceMotion ? 0.2 : 0.42 }
 
     /// small accents that should pop: selection, chevrons, inline reveals. a `Spring` so a layer can pop with the same physics
     static let popSpring = Spring(duration: 0.30, bounce: 0.34)

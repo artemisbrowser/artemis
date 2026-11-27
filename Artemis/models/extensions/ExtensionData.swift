@@ -119,7 +119,7 @@ nonisolated enum ExtensionData {
             let file = safe(name) + ".js"
             // a byte-order mark keeps non-ASCII code UTF-8 however it is loaded
             guard (try? (Data([0xEF, 0xBB, 0xBF]) + Data(code.utf8))
-                .write(to: folder.appendingPathComponent(file))) != nil
+                .write(to: folder.appendingPathComponent(file), options: .atomic)) != nil
             else { return ["ok": false] }
             return ["ok": true, "path": relative + "/" + file]
         case "userScripts.delete":
@@ -131,7 +131,7 @@ nonisolated enum ExtensionData {
             let registry = folder.appendingPathComponent("registry.json")
             if let value = message["set"] {
                 guard let data = try? JSONSerialization.data(withJSONObject: value) else { return ["ok": false] }
-                try? data.write(to: registry)
+                try? data.write(to: registry, options: .atomic)
                 return ["ok": true]
             }
             let stored = (try? Data(contentsOf: registry))

@@ -114,7 +114,7 @@ final class AgentTask: Identifiable {
 
     let id = UUID()
     /// the saved chat it writes to; nil for a throwaway chat, which never touches the disk
-    private(set) var chatID: UUID?
+    let chatID: UUID?
     var name = "" {
         didSet { save() }
     }
@@ -136,7 +136,13 @@ final class AgentTask: Identifiable {
     @ObservationIgnored private(set) weak var manager: TabManager?
     /// where its tabs open
     @ObservationIgnored let space: Space
+    /// its space's profile when it started; its chat is saved there and it reaches only that profile's tabs
+    @ObservationIgnored let profileID: Profile.ID
     @ObservationIgnored private(set) var tabs: Set<BrowserTab.ID> = []
+    /// the user's tabs it was handed, which it closes only when they agree
+    @ObservationIgnored private(set) var theirs: Set<BrowserTab.ID> = []
+    /// tabs the current turn has called on; only their pages' permission requests come to the panel
+    @ObservationIgnored var turnTabs: Set<BrowserTab.ID> = []
     /// sites where Manual acts unasked, as the user chose; the always-ask list asks there still
     @ObservationIgnored private var allowedSites: Set<String> = []
     /// tabs it has acted in
@@ -173,29 +179,21 @@ final class AgentTask: Identifiable {
         guard Self.isEnabled, manager.kind == .main, !SpaceLock.shared.isLocked(space) else { return nil }
         self.manager = manager
         self.space = space
+        profileID = space.profileID
+        chatID = throwaway ? nil : chat?.id ?? UUID()
         if let chat {
             mode = .manual
             name = chat.name
             entries = chat.entries
         }
-        chatID = throwaway ? nil : chat?.id ?? UUID()
     }
 
-    private var profile: Profile { BrowserCore.shared.profile(of: space) }
-
     private func save() {
-        guard let chatID, !isClosed, !entries.isEmpty else { return }
+        guard let chatID, !isClosed, !entries.isEmpty, let profile = BrowserCore.shared.profile(profileID) else { return }
         let chat = AgentChat(
             id: chatID, name: name, space: space.id, updated: Date(),
             entries: entries.map { Entry(id: $0.id, kind: $0.kind, text: scrub($0.text), act: $0.act) })
         AgentChats.shared.save(chat, in: profile)
-    }
-
-    /// from here on nothing of this chat is on disk
-    private func forget() {
-        guard let chatID else { return }
-        self.chatID = nil
-        AgentChats.shared.delete(chatID, in: profile)
     }
 
     // MARK: - Modes
@@ -233,10 +231,13 @@ final class AgentTask: Identifiable {
 
     // MARK: - What the bridge asks
 
-    /// a private tab makes the chat a throwaway one
     func adopt(_ tab: BrowserTab) {
         tabs.insert(tab.id)
-        if tab.isPrivate { forget() }
+    }
+
+    /// an incognito tab has no profile, so no task reaches one
+    func reaches(_ tab: BrowserTab) -> Bool {
+        tab.profileID == profileID
     }
 
     /// whether the user is looking at one of its tabs; it never takes them out of one of their own
@@ -317,10 +318,12 @@ final class AgentTask: Identifiable {
         case refused(String)
     }
 
-    /// from the tool, the words `what` names the act in, where it `leads` and the page it is on
-    static func standing(of tool: String, _ what: String, leads: String = "", at url: URL) -> Standing {
+    /// from the tool and the `key` it presses, the words `what` names the act in, where it `leads` and the page it is on.
+    /// Enter or Space, whatever the modifiers, is judged as a click on what it activates, which `what` names
+    static func standing(of tool: String, _ what: String, key: String? = nil, leads: String = "", at url: URL) -> Standing {
         let said = what.lowercased(), place = (url.absoluteString + " " + leads).lowercased()
-        let enters = ["fill", "type_text"].contains(tool), presses = tool == "click" || said.hasPrefix("press enter")
+        let enters = ["fill", "type_text"].contains(tool)
+        let presses = tool == "click" || tool == "press_key" && ["Enter", " "].contains(key)
         if enters, said.contains(/card ?number|credit card|debit card|\bcvv|\bcvc|security code|expir|passport|social security|\bssn\b|national (id|insurance)|driver'?s licen[cs]e|tax id/) {
             return .refused("it would enter card or identity details.")
         }
@@ -450,10 +453,16 @@ final class AgentTask: Identifiable {
         entries.append(Entry(kind: .user, text: prompt))
         isStopped = false
         turn += 1
+        turnTabs = []
         var prompt = prompt
         if let tab = manager?.unlockedContentTab, ["http", "https"].contains(tab.url?.scheme ?? "") {
-            adopt(tab)
-            prompt = "(The user is on tab \(tab.id.uuidString).)\n\n" + prompt
+            if reaches(tab) {
+                if !tabs.contains(tab.id) { theirs.insert(tab.id) }
+                adopt(tab)
+                prompt = "(The user is on tab \(tab.id.uuidString).)\n\n" + prompt
+            } else {
+                prompt = "(The user is on a tab of another profile or an incognito window, which this task can't use.)\n\n" + prompt
+            }
         }
         prompt = earlier + prompt
         guard process != nil || launch() else { return }
@@ -575,7 +584,7 @@ final class AgentTask: Identifiable {
     static let unasked = ["take_snapshot", "screenshot", "list_tabs", "list_spaces", "scroll", "hover", "wait_for", "show_tab", "close_tab"]
         .map { "mcp__artemis__\($0)" }.joined(separator: ",")
     /// the Claude Code release whose auto mode, permission asks and denial limit Artemis was checked against
-    static let checkedRelease = "2.1.330"
+    static let checkedRelease = "2.1.332"
 
     /// Auto runs under Claude Code's auto mode, whose classifier sees the user's messages and the
     /// calls; Manual and Bypass under its default mode, where Artemis answers each permission ask

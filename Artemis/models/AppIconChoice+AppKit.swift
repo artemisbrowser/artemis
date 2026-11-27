@@ -31,7 +31,13 @@ extension AppIconChoice {
         // an update replaces the bundle and drops the custom icon with it
         let onDisk = FileManager.default.fileExists(atPath: bundle + "/Icon\r")
             ? UserDefaults.standard.string(forKey: writtenKey) ?? "?" : ""
-        guard onDisk != stamp, NSWorkspace.shared.setIcon(image, forFile: bundle, options: []) else { return }
+        guard onDisk != stamp else { return }
+        // each icns slot (16–512 pt, @1x and @2x) needs a rep drawn at its own size: the asset's
+        // lone 1024 px rep handed to every slot makes IconServices log a fault
+        let icon = image.map { image in
+            NSImage(size: NSSize(width: 512, height: 512), flipped: false) { image.draw(in: $0); return true }
+        }
+        guard NSWorkspace.shared.setIcon(icon, forFile: bundle, options: []) else { return }
         UserDefaults.standard.set(stamp, forKey: writtenKey)
         NSWorkspace.shared.noteFileSystemChanged(bundle)
         DistributedNotificationCenter.default().postNotificationName(

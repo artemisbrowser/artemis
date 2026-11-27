@@ -96,7 +96,7 @@ final class InstalledExtension: Identifiable {
 
     /// the manifest keys WebKit drops that the compat bridge acts on
     private static let bridgedPermissions: Set<String> = [
-        "browsingData", "clipboardRead", "downloads", "fontSettings", "history", "identity", "idle",
+        "browsingData", "clipboardRead", "contentSettings", "downloads", "fontSettings", "history", "identity", "idle",
         "notifications", "offscreen", "proxy", "search", "sessions", "sidePanel", "system.display",
         "topSites", "userScripts",
     ]
@@ -149,6 +149,7 @@ final class InstalledExtension: Identifiable {
         case "topSites": "See your most visited sites"
         case "downloads": "Manage your downloads"
         case "fontSettings": "See your installed fonts"
+        case "contentSettings": "Change what sites may use, like your camera and location"
         case "identity": "Open sign-in pages"
         case "idle": "See when you're away"
         case "notifications": "Show notifications"

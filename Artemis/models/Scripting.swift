@@ -315,8 +315,9 @@ final class ArtemisMakeCommand: NSCreateCommand {
         guard Scripting.showsIncognito || !Scripting.isIncognito(space) else {
             return Scripting.fail(self, "Incognito windows are hidden from scripts. Show them in Artemis Settings → Privacy.")
         }
-        let tab = manager.newTab(select: space === manager.currentSpace, in: space)
-        if let url = resolvedKeyDictionary["scriptURL"] as? String { tab.scriptURL = url }
+        let url = resolvedKeyDictionary["scriptURL"] as? String
+        let tab = manager.newTab(select: space === manager.currentSpace, in: space, opensBar: url == nil)
+        if let url { tab.scriptURL = url }
         return tab.objectSpecifier
     }
 

@@ -16,8 +16,16 @@ final class PageDialogRequest: Identifiable {
         case leaveConfirm
         /// a link in a scheme WebKit doesn't render; `appName` is the app macOS says handles it
         case openExternal(scheme: String, appName: String)
-        /// basic, digest or NTLM sign-in; `realm` is the server's own text, shown as-is
-        case httpAuth(realm: String?)
+        /// basic, digest or NTLM sign-in; the server's realm text is never shown
+        case httpAuth
+
+        /// the page's scripts are held until the user answers
+        var stallsPage: Bool {
+            switch self {
+            case .openExternal, .httpAuth: false
+            default: true
+            }
+        }
     }
 
     /// the optional checkbox above the buttons
@@ -35,6 +43,10 @@ final class PageDialogRequest: Identifiable {
     /// an opaque origin (a `data:` or sandboxed frame), which then goes unnamed
     let host: String
     let checkbox: Checkbox?
+    /// the address a sign-in is for, which the pill shows while it is up
+    let url: URL?
+    /// when it went up; an app it offers can't be opened within `PermissionPrompt.armDelay` of this
+    let asked = Date()
     private var respond: ((Answer) -> Void)?
 
     /// what came back from the panel; `secondary` is a second field's text
@@ -45,13 +57,14 @@ final class PageDialogRequest: Identifiable {
     }
 
     init(
-        kind: Kind, message: String, host: String, checkbox: Checkbox? = nil,
+        kind: Kind, message: String, host: String, checkbox: Checkbox? = nil, url: URL? = nil,
         respond: @escaping (Answer) -> Void
     ) {
         self.kind = kind
         self.message = message
         self.host = host
         self.checkbox = checkbox
+        self.url = url
         self.respond = respond
     }
 

@@ -85,6 +85,7 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case updateBlocklists
     case incognitoTouchID
     case fingerprintDefence
+    case siteBlocking
     case sitePermissions
     case forgetAllSites
     case appleEventsJavaScript
@@ -97,6 +98,8 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case hoverArea
     case revealSpeed
     case spaceSwitchSpeed
+    case newTabPage
+    case pinnedLinksPeek
     case pinnedSeparation
     case splitOffDestination
     case tabPreviews
@@ -109,6 +112,7 @@ nonisolated enum SettingID: String, CaseIterable, Sendable {
     case routingRules
     case describeRule
     case externalLinks
+    case webApps
     case peekCorner
     case scoutFrame
     case bangs
@@ -289,7 +293,7 @@ nonisolated extension SettingID {
         case .appIcon:
             SettingsEntry(
                 pane: .appearance, title: "App Icon", section: "App Icon",
-                keywords: ["dock icon", "theme", "alternate icon"])
+                keywords: ["dock icon", "theme", "alternate icon", "home icon", "unlock"])
         case .profileList:
             SettingsEntry(
                 pane: .profiles, title: "Your Profiles",
@@ -424,7 +428,7 @@ nonisolated extension SettingID {
                 keywords: ["page zoom", "text size", "magnification"])
         case .clearPermissions:
             SettingsEntry(
-                pane: .profiles, page: .clearData, title: "Site permissions", section: "Every Profile",
+                pane: .profiles, page: .clearData, title: "Site permissions",
                 keywords: ["camera", "microphone", "location", "reset permissions"])
         case .clearNow:
             SettingsEntry(
@@ -458,6 +462,10 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .privacy, title: "Randomise fingerprintable readings", section: "Fingerprint Defence",
                 keywords: ["fingerprinting", "canvas", "anonymity", "fonts"])
+        case .siteBlocking:
+            SettingsEntry(
+                pane: .privacy, title: "Blocking by Site", section: "Blocking by Site",
+                keywords: ["site exceptions", "allow ads", "whitelist", "allowlist", "trackers on this site", "cookie banners"])
         case .sitePermissions:
             SettingsEntry(
                 pane: .privacy, title: "Site Permissions", section: "Site Permissions",
@@ -506,6 +514,14 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .sidebar, title: "Switching speed", section: "Spaces",
                 keywords: ["space animation", "transition", "swipe spaces"])
+        case .newTabPage:
+            SettingsEntry(
+                pane: .tabs, title: "Open new tabs as a page", section: "New Tabs",
+                keywords: ["blank tab", "new tab page", "search bar", "command bar", "new tab extension", "homepage"])
+        case .pinnedLinksPeek:
+            SettingsEntry(
+                pane: .tabs, title: "Open other sites in Peek", section: "Pinned Tabs",
+                keywords: ["favourites", "favorites", "links", "glance", "preview", "external site", "stay on page"])
         case .pinnedSeparation:
             SettingsEntry(
                 pane: .tabs, title: "When separating", section: "Pinned Tabs",
@@ -554,6 +570,10 @@ nonisolated extension SettingID {
             SettingsEntry(
                 pane: .links, title: "A link that matches a rule", section: "Links from other apps",
                 keywords: ["external links", "other apps", "open in scout"])
+        case .webApps:
+            SettingsEntry(
+                pane: .links, title: "Apps", section: "Apps",
+                keywords: ["web apps", "install as app", "site as app", "pwa", "dock", "standalone window"])
         case .peekCorner:
             SettingsEntry(
                 pane: .links, title: "Controls corner", section: "Peek",
@@ -668,7 +688,7 @@ nonisolated extension SettingID {
         case .deleteProfile: !ProfilesNavigator.shared.profile.isDefault
         case .neverSaved: !PasswordStore.shared.neverSave.isEmpty
         case .updateBlocklists: ContentBlocker.shared.isActive
-        case .forgetAllSites: !SitePermissionStore.shared.sorted.isEmpty
+        case .forgetAllSites: BrowserWindows.shared.browserScope?.currentProfile.sitePermissions.sorted.isEmpty == false
         case .previewSites: TabPreviewCard.isEnabled
         case .agentSetup, .agentSpaces, .agentScripts, .approvedAgents, .connectedAgents: AgentBridge.shared.isEnabled
         case .tidyTabNames, .askAboutPage, .iconIdeas, .askSettings, .rulesFromWords:

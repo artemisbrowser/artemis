@@ -86,11 +86,16 @@ enum Lobby {
     }
 
     private static func handBack(raising: Bool) {
-        let target =
-            NSApp.windows.last { $0.isVisible && $0.canBecomeKey && !shownAtResign.contains(ObjectIdentifier($0)) && !isLobby($0) }
-            ?? prior.flatMap { $0.isVisible ? $0 : nil }
-            ?? NSApp.orderedWindows.first { $0.isVisible && $0.canBecomeKey && !isLobby($0) }
-        if raising { target?.makeKeyAndOrderFront(nil) } else { target?.makeKey() }
+        let candidates =
+            [
+                NSApp.windows.last { $0.isVisible && $0.canBecomeKey && !shownAtResign.contains(ObjectIdentifier($0)) && !isLobby($0) },
+                prior.flatMap { $0.isVisible ? $0 : nil },
+            ].compactMap { $0 } + NSApp.orderedWindows.filter { $0.isVisible && $0.canBecomeKey && !isLobby($0) }
+        // as macOS does: a window on the Space shown, else another Space's, which the lobby (on every Space) can't switch to
+        let target = candidates.first(where: \.isOnActiveSpace) ?? candidates.first
+        // Desktop & Dock's "When switching to an application, switch to a Space with open windows"
+        let switchesSpaces = UserDefaults(suiteName: "com.apple.dock")?.object(forKey: "workspaces-auto-swoosh") as? Bool ?? true
+        if raising || target?.isOnActiveSpace == false && switchesSpaces { target?.makeKeyAndOrderFront(nil) } else { target?.makeKey() }
         leave()
     }
 

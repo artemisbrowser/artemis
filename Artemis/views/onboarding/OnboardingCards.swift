@@ -150,7 +150,7 @@ struct OnboardingCards: View {
             sidebarControls
         case .yours:
             VStack(alignment: .leading, spacing: 12) {
-                Rows(items: AppIconChoice.allCases, columns: 6, spacing: 10) { choice in
+                Rows(items: AppIconChoice.allCases.filter { !$0.isLocked }, columns: 6, spacing: 10) { choice in
                     Button {
                         icon = choice
                         AppIconChoice.apply()

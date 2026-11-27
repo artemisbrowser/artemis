@@ -66,23 +66,19 @@ nonisolated struct SitePermissionRecord: Codable, Identifiable, Sendable {
     var id: String { origin }
 }
 
-/// the remembered answers behind `PermissionPrompt`; `TabManager` queues the
-/// live requests. incognito answers stay in memory
+/// one profile's remembered answers behind `PermissionPrompt`; `TabManager` queues the
+/// live requests. its incognito windows' answers stay in memory
 @MainActor
 @Observable
 final class SitePermissionStore {
-    static let shared = SitePermissionStore()
-
     private(set) var records: [String: SitePermissionRecord] = [:]
     /// answers given in incognito, never written
     private var ephemeral: [String: SitePermissionRecord] = [:]
+    @ObservationIgnored private let fileURL: URL
 
-    private static let fileName = "permissions.json"
-
-    private init() {
-        records =
-            AppStorageLocation.loadDurable(
-                [String: SitePermissionRecord].self, from: AppStorageLocation.file(Self.fileName)) ?? [:]
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+        records = AppStorageLocation.loadDurable([String: SitePermissionRecord].self, from: fileURL) ?? [:]
     }
 
     /// the remembered answer, or nil if the site has never been asked. incognito
@@ -140,7 +136,7 @@ final class SitePermissionStore {
     func forgetAll() {
         records = [:]
         ephemeral = [:]
-        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(Self.fileName))
+        AppStorageLocation.discardUnreadable(of: fileURL)
         saveNow(keepsBackup: false)
     }
 
@@ -151,14 +147,14 @@ final class SitePermissionStore {
 
     private func save() {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        AppStorageLocation.writeDurable(data, to: AppStorageLocation.file(Self.fileName))
+        AppStorageLocation.writeDurable(data, to: fileURL)
     }
 
     /// write synchronously, for app termination, where a queued write dies
     /// with the process
     func saveNow(keepsBackup: Bool = true) {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(Self.fileName), keepsBackup: keepsBackup)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
     /// `scheme://host[:port]`, the key a decision is stored under; a default port

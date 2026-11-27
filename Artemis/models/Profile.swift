@@ -46,6 +46,7 @@ final class Profile: Identifiable {
     @ObservationIgnored private var openedHistory: HistoryStore?
     @ObservationIgnored private var openedArchive: ArchiveStore?
     @ObservationIgnored private var openedInputHistory: InputHistory?
+    @ObservationIgnored private var openedSitePermissions: SitePermissionStore?
 
     var history: HistoryStore {
         if let openedHistory { return openedHistory }
@@ -68,6 +69,17 @@ final class Profile: Identifiable {
         return store
     }
 
+    /// the default profile's is the app-wide file builds before profiles kept
+    var sitePermissions: SitePermissionStore {
+        if let openedSitePermissions { return openedSitePermissions }
+        let store = SitePermissionStore(fileURL: file("permissions.json"))
+        openedSitePermissions = store
+        return store
+    }
+
+    /// the default profile's are the app-wide files builds before profiles kept
+    @ObservationIgnored private(set) lazy var certificateTrust = CertificateTrust(
+        fileURL: file("certificate-exceptions.json"), strictURL: file("strict-transport.json"))
     @ObservationIgnored private(set) lazy var pageIndex = FullTextIndex(fileURL: file("pagetext.sqlite"))
     @ObservationIgnored private(set) lazy var translationRules = TranslationRules(
         fileURL: file("translation-rules.json"))
@@ -86,6 +98,7 @@ final class Profile: Identifiable {
         self.archiveAfterHours = archiveAfterHours
             ?? defaults.object(forKey: TabManager.autoArchiveHoursKey) as? Double
             ?? TabManager.defaultAutoArchiveHours
+        if !isDefault { AppStorageLocation.keepWrites(under: Self.directory(for: id)) }
     }
 
     var isDefault: Bool { id == Self.defaultID }
@@ -96,6 +109,13 @@ final class Profile: Identifiable {
         openedHistory?.saveNow()
         openedArchive?.saveNow()
         openedInputHistory?.saveNow()
+        openedSitePermissions?.saveNow()
+    }
+
+    /// Forget All Sites: this profile's permission answers and the apps its sites may open
+    func forgetSites() {
+        sitePermissions.forgetAll()
+        ExternalSchemes.forgetAll(in: id)
     }
 
     private func mirror(_ value: Any, _ key: String) {
@@ -104,17 +124,40 @@ final class Profile: Identifiable {
 
     var dataStore: WKWebsiteDataStore { ProfileStore.dataStore(for: id) }
 
+    /// set once this profile is deleted: nothing makes a folder for it again
+    @ObservationIgnored private(set) var isDiscarded = false
+
     /// where this profile keeps a file of its own
     func file(_ name: String) -> URL {
         guard !isDefault else { return AppStorageLocation.file(name) }
         let dir = Self.directory(for: id)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if !isDiscarded { try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
         return dir.appendingPathComponent(name)
     }
 
+    /// for a deleted profile: drops its writes, then removes its folder once the page index has closed
+    func discardFiles() {
+        isDiscarded = true
+        let folder = Self.directory(for: id)
+        AppStorageLocation.discardWrites(under: folder)
+        Task {
+            await pageIndex.close()
+            AppStorageLocation.removeDiscarded(folder)
+        }
+    }
+
+    private static var folders: URL { AppStorageLocation.directory.appendingPathComponent("Profiles", isDirectory: true) }
+
     static func directory(for id: UUID) -> URL {
-        AppStorageLocation.directory.appendingPathComponent("Profiles", isDirectory: true)
-            .appendingPathComponent(id.uuidString, isDirectory: true)
+        folders.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    /// removes each empty `Profiles/<id>` that no profile in `ids` owns; `rmdir` refuses a folder holding anything
+    static func sweepEmptyFolders(keeping ids: Set<UUID>) {
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: folders.path)) ?? [] {
+            guard let id = UUID(uuidString: name), !ids.contains(id) else { continue }
+            rmdir(directory(for: id).path)
+        }
     }
 }
 
@@ -189,8 +232,9 @@ enum ProfileStore {
         }
     }
 
-    /// on launch, delete any on-disk jar no profile owns
+    /// on launch, delete any on-disk jar and empty folder no profile owns
     static func reconcile(keeping ids: Set<UUID>) {
+        Profile.sweepEmptyFolders(keeping: ids)
         Task {
             // the fetch answers on WebKit's main run loop, which only the default store starts
             _ = WKWebsiteDataStore.default()

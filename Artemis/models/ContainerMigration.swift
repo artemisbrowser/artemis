@@ -6,6 +6,10 @@ import Foundation
 /// copies a sandboxed install's data out of its App Sandbox container to where an
 /// unsandboxed app keeps it, once; the container stays untouched as a backup
 nonisolated enum ContainerMigration {
+    static let marker = ".from-container"
+    /// a target that was already there is kept beside it as `<name>.<backup><stamp>`
+    static let backup = "pre-container-"
+
     /// runs before anything reads settings or stores: the first stored property of ArtemisApp
     static func run() {
         guard !AppStorageLocation.isContainerised, let id = Bundle.main.bundleIdentifier else { return }
@@ -15,7 +19,7 @@ nonisolated enum ContainerMigration {
         let folder = AppStorageLocation.folderName
         // not AppStorageLocation.directory: reading that creates the folder this replaces
         let support = library.appending(path: "Application Support/\(folder)")
-        let marker = support.appending(path: ".from-container")
+        let marker = support.appending(path: marker)
         guard fm.fileExists(atPath: old.path), !fm.fileExists(atPath: marker.path) else { return }
         // unreadable (App Data protection refused): try again next launch rather than mark it done
         guard let entries = try? fm.contentsOfDirectory(atPath: old.path), !entries.isEmpty else {
@@ -35,7 +39,7 @@ nonisolated enum ContainerMigration {
             guard fm.fileExists(atPath: source.path) else { continue }
             do {
                 if fm.fileExists(atPath: target.path) {
-                    try fm.moveItem(at: target, to: target.appendingPathExtension("pre-container-\(stamp)"))
+                    try fm.moveItem(at: target, to: target.appendingPathExtension("\(backup)\(stamp)"))
                 }
                 try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.copyItem(at: source, to: target)

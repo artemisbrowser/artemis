@@ -79,4 +79,10 @@ enum PerfFlags {
 
     /// a closing command bar fades as it stood, re-rendered only once it unmounts
     static var leavesClosingBarAlone: Bool { on("bar-quiet") }
+
+    /// ⇧⌘[ ⇧⌘] switch tabs from the key monitor, before AppKit's menu search and the page
+    static var reservesTabKeys: Bool { on("tab-keys") }
+
+    /// the space pager slides as one Core Animation layer outside the sidebar's graph
+    static var slidesPagerInLayer: Bool { on("pager-layer") }
 }

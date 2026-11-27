@@ -53,6 +53,16 @@ struct SpaceBackdrop: View, Animatable {
     var overPage = false
     /// the sidebar is pinned: its frost stacks on the background's across the whole window
     var sidebarPinned = false
+    /// `position` as written: the end of any animation `position` is part way through
+    private let target: Double
+
+    init(spaces: [Space], position: Double, overPage: Bool = false, sidebarPinned: Bool = false) {
+        self.spaces = spaces
+        self.position = position
+        self.overPage = overPage
+        self.sidebarPinned = sidebarPinned
+        target = position
+    }
 
     // `withAnimation` interpolates only animatable data: exposing `position`
     // re-runs `body` per frame of a click switch instead of jumping to the end
@@ -75,11 +85,15 @@ struct SpaceBackdrop: View, Animatable {
         // only the floor and the incoming layer are ever visible at once, so a
         // glass surface is needed exactly when one of those two is glass
         let glassInvolved = floorGlass || nextGlass
+        // the layers' fade runs on its own clock: mid-flight, cover the space on either side
+        let glassBeside = position != target && spaces.indices.contains(floor - 1)
+            && spaces[floor - 1].appearance.fill == .glass
+        let glassShown = glassInvolved || glassBeside
 
         ZStack {
             // opaque floor for the empty/degenerate case — but never while glass
             // is in view: over the page, the frost has to see the page beneath
-            if !glassInvolved {
+            if !glassShown {
                 Color.black
             }
 
@@ -90,16 +104,10 @@ struct SpaceBackdrop: View, Animatable {
                 sidebar: frost(\.sidebarFrost, floorSpace, nextSpace, frac),
                 brightness: frost(\.glassBrightness, floorSpace, nextSpace, frac),
                 sidebarPinned: sidebarPinned, overPage: overPage, edge: glassInvolved)
-                .opacity(glassInvolved ? 1 : 0)
+                .opacity(glassShown ? 1 : 0)
 
-            ForEach(Array(spaces.enumerated()), id: \.element.id) { index, space in
-                // SpaceBackgroundView (not a bare FillLayer) so a space's own
-                // colour edits still fade in place; the space *switch* is the
-                // outer opacity here
-                SpaceBackgroundView(appearance: space.appearance)
-                    .opacity(layerOpacity(
-                        index: index, floor: floor, frac: frac, glassInvolved: glassInvolved))
-            }
+            BackdropLayers(
+                spaces: spaces, position: min(max(target, 0), Double(max(spaces.count - 1, 0))), reports: !overPage)
         }
         .ignoresSafeArea()
     }
@@ -117,7 +125,7 @@ struct SpaceBackdrop: View, Animatable {
         return floorGlass ? floor : next
     }
 
-    private func layerOpacity(index: Int, floor: Int, frac: Double, glassInvolved: Bool) -> Double {
+    fileprivate static func layerOpacity(index: Int, floor: Int, frac: Double, glassInvolved: Bool) -> Double {
         if glassInvolved {
             // the substrate is the floor; the two participating layers plain-
             // crossfade over it, everything else is clear
@@ -128,6 +136,111 @@ struct SpaceBackdrop: View, Animatable {
         if index <= floor { return 1 }      // floor + everything beneath it: opaque
         if index == floor + 1 { return frac }  // the incoming space, fading in
         return 0
+    }
+}
+
+/// each space's colour as its own layer, faded by Core Animation on the transaction's curve,
+/// so the cross-fade starts in the same commit as the pager's slide and runs while main is busy
+private struct BackdropLayers: NSViewRepresentable {
+    let spaces: [Space]
+    let position: Double
+    let reports: Bool
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: BackdropLayersView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func makeNSView(context: Context) -> BackdropLayersView {
+        let view = BackdropLayersView()
+        if reports, Bench.isRequested { Bench.backdropShown = { [weak view] in view?.presentedPosition } }
+        return view
+    }
+
+    func updateNSView(_ view: BackdropLayersView, context: Context) {
+        view.update(spaces: spaces, position: position, animation: context.transaction.animation)
+    }
+}
+
+private final class BackdropLayersView: NSView {
+    private var hosts: [Space.ID: NSHostingView<SpaceBackgroundView>] = [:]
+    private var spaces: [Space] = []
+    private var shown: Double?
+    /// the lower space of the pair the last move crossed
+    private var floor = 0
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    var presentedPosition: Double? {
+        guard let next = spaces.indices.contains(floor + 1) ? hosts[spaces[floor + 1].id]?.layer : nil else {
+            return shown
+        }
+        return Double(floor) + Double(next.presentation()?.opacity ?? next.opacity)
+    }
+
+    func update(spaces: [Space], position: Double, animation: Animation?) {
+        let ids = Set(spaces.map(\.id))
+        for (id, host) in hosts where !ids.contains(id) {
+            host.removeFromSuperview()
+            hosts[id] = nil
+        }
+        for (index, space) in spaces.enumerated() {
+            if let host = hosts[space.id] {
+                if host.rootView.appearance != space.appearance { host.rootView = SpaceBackgroundView(appearance: space.appearance) }
+                host.layer?.zPosition = CGFloat(index)
+                continue
+            }
+            let host = NSHostingView(rootView: SpaceBackgroundView(appearance: space.appearance))
+            host.sizingOptions = []
+            host.safeAreaRegions = []
+            host.frame = bounds
+            host.autoresizingMask = [.width, .height]
+            host.wantsLayer = true
+            host.layer?.zPosition = CGFloat(index)
+            host.layer?.opacity = 0
+            addSubview(host)
+            hosts[space.id] = host
+        }
+        let membersChanged = self.spaces.map(\.id) != spaces.map(\.id)
+        let start = membersChanged ? position : presentedPosition ?? position
+        self.spaces = spaces
+        guard shown != position || membersChanged else { return }
+        shown = position
+        // the move's pair sets the rule at once; only the pair fades
+        let animated = animation != nil && start != position && abs(start - position) <= 1
+        floor = Int((animated ? min(start, position) : position).rounded(.down))
+        let glass = [floor, floor + 1].contains { spaces.indices.contains($0) && spaces[$0].appearance.fill == .glass }
+        let settle = animation == Motion.spaceColorSettle
+        let duration =
+            settle ? Motion.spaceColorSettleDuration
+            : UserDefaults.standard.object(forKey: "spaceTransitionDuration") as? Double ?? 0.2
+        func opacity(_ index: Int, at p: Double) -> Float {
+            Float(SpaceBackdrop.layerOpacity(
+                index: index, floor: floor, frac: min(max(p - Double(floor), 0), 1), glassInvolved: glass))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, space) in spaces.enumerated() {
+            guard let layer = hosts[space.id]?.layer else { continue }
+            let from = opacity(index, at: start), to = opacity(index, at: position)
+            layer.removeAnimation(forKey: "fade")
+            layer.opacity = to
+            guard animated, from != to else { continue }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = from
+            fade.toValue = to
+            fade.duration = duration
+            fade.timingFunction = CAMediaTimingFunction(name: settle ? .easeOut : .easeInEaseOut)
+            layer.add(fade, forKey: "fade")
+        }
+        CATransaction.commit()
     }
 }
 

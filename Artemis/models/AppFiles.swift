@@ -34,6 +34,13 @@ nonisolated enum AppStorageLocation {
     /// a lab copy or a self-test run: nobody is there to answer a macOS prompt, so the Keychain is
     /// a dictionary and the downloads folder sits in the data folder
     static let isTestRun = isExtensionLab || ProcessInfo.processInfo.environment["ARTEMIS_SELFTEST"] != nil
+    /// whether this launch reports and updates itself: never a test run, nor a perflab or extlab
+    /// copy started without its script, which the bundle id both scripts write still marks
+    static func reportsAndUpdates(
+        testRun: Bool = AppStorageLocation.isTestRun, bundleID: String? = Bundle.main.bundleIdentifier
+    ) -> Bool {
+        !testRun && bundleID?.hasPrefix("dev.findles.Artemis.") != true
+    }
     /// `ARTEMIS_DIAG=ext`: the extension runtime traces its compat calls
     static let isExtensionsDiag = ProcessInfo.processInfo.environment["ARTEMIS_DIAG"] == "ext"
 
@@ -96,16 +103,139 @@ nonisolated enum AppStorageLocation {
         writes.sync(execute: work)
     }
 
-    private static func rotate(_ data: Data, to url: URL, keepsBackup: Bool = true) {
-        let backup = url.appendingPathExtension("bak")
-        if !keepsBackup {
-            try? FileManager.default.removeItem(at: backup)
-        } else if let existing = try? Data(contentsOf: url), !existing.isEmpty {
-            try? existing.write(to: backup, options: .atomic)
+    /// a self-test's stand-in for a failing disk: the error a write to this URL throws; touched only on `writes`
+    nonisolated(unsafe) static var writeFailure: (@Sendable (URL) -> (any Error)?)?
+
+    private static func write(_ data: Data, to url: URL) throws {
+        if let error = writeFailure?(url) { throw error }
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// why saves are failing, for the sidebar's notice
+    enum SaveFailure: Sendable { case diskFull, other }
+
+    /// each file's newest failed write, until a write lands there; touched only on `writes`
+    nonisolated(unsafe) private static var unsaved: [URL: (data: Data, keepsBackup: Bool)] = [:] {
+        didSet {
+            guard unsaved.isEmpty else { return }
+            retryRounds = 0
+            logged = []
+            show(nil)
         }
-        do { try data.write(to: url, options: .atomic) } catch {
-            Diagnostics.record(
-                area: "storage", message: "\(url.lastPathComponent) failed to save: \(error.localizedDescription)")
+    }
+    /// whether a `retryUnsaved` is already queued; touched only on `writes`
+    nonisolated(unsafe) private(set) static var isRetryQueued = false
+    /// seconds from a failed write to its first retry; each failed round after it waits
+    /// twice as long, up to tenfold. touched only on `writes`
+    nonisolated(unsafe) static var retryBase = 30.0
+    /// retries queued since nothing was unsaved, at most 4; touched only on `writes`
+    nonisolated(unsafe) private static var retryRounds = 0
+    /// the causes logged since nothing was unsaved; touched only on `writes`
+    nonisolated(unsafe) private static var logged: Set<String> = []
+    /// what the notice shows; touched only on `writes`
+    nonisolated(unsafe) private static var shown: SaveFailure?
+
+    /// `.other` never replaces `.diskFull`; runs on `writes` only
+    private static func show(_ failure: SaveFailure?) {
+        guard failure != shown, failure != .other || shown == nil else { return }
+        shown = failure
+        DispatchQueue.main.async { StorageNotice.shared.failure = failure }
+    }
+
+    /// writes every failed write again; runs on `writes` only, through `enqueueDurable`
+    static func retryUnsaved() {
+        for (url, write) in unsaved { rotate(write.data, to: url, keepsBackup: write.keepsBackup) }
+    }
+
+    /// `retryUnsaved` for a quit, waited on for at most `seconds`: a stalled volume can't hold the quit
+    static func retryUnsavedNow(within seconds: Double = 2) {
+        let done = DispatchSemaphore(value: 0)
+        writes.async {
+            retryUnsaved()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + seconds)
+    }
+
+    /// forgets the failed write to each of `urls`, for a caller removing them; runs on `writes` only
+    static func forgetUnsaved(_ urls: [URL]) {
+        for url in urls { unsaved[url] = nil }
+    }
+
+    /// folders whose writes are dropped, each path ending in "/"; touched only on `writes`
+    nonisolated(unsafe) private static var discarded: Set<String> = []
+
+    /// drops every failed and later write under `folder`, until `keepWrites(under:)`;
+    /// writes queued before it still land
+    static func discardWrites(under folder: URL) {
+        let prefix = folder.path + "/"
+        writes.async {
+            discarded.insert(prefix)
+            unsaved = unsaved.filter { !$0.key.path.hasPrefix(prefix) }
+        }
+    }
+
+    static func keepWrites(under folder: URL) {
+        let prefix = folder.path + "/"
+        writes.async { discarded.remove(prefix) }
+    }
+
+    /// removes `folder` after the writes queued before it, unless `keepWrites(under:)` followed its discard
+    static func removeDiscarded(_ folder: URL) {
+        let prefix = folder.path + "/"
+        writes.async {
+            guard discarded.contains(prefix) else { return }
+            try? FileManager.default.removeItem(at: folder)
+        }
+    }
+
+    private static func rotate(_ data: Data, to url: URL, keepsBackup: Bool = true) {
+        guard !discarded.contains(where: { url.path.hasPrefix($0) }) else { return }
+        // a clear yet to land stays a clear: the primary still holds what it erased
+        let keepsBackup = keepsBackup && unsaved[url]?.keepsBackup != false
+        let backup = url.appendingPathExtension("bak")
+        let previous = keepsBackup ? (try? Data(contentsOf: url)) : nil
+        do {
+            do { try write(data, to: url) } catch {
+                let folder = url.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: folder.path) {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                } else {
+                    // a failed clear frees its backup's space for one more try, only while a
+                    // loadable primary remains; the primary itself is never removed
+                    guard !keepsBackup, (try? Data(contentsOf: url))?.isEmpty == false,
+                        (try? FileManager.default.removeItem(at: backup)) != nil
+                    else { throw error }
+                }
+                try write(data, to: url)
+            }
+            // only behind a landed write: a failed one leaves both files as they were
+            if let previous, !previous.isEmpty { try? write(previous, to: backup) }
+            if !keepsBackup { try? FileManager.default.removeItem(at: backup) }
+            unsaved[url] = nil
+        } catch {
+            let failure = error as NSError
+            let reason =
+                switch (failure.domain, failure.code) {
+                case (NSCocoaErrorDomain, NSFileWriteOutOfSpaceError): "disk full"
+                case (NSCocoaErrorDomain, NSFileWriteNoPermissionError): "no permission"
+                case (NSCocoaErrorDomain, NSFileWriteVolumeReadOnlyError): "read-only volume"
+                default: "\(failure.domain) \(failure.code)"
+                }
+            // one event per cause until nothing is unsaved; it names no file or volume
+            if logged.insert(reason).inserted {
+                Diagnostics.record(area: "storage", message: "save failed: \(reason)", level: .warning)
+            }
+            show(reason == "disk full" ? .diskFull : .other)
+            unsaved[url] = (data: data, keepsBackup: keepsBackup)
+            if !isRetryQueued {
+                isRetryQueued = true
+                writes.asyncAfter(deadline: .now() + min(retryBase * Double(1 << retryRounds), retryBase * 10)) {
+                    isRetryQueued = false
+                    retryUnsaved()
+                }
+                retryRounds = min(retryRounds + 1, 4)
+            }
         }
     }
 
@@ -119,7 +249,7 @@ nonisolated enum AppStorageLocation {
             do { return try decoder.decode(type, from: data) } catch {
                 debugLog("store: failed to decode \(candidate.lastPathComponent), trying backup")
                 let aside = candidate.appendingPathExtension("unreadable")
-                if !FileManager.default.fileExists(atPath: aside.path) { try? data.write(to: aside) }
+                if !FileManager.default.fileExists(atPath: aside.path) { try? data.write(to: aside, options: .atomic) }
                 // the case alone: a decoding error's text names the keys on its path,
                 // and some stores are keyed by host or by what was typed
                 let reason =

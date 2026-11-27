@@ -265,7 +265,8 @@ nonisolated enum Reports {
         let since = UserDefaults.standard.object(forKey: reportedThroughKey) as? Date ?? .distantPast
         let now = Date.now
         // the server takes at most 100 events a report
-        let events = Diagnostics.events(after: since).suffix(100)
+        // a raised exception goes out with a crash report or an export, never in this one
+        let events = Diagnostics.events(after: since).filter { $0.area != Diagnostics.exceptionArea }.suffix(100)
         guard now.timeIntervalSince(since) >= 3600, !events.isEmpty else { return }
         let diagnostics = await snapshot()
         guard let body = body(kind: "errors", diagnostics: diagnostics, events: Array(events)) else { return }

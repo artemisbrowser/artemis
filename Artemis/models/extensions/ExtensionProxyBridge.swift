@@ -170,7 +170,7 @@ final class ExtensionProxyBridge {
             // by the shim because WebKit truncates what it reports natively
             let level = message["level"] as? String ?? "log"
             let text = message["text"] as? String ?? ""
-            consoleLog.append("[\(level)] \(text)")
+            consoleLog.append("[\(level)] \(sender): \(text)")
             if consoleLog.count > 200 { consoleLog.removeFirst(consoleLog.count - 200) }
             debugLog("ext console \(level): \(text)")
             return ["ok": true]
@@ -263,7 +263,10 @@ final class ExtensionProxyBridge {
             let data = try? JSONSerialization.data(
                 withJSONObject: value.merging([Self.ownerKey: slot?.owner as Any].compactMapValues { $0 }) { $1 })
         else {
-            try? FileManager.default.removeItem(at: url)
+            AppStorageLocation.enqueueDurableNow {
+                AppStorageLocation.forgetUnsaved([url])
+                try? FileManager.default.removeItem(at: url)
+            }
             Self.saveCredentials(nil, profile)
             return
         }

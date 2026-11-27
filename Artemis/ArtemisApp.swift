@@ -242,6 +242,11 @@ struct ArtemisApp: App {
                     Button("Full-Page Image") { exportPage(.fullPageImage) }
                 }
                 .disabled(tabManager.unlockedContentTab?.url == nil)
+
+                Button("Install as App…") {
+                    if let tab = tabManager.unlockedContentTab { WebApps.shared.askToInstall(tab) }
+                }
+                .disabled(!(tabManager.unlockedContentTab.map(WebApps.canInstall) ?? false))
             }
 
             CommandGroup(replacing: .undoRedo) {
@@ -708,10 +713,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         TabNameStore.shared.saveNow()
         for profile in BrowserCore.shared.profiles { profile.saveNow() }
         ZoomStore.shared.saveNow()
-        SitePermissionStore.shared.saveNow()
         RoutingStore.shared.saveNow()
         AutofillStore.shared.saveNow()
         PasswordStore.saveNow()
+        AppStorageLocation.retryUnsavedNow()
         // a page's notifications die with its document
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
@@ -722,18 +727,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Bench.mark("didFinishLaunching")
         ScoutWindow.watchActivation()
         _ = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if Self.tiles(event) { return nil }
             let fKey = event.charactersIgnoringModifiers?.unicodeScalars.first.map { (0xF704...0xF726).contains($0.value) } == true
-            if fKey || !event.modifierFlags.isDisjoint(with: [.command, .control]), let menu = NSApp.mainMenu { Self.refresh(menu) }
-            return event
+            guard fKey || !event.modifierFlags.isDisjoint(with: [.command, .control]), let menu = NSApp.mainMenu else { return event }
+            guard let (holder, index) = Self.tabSwitchItem(in: Self.refresh(menu, for: event), for: event) else { return event }
+            holder.performActionForItem(at: index)
+            return nil
         }
         Lobby.install()
         // ⌘⌥N from any app
         GlobalHotkey.shared.register(.commandOptionN) { QuickLaunch.toggle() }
         AppIconChoice.apply()
+        WebApps.shared.start()
         SpotlightIndex.scheduleRefresh()
         // Safari exports a quit or crash left unpacked
         try? FileManager.default.removeItem(at: SafariImport.exports)
-        if !SelfTest.isRequested, !AppStorageLocation.isExtensionLab {
+        if AppStorageLocation.reportsAndUpdates() {
+            Diagnostics.watchExceptions()
             Task { await Reports.run() }
             Updates.shared.start()
         }
@@ -764,6 +774,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for case let submenu? in menu.items.map(\.submenu) { refresh(submenu) }
     }
 
+    private static let keyModifiers: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+
+    /// only the menus holding an item for the key and its modifiers; every menu when none does, as
+    /// an item may only appear once its menu updates. Keys are read through ⌘'s layout, as AppKit
+    /// matches them (Dvorak – QWERTY ⌘)
+    static func refresh(_ menu: NSMenu, for event: NSEvent) -> [NSMenu] {
+        let keys = Set([event.charactersIgnoringModifiers, event.characters(byApplyingModifiers: .command)].compactMap { $0?.lowercased() }.filter { !$0.isEmpty })
+        let modifiers = event.modifierFlags.intersection(keyModifiers)
+        let holders = menus(in: menu).filter {
+            $0.items.contains { item in
+                let shift: NSEvent.ModifierFlags = item.keyEquivalent == item.keyEquivalent.lowercased() ? [] : .shift
+                return keys.contains(item.keyEquivalent.lowercased())
+                    && item.keyEquivalentModifierMask.intersection(keyModifiers).union(shift) == modifiers
+            }
+        }
+        guard !holders.isEmpty else {
+            refresh(menu)
+            return []
+        }
+        for holder in holders {
+            holder.delegate?.menuNeedsUpdate?(holder)
+            holder.update()
+        }
+        return holders
+    }
+
+    /// the system's tiling keys (fn⌃F Fill, fn⌃C Center): AppKit offers them only to a window
+    /// that `isMovable`, which a browser window isn't while it drags itself
+    private static func tiles(_ event: NSEvent) -> Bool {
+        let menuSelector = NSSelectorFromString("_windowTilingMenu")
+        guard event.modifierFlags.contains([.control, .function]), event.specialKey == nil,
+            let window = NSApp.keyWindow, !window.isMovable, window.responds(to: menuSelector)
+        else { return false }
+        window.isMovable = true
+        defer { window.isMovable = false }
+        let menu = window.perform(menuSelector)?.takeUnretainedValue() as? NSMenu
+        return menu?.performKeyEquivalent(with: event) == true
+    }
+
+    /// ⇧⌘[ ⇧⌘] switch tabs from the key monitor, before AppKit's search of every menu and before the
+    /// page; not under a modal panel, nor in the Web Inspector, whose own panels switch on them
+    static func tabSwitchItem(in menus: [NSMenu], for event: NSEvent) -> (NSMenu, Int)? {
+        let mask: NSEvent.ModifierFlags = [.command, .shift]
+        guard PerfFlags.reservesTabKeys, NSApp.modalWindow == nil, !inInspector(event.window),
+            event.modifierFlags.intersection(keyModifiers) == mask,
+            let key = event.characters(byApplyingModifiers: .command), key == "[" || key == "]"
+        else { return nil }
+        for menu in menus {
+            if let index = menu.items.firstIndex(where: { $0.isEnabled && $0.keyEquivalent == key && $0.keyEquivalentModifierMask == mask }) {
+                return (menu, index)
+            }
+        }
+        return nil
+    }
+
+    private static func inInspector(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        let named = { (object: AnyObject) in NSStringFromClass(type(of: object)).contains("Inspector") }
+        let responders = (window.firstResponder as? NSView).map { sequence(first: $0, next: \.superview) }
+        return named(window) || responders?.contains { named($0) } == true
+    }
+
+    private static func menus(in menu: NSMenu) -> [NSMenu] {
+        [menu] + menu.items.compactMap(\.submenu).flatMap(menus(in:))
+    }
+
     /// a page handed off from another device opens in a tab, not a Scout window
     func application(
         _ application: NSApplication, continue userActivity: NSUserActivity,
@@ -780,8 +856,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        // files get tabs, all in one window; a web link gets a Scout window
-        let files = urls.filter(\.isFileURL)
+        // an app's launcher opens the app, other files get tabs, all in one window; a web link gets a Scout window
+        let files = urls.filter { $0.isFileURL && !WebApps.shared.open(launcher: $0) }
         if !files.isEmpty {
             Task {
                 await openInBrowser(files)

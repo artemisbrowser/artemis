@@ -20,6 +20,8 @@ final class UserScriptWorld: NSObject, WKScriptMessageHandlerWithReply {
     private let world: WKContentWorld
     private weak var context: WKWebExtensionContext?
     private var installed: [(controller: WKUserContentController, scripts: [WKUserScript], handles: Bool)] = []
+    /// `contentScripts.register` scripts by id; `install` leaves them be
+    private var registered: [String: [(controller: WKUserContentController, script: WKUserScript)]] = [:]
     /// the push ports of the extension pages that have a user-script listener
     private var listeners: [WKWebExtension.MessagePort] = []
     /// `silent`: the listening pages that have answered a message with nothing
@@ -38,8 +40,15 @@ final class UserScriptWorld: NSObject, WKScriptMessageHandlerWithReply {
 
     /// rebuild a running extension's world from its registry: when it loads, and after every change to either
     static func sync(_ context: WKWebExtensionContext, in profile: UUID) {
-        guard context.isLoaded, ExtensionData.declares("userScripts", context) else { return }
         let key = ExtensionAPIBridge.key(of: context, in: profile)
+        if !context.hasAccessToPrivateData, let world = running[key] {
+            let shut = SharedWebContent.userContentController(for: profile, isPrivate: true)
+            for (id, pairs) in world.registered {
+                for (controller, script) in pairs where controller === shut { controller.perform(remove, with: script) }
+                world.registered[id] = pairs.filter { $0.controller !== shut }
+            }
+        }
+        guard context.isLoaded, ExtensionData.declares("userScripts", context) else { return }
         let world = running[key] ?? UserScriptWorld(context: context)
         running[key] = world
         world.install(context, in: profile)
@@ -48,6 +57,7 @@ final class UserScriptWorld: NSObject, WKScriptMessageHandlerWithReply {
     static func stop(_ key: String) {
         guard let world = running.removeValue(forKey: key) else { return }
         world.uninstall()
+        for (controller, script) in world.registered.values.joined() { controller.perform(remove, with: script) }
         world.listeners = []
         world.drop()
     }
@@ -89,6 +99,31 @@ final class UserScriptWorld: NSObject, WKScriptMessageHandlerWithReply {
             scripts.forEach(controller.addUserScript)
             installed.append((controller, scripts, messaging))
         }
+    }
+
+    /// Firefox's `contentScripts.register`: code behind the extension's host access, in the page's
+    /// world or the extension's own, until unregistered or the extension stops
+    static func contentScript(
+        _ type: String, _ message: [String: Any], for context: WKWebExtensionContext, in profile: UUID
+    ) -> [String: Any] {
+        guard context.isLoaded, let id = message["id"] as? String else { return ["ok": false] }
+        let key = ExtensionAPIBridge.key(of: context, in: profile)
+        let world = running[key] ?? UserScriptWorld(context: context)
+        running[key] = world
+        for (controller, script) in world.registered.removeValue(forKey: id) ?? [] { controller.perform(remove, with: script) }
+        guard type == "contentScripts.register", let code = message["code"] as? String else { return ["ok": true] }
+        let script = WKUserScript(
+            source: matching(message, granted: context.currentPermissionMatchPatterns.map(\.string), code),
+            injectionTime: message["runAt"] as? String == "document_start" ? .atDocumentStart : .atDocumentEnd,
+            forMainFrameOnly: message["allFrames"] as? Bool != true,
+            in: message["world"] as? String == "MAIN" ? .page : world.world)
+        for isPrivate in [false, true] where !isPrivate || context.hasAccessToPrivateData {
+            let controller = SharedWebContent.userContentController(for: profile, isPrivate: isPrivate)
+            guard controller.responds(to: remove) else { continue }
+            controller.addUserScript(script)
+            world.registered[id, default: []].append((controller, script))
+        }
+        return ["ok": true]
     }
 
     private func uninstall() {

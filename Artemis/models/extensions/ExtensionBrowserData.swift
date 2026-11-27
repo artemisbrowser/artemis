@@ -90,9 +90,27 @@ extension ExtensionAPIBridge {
             guard ExtensionData.declares("userScripts", context), let profileID else { return ["ok": false] }
             return await UserScriptWorld.handle(type, message, for: context, in: profileID)
 
+        // Firefox lets any MV2 extension register code for the sites it can reach
+        case "contentScripts.register", "contentScripts.unregister":
+            guard context.webExtension.manifestVersion < 3, let profileID else { return ["ok": false] }
+            return UserScriptWorld.contentScript(type, message, for: context, in: profileID)
+
+        case "favicon.get":
+            guard ExtensionData.declares("favicon", context), let profile,
+                let host = (message["pageUrl"] as? String).flatMap(URL.init(string:))?.host(),
+                shown(profile, to: context).contains(where: { $0.url.host() == host }),
+                let tiff = FaviconStore.shared.icon(for: host)?.tiffRepresentation,
+                let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+            else { return [:] }
+            return ["url": "data:image/png;base64," + png.base64EncodedString()]
+
         case "system.display":
             guard ExtensionData.declares("system.display", context) else { return ["displays": []] }
             return ["displays": Self.displays()]
+
+        case "contentSettings.get", "contentSettings.set", "contentSettings.clear":
+            guard ExtensionData.declares("contentSettings", context) else { return ["ok": false] }
+            return contentSetting(type, message, for: context)
 
         case "fontSettings.list":
             guard ExtensionData.declares("fontSettings", context) else { return ["fonts": []] }
@@ -101,6 +119,83 @@ extension ExtensionAPIBridge {
 
         default:
             return nil
+        }
+    }
+
+    /// the content-setting types Artemis keeps per site, as its own permissions
+    private static let sitePermissions: [String: SitePermission] = [
+        "automaticDownloads": .downloads, "camera": .camera, "location": .location,
+        "microphone": .microphone, "notifications": .notifications,
+    ]
+
+    /// the origins each extension set, by "id|profile|permission": its `clear` and its uninstall undo only its own
+    private static var contentSet: [String: Set<String>] {
+        get { (UserDefaults.standard.dictionary(forKey: "extensionContentSettings") as? [String: [String]] ?? [:]).mapValues { Set($0) } }
+        set { UserDefaults.standard.set(newValue.mapValues { Array($0) }, forKey: "extensionContentSettings") }
+    }
+
+    /// an uninstalled extension's site settings go with it, in every profile and incognito
+    func forgetContentSettings(of id: String) {
+        for (key, origins) in Self.contentSet where key.hasPrefix(id + "|") {
+            let parts = key.split(separator: "|").map(String.init)
+            guard parts.count == 3, let profile = UUID(uuidString: parts[1]),
+                let permission = SitePermission(rawValue: parts[2]),
+                let store = BrowserCore.shared.profile(profile)?.sitePermissions
+            else { continue }
+            for origin in origins {
+                store.forget(origin, permission)
+                store.forget(origin, permission, ephemeral: true)
+            }
+        }
+        Self.contentSet = Self.contentSet.filter { !$0.key.hasPrefix(id + "|") }
+    }
+
+    /// a pattern names one site: scheme http, https or `*`, a host without wildcards, any path
+    private func contentSetting(_ type: String, _ message: [String: Any], for context: WKWebExtensionContext) -> [String: Any] {
+        guard let permission = Self.sitePermissions[message["type"] as? String ?? ""] else {
+            return ["ok": false, "error": "Artemis doesn't offer this setting."]
+        }
+        let incognito = type == "contentSettings.get"
+            ? message["incognito"] as? Bool == true : message["scope"] as? String == "incognito_session_only"
+        guard !incognito || context.hasAccessToPrivateData else {
+            return ["ok": false, "error": "You do not have permission to access incognito preferences."]
+        }
+        let profile = Self.profile(of: context)
+        guard let store = BrowserCore.shared.profile(profile)?.sitePermissions else {
+            return ["ok": false, "error": "This extension's profile is gone."]
+        }
+        let key = [context.uniqueIdentifier, profile.uuidString, permission.rawValue].joined(separator: "|")
+        switch type {
+        case "contentSettings.get":
+            let url = (message["primaryUrl"] as? String).flatMap(URL.init(string:))
+            guard let origin = SitePermissionStore.originString(url) else { return ["setting": "ask"] }
+            let setting: String = switch store.decision(for: origin, permission, ephemeral: incognito) {
+            case .allow: "allow"
+            case .deny: "block"
+            case nil: "ask"
+            }
+            return ["setting": setting]
+        case "contentSettings.clear":
+            for origin in Self.contentSet.removeValue(forKey: key) ?? [] {
+                store.forget(origin, permission, ephemeral: incognito)
+            }
+            return ["ok": true]
+        default:
+            let pattern = message["primaryPattern"] as? String ?? ""
+            guard let match = pattern.wholeMatch(of: /(https?|\*):\/\/([^\/*\[\]]+)(\/.*)?/) else {
+                return ["ok": false, "error": "Artemis keeps site settings for one site at a time."]
+            }
+            let schemes = match.1 == "*" ? ["https", "http"] : [String(match.1)]
+            let origins = schemes.compactMap { SitePermissionStore.originString(URL(string: "\($0)://\(match.2)/")) }
+            for origin in origins {
+                switch message["setting"] as? String {
+                case "allow": store.set(.allow, for: origin, permission, ephemeral: incognito)
+                case "block": store.set(.deny, for: origin, permission, ephemeral: incognito)
+                default: store.forget(origin, permission, ephemeral: incognito)
+                }
+            }
+            Self.contentSet[key, default: []].formUnion(origins)
+            return ["ok": true]
         }
     }
 

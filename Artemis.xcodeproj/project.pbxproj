@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D0C700310000000000000001 /* ArtemisAppShim in Embed Helpers */ = {isa = PBXBuildFile; fileRef = D0C700320000000000000001 /* ArtemisAppShim */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		D0C700010000000000000001 /* ArtemisDockTile.docktileplugin in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B401BDA32FA8B84B00429B08 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B401BDA22FA8B84B00429B08 /* AppIcon.icon */; };
 		D0C700210000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D0C700220000000000000001 /* Sparkle */; };
@@ -14,6 +15,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		D0C700390000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B4EF41DC2FA66F50000526C4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D0C700370000000000000001;
+			remoteInfo = ArtemisAppShim;
+		};
 		D0C700090000000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B4EF41DC2FA66F50000526C4 /* Project object */;
@@ -24,6 +32,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		D0C700380000000000000001 /* Embed Helpers */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				D0C700310000000000000001 /* ArtemisAppShim in Embed Helpers */,
+			);
+			name = "Embed Helpers";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D0C700080000000000000001 /* Embed PlugIns */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -38,6 +57,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D0C700320000000000000001 /* ArtemisAppShim */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ArtemisAppShim; sourceTree = BUILT_PRODUCTS_DIR; };
 		B401BDA22FA8B84B00429B08 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		B4EF41E42FA66F50000526C4 /* Artemis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Artemis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ArtemisDockTile.docktileplugin; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -54,6 +74,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		D0C700330000000000000001 /* ArtemisAppShim */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ArtemisAppShim;
+			sourceTree = "<group>";
+		};
 		B4EF41E62FA66F50000526C4 /* Artemis */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -88,6 +113,7 @@
 				B4EF41E62FA66F50000526C4 /* Artemis */,
 				B4EF41E52FA66F50000526C4 /* Products */,
 				D0C700030000000000000001 /* ArtemisDockTile */,
+				D0C700330000000000000001 /* ArtemisAppShim */,
 				B401BDA22FA8B84B00429B08 /* AppIcon.icon */,
 			);
 			sourceTree = "<group>";
@@ -97,6 +123,7 @@
 			children = (
 				B4EF41E42FA66F50000526C4 /* Artemis.app */,
 				D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */,
+				D0C700320000000000000001 /* ArtemisAppShim */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -112,11 +139,13 @@
 				B4EF41E12FA66F50000526C4 /* Frameworks */,
 				B4EF41E22FA66F50000526C4 /* Resources */,
 				D0C700080000000000000001 /* Embed PlugIns */,
+				D0C700380000000000000001 /* Embed Helpers */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				D0C7000A0000000000000001 /* PBXTargetDependency */,
+				D0C7003A0000000000000001 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B4EF41E62FA66F50000526C4 /* Artemis */,
@@ -148,6 +177,24 @@
 			productReference = D0C700020000000000000001 /* ArtemisDockTile.docktileplugin */;
 			productType = "com.apple.product-type.bundle";
 		};
+		D0C700370000000000000001 /* ArtemisAppShim */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D0C7003D0000000000000001 /* Build configuration list for PBXNativeTarget "ArtemisAppShim" */;
+			buildPhases = (
+				D0C700350000000000000001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D0C700330000000000000001 /* ArtemisAppShim */,
+			);
+			name = ArtemisAppShim;
+			productName = ArtemisAppShim;
+			productReference = D0C700320000000000000001 /* ArtemisAppShim */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -162,6 +209,9 @@
 						CreatedOnToolsVersion = 26.4.1;
 					};
 					D0C700070000000000000001 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					D0C700370000000000000001 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
 				};
@@ -186,6 +236,7 @@
 			targets = (
 				B4EF41E32FA66F50000526C4 /* Artemis */,
 				D0C700070000000000000001 /* ArtemisDockTile */,
+				D0C700370000000000000001 /* ArtemisAppShim */,
 			);
 		};
 /* End PBXProject section */
@@ -202,6 +253,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		D0C700350000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D0C700050000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -219,6 +277,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		D0C7003A0000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D0C700370000000000000001 /* ArtemisAppShim */;
+			targetProxy = D0C700390000000000000001 /* PBXContainerItemProxy */;
+		};
 		D0C7000A0000000000000001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = D0C700070000000000000001 /* ArtemisDockTile */;
@@ -227,6 +290,34 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		D0C7003B0000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(ARTEMIS_BUNDLE_ID).AppShim";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D0C7003C0000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_HARDENED_RUNTIME = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(ARTEMIS_BUNDLE_ID).AppShim";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		B4EF41ED2FA66F52000526C4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -462,6 +553,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D0C7003D0000000000000001 /* Build configuration list for PBXNativeTarget "ArtemisAppShim" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0C7003B0000000000000001 /* Debug */,
+				D0C7003C0000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		B4EF41DF2FA66F50000526C4 /* Build configuration list for PBXProject "Artemis" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

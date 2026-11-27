@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 (($# == 2)) || { sed -n 2,4p "$0"; exit 2; }
 CLONE=$1 MSG=$2
 R=${ARTEMIS_RELEASE_DIR:-"$HOME/Library/Application Support/ArtemisRelease"}
-PATHS=(Artemis Artemis.xcodeproj ArtemisDockTile AppIcon.icon Vendor docs tools feedback deploy.sh xcede.yml .prettierignore CLA.md LICENSE THIRD-PARTY-NOTICES.md)
+PATHS=(Artemis Artemis.xcodeproj ArtemisAppShim ArtemisDockTile AppIcon.icon Vendor docs tools feedback deploy.sh xcede.yml .prettierignore CLA.md LICENSE THIRD-PARTY-NOTICES.md)
 fail() { echo "public-sync: $*" >&2; exit 1; }
 # 0 when the search finds something and 1 when it finds nothing; anything else stops the sync
 found() { local rc=0; "$@" >&2 || rc=$?; ((rc <= 1)) || fail "$1 failed ($rc)"; return $rc; }

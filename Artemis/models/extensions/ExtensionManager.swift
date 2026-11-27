@@ -2,7 +2,62 @@
 // Copyright (c) 2026 Fin. Additional terms under GPL section 7 apply: see LICENSE-ADDITIONAL-TERMS.
 
 import AppKit
+import UniformTypeIdentifiers
 import WebKit
+
+extension WKWebExtensionContext {
+    /// WebKit's MV3 mode cuts every frame's script-src to 'self', so a site framed in the page
+    /// loses its CDN; it is dropped only where the manifest's policy, sent with each page of the
+    /// package, already keeps the extension's own scripts there
+    var pageConfiguration: WKWebViewConfiguration? {
+        guard let configuration = webViewConfiguration else { return nil }
+        let setMode = Selector(("_setContentSecurityPolicyModeForExtension:"))
+        if ExtensionCompat.pagePolicyHoldsScripts(webExtension.manifest), configuration.responds(to: setMode) {
+            typealias Setter = @convention(c) (AnyObject, Selector, Int) -> Void
+            unsafeBitCast(configuration.method(for: setMode), to: Setter.self)(configuration, setMode, 0)
+        }
+        return configuration
+    }
+}
+
+/// a manifest's sandbox pages, which WebKit serves under the extension_pages policy: served here to
+/// frames in the extension's own pages, under the sandbox policy and with no extension API
+final class SandboxPages: NSObject, WKURLSchemeHandler {
+    static let scheme = "artemis-sandbox"
+    static let shared = SandboxPages()
+
+    func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
+        let host = task.request.url?.host()
+        guard let url = task.request.url,
+            let context = WebExtensionRuntime.controllers.values.lazy
+                .compactMap({ $0.extensionContexts.first { $0.baseURL.host() == host } }).first,
+            let id = ExtensionManager.shared.installed.first(where: { $0.webExtension === context.webExtension })?.id
+        else { return task.didFailWithError(URLError(.fileDoesNotExist)) }
+        let manifest = context.webExtension.manifest
+        let sandbox = manifest["sandbox"] as? [String: Any]
+        let pages = Set((sandbox?["pages"] as? [String] ?? []).map { String($0.trimmingPrefix("/")) })
+        let dir = ExtensionInstaller.storageRoot.appendingPathComponent(id, isDirectory: true)
+        let root = (ExtensionInstaller.manifestRoot(under: dir) ?? dir).standardizedFileURL.resolvingSymlinksInPath()
+        let path = String(url.path(percentEncoded: false).trimmingPrefix("/"))
+        let file = root.appending(path: path).standardizedFileURL.resolvingSymlinksInPath()
+        let main = task.request.mainDocumentURL
+        guard !pages.isEmpty, main?.host() == host, main?.scheme == context.baseURL.scheme,
+            file.path.hasPrefix(root.path + "/"),
+            pages.contains(path) || !["html", "htm"].contains(file.pathExtension.lowercased()),
+            let data = try? Data(contentsOf: file)
+        else { return task.didFailWithError(URLError(.fileDoesNotExist)) }
+        let policy = ExtensionCompat.admittingSandboxScheme((manifest["content_security_policy"] as? [String: Any])?["sandbox"] as? String
+            ?? sandbox?["content_security_policy"] as? String
+            ?? "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self'")
+        let type = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": type, "Content-Security-Policy": policy])!)
+        task.didReceive(data)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {}
+}
 
 /// one `WKWebExtensionController` per profile, made with the profile's first tab; each keeps its
 /// own extension storage and answers from its profile's jar. the default profile's runs on
@@ -18,6 +73,7 @@ enum WebExtensionRuntime {
         let webViews = configuration.webViewConfiguration ?? WKWebViewConfiguration()
         ExtensionLab.quiet(webViews.preferences)
         FingerprintNoise.hideInstalledFonts(from: webViews.preferences)
+        webViews.setURLSchemeHandler(SandboxPages.shared, forURLScheme: SandboxPages.scheme)
         configuration.webViewConfiguration = webViews
         let controller = WKWebExtensionController(configuration: configuration)
         controller.delegate = ExtensionManager.shared
@@ -261,7 +317,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         UserScriptWorld.sync(context, in: profile)
     }
 
-    /// the profile's pages keep `browser` only where an extension running there is externally connectable
+    /// while the profile runs an extension, its pages keep `browser` only where one is externally connectable
     @MainActor
     private func gatePageNamespace(in profile: UUID) {
         let running = installed.filter { $0.contexts[profile]?.isLoaded == true }
@@ -270,7 +326,8 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 ($0.webExtension.manifest["externally_connectable"] as? [String: Any])?["matches"] as? [String] ?? []
             }
             PageNamespaceGate.apply(
-                patterns, to: SharedWebContent.userContentController(for: profile, isPrivate: isPrivate))
+                running.isEmpty ? nil : patterns,
+                to: SharedWebContent.userContentController(for: profile, isPrivate: isPrivate))
         }
     }
 
@@ -334,7 +391,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             ext.forget(profile)
         }
         if let controller = WebExtensionRuntime.remove(profile),
-            let storage = controller.configuration.value(forKey: "_storageDirectoryPath") as? String,
+            let storage = controller.configuration.spiValue(forKey: "_storageDirectoryPath") as? String,
             storage.contains(profile.uuidString)
         {
             try? FileManager.default.removeItem(atPath: storage)
@@ -400,6 +457,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         // Chrome's uninstall drops every profile's data, run this session or not
         for profile in allProfiles { try? FileManager.default.removeItem(at: storageFolder(of: ext, in: profile)) }
         ExtensionAPIBridge.shared.forgetPanelSettings(of: ext.id)
+        ExtensionAPIBridge.shared.forgetContentSettings(of: ext.id)
         persist()
     }
 
@@ -410,7 +468,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         "bookmarks", "browsingData", "clipboardRead", "contentSettings", "debugger",
         "declarativeContent", "desktopCapture", "downloads", "favicon", "fontSettings", "gcm",
         "history", "identity", "idle", "management", "notifications", "offscreen",
-        "pageCapture", "power", "privacy", "proxy", "readingList", "search", "sessions",
+        "pageCapture", "power", "printerProvider", "privacy", "proxy", "readingList", "search", "sessions",
         "sidePanel", "system", "tabCapture", "tabGroups", "topSites", "tts", "ttsEngine",
         "userScripts", "vpnProvider", "webRequestAuthProvider", "webRequestBlocking",
     ]
@@ -471,6 +529,21 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openTab(url, for: ext.context)
     }
 
+    /// `chrome_url_overrides.newtab` of an extension on in `manager`'s space, the latest installed
+    /// winning; none in incognito, whose store an extension's own page can't use
+    @MainActor
+    func newTabPage(for manager: TabManager) -> (url: URL, configuration: WKWebViewConfiguration)? {
+        let space = manager.currentSpace
+        guard isMasterEnabled, manager.dataStore(for: space).isPersistent else { return nil }
+        for ext in installed.reversed() where ext.profiles.contains(space.profileID) {
+            guard let context = ext.contexts[space.profileID], context.isLoaded,
+                let url = context.overrideNewTabPageURL, let configuration = context.pageConfiguration
+            else { continue }
+            return (url, configuration)
+        }
+        return nil
+    }
+
     /// open a store landing page in a new tab so the user can browse for
     /// extensions (the in-page banner then offers one-click install)
     @MainActor
@@ -491,7 +564,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
             manager.currentSpace.profileID == id ? nil : manager.spaces.first { $0.profileID == id }
         } ?? manager.currentSpace
         let ownPage = url != nil && url?.scheme == context?.baseURL.scheme
-        let configuration = ownPage ? context?.webViewConfiguration : nil
+        let configuration = ownPage ? context?.pageConfiguration : nil
         if ownPage, configuration == nil { return nil }
         return manager.newTab(
             url: url, configuration: configuration, select: select && home === manager.currentSpace, in: home)
@@ -642,6 +715,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         defer {
             hasRehydrated = true
             for profile in WebExtensionRuntime.controllers.keys { controllerCreated(for: profile) }
+            startStoreWork()
         }
         guard let data = UserDefaults.standard.data(forKey: Self.recordsKey),
             let records = try? JSONDecoder().decode([ExtensionRecord].self, from: data)
@@ -649,6 +723,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
 
         unrestored = records
         for record in records {
+            ExtensionInstaller.promoteStaged(for: record.id)
             guard let resourceURL = await ExtensionCompat.prepare(storedID: record.id) else {
                 // a package still on disk was refused: its record stays, as for one that fails to load
                 if FileManager.default.fileExists(
@@ -677,6 +752,144 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
                 Diagnostics.record(
                     area: "extensions", message: "a stored extension failed to load: \(error.localizedDescription)")
             }
+        }
+    }
+
+    // MARK: - Updates
+
+    enum UpdateOutcome: Equatable {
+        case current, updated, deferred
+        case refused(String)
+    }
+
+    static let blockerID = "ddkjiahejlhfcafbddmgiahcphecmpfh"
+    private static let blockerProfilesKey = "blockerProfilesV1"
+
+    /// full blockers that would filter twice beside it: uBlock Origin, AdGuard, Adblock Plus, AdBlock, Ghostery
+    private static let otherBlockerIDs: Set<String> = [
+        "uBlock0@raymondhill.net", "cjpalhdlnbpafiamejdnhcphjbkeiagm", "adguardadblocker@adguard.com",
+        "bgnkhhnnamicmpeenaelnjfhikgbkllg", "{d10d0bf8-f5b5-c8b4-a8b2-2b9879e08c5d}", "cfhdojbkjhnklbpkdaibdccddilifddb",
+        "jid1-NIfFY2CA8fy1tg@jetpack", "gighmmpiobklfepjocnamgkkbiglidom", "firefox@ghostery.com",
+        "mlomiejdfkolichcflejclcbmpeaniij",
+    ]
+
+    /// uBlock Origin Lite from the Chrome Web Store, switched on once in each profile; a failed download
+    /// retries next launch. once on anywhere, its absence is the user's removal and it never returns.
+    /// a profile is passed over while another full blocker is installed
+    @MainActor
+    func preinstallBlocker() async {
+        let defaults = UserDefaults.standard
+        let done = Set((defaults.stringArray(forKey: Self.blockerProfilesKey) ?? []).compactMap(UUID.init(uuidString:)))
+        let pending = allProfiles.subtracting(done)
+        let own = installed.first { $0.id == Self.blockerID || $0.name == "uBlock Origin Lite" }
+        guard !pending.isEmpty, own != nil || done.isEmpty else { return }
+        let other = installed.contains { ext in
+            ["uBlock Origin", "AdGuard", "Adblock Plus", "AdBlock", "Ghostery"].contains { ext.name.hasPrefix($0) && ext !== own }
+                || Self.otherBlockerIDs.contains(ExtensionStores.geckoID(of: ext.webExtension.manifest) ?? ext.id)
+        }
+        var blocker = own
+        if blocker == nil, !other {
+            blocker = try? await installFromStore(
+                pageURL: URL(string: "https://chromewebstore.google.com/detail/\(Self.blockerID)")!)
+        }
+        guard blocker != nil || other else { return }
+        // a copy the user installed before keeps the profiles they gave it
+        if let blocker, !other, own == nil || !done.isEmpty {
+            for profile in pending { setEnabled(blocker, true, in: profile) }
+        }
+        defaults.set(done.union(pending).map(\.uuidString), forKey: Self.blockerProfilesKey)
+    }
+
+    /// the extensions whose popup is on screen
+    @ObservationIgnored var shownPopups: Set<String> = []
+
+    /// uBlock Origin Lite is installed, then store installs are checked at launch and daily; an update
+    /// held back while in use is retried hourly
+    @MainActor
+    private func startStoreWork() {
+        guard !(SelfTest.isRequested || ExtensionLab.isRequested || Bench.isRequested) else { return }
+        Task(priority: .background) { @MainActor in
+            await preinstallBlocker()
+            var checked = Date.distantPast
+            while true {
+                let due = Date.now.timeIntervalSince(checked) >= 86_400
+                if due { checked = .now }
+                for ext in installed where (due && ext.source != .disk) || ExtensionInstaller.hasStaged(for: ext.id) {
+                    _ = await update(ext)
+                }
+                try? await Task.sleep(for: .seconds(3600))
+            }
+        }
+    }
+
+    /// fetch and stage the store's newer release, then swap it in unless the extension is in use.
+    /// `feed` stands in for the Chrome Web Store's update service
+    @MainActor
+    func update(_ ext: InstalledExtension, feed: URL? = nil) async -> UpdateOutcome {
+        if !ExtensionInstaller.hasStaged(for: ext.id) {
+            var stored: String?
+            do {
+                guard let release = try await ExtensionStores.newerRelease(of: ext, feed: feed) else { return .current }
+                let file = try await ExtensionStores.download(release)
+                defer { try? FileManager.default.removeItem(at: file) }
+                let id = try await ExtensionInstaller.install(from: file, fromStore: true)
+                stored = id
+                guard let root = await ExtensionCompat.prepare(storedID: id) else {
+                    throw ExtensionInstaller.InstallError.holdsLink
+                }
+                if let why = refusal(of: try await WKWebExtension(resourceBaseURL: root), storedAs: id, replacing: ext) {
+                    ExtensionInstaller.removeStorage(forID: id)
+                    return .refused(why)
+                }
+                try ExtensionInstaller.stage(id, for: ext.id)
+            } catch {
+                if let stored { ExtensionInstaller.removeStorage(forID: stored) }
+                if !(error is URLError) {
+                    Diagnostics.record(area: "extensions", message: "an extension update failed: \(error.localizedDescription)")
+                }
+                return .refused(error.localizedDescription)
+            }
+        }
+        guard !isInUse(ext) else { return .deferred }
+        for profile in ext.contexts.keys { unload(ext, in: profile) }
+        guard ExtensionInstaller.promoteStaged(for: ext.id),
+            let root = await ExtensionCompat.prepare(storedID: ext.id),
+            let webExtension = try? await WKWebExtension(resourceBaseURL: root),
+            let index = installed.firstIndex(where: { $0 === ext })
+        else {
+            if installed.contains(where: { $0 === ext }) { for profile in ext.profiles { load(ext, in: profile) } }
+            return .refused("the update couldn't replace the installed package")
+        }
+        let next = InstalledExtension(
+            id: ext.id, source: ext.source, webExtension: webExtension, profiles: ext.profiles, isPinned: ext.isPinned)
+        next.allowsIncognito = ext.allowsIncognito
+        next.seedsFromDefault = ext.seedsFromDefault
+        installed[index] = next
+        for profile in next.profiles { load(next, in: profile) }
+        return .updated
+    }
+
+    /// why a downloaded package may not replace `ext`: removed meanwhile, another publisher's, not newer,
+    /// or asking for more
+    private func refusal(of package: WKWebExtension, storedAs id: String, replacing ext: InstalledExtension) -> String? {
+        guard installed.contains(where: { $0 === ext }) else { return "the extension was removed" }
+        let origin = ExtensionInstaller.packageOrigin(forStoredID: id)
+        guard origin != nil, origin == ExtensionInstaller.packageOrigin(forStoredID: ext.id),
+            ExtensionStores.geckoID(of: package.manifest) == ExtensionStores.geckoID(of: ext.webExtension.manifest)
+        else { return "the update isn't signed as the installed extension" }
+        guard (package.version ?? "").compare(ext.version ?? "", options: .numeric) == .orderedDescending else {
+            return "the update isn't newer"
+        }
+        let asks = InstalledExtension(id: id, source: ext.source, webExtension: package, profiles: [], isPinned: false)
+        guard Set(asks.consentLines).isSubset(of: ext.consentLines) else { return "the update asks for more access" }
+        return nil
+    }
+
+    /// its popup is open or a tab shows one of its pages
+    @MainActor
+    private func isInUse(_ ext: InstalledExtension) -> Bool {
+        shownPopups.contains(ext.id) || (tabManager?.allTabs ?? []).contains { tab in
+            ext.contexts.values.contains { tab.url?.scheme == $0.baseURL.scheme && tab.url?.host == $0.baseURL.host }
         }
     }
 
@@ -731,8 +944,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         _ controller: WKWebExtensionController, connectUsing port: WKWebExtension.MessagePort,
         for extensionContext: WKWebExtensionContext
     ) async throws {
-        // a port to a missing host disconnects, as in Chrome; WebKit drops the error,
-        // so runtime.lastError stays unset in onDisconnect
+        // a port to a missing host disconnects, as in Chrome
         guard port.applicationIdentifier == ExtensionCompat.nativeAppID else {
             return port.disconnect(throwing: Self.hostNotFound)
         }
@@ -758,6 +970,7 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         openNewTabUsing configuration: WKWebExtension.TabConfiguration,
         for context: WKWebExtensionContext
     ) async throws -> (any WKWebExtensionTab)? {
+        if configuration.url?.isFileURL == true { throw Self.fileURLRefused }
         // an incognito window's request stays in it; an extension's own pages need a normal one
         if let window = configuration.window as? ExtensionWindow, window.isPrivate(for: context),
             configuration.url?.scheme != context.baseURL.scheme
@@ -878,8 +1091,19 @@ final class ExtensionManager: NSObject, WKWebExtensionControllerDelegate {
         pendingPopup = PopupRequest(extensionID: context.uniqueIdentifier)
     }
 
+    /// what `tabs.create` and `tabs.update` reject a file URL with, as Chrome does without file access
+    static let fileURLRefused = NSError(
+        domain: "ArtemisExtensions", code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Cannot navigate to a file URL without local file access."])
+
     /// what a refused `action.openPopup()` rejects with
     private static let noPopupWindow = NSError(
         domain: "ArtemisExtensions", code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Could not find an active browser window."])
+}
+
+extension WKWebExtension.Action {
+    /// `popupWebView`, nil while the context is unloaded: WebKit raises building one with no configuration,
+    /// and an exception unwound through a Swift task leaves the main thread's executor tracking dangling
+    var loadedPopupWebView: WKWebView? { webExtensionContext?.isLoaded == true ? popupWebView : nil }
 }

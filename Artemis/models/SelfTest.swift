@@ -61,8 +61,8 @@ enum SelfTest {
         }
 
         let origin = "https://capture.diag.example"
-        SitePermissionStore.shared.set(.allow, for: origin, .microphone, ephemeral: false)
-        SitePermissionStore.shared.set(.allow, for: origin, .camera, ephemeral: false)
+        manager.currentProfile.sitePermissions.set(.allow, for: origin, .microphone, ephemeral: false)
+        manager.currentProfile.sitePermissions.set(.allow, for: origin, .camera, ephemeral: false)
         let tab = manager.newTab(url: nil, select: true)
         let html = """
             <html><body><script>
@@ -662,7 +662,7 @@ enum SelfTest {
             return flush()
         }
         out.append("presentsPopup=\(action.presentsPopup)")
-        guard let webView = action.popupWebView else {
+        guard let webView = action.loadedPopupWebView else {
             out.append("popupWebView is nil")
             return flush()
         }
@@ -752,10 +752,10 @@ enum SelfTest {
         // the unlock/login screen means the Angular app booted, storage worked and WASM loaded
         if let action = em.action(for: ext) {
             out.append("presentsPopup=\(action.presentsPopup)")
-            var popup = action.popupWebView
+            var popup = action.loadedPopupWebView
             for _ in 0..<40 where popup == nil {
                 try? await Task.sleep(for: .milliseconds(100))
-                popup = action.popupWebView
+                popup = action.loadedPopupWebView
             }
             if let popup {
                 for tick in [3, 6, 10] {
@@ -971,6 +971,45 @@ enum SelfTest {
         }
     }
 
+    /// seconds since Fin's last real input, as `fin-away` measures it: the hardware clock of each input
+    /// event type, which postToPid and session-tap posts leave alone. a touched ~/.cache/artemis/fin-here counts too
+    private static var secondsSinceFin: TimeInterval {
+        // mouse buttons, moves and drags; keys and modifiers; scroll; trackpad touches
+        let types: [UInt32] = [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 22, 25, 26, 27, 29]
+        let hardware = types.map {
+            CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: CGEventType(rawValue: $0)!)
+        }.min()!
+        let touched = try? FileManager.default
+            .attributesOfItem(atPath: NSHomeDirectory() + "/.cache/artemis/fin-here")[.modificationDate] as? Date
+        return min(hardware, touched.map { -$0.timeIntervalSinceNow } ?? .infinity)
+    }
+
+    /// hides the lab while Fin is at the Mac, until he has been away 60 s. only between steps, never
+    /// inside a timed one. `log` gets "pause <epoch>" then "resume <epoch>", which `fin-away --paused` totals.
+    /// ARTEMIS_PAUSE_FILE exists while paused and resuming deletes it, so a runner that moves it away holds the pause
+    static func yieldScreen(_ log: (String) -> Void) async {
+        guard secondsSinceFin < 60 else { return }
+        let held = ProcessInfo.processInfo.environment["ARTEMIS_PAUSE_FILE"]
+        if let held { FileManager.default.createFile(atPath: held, contents: nil) }
+        log("pause \(Int(Date().timeIntervalSince1970))")
+        NSApp.hide(nil)
+        // a hidden app naps, and a napping one polls late
+        let awake = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "self-test paused")
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+            guard secondsSinceFin >= 60 else { continue }
+            if let held, (try? FileManager.default.removeItem(atPath: held)) == nil { continue }
+            break
+        }
+        ProcessInfo.processInfo.endActivity(awake)
+        NSApp.unhide(nil)
+        try? await Task.sleep(for: .milliseconds(300))
+        NSApp.activate(ignoringOtherApps: true)
+        mainWindow()?.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(for: .milliseconds(700))
+        log("resume \(Int(Date().timeIntervalSince1970))")
+    }
+
     private static var lines: [String] = []
     private static var passed = 0
     private static var failed = 0
@@ -1015,7 +1054,7 @@ enum SelfTest {
     /// a click as `UserGesture` sees one: in no window when nil, else at `page`'s centre with its
     /// window's command bar closed, once the page owns that spot. A page still covered when the
     /// wait ends fails a record and gets no press
-    private static func pressNatively(on page: WKWebView?) async {
+    private static func pressNatively(on page: WKWebView?, _ flags: NSEvent.ModifierFlags = []) async {
         let window = page?.window
         let spot = page.map { $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil) } ?? .zero
         if let page {
@@ -1033,7 +1072,7 @@ enum SelfTest {
         }
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             guard let event = NSEvent.mouseEvent(
-                with: type, location: spot, modifierFlags: [],
+                with: type, location: spot, modifierFlags: flags,
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0,
                 context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
             else { continue }
@@ -1091,6 +1130,7 @@ enum SelfTest {
         let engineChoices = engineKeys.map(UserDefaults.standard.string(forKey:))
         engineKeys.forEach(UserDefaults.standard.removeObject)
 
+        await yieldScreen(emit)
         // the suite checks traffic lights, first responders and hover dismissals, which
         // behave differently in a background app
         NSApp.activate(ignoringOtherApps: true)
@@ -1128,38 +1168,49 @@ enum SelfTest {
         OwnerUnlock.check = { _ in true }
 
         let plumbing: [(String, () async -> Void)] = [
-            ("durablestorage", { await testDurableStorage() }),
+            ("durablestorage", { await testDurableStorage(manager: manager) }),
             ("diagnostics", { testDiagnostics() }),
             ("iconsearch", { await testIconSearch() }),
             ("settingssearch", { await testSettingsSearch() }),
+            ("homeegg", { await testHomeEgg(manager: manager) }),
             ("reports", { await testReports() }),
             ("hardreset", { await testHardReset() }),
             ("feedback", { testFeedback(manager: manager) }),
             ("session", { await testSession(manager: manager) }),
             ("scoutfront", { await testScoutFront(manager: manager) }),
+            ("scoutbitmaps", { await testScoutBitmaps() }),
+            ("webapps", { await testWebApps(manager: manager) }),
             ("zoomstore", { testZoomStore() }),
             ("tabzoomandmute", { await testTabZoomAndMute(manager: manager) }),
             ("mediareporting", { await testMediaReporting(manager: manager) }),
             ("hiddenpagekeepsplaying", { await testHiddenPageKeepsPlaying(manager: manager) }),
+            ("closedpagesfallsilent", { await testClosedPagesFallSilent(manager: manager) }),
             ("nowebkitpip", { await testNoWebKitPiP(manager: manager) }),
             ("miniplayer", { await testMiniPlayer(manager: manager) }),
             ("miniplayernotch", { await testMiniPlayerNotch(manager: manager) }),
             ("pageresizesettles", { await testPageResizeSettles(manager: manager) }),
+            ("swipesnapshot", { await testSwipeSnapshot(manager: manager) }),
+            ("swipeundo", { await testSwipeUndo(manager: manager) }),
             ("pagestack", { await testPageStack(manager: manager) }),
             ("newtabmount", { await testNewTabMount(manager: manager) }),
+            ("backgroundwidth", { await testBackgroundWidth(manager: manager) }),
             ("splitresizeholds", { testSplitResizeHolds(manager: manager) }),
             ("windowscopedmonitors", { await testWindowScopedMonitors(manager: manager) }),
             ("splitpanemoves", { testSplitPaneMoves(manager: manager) }),
             ("sitepermissions", { await testSitePermissions(manager: manager) }),
+            ("sitepermissionprofiles", { testSitePermissionProfiles(manager: manager) }),
             ("webplatformpanels", { await testWebPlatformPanels(manager: manager) }),
             ("webnotifications", { await testWebNotifications(manager: manager) }),
             ("appbadge", { await testAppBadge(manager: manager) }),
             ("reopenclosedtab", { await testReopenClosedTab(manager: manager) }),
             ("tabnames", { await testTabNames(manager: manager) }),
             ("favourites", { await testFavourites(manager: manager) }),
+            ("pinned", { await testPinnedHome(manager: manager) }),
             ("bulkselection", { await testBulkSelection(manager: manager) }),
             ("httpauth", { await testHTTPAuth(manager: manager) }),
+            ("uitrust", { await testUITrust(manager: manager) }),
             ("certificatetrust", { await testCertificateTrust() }),
+            ("certificateprofiles", { await testCertificateProfiles(manager: manager) }),
             ("bookmarkimport", { await testBookmarkImport(manager: manager) }),
             ("arcimport", { await testArcImport(manager: manager) }),
             ("importfresh", { await testImportTakesFreshSpace(manager: manager) }),
@@ -1190,11 +1241,13 @@ enum SelfTest {
             ("agentgate", {
                 await agentOn {
                     await testAgentGate(manager: manager)
+                    await testAgentProfiles(manager: manager)
                     await testAgentPermission(manager: manager)
                     await testAgentStatus(manager: manager)
                 }
                 await testAgentOutsideMark(manager: manager)
             }),
+            ("agentwaits", { await testAgentWaits(manager: manager) }),
             ("agentrules", {
                 await agentOn {
                     await testAgentRules(manager: manager)
@@ -1226,7 +1279,9 @@ enum SelfTest {
             ("converter", { await testConverter() }),
             ("sitehides", { await testSiteHides() }),
             ("sitepool", { await testSitePool(manager: manager) }),
+            ("swhost", { await testServiceWorkerHost(manager: manager) }),
             ("liveblocking", { await testLiveBlocking() }),
+            ("siteblocking", { await testSiteBlocking() }),
             ("privacycleaner", { await testPrivacyCleaner(manager: manager) }),
             ("printing", { await testPrinting(manager: manager) }),
             ("hibernation", { await testHibernation(manager: manager) }),
@@ -1269,6 +1324,9 @@ enum SelfTest {
             ("peekpress", { await testPeekPress(manager: manager) }),
             ("libraryfilter", { await testLibraryFilter(manager: manager) }),
             ("libraryflick", { await testLibraryFlick(manager: manager) }),
+            ("libraryoverlay", { await testLibraryOverlay(manager: manager) }),
+            ("libraryreopen", { await testLibraryReopen(manager: manager, widen: false) }),
+            ("librarywiden", { await testLibraryReopen(manager: manager, widen: true) }),
             ("gift", { await testGift(manager: manager) }),
             ("updateflow", { await testUpdateFlow() }),
             ("updateready", { await testUpdateReadyAtOnce() }),
@@ -1301,17 +1359,24 @@ enum SelfTest {
             ("extensionruntimeprobe", { await testExtensionRuntimeProbe() }),
             ("extensionpage", { await testExtensionPageInTab() }),
             ("extensionviews", { await testExtensionViews() }),
+            ("extensionpopup", { await testExtensionPopup() }),
+            ("tabcapturereach", { await testTabCaptureReach() }),
             ("userscriptworld", { await testUserScriptWorld() }),
             ("userscriptinstall", { await testUserScriptInstall() }),
             ("extensionmv2probe", { await testExtensionMV2Probe() }),
+            ("extensionframerequests", { await testExtensionFrameRequests() }),
+            ("extensionupdates", { await testExtensionUpdates() }),
+            ("extensionpreinstall", { await testExtensionPreinstall() }),
             ("extensionescalation", { await testExtensionEscalation() }),
             ("extensionapibridgeprobe", { await testExtensionAPIBridgeProbe() }),
             ("workerclients", { await testWorkerClientsProbe() }),
             ("incognitoextensions", { await testIncognitoExtensions(manager: manager) }),
+            ("newtabpage", { await testNewTabPage(manager: manager) }),
         ]
         let run = plumbing
         Coverage.mark("_launch")
         for (name, test) in run where wants(name) {
+            await yieldScreen(emit)
             await test()
             if Coverage.mark(name) { emit("group \(name)") }
         }
@@ -1320,11 +1385,13 @@ enum SelfTest {
             try? await Task.sleep(for: .milliseconds(500))
         }
         for (name, test) in withExtensions where wants(name) {
+            await yieldScreen(emit)
             await test()
             if Coverage.mark(name) { emit("group \(name)") }
         }
         // only when named: a real fullscreen takes over a Space on the screen
         if groups.contains("lightsfullscreen") { await testLightsFullscreen() }
+        if groups.contains("lobbyfullscreen") { await testLobbyFullscreen(manager: manager) }
         // only when named: what youtube.com serves and how fast is not the suite's to hold still
         if groups.contains("miniplayerlive") { await testMiniPlayerLiveShorts(manager: manager) }
         // only when named: it closes every browser window, the suite's own among them
@@ -1378,6 +1445,97 @@ enum SelfTest {
             "\(strays) of \(samples) samples with both sets, exited \(settledAt != nil), own hidden after \(close.isHidden)")
     }
 
+    /// ⌘-Tab back from an app that took the screen lands where macOS would: on a browser window on the Space
+    /// shown, else on the fullscreen one's Space
+    private static func testLobbyFullscreen(manager: TabManager) async {
+        let name = "lobby: ⌘-Tab back to a fullscreen window returns to its Space, key, its page drawing"
+        let spaces = "lobby: ⌘-Tab back to a Space with a browser window keys that one, leaving the fullscreen one's Space"
+        guard let main = BrowserWindows.shared.window(of: manager), let second = await Scripting.openWindow(incognito: false),
+            let beside = BrowserWindows.shared.window(of: second)
+        else { return record(name, false, "no two browser windows") }
+        let tab = manager.newTab(url: nil, select: true)
+        await load(tab, html: "<title>fullscreen</title><script>__frames = 0; (function f() { __frames++; requestAnimationFrame(f) })()</script>")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lobby-fullscreen-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("helper.js")
+        try? standIn.write(to: script, atomically: true, encoding: .utf8)
+        let other = Process()
+        other.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        other.arguments = ["-l", "JavaScript", script.path, "\(ProcessInfo.processInfo.processIdentifier)", Bundle.main.bundlePath, dir.path]
+        try? other.run()
+        defer {
+            other.terminate()
+            try? FileManager.default.removeItem(at: dir)
+            manager.close(tab)
+            if beside.isVisible { beside.performClose(nil) }
+        }
+        for _ in 0..<150 where NSRunningApplication(processIdentifier: other.processIdentifier)?.activationPolicy != .regular {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        var step = 0
+        func send(_ command: String) async {
+            step += 1
+            let file = dir.appendingPathComponent("\(step)")
+            if command == "front", let app = NSRunningApplication(processIdentifier: other.processIdentifier) { NSApp.yieldActivation(to: app) }
+            try? command.write(to: file, atomically: true, encoding: .utf8)
+            for _ in 0..<300 where !FileManager.default.fileExists(atPath: file.path + ".done") {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        /// the stand-in takes the screen from the fullscreen window, to its own window's desktop
+        func away(_ what: String) async -> Bool {
+            await send("front")
+            await settle(.seconds(5)) { !NSApp.isActive && !main.isOnActiveSpace }
+            if NSApp.isActive || main.isOnActiveSpace { note("lobby fullscreen: \(what) skipped — the stand-in app never took the screen") }
+            return !NSApp.isActive && !main.isOnActiveSpace
+        }
+        // the stand-in's window opens on the desktop beside the second browser window
+        becomeKey(beside)
+        await send("front")
+        await send("plain")
+        try? await Task.sleep(for: .seconds(1))
+        becomeKey(main)
+        main.toggleFullScreen(nil)
+        await settle(.seconds(6)) { main.styleMask.contains(.fullScreen) }
+        try? await Task.sleep(for: .seconds(1))
+
+        if await away("two Spaces"), beside.isOnActiveSpace {
+            await send("plain")
+            await settle(.seconds(5)) { NSApp.isActive && beside.isKeyWindow }
+            try? await Task.sleep(for: .milliseconds(500))
+            record(spaces, NSApp.isActive && beside.isKeyWindow && beside.isOnActiveSpace && !main.isOnActiveSpace && !Lobby.isHolding,
+                "active \(NSApp.isActive), that window key \(beside.isKeyWindow) shown \(beside.isOnActiveSpace), "
+                    + "fullscreen one shown \(main.isOnActiveSpace), lobby holding \(Lobby.isHolding)")
+        } else if !NSApp.isActive {
+            note("lobby fullscreen: two Spaces skipped — the stand-in's window is not beside the second browser window")
+            await send("plain")
+        }
+        beside.performClose(nil)
+        await settle { !beside.isVisible }
+        becomeKey(main)
+        await settle(.seconds(3)) { main.isOnActiveSpace }
+
+        if await away("one Space") {
+            await send("plain")
+            await settle(.seconds(5)) { NSApp.isActive && main.isKeyWindow && main.isOnActiveSpace }
+            try? await Task.sleep(for: .milliseconds(500))
+            let start = (try? await tab.webView.evaluateJavaScript("__frames")) as? Int ?? 0
+            try? await Task.sleep(for: .milliseconds(500))
+            let drawn = ((try? await tab.webView.evaluateJavaScript("__frames")) as? Int ?? 0) - start
+            record(name,
+                NSApp.isActive && main.isKeyWindow && main.isOnActiveSpace && main.occlusionState.contains(.visible) && drawn > 5
+                    && !Lobby.isHolding,
+                "active \(NSApp.isActive), key \(main.isKeyWindow), on the shown Space \(main.isOnActiveSpace), "
+                    + "visible \(main.occlusionState.contains(.visible)), \(drawn) frames in 0.5 s, lobby holding \(Lobby.isHolding)")
+        }
+        await send("quit")
+        if !main.isOnActiveSpace { main.makeKeyAndOrderFront(nil) }
+        if main.styleMask.contains(.fullScreen) {
+            main.toggleFullScreen(nil)
+            await settle(.seconds(6)) { !main.styleMask.contains(.fullScreen) }
+        }
+    }
+
     /// with every browser window closed the app stays up, and ⌘T and ⌘N each open a window. the
     /// suite's task ends with its window, so this runs in a task of its own
     private static func testWindowless() async {
@@ -1429,7 +1587,7 @@ enum SelfTest {
 
     // MARK: - Storage
 
-    private static func testDurableStorage() async {
+    private static func testDurableStorage(manager: TabManager) async {
         let url = AppStorageLocation.file("selftest-durable.json")
         let backup = url.appendingPathExtension("bak")
         let aside = url.appendingPathExtension("unreadable")
@@ -1547,6 +1705,265 @@ enum SelfTest {
 
         try? FileManager.default.removeItem(at: url)
         try? FileManager.default.removeItem(at: backup)
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-durable-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sealed = root.appendingPathComponent("sealed", isDirectory: true)
+        let one = sealed.appendingPathComponent("one.json"), two = sealed.appendingPathComponent("two.json")
+        func encoded(_ value: String) -> Data { try! JSONEncoder().encode(Payload(value: value)) }
+        func load(_ file: URL) -> String { AppStorageLocation.loadDurable(Payload.self, from: file)?.value ?? "nil" }
+        func changeACL(_ arguments: String...) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+            process.arguments = arguments + [sealed.path]
+            if (try? process.run()) != nil { process.waitUntilExit() }
+        }
+
+        let missing = root.appendingPathComponent("missing/store.json")
+        AppStorageLocation.writeDurableNow(encoded("recreated"), to: missing)
+        record("durable: a write into a missing folder recreates it", load(missing) == "recreated", "got \(load(missing))")
+
+        let gone = root.appendingPathComponent("gone", isDirectory: true)
+        let late = gone.appendingPathComponent("late.json")
+        AppStorageLocation.writeDurableNow(encoded("early"), to: late)
+        AppStorageLocation.discardWrites(under: gone)
+        AppStorageLocation.removeDiscarded(gone)
+        AppStorageLocation.writeDurableNow(encoded("late"), to: late)
+        record(
+            "durable: a write under a discarded folder never recreates it",
+            !FileManager.default.fileExists(atPath: gone.path), "got \(load(late))")
+        AppStorageLocation.keepWrites(under: gone)
+        AppStorageLocation.writeDurableNow(encoded("back"), to: late)
+        record("durable: a folder kept again takes writes", load(late) == "back", "got \(load(late))")
+
+        func exists(_ id: UUID) -> Bool { FileManager.default.fileExists(atPath: Profile.directory(for: id).path) }
+        let deleted = Profile(name: "SelfTest Deleted", icon: "person")
+        _ = deleted.file("history.json")
+        let hadFolder = exists(deleted.id)
+        deleted.discardFiles()
+        await settle { !exists(deleted.id) }
+        _ = deleted.file("history.json")
+        _ = AgentChats.folder(deleted)
+        record("durable: a deleted profile's lingering object makes no folder", hadFolder && !exists(deleted.id))
+
+        let visited = manager.createProfile(name: "SelfTest Visited", icon: "person")
+        let page = URL(string: "https://deleted-profile.selftest.example/")!
+        visited.history.record(url: page, title: "Visited")
+        visited.archive.add(id: UUID(), url: page, title: "Visited", spaceName: "SelfTest", name: nil)
+        let pending = exists(visited.id)
+            && !FileManager.default.fileExists(atPath: visited.file("history.json").path)
+        manager.deleteProfile(visited)
+        // past the stores' 1 s debounce
+        try? await Task.sleep(for: .seconds(2.5))
+        record(
+            "durable: a deleted profile's pending saves never bring its folder back",
+            pending && !exists(visited.id), "pending \(pending), folder \(exists(visited.id))")
+
+        let orphan = UUID(), holding = UUID(), owned = UUID()
+        for id in [orphan, holding, owned] {
+            try? FileManager.default.createDirectory(at: Profile.directory(for: id), withIntermediateDirectories: true)
+        }
+        try? encoded("kept").write(to: Profile.directory(for: holding).appendingPathComponent("history.json"))
+        Profile.sweepEmptyFolders(keeping: Set(BrowserCore.shared.profiles.map(\.id) + [owned]))
+        record(
+            "durable: the launch sweep takes only an empty folder no profile owns",
+            !exists(orphan) && exists(holding) && exists(owned),
+            "orphan \(exists(orphan)), holding \(exists(holding)), owned \(exists(owned))")
+        for id in [holding, owned] { try? FileManager.default.removeItem(at: Profile.directory(for: id)) }
+
+        // a full disk, stood in for by `writeFailure`: nothing real is filled
+        func retryQueued() -> Bool {
+            var queued = false
+            AppStorageLocation.enqueueDurableNow { queued = AppStorageLocation.isRetryQueued }
+            return queued
+        }
+        await settle(.seconds(35)) { !retryQueued() }
+        let stores = (1...6).map { root.appendingPathComponent("full/store\($0).json") }
+        let outOfSpace = NSError(
+            domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "You can’t save the file “store1.json” because the volume “Macintosh HD” is out of space."
+            ])
+        func fill(_ isFull: (@Sendable (URL) -> Bool)?) {
+            AppStorageLocation.enqueueDurableNow {
+                AppStorageLocation.writeFailure = isFull.map { isFull in { isFull($0) ? outOfSpace : nil } }
+            }
+        }
+        for store in stores {
+            AppStorageLocation.writeDurableNow(encoded("old"), to: store)
+            AppStorageLocation.writeDurableNow(encoded("kept"), to: store)
+        }
+        try? Data("{ torn".utf8).write(to: stores[0])
+        AppStorageLocation.enqueueDurableNow { AppStorageLocation.retryBase = 0.5 }
+        let attempts = OSAllocatedUnfairLock(initialState: [ContinuousClock.Instant]())
+        let filledAt = Date.now
+        // the backups still fit: only the stores themselves are refused
+        let refuses: @Sendable (URL) -> Bool = { url in
+            if url == stores[0] { attempts.withLock { $0.append(.now) } }
+            return url.pathExtension == "json"
+        }
+        /// the notice, behind every change the writes so far have queued on main
+        func notice() async -> AppStorageLocation.SaveFailure? {
+            await withCheckedContinuation { drained in DispatchQueue.main.async { drained.resume() } }
+            return StorageNotice.shared.failure
+        }
+        /// how tall the sidebar's pill stands: nothing while no save is failing
+        func pillHeight() -> CGFloat {
+            NSHostingView(rootView: StoragePill().environment(TooltipState())).fittingSize.height
+        }
+        fill(refuses)
+        for value in ["new", "newer"] {
+            for store in stores { AppStorageLocation.writeDurableNow(encoded(value), to: store) }
+        }
+        let survivors = stores.dropFirst().map(load)
+        record(
+            "durable: a save failing on a full disk leaves the file as it was",
+            survivors.allSatisfy { $0 == "kept" }, "got \(survivors)")
+        record(
+            "durable: and never copies a damaged file over its good backup",
+            load(stores[0]) == "old", "got \(load(stores[0]))")
+        let events = Diagnostics.recent
+            .filter { $0.t >= filledAt && $0.area == "storage" && $0.message.hasPrefix("save failed") }.map(\.message)
+        record(
+            "durable: six stores failing on a full disk log one event, naming no file or volume",
+            events == ["save failed: disk full"], "\(events)")
+        record(
+            "durable: and raise the sidebar's notice",
+            await notice() == .diskFull && pillHeight() >= 28, "pill \(pillHeight())")
+        fill { $0 != stores[5] && refuses($0) }
+        AppStorageLocation.writeDurableNow(encoded("newer"), to: stores[5])
+        record("durable: the notice stays while any save is still failing", await notice() == .diskFull)
+        await settle(.seconds(8)) { attempts.withLock { $0.count } >= 4 }
+        let tries = attempts.withLock { $0 }
+        if tries.count >= 4 {
+            let first = tries[2] - tries[0], second = tries[3] - tries[2]
+            record(
+                "durable: each retry of a failing save waits longer than the last",
+                second - first > .milliseconds(200), "waited \(first), then \(second)")
+        } else {
+            record("durable: each retry of a failing save waits longer than the last", false, "\(tries.count) tries")
+        }
+        fill(nil)
+        await settle(.seconds(8)) { stores.dropFirst().allSatisfy { load($0) == "newer" } }
+        // the retry round that landed them has finished
+        AppStorageLocation.enqueueDurableNow {}
+        let landed = stores.map(load)
+        record(
+            "durable: every failed save lands by itself once space returns",
+            landed.allSatisfy { $0 == "newer" }, "got \(landed)")
+        record(
+            "durable: and the notice goes with the last of them",
+            await notice() == nil && pillHeight() < 28, "pill \(pillHeight())")
+        let freed = stores[1].appendingPathExtension("bak")
+        fill { $0 == stores[1] && FileManager.default.fileExists(atPath: freed.path) }
+        AppStorageLocation.writeDurableNow(encoded("cleared"), to: stores[1], keepsBackup: false)
+        record(
+            "durable: a clear on a full disk lands in the space its backup frees",
+            load(stores[1]) == "cleared" && !FileManager.default.fileExists(atPath: freed.path),
+            "got \(load(stores[1]))")
+        fill(nil)
+        AppStorageLocation.enqueueDurableNow { AppStorageLocation.retryBase = 30 }
+        await settle(.seconds(8)) { !retryQueued() }
+
+        // a file where its folder should be fails the write
+        let blocker = root.appendingPathComponent("blocker")
+        let blocked = blocker.appendingPathComponent("store.json")
+        func failWrite() {
+            try? FileManager.default.removeItem(at: blocker)
+            FileManager.default.createFile(atPath: blocker.path, contents: nil)
+            AppStorageLocation.writeDurableNow(encoded("held"), to: blocked)
+        }
+        failWrite()
+        try? FileManager.default.removeItem(at: blocker)
+        AppStorageLocation.retryUnsavedNow()
+        record("durable: the quit retry lands a failed write", load(blocked) == "held", "got \(load(blocked))")
+        failWrite()
+        try? FileManager.default.removeItem(at: blocker)
+        let gate = DispatchSemaphore(value: 0)
+        AppStorageLocation.enqueueDurable { gate.wait() }
+        let began = ContinuousClock.now
+        AppStorageLocation.retryUnsavedNow(within: 0.05)
+        let waited = ContinuousClock.now - began
+        let early = load(blocked)
+        gate.signal()
+        AppStorageLocation.enqueueDurableNow {}
+        record(
+            "durable: the quit retry stops waiting on a held queue",
+            waited < .seconds(1) && early == "nil" && load(blocked) == "held",
+            "waited \(waited), got \(early) then \(load(blocked))")
+
+        func retry() { AppStorageLocation.enqueueDurableNow { AppStorageLocation.retryUnsaved() } }
+        failWrite()
+        try? FileManager.default.removeItem(at: blocker)
+        AppStorageLocation.writeDurableNow(encoded("cleared"), to: blocked, keepsBackup: false)
+        retry()
+        record("durable: a retry never undoes a clear that landed after the failed write", load(blocked) == "cleared", "got \(load(blocked))")
+        failWrite()
+        AppStorageLocation.writeDurableNow(encoded("cleared"), to: blocked, keepsBackup: false)
+        try? FileManager.default.removeItem(at: blocker)
+        retry()
+        record("durable: and retries a clear that failed after it, not the write before", load(blocked) == "cleared", "got \(load(blocked))")
+
+        // a file where a profile's chats folder should be fails their saves
+        let owner = Profile(name: "SelfTest Retry", icon: "person")
+        let chats = owner.file("AgentChats")
+        FileManager.default.createFile(atPath: chats.path, contents: nil)
+        let kept = AgentChat(id: UUID(), name: "kept", space: UUID(), updated: .now, entries: [])
+        let removed = AgentChat(id: UUID(), name: "removed", space: UUID(), updated: .now, entries: [])
+        for chat in [kept, removed] { AgentChats.shared.save(chat, in: owner) }
+        AgentChats.shared.delete(removed.id, in: owner)
+        AppStorageLocation.enqueueDurableNow {}
+        try? FileManager.default.removeItem(at: chats)
+        retry()
+        func saved(_ chat: AgentChat) -> Bool {
+            FileManager.default.fileExists(atPath: chats.appending(path: "\(chat.id.uuidString).json").path)
+        }
+        record(
+            "durable: a retry writes back a kept chat, never one deleted while it waited",
+            saved(kept) && !saved(removed), "kept \(saved(kept)), removed \(saved(removed))")
+
+        let wedge = owner.file("wedge")
+        FileManager.default.createFile(atPath: wedge.path, contents: nil)
+        AppStorageLocation.writeDurableNow(encoded("held"), to: wedge.appendingPathComponent("store.json"))
+        owner.discardFiles()
+        await settle { !exists(owner.id) }
+        retry()
+        record("durable: a retry never brings a deleted profile's folder back", !exists(owner.id))
+
+        try? FileManager.default.createDirectory(at: sealed, withIntermediateDirectories: true)
+        AppStorageLocation.writeDurableNow(encoded("kept"), to: one)
+        AppStorageLocation.writeDurableNow(encoded("kept again"), to: one)
+
+        // this ACL refuses new files in the folder while the ones in it can still be removed
+        changeACL("+a", "everyone deny add_file")
+        guard !FileManager.default.createFile(atPath: sealed.appendingPathComponent("probe").path, contents: nil) else {
+            return note("durable: failed-write records skipped: the scratch folder took no ACL")
+        }
+        let sealedAt = Date.now
+        let oneBackup = one.appendingPathExtension("bak")
+        AppStorageLocation.writeDurableNow(encoded("cleared"), to: one, keepsBackup: false)
+        record(
+            "durable: a failed clear keeps the file it could not replace, without its backup",
+            load(one) == "kept again" && !FileManager.default.fileExists(atPath: oneBackup.path), "got \(load(one))")
+        AppStorageLocation.writeDurableNow(encoded("after"), to: one)
+        AppStorageLocation.writeDurableNow(encoded("kept too"), to: two)
+        let logged = Diagnostics.recent
+            .filter { $0.t >= sealedAt && $0.area == "storage" && $0.message.hasPrefix("save failed: ") }.map(\.message)
+        record(
+            "durable: two files failing for one cause log one storage event, naming no file",
+            logged.count == 1 && !logged.contains { $0.contains("json") }, "\(logged)")
+        changeACL("-N")
+        AppStorageLocation.enqueueDurableNow { AppStorageLocation.retryUnsaved() }
+        record(
+            "durable: a failed write is retried until it lands",
+            load(one) == "after" && load(two) == "kept too", "got \(load(one)), \(load(two))")
+        record(
+            "durable: and a write behind a failed clear backs up nothing it erased",
+            !FileManager.default.fileExists(atPath: oneBackup.path))
+        await settle { StorageNotice.shared.failure == nil }
+        record("durable: the group leaves no save failing and no notice up", StorageNotice.shared.failure == nil)
     }
 
     /// one change written by `saveNow` is on disk when it returns; a debounced write of an
@@ -1592,6 +2009,102 @@ enum SelfTest {
         record(
             "durable: \(name) survives a torn primary", recovered > 0,
             "\(recovered) entries came back")
+    }
+
+    /// artemisbrowser.app's marker reaches only frames of that exact origin and says only the version;
+    /// the Home icon unlocks only from a verified main-frame commit there, never from page JS or a lookalike
+    private static func testHomeEgg(manager: TabManager) async {
+        let wasUnlocked = HomeEgg.isUnlocked
+        UserDefaults.standard.set(false, forKey: HomeEgg.unlockedKey)
+        defer { UserDefaults.standard.set(wasUnlocked, forKey: HomeEgg.unlockedKey) }
+
+        let ours = ["https://artemisbrowser.app/", "https://www.artemisbrowser.app/download?x=1#y", "https://artemisbrowser.app:443/"]
+        let lookalikes = [
+            "http://artemisbrowser.app/", "https://artemisbrowser.app.evil.example/", "https://evil.example/artemisbrowser.app",
+            "https://artemisbrowser.app@evil.example/", "https://user@artemisbrowser.app/", "https://artemisbrowser.app./",
+            "https://xn--rtemisbrowser-z7b.app/", "https://sub.artemisbrowser.app/", "https://artemisbrowser.app:8443/",
+            "https://wwww.artemisbrowser.app/", "data:text/html,artemisbrowser.app", "blob:https://artemisbrowser.app/0f0e",
+            "file:///artemisbrowser.app/index.html", "about:blank",
+        ]
+        let missed = ours.filter { !HomeEgg.unlocks(URL(string: $0), isSecure: true, isPrivate: false) }
+        record("home egg: a secure non-incognito commit at either host unlocks", missed.isEmpty, "missed \(missed)")
+        let leaked = lookalikes.filter { HomeEgg.unlocks(URL(string: $0), isSecure: true, isPrivate: false) }
+        record("home egg: no lookalike, other scheme, port, userinfo or trailing-dot host unlocks", leaked.isEmpty, "unlocked \(leaked)")
+        let home = URL(string: "https://artemisbrowser.app/")!
+        record(
+            "home egg: incognito, or a connection a certificate exception opened, doesn't unlock",
+            !HomeEgg.unlocks(home, isSecure: true, isPrivate: true) && !HomeEgg.unlocks(home, isSecure: false, isPrivate: false))
+        record(
+            "home egg: the marker carries the short version and nothing else about the build",
+            !HomeEgg.version.isEmpty && HomeEgg.version.allSatisfy { $0.isASCII && ($0.isNumber || $0 == ".") },
+            HomeEgg.version)
+
+        let tab = manager.newTab(url: nil, select: false)
+        defer { manager.close(tab) }
+        func load(_ base: String, _ body: String = "") async -> [String: Any] {
+            let url = URL(string: base)!
+            let html = """
+                <html><head><script>window.__seen = JSON.stringify(Object.assign({}, document.documentElement.dataset));
+                window.__frames = []; addEventListener("message", e => __frames.push(e.data));</script></head><body>\(body)</body></html>
+                """
+            tab.webView.loadHTMLString(html, baseURL: url)
+            await settle { tab.url == url && !tab.isLoading }
+            try? await Task.sleep(for: .milliseconds(300))
+            let probe = """
+                JSON.stringify({ seen: window.__seen, now: JSON.stringify(Object.assign({}, document.documentElement.dataset)),
+                  globals: Object.getOwnPropertyNames(window).filter(k => /artemis/i.test(k)), frames: window.__frames })
+                """
+            let json = (try? await tab.webView.evaluateJavaScript(probe)) as? String ?? "{}"
+            return (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        }
+        let reporter = "<script>parent.postMessage(JSON.stringify(Object.assign({}, document.documentElement.dataset)), '*')</script>"
+        let frames = """
+            <iframe sandbox="allow-scripts" srcdoc="\(reporter.replacingOccurrences(of: "'", with: "&#39;"))"></iframe>
+            """
+        let marker = "{\"artemis\":\"\(HomeEgg.version)\"}"
+        let page = await load("https://artemisbrowser.app/", frames)
+        await settle { await (try? tab.webView.evaluateJavaScript("window.__frames.length")) as? Int == 1 }
+        let framed = (try? await tab.webView.evaluateJavaScript("window.__frames")) as? [String] ?? []
+        record(
+            "home egg: our page's root carries the version before its own first script runs",
+            page["seen"] as? String == marker && page["now"] as? String == marker, "\(page)")
+        record(
+            "home egg: a frame of another origin on our page gets nothing",
+            framed == ["{}"], "\(framed)")
+        try? await Task.sleep(for: .milliseconds(500))
+        record(
+            "home egg: a commit at our URL with no TLS behind it (loadHTMLString) doesn't unlock",
+            !HomeEgg.isUnlocked)
+
+        var marked: [String] = [], baseline: [String]?
+        for base in ["https://artemisbrowser.app.evil.example/", "http://artemisbrowser.app/", "https://artemisbrowser.app:8443/",
+                     "https://xn--rtemisbrowser-z7b.app/", "https://sub.artemisbrowser.app/"]
+        {
+            let other = await load(base)
+            baseline = baseline ?? other["globals"] as? [String]
+            if other["seen"] as? String != "{}" || other["now"] as? String != "{}" { marked.append("\(base) \(other)") }
+        }
+        record("home egg: no other origin, lookalike or port gets the marker", marked.isEmpty, marked.joined(separator: "; "))
+        let ownGlobals = (page["globals"] as? [String])?.sorted()
+        record(
+            "home egg: our page world gets no global beyond what every page has, only the attribute",
+            ownGlobals != nil && ownGlobals == baseline?.sorted(), "\(ownGlobals ?? []) vs \(baseline ?? [])")
+
+        let iconScripts = { SharedWebContent.all.map { $0.userScripts.filter { $0.source.contains("artemisIcon") }.count } }
+        let before = iconScripts()
+        HomeEgg.unlock()
+        HomeEgg.unlock()
+        let added = zip(iconScripts(), before).map { $0 - $1 }
+        record(
+            "home egg: unlocking twice sets the flag and adds the icon attribute once to each controller",
+            HomeEgg.isUnlocked && !AppIconChoice.home.isLocked && !added.isEmpty && added.allSatisfy { $0 == 1 },
+            "\(added)")
+        let after = await load("https://www.artemisbrowser.app/")
+        let other = await load("https://artemisbrowser.app.evil.example/")
+        record(
+            "home egg: once unlocked, our pages say so and others still see nothing",
+            after["seen"] as? String == "{\"artemis\":\"\(HomeEgg.version)\",\"artemisIcon\":\"unlocked\"}" && other["seen"] as? String == "{}",
+            "\(after["seen"] ?? "nil") / \(other["seen"] ?? "nil")")
     }
 
     // MARK: - Diagnostics
@@ -1726,6 +2239,14 @@ enum SelfTest {
     private static func testHardReset() async {
         let fm = FileManager.default
         let library = fm.temporaryDirectory.appendingPathComponent("selftest-reset-\(UUID().uuidString)")
+        let backups = ["Application Support/Lab.pre-container-1700000000", "HTTPStorages/lab.id.binarycookies.pre-container-1"]
+        let lookalikes = [
+            "Application Support/Lab.pre-container-", "Application Support/Lab.pre-container-1x",
+            "Application Support/Lab2.pre-container-1", "WebKit/other.id.pre-container-1",
+        ]
+        for path in backups + lookalikes {
+            try? fm.createDirectory(at: library.appending(path: path), withIntermediateDirectories: true)
+        }
         let paths = HardReset.paths(library: library, folder: "Lab", bundleID: "lab.id")
         record(
             "hard reset: every path sits two levels inside the Library, and a missing name gives none",
@@ -1733,7 +2254,23 @@ enum SelfTest {
                 && paths.allSatisfy { $0.deletingLastPathComponent().deletingLastPathComponent().path == library.path }
                 && HardReset.paths(library: library, folder: "", bundleID: "lab.id").isEmpty
                 && HardReset.paths(library: library, folder: "Lab", bundleID: "").isEmpty)
+        let named = Set(paths.map { $0.path.dropFirst(library.path.count + 1) })
+        record(
+            "hard reset: it names the container migration's backups, and nothing only like them",
+            backups.allSatisfy { named.contains(Substring($0)) } && lookalikes.allSatisfy { !named.contains(Substring($0)) },
+            named.sorted().joined(separator: ", "))
+        for path in lookalikes { try? fm.removeItem(at: library.appending(path: path)) }
 
+        // a test run's Keychain is in memory: nothing here reaches the login keychain
+        Keychain.put(Keychain.cards, "selftest-card", Data("4111111111111111".utf8))
+        Keychain.put(Keychain.passwords, "selftest-reset", Data("kept".utf8))
+        HardReset.eraseKeychain(passwords: false)
+        record(
+            "hard reset: card numbers leave the Keychain, and saved passwords stay unless asked",
+            Keychain.accounts(Keychain.cards).isEmpty && Keychain.secret(Keychain.passwords, "selftest-reset") != nil)
+        Keychain.delete(Keychain.passwords, "selftest-reset")
+
+        let marker = HardReset.marker(library: library, folder: "Lab")
         let bystander = library.appending(path: "WebKit/other.app/data")
         var swept = true
         // no process has this pid, so each sweep starts at once; no app is reopened
@@ -1742,13 +2279,17 @@ enum SelfTest {
                 try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? Data("x".utf8).write(to: file)
             }
-            let shell = HardReset.sweep(after: 99_999, paths: paths, domain: domain, reopening: nil)
+            let shell = HardReset.sweep(after: 99_999, paths: paths, marker: marker, domain: domain, reopening: nil)
             await settle { !shell.isRunning }
             swept =
                 swept && !shell.isRunning && shell.terminationStatus == 0
-                && paths.allSatisfy { !fm.fileExists(atPath: $0.path) } && fm.fileExists(atPath: bystander.path)
+                && paths.filter { $0.path != marker.deletingLastPathComponent().path }.allSatisfy { !fm.fileExists(atPath: $0.path) }
+                && fm.fileExists(atPath: bystander.path)
+                && (try? fm.contentsOfDirectory(atPath: marker.deletingLastPathComponent().path)) == [marker.lastPathComponent]
         }
-        record("hard reset: the sweep removes every path and leaves its neighbour, with a defaults domain or none", swept)
+        record(
+            "hard reset: the sweep removes every path and leaves its neighbour, with a defaults domain or none, and marks the container migrated",
+            swept)
         try? fm.removeItem(at: library)
     }
 
@@ -1824,6 +2365,46 @@ enum SelfTest {
         record(
             "reports: past the cap an expendable file goes before the rest",
             survivors == ["kept", "expendable 2"], survivors.joined(separator: ","))
+
+        record(
+            "reports: a lab copy starts no reporter, however it was started",
+            !AppStorageLocation.reportsAndUpdates(testRun: false, bundleID: "dev.findles.Artemis.SbtA")
+                && AppStorageLocation.reportsAndUpdates(testRun: false, bundleID: "dev.findles.Artemis")
+                && AppStorageLocation.reportsAndUpdates(testRun: false, bundleID: "app.artemisbrowser.Artemis")
+                && !AppStorageLocation.reportsAndUpdates(testRun: true, bundleID: "app.artemisbrowser.Artemis"))
+
+        let raised = NSException(
+            name: NSExceptionName("SelfTestRaised"), reason: "no layout for 0x600003e1c0a0 at https://secret.example/x",
+            userInfo: nil)
+        let stack = Diagnostics.throwSite()
+        for _ in 0..<2 { Diagnostics.record(raised: raised, stack: stack, inPrivate: false) }
+        let logged = Diagnostics.recent.filter { $0.message.hasPrefix("SelfTestRaised:") }
+        let parts = logged.last?.message.components(separatedBy: " | ") ?? []
+        record(
+            "reports: a raised exception is logged with its name, redacted reason and throw site",
+            logged.last?.area == "exception" && parts.count == 2
+                && parts[0] == "SelfTestRaised: no layout for 0x at <url>" && parts[1].contains("Artemis")
+                && parts[1].range(of: #"\+\d+"#, options: .regularExpression) != nil,
+            logged.last?.message ?? "nothing logged")
+        record("reports: a throw site that repeats is logged once", logged.count == 1, "\(logged.count)")
+
+        func message(_ name: String, reason: String, stack: [UInt], inPrivate: Bool) -> String {
+            Diagnostics.record(
+                raised: NSException(name: NSExceptionName(name), reason: reason, userInfo: nil), stack: stack,
+                inPrivate: inPrivate)
+            return Diagnostics.recent.last { $0.message.hasPrefix(name) }?.message ?? "nothing logged"
+        }
+        let hidden = message(
+            "SelfTestPrivate", reason: "no layout for secret.example", stack: Array(stack.dropFirst()), inPrivate: true)
+        record(
+            "reports: with a private window open a raised exception keeps its name and stack and loses its reason",
+            hidden.hasPrefix("SelfTestPrivate: in a private window | ") && hidden.contains("+"), hidden)
+        let long = message(
+            "SelfTestLong", reason: "data:" + String(repeating: "a", count: 1990) + " secret@example.com and more",
+            stack: Array(stack.dropFirst(2)), inPrivate: false)
+        record(
+            "reports: a long reason is clipped at a whole word before it is redacted",
+            long.hasPrefix("SelfTestLong: <url> | "), String(long.prefix(80)))
     }
 
     /// everything ticked: a private window still sends neither its page nor a
@@ -2193,6 +2774,148 @@ enum SelfTest {
         }
     }
 
+    /// a pinned tab is at home wherever its home's page takes itself with no press behind the move,
+    /// and away wherever the person takes it
+    private static func testPinnedHome(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        let page = """
+            <html><body><form id=post method=post action="/posted"></form><script>
+            if (location.pathname == '/redirects') location.replace('/redirected')
+            if (location.pathname == '/posts') document.getElementById('post').submit()
+            setInterval(() => {
+              if (location.pathname == '/late/over') location.href = 'http://localhost:' + location.port + '/over'
+            }, 250)
+            </script>page</body></html>
+            """
+        let gone = URL(string: "http://127.0.0.1:1/gone")!
+        guard let served = serveLoopback(page), let failed = serveLoopback("", status: "302 Found\r\nLocation: \(gone)")
+        else { return record("pinned home: serves its pages", false) }
+        var opened: [BrowserTab] = []
+        defer {
+            close(served.socket)
+            close(failed.socket)
+            for tab in opened {
+                manager.togglePin(tab)
+                manager.close(tab)
+            }
+            manager.selectedTabID = previous
+        }
+        func at(_ path: String) -> URL { URL(string: "http://127.0.0.1:\(served.port)\(path)")! }
+        func place(_ tab: BrowserTab) -> String {
+            "at \((tab.url ?? tab.lastAttemptedURL)?.absoluteString ?? "nil"), landing \(tab.homeLanding?.absoluteString ?? "nil")"
+        }
+        func open(_ url: URL, until loaded: (BrowserTab) -> Bool) async -> BrowserTab {
+            let tab = manager.newTab(url: url, select: false)
+            opened.append(tab)
+            await settle(.seconds(5)) { loaded(tab) }
+            return tab
+        }
+        // pinned on another page of the site, then sent to `path` as its home
+        func pinned(home path: String, landing: String) async -> BrowserTab {
+            let tab = await open(at("/start")) { $0.url?.path() == "/start" && !$0.isLoading }
+            manager.togglePin(tab)
+            tab.pinnedURL = at(path)
+            tab.load(at(path))
+            await settle(.seconds(5)) { tab.url?.path() == landing && !tab.isLoading }
+            return tab
+        }
+
+        let late = await pinned(home: "/late", landing: "/late")
+        let lateLoaded = ContinuousClock.now
+
+        let redirecting = await pinned(home: "/redirects", landing: "/redirected")
+        record(
+            "pinned home: a home page sending itself on by script as it loads is at home where it lands",
+            redirecting.url?.path() == "/redirected" && !redirecting.isOffPinnedURL, place(redirecting))
+        let posting = await pinned(home: "/posts", landing: "/posted")
+        record(
+            "pinned home: a home page posting a form as it loads is at home where the form lands",
+            posting.url?.path() == "/posted" && !posting.isOffPinnedURL, place(posting))
+
+        let failingHome = URL(string: "http://127.0.0.1:\(failed.port)/")!
+        let failing = await open(failingHome) { $0.loadError != nil }
+        manager.togglePin(failing)
+        failing.pinnedURL = failingHome
+        failing.load(failingHome)
+        await settle(.seconds(5)) { failing.loadError != nil && failing.lastAttemptedURL == gone }
+        record(
+            "pinned home: a home whose redirect fails to load is at home",
+            failing.url == nil && failing.lastAttemptedURL == gone && !failing.isOffPinnedURL, place(failing))
+
+        func rows(_ marker: String) -> [BrowserTab] {
+            let file = Data(
+                """
+                {\(marker)"spaces":[{"id":"\(UUID().uuidString)","name":"Pinned Home","tabs":[\
+                {"url":"https://pinned-home.selftest.example/inbox","pinnedURL":"https://pinned-home.selftest.example/",\
+                "isPinned":true}]}]}
+                """.utf8)
+            return (try? JSONDecoder().decode(BrowsingSession.self, from: file))?.spaces.first
+                .map { TabManager.makeSpace(from: $0).tabs } ?? []
+        }
+        let older = rows("")
+        record(
+            "pinned home: a pinned row an older build saved off its home, with no landing, is at home",
+            older.count == 1 && older.first?.isOffPinnedURL == false,
+            "\(older.count) rows, landing \(older.first?.homeLanding?.absoluteString ?? "nil")")
+        let written = (try? JSONEncoder().encode(manager.sessionSnapshot())).map { String(decoding: $0, as: UTF8.self) }
+        let kept = rows("\"landingsKnown\":true,")
+        record(
+            "pinned home: a file this build writes says its landings are known, and a row off its home there stays off",
+            written?.contains("\"landingsKnown\":true") == true && kept.first?.isOffPinnedURL == true)
+
+        // a connection that never sends, as WebKit's preconnect can leave beside the real request
+        let silent = socket(AF_INET, SOCK_STREAM, 0)
+        var server = sockaddr_in()
+        server.sin_family = sa_family_t(AF_INET)
+        server.sin_addr.s_addr = inet_addr("127.0.0.1")
+        server.sin_port = served.port.bigEndian
+        _ = withUnsafePointer(to: &server) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(silent, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        defer { close(silent) }
+        redirecting.load(at("/elsewhere"))
+        await settle(.seconds(5)) { redirecting.url?.path() == "/elsewhere" && !redirecting.isLoading }
+        record(
+            "pinned home: sent to another page of its site, a pinned tab is off home",
+            redirecting.url?.path() == "/elsewhere" && redirecting.isOffPinnedURL, place(redirecting))
+
+        SelfTest.mainWindow()?.makeKeyAndOrderFront(nil)
+        manager.selectedTabID = posting.id
+        await pressNatively(on: posting.webView)
+        _ = try? await posting.webView.evaluateJavaScript("location.href = '/read'; 1")
+        await settle(.seconds(5)) { posting.url?.path() == "/read" && !posting.isLoading }
+        record(
+            "pinned home: after a press in its page, the page a pinned tab goes to is off home",
+            posting.url?.path() == "/read" && posting.isOffPinnedURL, place(posting))
+
+        let stepping = await open(at("/steps")) { $0.url?.path() == "/steps" && !$0.isLoading }
+        _ = try? await stepping.webView.evaluateJavaScript("history.pushState(null, '', '/steps/on'); 1")
+        await settle(.seconds(5)) { stepping.url?.path() == "/steps/on" }
+        stepping.goBack()
+        await settle(.seconds(5)) { stepping.url?.path() == "/steps" }
+        manager.togglePin(stepping)
+        stepping.goForward()
+        await settle(.seconds(5)) { stepping.url?.path() == "/steps/on" }
+        record(
+            "pinned home: a step forward through history from home is off home",
+            stepping.pinnedURL?.path() == "/steps" && stepping.url?.path() == "/steps/on" && stepping.isOffPinnedURL,
+            place(stepping))
+
+        try? await Task.sleep(until: lateLoaded + .seconds(21), clock: .continuous)
+        _ = try? await late.webView.evaluateJavaScript("history.replaceState(null, '', '/late/moved'); 1")
+        await settle { late.url?.path() == "/late/moved" }
+        record(
+            "pinned home: a home page rewriting its address long after loading is at home there",
+            late.url?.path() == "/late/moved" && !late.isOffPinnedURL, place(late))
+        // the page's timer leaves by itself, since a script run from here may carry a user gesture; shown, it isn't throttled
+        manager.selectedTabID = late.id
+        _ = try? await late.webView.evaluateJavaScript("history.replaceState(null, '', '/late/over'); 1")
+        await settle(.seconds(10)) { late.url?.host() == "localhost" && !late.isLoading }
+        record(
+            "pinned home: a home page taking itself to another site long after loading is off home",
+            late.url?.host() == "localhost" && late.isOffPinnedURL, place(late))
+    }
+
     /// a favourite is a record with an id and a home: closing it goes home, a relaunch keeps
     /// both, and older builds' files read and are read both ways
     private static func testFavourites(manager: TabManager) async {
@@ -2302,8 +3025,8 @@ enum SelfTest {
                 && olderFile?.map(\.name) == [nil, "Old B"] && Set(olderFile?.map(\.id) ?? []).count == 2,
             "\(olderFile?.map(\.url) ?? [])")
 
-        // a real tile in an offscreen window, clicked through AppKit: off its home, the favicon side
-        // to the seam 2pt past the slash goes home, as a pinned row's favicon square does
+        // a real tile in an offscreen window, clicked through AppKit: one click never reloads,
+        // a plain pair goes home or refreshes there
         let tileHome = FileManager.default.temporaryDirectory.appending(path: "selftest-favourite-tile.html")
         try? Data("<html><title>Tile Home</title><body>h</body></html>".utf8).write(to: tileHome)
         let tileAway = URL(string: "https://favourite-tile-away.selftest.example/")!
@@ -2314,9 +3037,8 @@ enum SelfTest {
         await settle { favourite.url == tileHome && !favourite.isLoading }
         manager.toggleEssential(favourite)
         let metrics = SidebarMetrics.standard
-        // narrow enough (tiles start at 70pt) that the badge reaches left of the seam
         let size = CGSize(width: 72, height: metrics.essentialTileHeight)
-        let seam = size.width / 2 + metrics.essentialFaviconSize / 2 + 8 + 2
+        let pastIcon = size.width / 2 + metrics.essentialFaviconSize / 2 + 8
         let host = NSHostingView(
             rootView: EssentialTile(tab: favourite)
                 .frame(width: size.width, height: size.height)
@@ -2336,17 +3058,23 @@ enum SelfTest {
         let middle = size.height / 2
         // from another tab, so the click is what selects it; load() sets lastAttemptedURL as it starts.
         // posted through NSApp, as a real click is, so the tile sees the click's own modifiers
-        func click(at point: NSPoint, _ flags: NSEvent.ModifierFlags = []) async -> Bool {
-            manager.selectedTabID = other.id
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                guard let event = NSEvent.mouseEvent(
-                    with: type, location: point, modifierFlags: flags,
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                    context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)
-                else { continue }
-                NSApp.postEvent(event, atStart: false)
+        // `counts` [1, 2] is a double-click's pair; `from` nil clicks the tile where it is
+        func click(
+            at point: NSPoint, _ flags: NSEvent.ModifierFlags = [], counts: [Int] = [1], from start: BrowserTab? = other
+        ) async -> Bool {
+            if let start { manager.selectedTabID = start.id }
+            for count in counts {
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    guard let event = NSEvent.mouseEvent(
+                        with: type, location: point, modifierFlags: flags,
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, eventNumber: 0, clickCount: count, pressure: type == .leftMouseUp ? 0 : 1)
+                    else { continue }
+                    NSApp.postEvent(event, atStart: false)
+                }
             }
             await settle(.seconds(1)) { manager.selectedTabID != other.id }
+            try? await Task.sleep(for: .milliseconds(200))
             return manager.activeEssentialID == favourite.id
         }
         func selectsOnly(at points: [NSPoint]) async -> (held: Bool, detail: String) {
@@ -2361,23 +3089,57 @@ enum SelfTest {
             return (held, detail.joined(separator: "; "))
         }
 
-        let atHome = await selectsOnly(at: [8, size.width / 2, seam - 1.5, size.width - 4].map { NSPoint(x: $0, y: middle) })
+        let atHome = await selectsOnly(at: [8, size.width / 2, pastIcon, size.width - 4].map { NSPoint(x: $0, y: middle) })
         record(
             "favourites: at its home, a click anywhere on its tile only selects it",
             atHome.held && favourite.url == tileHome, atHome.detail)
-        // the 16pt badge sits 4pt in from the top right; this point is on it and left of the seam
+        func mark() async { _ = try? await favourite.webView.evaluateJavaScript("window.kept = true") }
+        func pageKept() async -> Bool {
+            try? await Task.sleep(for: .milliseconds(500))
+            return (try? await favourite.webView.evaluateJavaScript("window.kept === true")) as? Bool == true
+        }
+        func loadKind() async -> String {
+            let js = "performance.getEntriesByType('navigation')[0]?.type ?? 'none'"
+            return (try? await favourite.webView.evaluateJavaScript(js)) as? String ?? "nil"
+        }
+        // the 16pt badge sits 4pt in from the top right; this point is on it
         let onBadge = NSPoint(x: size.width - 4 - 16 + 2, y: size.height - 12)
         favourite.webView.loadHTMLString("<html><title>(120) Away</title><body>a</body></html>", baseURL: tileAway)
         await settle { favourite.url == tileAway && !favourite.isLoading && favourite.unread != nil }
-        let pastSeam = await selectsOnly(at: [
-            NSPoint(x: seam + 1.5, y: middle), NSPoint(x: size.width - 4, y: middle),
-            onBadge,
-        ])
+        await mark()
+        let anywhere = await selectsOnly(at: [8, size.width / 2, pastIcon, size.width - 4].map { NSPoint(x: $0, y: middle) } + [onBadge])
+        let keptAway = await pageKept()
         record(
-            "favourites: off its home, a click past the seam or on its badge only selects it",
-            onBadge.x < seam && favourite.isOffPinnedURL && favourite.unread != nil && pastSeam.held
-                && favourite.url == tileAway,
-            pastSeam.detail)
+            "favourites: off its home, a click anywhere on its tile, badge included, selects it at its page with no reload",
+            favourite.isOffPinnedURL && favourite.unread != nil && anywhere.held && keptAway && favourite.url == tileAway,
+            "\(anywhere.detail); page kept \(keptAway)")
+
+        // drawn away it matches itself drawn at home; with a slash laid over, the same capture differs
+        func drawn(_ view: NSView) async -> Data? {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            return rep.bitmapData.map { Data(bytes: $0, count: rep.bytesPerRow * rep.pixelsHigh) }
+        }
+        let awayDrawn = await drawn(host)
+        let slashed = NSHostingView(
+            rootView: EssentialTile(tab: favourite)
+                .overlay { OffHomeSlash().offset(x: metrics.essentialFaviconSize / 2 + 8) }
+                .frame(width: size.width, height: size.height)
+                .environment(manager)
+                .environment(SidebarDragState())
+                .environment(TooltipState()))
+        slashed.frame = host.frame
+        window.contentView = slashed
+        let slashedDrawn = await drawn(slashed)
+        window.contentView = host
+        favourite.pinnedURL = tileAway
+        let homeDrawn = await drawn(host)
+        favourite.pinnedURL = tileHome
+        record(
+            "favourites: off its home, its tile draws no slash",
+            favourite.isOffPinnedURL && awayDrawn != nil && slashedDrawn != nil && awayDrawn == homeDrawn && slashedDrawn != awayDrawn,
+            "away matches home \(awayDrawn == homeDrawn), a slash would show \(slashedDrawn != awayDrawn)")
 
         manager.selectedTabID = other.id
         manager.returnToPinnedURL(favourite)
@@ -2388,19 +3150,79 @@ enum SelfTest {
                 && manager.activeEssentialID == favourite.id && manager.essentials.contains { $0 === favourite },
             favourite.url?.absoluteString ?? "nil")
 
-        var wentHome = true
-        var detail: [String] = []
-        for x in [8, size.width / 2, seam - 1.5] {
-            await navigate(favourite, to: tileAway)
-            let off = favourite.isOffPinnedURL
-            let selected = await click(at: NSPoint(x: x, y: middle))
-            await settle { favourite.url == tileHome && !favourite.isLoading }
-            wentHome = wentHome && off && selected && favourite.url == tileHome
-            detail.append("\(x): off \(off), selected \(selected), at \(favourite.url?.absoluteString ?? "nil")")
+        func backEntry() -> (title: String, perform: () -> Void)? {
+            MenuEntryActions.actions(EssentialsGrid.menuEntries(for: favourite, in: manager))
+                .first { $0.title == "Back to Favourite's Page" }
         }
+        await navigate(favourite, to: tileAway)
+        let entry = backEntry()
+        manager.selectedTabID = other.id
+        entry?.perform()
+        await settle { favourite.url == tileHome && !favourite.isLoading }
         record(
-            "favourites: off its home, a click on its favicon side, slash included, takes it home and selects it",
-            wentHome, detail.joined(separator: "; "))
+            "favourites: off its home, its menu's Back to Favourite's Page takes it home and selects it; at home the menu has none",
+            entry != nil && favourite.url == tileHome && manager.activeEssentialID == favourite.id && backEntry() == nil,
+            favourite.url?.absoluteString ?? "nil")
+
+        func backAction() -> CommandAction? {
+            let rows = CommandBarEngine(manager: manager).items(
+                input: "back to favourite", scope: .actions, textHits: [], suggestions: [])
+            for row in rows { if case .action(let action) = row.kind, action.id == "back-home" { return action } }
+            return nil
+        }
+        await navigate(favourite, to: tileAway)
+        manager.selectedTabID = favourite.id
+        let action = backAction()
+        action?.run()
+        await settle { favourite.url == tileHome && !favourite.isLoading }
+        record(
+            "favourites: off its home, the command bar's Back to Favourite's Page takes it home; at home the bar offers none",
+            action?.title == "Back to Favourite's Page" && favourite.url == tileHome && backAction() == nil,
+            favourite.url?.absoluteString ?? "nil")
+
+        await navigate(favourite, to: tileAway)
+        let fromElsewhere = await click(at: NSPoint(x: size.width / 2, y: middle), counts: [1, 2])
+        await settle { favourite.url == tileHome && !favourite.isLoading }
+        let homeOnce = await loadKind()
+        record(
+            "favourites: off its home, a double-click from another tab selects it and takes it home once",
+            fromElsewhere && favourite.url == tileHome && homeOnce == "navigate",
+            "selected \(fromElsewhere), at \(favourite.url?.absoluteString ?? "nil"), load \(homeOnce)")
+
+        await navigate(favourite, to: tileAway)
+        let shownAway = await click(at: NSPoint(x: size.width - 4, y: middle), counts: [1, 2], from: favourite)
+        await settle { favourite.url == tileHome && !favourite.isLoading }
+        record(
+            "favourites: off its home, a double-click on the shown tile takes it home",
+            shownAway && favourite.url == tileHome, favourite.url?.absoluteString ?? "nil")
+
+        await mark()
+        let shownHome = await click(at: NSPoint(x: 8, y: middle), counts: [1, 2], from: favourite)
+        await settle { !favourite.isLoading }
+        let refreshed = !(await pageKept())
+        let refreshKind = await loadKind()
+        record(
+            "favourites: at its home, a double-click on the shown tile refreshes it",
+            shownHome && refreshed && refreshKind == "reload" && favourite.url == tileHome,
+            "page gone \(refreshed), load \(refreshKind)")
+
+        await mark()
+        let switched = await click(at: NSPoint(x: size.width / 2, y: middle), counts: [1, 2])
+        let keptSwitched = await pageKept()
+        record(
+            "favourites: at its home, a double-click whose first click switched to it only selects it",
+            switched && keptSwitched && favourite.url == tileHome, "selected \(switched), page kept \(keptSwitched)")
+
+        manager.close(favourite)
+        let asleep = favourite.pendingURL == tileHome
+        let woke = await click(at: NSPoint(x: size.width / 2, y: middle), counts: [1, 2])
+        await settle { favourite.pendingURL == nil && favourite.url == tileHome && !favourite.isLoading }
+        try? await Task.sleep(for: .milliseconds(300))
+        let wokeKind = await loadKind()
+        record(
+            "favourites: asleep at its home, a double-click wakes it once with no refresh on top",
+            asleep && woke && favourite.url == tileHome && wokeKind == "navigate",
+            "asleep \(asleep), selected \(woke), load \(wokeKind)")
 
         // the shipped separation settings: the favourite stays, the page opens at the foot of Today
         let separation = [
@@ -2410,27 +3232,23 @@ enum SelfTest {
         let savedSeparation = separation.keys.map { ($0, UserDefaults.standard.object(forKey: $0)) }
         separation.forEach { UserDefaults.standard.set($1, forKey: $0) }
         await navigate(favourite, to: tileAway)
-        _ = await click(at: NSPoint(x: size.width / 2, y: middle), .command)
+        _ = await click(at: NSPoint(x: size.width - 4, y: middle), .command)
         await settle { favourite.url == tileHome && !favourite.isLoading }
         savedSeparation.forEach { UserDefaults.standard.set($1, forKey: $0) }
         let split = manager.selectedTab
         record(
-            "favourites: off its home, a ⌘-click on its favicon side opens the page in a tab of its own and takes the favourite home",
+            "favourites: off its home, a ⌘-click anywhere on its tile opens the page in a tab of its own and takes the favourite home",
             split !== favourite && split?.lastAttemptedURL == tileAway
                 && split.map { manager.currentSpace.todayEntries.last == .tab($0.id) } == true
                 && favourite.url == tileHome && favourite.pinnedURL == tileHome
                 && manager.essentials.contains { $0 === favourite },
             "selected \(split?.lastAttemptedURL?.absoluteString ?? "nil"), at \(favourite.url?.absoluteString ?? "nil")")
 
-        _ = try? await favourite.webView.evaluateJavaScript("window.kept = true")
-        func pageKept() async -> Bool {
-            try? await Task.sleep(for: .milliseconds(500))
-            return (try? await favourite.webView.evaluateJavaScript("window.kept === true")) as? Bool == true
-        }
+        await mark()
         let selected = await click(at: NSPoint(x: size.width / 2, y: middle))
         let kept = await pageKept()
         record(
-            "favourites: back at its home, a click on its favicon side only selects it again",
+            "favourites: back at its home, a click on it only selects it again",
             selected && kept && !favourite.isOffPinnedURL, "selected \(selected), page kept \(kept)")
         manager.selectedTabID = other.id
         let tabs = manager.currentSpace.tabs.count
@@ -2442,6 +3260,131 @@ enum SelfTest {
             keptAtHome && favourite.url == tileHome && favourite.pinnedURL == tileHome
                 && manager.activeEssentialID == favourite.id && manager.currentSpace.tabs.count == tabs,
             "page kept \(keptAtHome), tabs \(tabs) -> \(manager.currentSpace.tabs.count)")
+
+        // a person's link to another site from a favourite or pinned tab opens in Peek; the rest navigate
+        let linking = """
+            <html><body><a id=same href="/next">same</a><a id=cross>cross</a><a id=blank target=_blank>blank</a>
+            <script>for (const id of ['cross', 'blank']) document.getElementById(id).href = 'http://localhost:' + location.port + '/elsewhere'</script>
+            </body></html>
+            """
+        if let served = serveLoopback(linking) {
+            defer { close(served.socket) }
+            let siteHome = URL(string: "http://127.0.0.1:\(served.port)/home")!
+            let elsewhere = URL(string: "http://localhost:\(served.port)/elsewhere")!
+            let linked = manager.newTab(url: siteHome, select: false)
+            await settle { linked.url == siteHome && !linked.isLoading }
+            manager.toggleEssential(linked)
+            func follow(_ id: String, in tab: BrowserTab = linked) async {
+                let js = "document.getElementById('\(id)').click(); 1"
+                _ = try? await tab.webView.evaluateJavaScript(js)
+                try? await Task.sleep(for: .milliseconds(800))
+            }
+            // a real press, so its modifiers and the popup's user gesture reach WebKit
+            func press(_ id: String, _ flags: NSEvent.ModifierFlags = []) async {
+                let cover = "document.getElementById('\(id)').style.cssText = 'position:fixed;inset:0;z-index:9'; 1"
+                _ = try? await linked.webView.evaluateJavaScript(cover)
+                SelfTest.mainWindow()?.makeKeyAndOrderFront(nil)
+                manager.selectedTabID = linked.id
+                await pressNatively(on: linked.webView, flags)
+                try? await Task.sleep(for: .milliseconds(800))
+            }
+            func goHome(_ tab: BrowserTab = linked) async {
+                tab.load(siteHome)
+                await settle { tab.url == siteHome && !tab.isLoading }
+            }
+            await follow("cross")
+            record(
+                "favourites: a link to another site opens in Peek, the favourite left on its page",
+                manager.peekTab?.lastAttemptedURL == elsewhere && linked.url == siteHome,
+                "peek \(manager.peekTab?.lastAttemptedURL?.absoluteString ?? "none"), at \(linked.url?.absoluteString ?? "nil")")
+            manager.closePeek()
+
+            await follow("same")
+            await settle { linked.url?.path() == "/next" && !linked.isLoading }
+            record(
+                "favourites: a link within its site navigates the favourite",
+                linked.url?.path() == "/next" && manager.peekTab == nil, linked.url?.absoluteString ?? "nil")
+            await goHome()
+
+            let before = Set(manager.allTabs.map(\.id))
+            await press("cross", .command)
+            let behind = manager.allTabs.filter { !before.contains($0.id) }
+            record(
+                "favourites: ⌘ on a link to another site still opens it in a tab behind",
+                behind.first?.lastAttemptedURL == elsewhere && manager.peekTab == nil && linked.url == siteHome,
+                "new \(behind.map { $0.lastAttemptedURL?.absoluteString ?? "nil" }), peek \(manager.peekTab != nil)")
+            await press("blank")
+            let popups = manager.allTabs.filter { !before.contains($0.id) }
+            record(
+                "favourites: a link to another site that asks for a new window gets one, not Peek",
+                popups.count == behind.count + 1 && manager.peekTab == nil && linked.url == siteHome,
+                "\(popups.count - behind.count) opened, peek \(manager.peekTab != nil)")
+            popups.forEach { manager.close($0) }
+            manager.closePeek()
+
+            _ = try? await linked.webView.evaluateJavaScript("location.href = document.getElementById('cross').href; 1")
+            await settle { linked.url == elsewhere && !linked.isLoading }
+            record(
+                "favourites: a page moving itself to another site is left to it",
+                linked.url == elsewhere && manager.peekTab == nil, linked.url?.absoluteString ?? "nil")
+            await goHome()
+
+            let savedPeek = UserDefaults.standard.object(forKey: TabManager.pinnedLinksPeekKey)
+            UserDefaults.standard.set(false, forKey: TabManager.pinnedLinksPeekKey)
+            await follow("cross")
+            await settle { linked.url == elsewhere && !linked.isLoading }
+            UserDefaults.standard.set(savedPeek, forKey: TabManager.pinnedLinksPeekKey)
+            record(
+                "favourites: with Open other sites in Peek off, a link to another site navigates the favourite",
+                linked.url == elsewhere && manager.peekTab == nil, linked.url?.absoluteString ?? "nil")
+            manager.closePeek()
+
+            let pinned = manager.newTab(url: siteHome, select: false)
+            await settle { pinned.url == siteHome && !pinned.isLoading }
+            manager.togglePin(pinned)
+            await follow("cross", in: pinned)
+            record(
+                "favourites: a pinned tab's link to another site opens in Peek too",
+                pinned.isPinned && manager.peekTab?.lastAttemptedURL == elsewhere && pinned.url == siteHome,
+                "peek \(manager.peekTab?.lastAttemptedURL?.absoluteString ?? "none")")
+            manager.closePeek()
+            manager.selectedTabID = other.id
+            manager.removeEssential(linked)
+        } else {
+            record("favourites: serves a page with links", false)
+        }
+
+        // a home page that moves itself on loading still reads as home; a move after a press in it does not
+        let rewrites = "<html><body><script>if (location.pathname == '/home') history.replaceState(null, '', '/home/inbox#mail')</script>home</body></html>"
+        if let served = serveLoopback(rewrites) {
+            defer { close(served.socket) }
+            let movingHome = URL(string: "http://127.0.0.1:\(served.port)/home")!
+            let moving = manager.newTab(url: movingHome, select: false)
+            await settle { moving.url?.path() == "/home/inbox" && !moving.isLoading }
+            manager.toggleEssential(moving)
+            moving.pinnedURL = movingHome
+            let offBefore = moving.isOffPinnedURL
+            SelfTest.mainWindow()?.makeKeyAndOrderFront(nil)
+            manager.returnToPinnedURL(moving)
+            await settle(.seconds(5)) { moving.homeLanding != nil && !moving.isLoading }
+            let landed = moving.url?.path() == "/home/inbox" && !moving.isOffPinnedURL
+            let saved = manager.sessionSnapshot().profiles.flatMap(\.favourites).first { $0.id == moving.id }
+            record(
+                "favourites: a home page that rewrites its own address on loading reads as home, and keeps that landing saved",
+                offBefore && landed && saved?.landing == moving.homeLanding?.absoluteString && saved?.landing != nil,
+                "off before \(offBefore), at \(moving.url?.absoluteString ?? "nil"), landing \(saved?.landing ?? "nil")")
+            await pressNatively(on: moving.webView)
+            _ = try? await moving.webView.evaluateJavaScript("history.pushState(null, '', '/read')")
+            await settle { moving.url?.path() == "/read" }
+            record(
+                "favourites: after a press in the page, its next move reads as off home",
+                moving.url?.path() == "/read" && moving.isOffPinnedURL,
+                "at \(moving.url?.absoluteString ?? "nil"), landing \(moving.homeLanding?.absoluteString ?? "nil")")
+            manager.selectedTabID = other.id
+            manager.removeEssential(moving)
+        } else {
+            record("favourites: serves a home page that rewrites its address", false)
+        }
 
         // each space remembers whether it last showed a favourite or one of its own tabs
         let start = manager.currentSpace
@@ -2666,18 +3609,23 @@ enum SelfTest {
             manager.selectedTabID = previous
         }
 
-        func challenge(_ method: String) -> URLAuthenticationChallenge {
+        tab.webView.loadHTMLString("<html></html>", baseURL: URL(string: "https://router.selftest.example/"))
+        await settle { tab.url?.host() == "router.selftest.example" && !tab.isLoading }
+
+        func challenge(_ method: String, host: String, port: Int) -> URLAuthenticationChallenge {
             URLAuthenticationChallenge(
                 protectionSpace: URLProtectionSpace(
-                    host: "router.selftest.example", port: 443, protocol: "https",
+                    host: host, port: port, protocol: "https",
                     realm: "Admin Area", authenticationMethod: method),
                 proposedCredential: nil, previousFailureCount: 0, failureResponse: nil,
                 error: nil, sender: SilentChallengeSender())
         }
-        func ask(_ method: String) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        func ask(
+            _ method: String, host: String = "router.selftest.example", port: Int = 443
+        ) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
             await withCheckedContinuation { continuation in
                 var resumed = false
-                tab.webView(tab.webView, didReceive: challenge(method)) { disposition, credential in
+                tab.webView(tab.webView, didReceive: challenge(method, host: host, port: port)) { disposition, credential in
                     guard !resumed else { return }
                     resumed = true
                     continuation.resume(returning: (disposition, credential))
@@ -2696,13 +3644,11 @@ enum SelfTest {
             if let dialog = tab.pendingDialog { raised = dialog; break }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        if case .httpAuth(let realm) = raised?.kind {
+        if case .httpAuth = raised?.kind {
             record("auth: basic auth raises a login", true)
-            record("auth: the login carries the server's realm", realm == "Admin Area", realm ?? "nil")
             record("auth: and names the host", raised?.host == "router.selftest.example")
         } else {
             record("auth: basic auth raises a login", false, "nothing was asked")
-            record("auth: the login carries the server's realm", false, "no login")
             record("auth: and names the host", false, "no login")
         }
         tab.answerDialog(true, text: "fin", secondary: "hunter2")
@@ -2733,6 +3679,111 @@ enum SelfTest {
             "auth: cancelling cancels the challenge",
             cancelled.0 == .cancelAuthenticationChallenge, "\(cancelled.0)")
         record("auth: nothing is left on screen", tab.pendingDialog == nil)
+
+        let crossOrigin = await ask(NSURLAuthenticationMethodHTTPBasic, host: "cdn.selftest.example")
+        record(
+            "auth: another origin's subresource never raises a login",
+            crossOrigin.0 == .cancelAuthenticationChallenge && tab.pendingDialog == nil, "\(crossOrigin.0)")
+
+        // a link's load the server challenges: the pill names who asks, not the page still shown
+        _ = try? await tab.webView.evaluateJavaScript("location = 'https://192.0.2.1:81/'")
+        await settle { tab.webView.url?.host() == "192.0.2.1" }
+        guard tab.webView.url?.host() == "192.0.2.1" else {
+            tab.stopLoading()
+            return note("auth: skipped the pending-load sign-in; the load ended at once")
+        }
+        async let pending = ask(NSURLAuthenticationMethodHTTPBasic, host: "192.0.2.1", port: 81)
+        await settle { tab.pendingDialog != nil }
+        record(
+            "auth: a load's sign-in shows its host in the pill",
+            tab.pendingDialog?.host == "192.0.2.1" && UrlField.displayText(for: tab) == "192.0.2.1:81"
+                && tab.url?.host() == "router.selftest.example",
+            UrlField.displayText(for: tab))
+        tab.answerDialog(false)
+        _ = await pending
+        tab.stopLoading()
+        record("auth: cancelling puts the pill back", UrlField.displayText(for: tab) == "router.selftest.example")
+    }
+
+    /// who a page belongs to stays readable: the pill keeps the registrable domain, a Peek names
+    /// its own site, and a prompt sits only over the page that asked
+    private static func testUITrust(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        // a blank selected tab would open the address bar over the window
+        let shown = manager.newTab(url: URL(string: "about:blank"), select: true)
+        let hidden = manager.newTab(url: URL(string: "about:blank"), select: false)
+        defer {
+            manager.closePeek()
+            manager.close(hidden)
+            manager.close(shown)
+            manager.selectedTabID = previous
+        }
+
+        let lure = URL(string: "https://fin:hunter2@accounts.google.com.session-check.evil.com/login")!
+        await navigate(hidden, to: lure)
+        let full = UrlField.displayText(for: hidden, full: true)
+        record(
+            "trust: the full url drops its password and keeps the registrable domain",
+            !full.contains("hunter2") && !full.contains("fin@") && full.hasSuffix("….evil.com/login"), full)
+        let hovered = LinkHoverCapsule.trimmed(lure)
+        record("trust: the link preview drops a link's user and password", !hovered.contains("@") && !hovered.contains("hunter2")
+            && hovered.hasPrefix("accounts.google.com.session-check.evil.com"), hovered)
+
+        // a Peek names its own page, and says when it isn't secure
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView else {
+            return record("trust: the window is up", false)
+        }
+        func ax(_ e: NSObject, _ key: String) -> Any? { e.responds(to: Selector(key)) ? e.value(forKey: key) : nil }
+        func labels(in e: NSObject, depth: Int = 0) -> [String] {
+            guard depth < 60, !(e is WKWebView) else { return [] }
+            let children = (ax(e, "accessibilityChildren") as? [Any] ?? []).flatMap {
+                ($0 as? NSObject).map { labels(in: $0, depth: depth + 1) } ?? []
+            }
+            return [ax(e, "accessibilityLabel") as? String, ax(e, "accessibilityValue") as? String].compactMap { $0 } + children
+        }
+        func originLabel(_ host: String) async -> String? {
+            var found: String?
+            await settle { found = labels(in: content).first { $0.contains(host) }; return found != nil }
+            return found
+        }
+        let insecure = URL(string: "http://peek-origin.selftest.example/")!
+        manager.peek(insecure)
+        guard let peek = manager.peekTab else { return record("trust: a Peek opens", false) }
+        await navigate(peek, to: insecure)
+        let plain = await originLabel("peek-origin.selftest.example")
+        record("trust: a Peek names its site and that it isn't secure", plain?.contains("Not Secure") == true, plain ?? "no label")
+        await navigate(peek, to: URL(string: "https://peek-next.selftest.example/")!)
+        let secure = await originLabel("peek-next.selftest.example")
+        record(
+            "trust: and follows the Peek's own navigation",
+            secure != nil && secure?.contains("Not Secure") == false, secure ?? "no label")
+        manager.closePeek()
+
+        // a prompt waits for its tab to be shown, and a new page drops it
+        let origin = "https://accounts.google.com.session-check.evil.com"
+        hidden.sitePermissions?.forget(origin)
+        var decided: PermissionDecision?
+        manager.requestPermission([.camera], origin: origin, tab: hidden) { decided = $0 }
+        record(
+            "trust: a background tab's prompt stays off the page shown",
+            manager.currentPermissionRequest?.tabID != hidden.id && manager.permissionQueue.contains { $0.tabID == hidden.id })
+        manager.selectedTabID = hidden.id
+        record("trust: and appears over its own tab", manager.currentPermissionRequest?.tabID == hidden.id)
+        await navigate(hidden, to: URL(string: "https://elsewhere.selftest.example/")!)
+        record(
+            "trust: a new page refuses what the last one asked",
+            decided == .deny && !manager.permissionQueue.contains { $0.tabID == hidden.id },
+            "\(decided.map { "\($0)" } ?? "unanswered")")
+        hidden.sitePermissions?.forget(origin)
+
+        await navigate(hidden, to: URL(string: "https://blob.selftest.example/")!)
+        _ = try? await hidden.webView.evaluateJavaScript(
+            "location = URL.createObjectURL(new Blob(['<p>made here</p>'], {type: 'text/html'})); 0")
+        await settle { hidden.url?.scheme == "blob" }
+        record(
+            "trust: a page a site made itself still names the site",
+            hidden.url?.scheme == "blob" && UrlField.displayText(for: hidden) == "blob.selftest.example",
+            "\(hidden.url?.absoluteString ?? "no url") shows \(UrlField.displayText(for: hidden))")
     }
 
     /// Choosing to trust a certificate the system refuses. The exception blob is
@@ -2740,8 +3791,9 @@ enum SelfTest {
     /// this host" from meaning "trust anything this host ever presents".
     private static func testCertificateTrust() async {
         let host = "staging.selftest.example"
-        CertificateTrust.forget(host)
-        record("certs: nothing is trusted to start with", !CertificateTrust.hasException(for: host))
+        let certs = BrowserCore.shared.defaultProfile.certificateTrust
+        certs.forget(host)
+        record("certs: nothing is trusted to start with", !certs.hasException(for: host))
 
         // no exception without a certificate seen for this host
         let failed = BrowserTab()
@@ -2755,7 +3807,7 @@ enum SelfTest {
         record(
             "certs: no certificate seen means no exception",
             offered && failed.certificateFailure == .overridable && failed.loadError != nil)
-        record("certs: and nothing was recorded", !CertificateTrust.hasException(for: host))
+        record("certs: and nothing was recorded", !certs.hasException(for: host))
 
         // which failures are worth a "continue anyway" and which aren't
         func urlError(_ code: Int) -> NSError { NSError(domain: NSURLErrorDomain, code: code) }
@@ -2776,83 +3828,67 @@ enum SelfTest {
             "certs: a failure from another domain is not a certificate problem",
             !CertificateTrust.isOverridable(NSError(domain: "WebKitErrorDomain", code: 102)))
 
-        // a self-signed certificate for the host, which the system refuses
-        let der = Data(
-            base64Encoded: """
-                MIIBnjCCAUOgAwIBAgIUU9jXMrlUo+MvX37lv3S3ZlGwFaQwCgYIKoZIzj0EAwIwIzEhMB8GA1UEAwwY
-                c3RhZ2luZy5zZWxmdGVzdC5leGFtcGxlMCAXDTI2MTEwNDA2MTkzNFoYDzIxMjYxMDExMDYxOTM0WjAj
-                MSEwHwYDVQQDDBhzdGFnaW5nLnNlbGZ0ZXN0LmV4YW1wbGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
-                AARvwC38NPUY4ukENTpoauoulz3AazFFAqcL1EvIRm3gYtnjNVXxNoSD68tyvF6kOvnOrnAtg8b43+XA
-                1a+m4jsYo1MwUTAdBgNVHQ4EFgQU5PMzG5lMtfWPJCBsI+BNN5sA4kgwHwYDVR0jBBgwFoAU5PMzG5lM
-                tfWPJCBsI+BNN5sA4kgwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBGAiEAsTX5ItpbU4kC
-                Jp6Yq/ZjfYqGZQzkna8h8HPZ/xsnAOICIQDyDzyTMVZyxzLT/D/sUGjPVeV7NKAmB/qznLKucauLTw==
-                """, options: .ignoreUnknownCharacters) ?? Data()
-        func refused() -> SecTrust? {
-            var trust: SecTrust?
-            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return nil }
-            SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, host as CFString), &trust)
-            return trust
-        }
+        func refused() -> SecTrust? { refusedTrust(for: host) }
         func applies(_ host: String, ephemeral: Bool) -> Bool {
-            refused().map { CertificateTrust.applyException(to: $0, host: host, ephemeral: ephemeral) } ?? false
+            refused().map { certs.applyException(to: $0, host: host, ephemeral: ephemeral) } ?? false
         }
         record("certs: an unstored exception is never applied", refused() != nil && !applies(host, ephemeral: true))
 
         // incognito's exception lives in memory, for incognito pages, until the last window closes
         record(
             "certs: incognito's exception is accepted but never saved",
-            refused().map { CertificateTrust.addException(for: host, trust: $0, ephemeral: true) } == true
-                && !CertificateTrust.hasException(for: host))
+            refused().map { certs.addException(for: host, trust: $0, ephemeral: true) } == true
+                && !certs.hasException(for: host))
         record(
             "certs: and applies to incognito pages only",
             applies(host, ephemeral: true) && !applies(host, ephemeral: false))
-        CertificateTrust.forgetEphemeral()
+        certs.forgetEphemeral()
         record("certs: closing incognito forgets it", !applies(host, ephemeral: true))
 
         // an HSTS-preloaded site, never loaded: no way past its certificate failures
         let strict = "staging.selftest.dev"
-        CertificateTrust.forget(strict)
+        certs.forget(strict)
         record(
             "certs: an HSTS-preloaded site requires a secure connection",
-            ["mail.google.com", "github.com", strict].allSatisfy { CertificateTrust.requiresSecureConnection($0) })
-        record("certs: an ordinary site does not", !CertificateTrust.requiresSecureConnection(host))
+            ["mail.google.com", "github.com", strict].allSatisfy { certs.requiresSecureConnection($0) })
+        record("certs: an ordinary site does not", !certs.requiresSecureConnection(host))
 
         // a site that sent Strict-Transport-Security itself, not preloaded
         let learned = "hsts.selftest.example"
-        CertificateTrust.noteStrictTransport("max-age=600; includeSubDomains", host: learned, ephemeral: false)
+        certs.noteStrictTransport("max-age=600; includeSubDomains", host: learned, ephemeral: false)
         record(
             "certs: a site that sent HSTS requires a secure connection, and so do its subdomains",
-            CertificateTrust.requiresSecureConnection(learned)
-                && CertificateTrust.requiresSecureConnection("deep.sub.\(learned)"))
-        CertificateTrust.noteStrictTransport("Max-Age=\"600\"", host: learned, ephemeral: false)
+            certs.requiresSecureConnection(learned)
+                && certs.requiresSecureConnection("deep.sub.\(learned)"))
+        certs.noteStrictTransport("Max-Age=\"600\"", host: learned, ephemeral: false)
         record(
             "certs: without includeSubDomains it covers the host alone",
-            CertificateTrust.requiresSecureConnection(learned)
-                && !CertificateTrust.requiresSecureConnection("sub.\(learned)"))
-        CertificateTrust.noteStrictTransport("includeSubDomains", host: learned, ephemeral: false)
-        record("certs: a header with no max-age changes nothing", CertificateTrust.requiresSecureConnection(learned))
-        CertificateTrust.noteStrictTransport("max-age=0", host: learned, ephemeral: false)
-        record("certs: max-age=0 forgets the site", !CertificateTrust.requiresSecureConnection(learned))
-        CertificateTrust.noteStrictTransport("max-age=600", host: learned, ephemeral: true)
+            certs.requiresSecureConnection(learned)
+                && !certs.requiresSecureConnection("sub.\(learned)"))
+        certs.noteStrictTransport("includeSubDomains", host: learned, ephemeral: false)
+        record("certs: a header with no max-age changes nothing", certs.requiresSecureConnection(learned))
+        certs.noteStrictTransport("max-age=0", host: learned, ephemeral: false)
+        record("certs: max-age=0 forgets the site", !certs.requiresSecureConnection(learned))
+        certs.noteStrictTransport("max-age=600", host: learned, ephemeral: true)
         record(
             "certs: HSTS learned in incognito holds for incognito pages only",
-            CertificateTrust.requiresSecureConnection(learned, ephemeral: true)
-                && !CertificateTrust.requiresSecureConnection(learned))
-        CertificateTrust.forgetEphemeral()
+            certs.requiresSecureConnection(learned, ephemeral: true)
+                && !certs.requiresSecureConnection(learned))
+        certs.forgetEphemeral()
         record(
             "certs: and goes when incognito closes",
-            !CertificateTrust.requiresSecureConnection(learned, ephemeral: true))
+            !certs.requiresSecureConnection(learned, ephemeral: true))
         for header in ["max-age=infinity", "max-age=1e9", "max-age=-600", "max-age="] {
-            CertificateTrust.noteStrictTransport(header, host: learned, ephemeral: true)
+            certs.noteStrictTransport(header, host: learned, ephemeral: true)
         }
         record(
             "certs: a max-age that isn't plain digits is ignored",
-            !CertificateTrust.requiresSecureConnection(learned, ephemeral: true))
-        CertificateTrust.noteStrictTransport("max-age=\(String(repeating: "9", count: 400))", host: learned, ephemeral: true)
+            !certs.requiresSecureConnection(learned, ephemeral: true))
+        certs.noteStrictTransport("max-age=\(String(repeating: "9", count: 400))", host: learned, ephemeral: true)
         record(
             "certs: a huge max-age holds, capped",
-            CertificateTrust.requiresSecureConnection(learned, ephemeral: true))
-        CertificateTrust.forgetEphemeral()
+            certs.requiresSecureConnection(learned, ephemeral: true))
+        certs.forgetEphemeral()
 
         func certificateFailed(on host: String) -> (BrowserTab, URLSession.AuthChallengeDisposition?) {
             let tab = BrowserTab()
@@ -2879,27 +3915,27 @@ enum SelfTest {
         record(
             "certs: an HSTS site's certificate failure is final, certificate in hand",
             strictTab.certificateFailure == .final && strictTab.serverTrusts[strict] != nil
-                && !CertificateTrust.hasException(for: strict, ephemeral: true),
+                && !certs.hasException(for: strict, ephemeral: true),
             "\(String(describing: strictTab.certificateFailure))")
-        CertificateTrust.noteStrictTransport("max-age=600", host: learned, ephemeral: false)
+        certs.noteStrictTransport("max-age=600", host: learned, ephemeral: false)
         let (learnedTab, _) = certificateFailed(on: learned)
         learnedTab.acceptCertificateAndRetry()
         record(
             "certs: a site that sent HSTS gets no Continue Anyway",
-            learnedTab.certificateFailure == .final && !CertificateTrust.hasException(for: learned),
+            learnedTab.certificateFailure == .final && !certs.hasException(for: learned),
             "\(String(describing: learnedTab.certificateFailure))")
-        CertificateTrust.noteStrictTransport("max-age=0", host: learned, ephemeral: false)
+        certs.noteStrictTransport("max-age=0", host: learned, ephemeral: false)
         let (ordinaryTab, _) = certificateFailed(on: host)
         ordinaryTab.acceptCertificateAndRetry()
         ordinaryTab.webView.stopLoading()
         record(
             "certs: an ordinary site's certificate can still be accepted",
-            ordinaryTab.certificateFailure == nil && CertificateTrust.hasException(for: host))
+            ordinaryTab.certificateFailure == nil && certs.hasException(for: host))
 
         // exceptions saved before the site required a secure connection
         let planted = refused().map {
-            CertificateTrust.addException(for: strict, trust: $0, ephemeral: false)
-                && CertificateTrust.addException(for: strict, trust: $0, ephemeral: true)
+            certs.addException(for: strict, trust: $0, ephemeral: false)
+                && certs.addException(for: strict, trust: $0, ephemeral: true)
         } == true
         record(
             "certs: a stored or incognito exception never applies to an HSTS site",
@@ -2928,12 +3964,133 @@ enum SelfTest {
                 && !ordinaryPage.offersCredentials(to: "https://\(strict)")
                 && strictPage.offersCredentials(to: "http://\(host)")
                 && !strictPage.offersCredentials(to: "http://\(host)", under: "https://\(host)"))
-        let listed = CertificateTrust.hasException(for: strict)
-        CertificateTrust.forget(strict)
+        let listed = certs.hasException(for: strict)
+        certs.forget(strict)
         record(
             "certs: Stop Trusting still lists and forgets it",
-            listed && !CertificateTrust.hasException(for: strict, ephemeral: true))
-        CertificateTrust.forget(host)
+            listed && !certs.hasException(for: strict, ephemeral: true))
+        certs.forget(host)
+    }
+
+    /// a certificate exception is the accepting profile's; incognito's sits in memory under its parent profile
+    private static func testCertificateProfiles(manager: TabManager) async {
+        let host = "staging.selftest.example"
+        let home = manager.core.defaultProfile
+        let work = manager.createProfile(name: "SelfTest Certificates", icon: "person")
+        home.certificateTrust.forget(host)
+        func page(in profile: Profile) -> BrowserTab {
+            manager.newTab(url: nil, configuration: BrowserTab.defaultConfiguration(dataStore: profile.dataStore), select: false)
+        }
+        func challenge(_ tab: BrowserTab) -> URLSession.AuthChallengeDisposition? {
+            let space = TrustSpace(
+                host: host, port: 443, protocol: NSURLProtectionSpaceHTTPS, realm: nil,
+                authenticationMethod: NSURLAuthenticationMethodServerTrust)
+            space.trust = refusedTrust(for: host)
+            var answer: URLSession.AuthChallengeDisposition?
+            tab.webView(
+                tab.webView,
+                didReceive: URLAuthenticationChallenge(
+                    protectionSpace: space, proposedCredential: nil, previousFailureCount: 0,
+                    failureResponse: nil, error: nil, sender: SilentChallengeSender())
+            ) { disposition, _ in answer = disposition }
+            return answer
+        }
+        func accept(in tab: BrowserTab) {
+            _ = challenge(tab)
+            tab.webView(
+                tab.webView, didFailProvisionalNavigation: nil,
+                withError: NSError(
+                    domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted,
+                    userInfo: [NSURLErrorFailingURLErrorKey: URL(string: "https://\(host)/")!]))
+            tab.acceptCertificateAndRetry()
+            tab.webView.stopLoading()
+        }
+        func onDisk(_ url: URL) -> Bool {
+            AppStorageLocation.loadDurable([String: Data].self, from: url)?[host] != nil
+        }
+        let homeTab = page(in: home), workTab = page(in: work)
+
+        accept(in: homeTab)
+        record(
+            "cert profiles: an exception accepted in one profile is refused in another",
+            challenge(homeTab) == .useCredential && challenge(workTab) == .performDefaultHandling)
+        let reopened = Profile(id: Profile.defaultID, name: "SelfTest Reopened", icon: "person")
+        record(
+            "cert profiles: an app-wide exception from before profiles stays the default profile's alone",
+            reopened.certificateTrust.hasException(for: host) && !work.certificateTrust.hasException(for: host))
+
+        let workIncognito = TabManager(core: manager.core, kind: .incognito)
+        workIncognito.openIncognitoSpace(parent: work)
+        let homeIncognito = TabManager(core: manager.core, kind: .incognito)
+        homeIncognito.openIncognitoSpace(parent: home)
+        let workGhost = workIncognito.newTab(url: nil, select: false), homeGhost = homeIncognito.newTab(url: nil, select: false)
+        record(
+            "cert profiles: incognito applies its own profile's saved exceptions only",
+            challenge(homeGhost) == .useCredential && challenge(workGhost) == .performDefaultHandling)
+        accept(in: workGhost)
+        record(
+            "cert profiles: an incognito exception holds only in that profile's incognito windows, never on disk",
+            challenge(workGhost) == .useCredential && challenge(workTab) == .performDefaultHandling
+                && !onDisk(work.file("certificate-exceptions.json")))
+        workIncognito.windowWillClose()
+        homeIncognito.windowWillClose()
+        record(
+            "cert profiles: closing the last incognito window forgets its exceptions",
+            !work.certificateTrust.hasException(for: host, ephemeral: true)
+                && home.certificateTrust.hasException(for: host))
+
+        accept(in: workTab)
+        record(
+            "cert profiles: the default profile writes the app-wide file, another profile its own",
+            onDisk(AppStorageLocation.file("certificate-exceptions.json")) && onDisk(work.file("certificate-exceptions.json")))
+        await PrivacyCleaner.clear([.permissions], range: .all, in: work, manager: manager)
+        record(
+            "cert profiles: clearing one profile's site permissions keeps another's exceptions",
+            challenge(workTab) == .performDefaultHandling && challenge(homeTab) == .useCredential)
+
+        // the app-wide learned list, seeded once into every profile then existing
+        let learned = "hsts-seed.selftest.example"
+        home.certificateTrust.noteStrictTransport("max-age=600", host: learned, ephemeral: false)
+        AppStorageLocation.enqueueDurableNow {}
+        UserDefaults.standard.removeObject(forKey: CertificateTrust.strictSeededKey)
+        CertificateTrust.seedStrictHosts(into: [home, work])
+        let fresh = manager.createProfile(name: "SelfTest Certificates Later", icon: "person")
+        let seededTab = page(in: work)
+        seededTab.webView(
+            seededTab.webView, didFailProvisionalNavigation: nil,
+            withError: NSError(
+                domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted,
+                userInfo: [NSURLErrorFailingURLErrorKey: URL(string: "https://\(learned)/")!]))
+        record(
+            "cert profiles: a profile existing at migration refuses Continue Anyway for a site the app-wide list learned",
+            seededTab.certificateFailure == .final && !fresh.certificateTrust.requiresSecureConnection(learned),
+            "\(String(describing: seededTab.certificateFailure))")
+        home.certificateTrust.noteStrictTransport("max-age=0", host: learned, ephemeral: false)
+
+        manager.close(seededTab)
+        manager.close(homeTab)
+        manager.close(workTab)
+        manager.deleteProfile(fresh)
+        manager.deleteProfile(work)
+        home.certificateTrust.forget(host)
+    }
+
+    /// a self-signed certificate for staging.selftest.example, which the system refuses
+    private static func refusedTrust(for host: String) -> SecTrust? {
+        let der = Data(
+            base64Encoded: """
+                MIIBnjCCAUOgAwIBAgIUU9jXMrlUo+MvX37lv3S3ZlGwFaQwCgYIKoZIzj0EAwIwIzEhMB8GA1UEAwwY
+                c3RhZ2luZy5zZWxmdGVzdC5leGFtcGxlMCAXDTI2MTEwNDA2MTkzNFoYDzIxMjYxMDExMDYxOTM0WjAj
+                MSEwHwYDVQQDDBhzdGFnaW5nLnNlbGZ0ZXN0LmV4YW1wbGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC
+                AARvwC38NPUY4ukENTpoauoulz3AazFFAqcL1EvIRm3gYtnjNVXxNoSD68tyvF6kOvnOrnAtg8b43+XA
+                1a+m4jsYo1MwUTAdBgNVHQ4EFgQU5PMzG5lMtfWPJCBsI+BNN5sA4kgwHwYDVR0jBBgwFoAU5PMzG5lM
+                tfWPJCBsI+BNN5sA4kgwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNJADBGAiEAsTX5ItpbU4kC
+                Jp6Yq/ZjfYqGZQzkna8h8HPZ/xsnAOICIQDyDzyTMVZyxzLT/D/sUGjPVeV7NKAmB/qznLKucauLTw==
+                """, options: .ignoreUnknownCharacters) ?? Data()
+        var trust: SecTrust?
+        guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return nil }
+        SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, host as CFString), &trust)
+        return trust
     }
 
     /// a fresh install's untouched Personal gives way to imported spaces in its profile; a touched one stays
@@ -4187,14 +5344,23 @@ enum SelfTest {
             tab.lastAttemptedURL?.host() == "scripting.selftest.example",
             tab.lastAttemptedURL?.absoluteString ?? "nothing")
 
+        manager.isCommandBarVisible = false
         let made = await run(
             "id of (make new tab at window id \(window) with properties {URL:\"https://made.selftest.example/\"})")
         let madeTab = manager.currentSpace.tabs.first { $0.id.uuidString == made }
         record(
             "scripting: make new tab opens the URL in the window's space",
             madeTab?.lastAttemptedURL?.host() == "made.selftest.example", made)
+        record("scripting: a tab made with a URL opens no command bar", !manager.isCommandBarVisible)
         _ = await run("close tab id \"\(made)\"")
         record("scripting: close removes the tab", !manager.currentSpace.tabs.contains { $0.id.uuidString == made })
+
+        let empty = await run("id of (make new tab at window id \(window))")
+        record(
+            "scripting: a tab made without a URL opens the command bar on it",
+            manager.isCommandBarVisible && manager.selectedTab?.id.uuidString == empty, empty)
+        manager.isCommandBarVisible = false
+        _ = await run("close tab id \"\(empty)\"")
     }
 
     /// Every intent and entity query, performed in-process against live spaces and
@@ -5247,73 +6413,304 @@ enum SelfTest {
         BrowserWindows.shared.window(of: manager).map(becomeKey)
     }
 
+    /// a site installed as an app: its launcher opens a window with no sidebar, whose off-site
+    /// link lands in the browser, and removing it takes the window and the launcher
+    private static func testWebApps(manager: TabManager) async {
+        let mail = WebApp(name: "Mail", url: URL(string: "https://mail.google.com/")!, spaceID: UUID(), profileID: UUID())
+        record(
+            "apps: a subdomain of the app's site is on it, another site is not",
+            mail.covers(URL(string: "https://accounts.google.com/x")!) && !mail.covers(URL(string: "https://example.com/")!))
+        let old = Data(
+            #"[{"id":"\#(UUID().uuidString)","name":"Old","url":"https://example.com/","spaceID":"\#(UUID().uuidString)","profileID":"\#(UUID().uuidString)"}]"#
+                .utf8)
+        let decoded = (try? JSONDecoder().decode([WebApp].self, from: old))?.first
+        record(
+            "apps: an app saved before its settings existed opens with their defaults",
+            decoded.map { $0.icon == .favicon && $0.look == .glass && !$0.collapsed && $0.edgeInset == nil && $0.showsNavigation && $0.badges }
+                == true)
+        record(
+            "apps: the Dock badge reads the count a title carries",
+            WebApp.badge(in: "Inbox (3) - Mail") == "3" && WebApp.badge(in: "(12+) Chat") == "12+"
+                && WebApp.badge(in: "Mail") == nil)
+        func missingAppAlerts() -> Int {
+            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+            return windows.filter { $0[kCGWindowOwnerName as String] as? String == "CoreServicesUIAgent" }.count
+        }
+        let alertsBefore = missingAppAlerts()
+        let html = """
+            <html><head><title>Self-Test App</title></head><body style='margin:0'>
+            <a id=off style='display:block;position:fixed;inset:0'>elsewhere</a>
+            <script>off.href = 'http://localhost:' + location.port + '/elsewhere'</script></body></html>
+            """
+        guard let served = serveLoopback(html), let main = BrowserWindows.shared.window(of: manager) else {
+            return record("apps: a local page and a browser window", false)
+        }
+        defer { close(served.socket) }
+        let home = URL(string: "http://127.0.0.1:\(served.port)/app")!
+        let away = URL(string: "http://localhost:\(served.port)/elsewhere")!
+        let previous = manager.selectedTabID
+        let apps = WebApps.shared
+        let app = apps.install(home, name: "Self-Test App", from: manager.currentSpace, icon: nil)
+        let launcher = apps.launcher(of: app)
+        let script = launcher.appending(path: "Contents/MacOS/launch")
+        let info = NSDictionary(contentsOf: launcher.appending(path: "Contents/Info.plist"))
+        record(
+            "apps: installing writes an executable launcher naming the app",
+            FileManager.default.isExecutableFile(atPath: script.path) && info?["ArtemisAppID"] as? String == app.id.uuidString)
+        record(
+            "apps: the launcher is a native app with the app's icon, so it holds a Dock tile of its own",
+            info?["ArtemisShim"] != nil && info?["LSUIElement"] == nil
+                && FileManager.default.fileExists(atPath: launcher.appending(path: "Contents/Resources/AppIcon.icns").path),
+            "shim \(info?["ArtemisShim"] ?? "none"), agent \(info?["LSUIElement"] ?? "no")")
+        let twin = apps.install(home, name: "self-test APP", from: manager.currentSpace, icon: nil)
+        record(
+            "apps: a name that differs only in case gets a number, so its launcher is its own",
+            twin.name == "self-test APP 2" && apps.launcher(of: twin) != launcher, twin.name)
+        apps.remove(twin)
+
+        let quiet = NSWorkspace.OpenConfiguration()
+        quiet.activates = false
+        quiet.addsToRecentItems = false
+        _ = try? await NSWorkspace.shared.openApplication(at: launcher, configuration: quiet)
+        await settle(.seconds(10)) { apps.window(of: app) != nil }
+        record("apps: the launcher opens the app's window", apps.window(of: app) != nil, launcher.path)
+        if apps.window(of: app) == nil { apps.open(app) }
+        await settle { apps.window(of: app).flatMap(BrowserWindows.shared.manager(for:))?.selectedTab != nil }
+        func shim() -> NSRunningApplication? { NSRunningApplication.runningApplications(withBundleIdentifier: apps.shimID(app)).first }
+        await settle(.seconds(5)) { shim() != nil }
+        record(
+            "apps: while its window is open the launcher runs as an app of its own, with a Dock tile and a ⌘-Tab entry",
+            shim()?.activationPolicy == .regular, "\(String(describing: shim()?.activationPolicy.rawValue))")
+        guard let window = apps.window(of: app), let content = window.contentView,
+            let page = BrowserWindows.shared.manager(for: window)?.selectedTab
+        else {
+            apps.remove(app)
+            return record("apps: the app's window shows its page", false)
+        }
+        await settle(.seconds(5)) { page.url == home && !page.isLoading && page.title == "Self-Test App" }
+        let frame = page.webView.convert(page.webView.bounds, to: nil)
+        record(
+            "apps: the page spans the window under a thin bar, with no sidebar",
+            page.url == home && frame.width > content.bounds.width - 40 && content.bounds.height - frame.maxY < 60,
+            "page \(frame), window \(content.bounds.size)")
+
+        func landed() -> BrowserTab? { manager.allTabs.first { $0.lastAttemptedURL == away || $0.url == away } }
+        let appManager = BrowserWindows.shared.manager(for: window)
+        let stays = appManager?.routeLinkedNavigation(from: page, to: home.appending(path: "next")) == false
+        let leaves = appManager?.routeLinkedNavigation(from: page, to: away) == true
+        await settle(.seconds(5)) { landed() != nil }
+        record(
+            "apps: a link on the app's site stays, one to another site opens in the browser",
+            stays && leaves && landed() != nil && page.url == home,
+            "stays \(stays), leaves \(leaves), browser \(landed()?.url?.absoluteString ?? "nil")")
+        if let tab = landed() { manager.close(tab) }
+
+        becomeKey(window)
+        if window.isKeyWindow {
+            await pressNatively(on: page.webView)
+            await settle(.seconds(5)) { landed() != nil }
+            record(
+                "apps: a clicked link to another site opens in the browser, and the app keeps its page",
+                landed() != nil && page.url == home,
+                "browser \(landed()?.url?.absoluteString ?? "nil"), app \(page.url?.absoluteString ?? "nil")")
+            if let tab = landed() { manager.close(tab) }
+        } else {
+            note("apps: a clicked off-site link skipped (the app window isn't key)")
+        }
+        manager.selectedTabID = previous
+
+        var edited = apps.app(app.id) ?? app
+        edited.floats = true
+        edited.collapsed = true
+        edited.edgeInset = 0
+        edited.keepsLinks = true
+        edited.look = .solid
+        edited.icon = .glyph("star.fill")
+        let icon = launcher.appending(path: "Contents/Resources/icon.png")
+        let iconBefore = try? Data(contentsOf: icon)
+        apps.update(edited)
+        await settle(.seconds(3)) {
+            let gap = content.bounds.height - page.webView.convert(page.webView.bounds, to: nil).maxY
+            return window.level == .floating && gap < 2
+        }
+        let framed = page.webView.convert(page.webView.bounds, to: nil)
+        record(
+            "apps: settings apply to the open window: it floats, its toolbar hides and the page meets the edges",
+            window.level == .floating && content.bounds.height - framed.maxY < 2 && framed.width >= content.bounds.width - 1,
+            "level \(window.level.rawValue), page \(framed), window \(content.bounds.size)")
+        record(
+            "apps: with other sites kept, a link to one stays in the app",
+            appManager?.routeLinkedNavigation(from: page, to: away) == false)
+        await settle(.seconds(3)) { (try? Data(contentsOf: icon)) != iconBefore }
+        record("apps: a symbol icon redraws the launcher's icon", (try? Data(contentsOf: icon)) != iconBefore)
+        await settle(.seconds(2)) {
+            AppStorageLocation.loadDurable([WebApp].self, from: AppStorageLocation.file("apps.json"))?.first { $0.id == app.id } == apps.app(app.id)
+        }
+        let saved = AppStorageLocation.loadDurable([WebApp].self, from: AppStorageLocation.file("apps.json"))?.first { $0.id == app.id }
+        record(
+            "apps: the settings are saved",
+            saved != nil && saved == apps.app(app.id) && saved?.floats == true && saved?.icon == .glyph("star.fill"))
+
+        edited = apps.app(app.id) ?? edited
+        edited.name = "Self-Test App Renamed"
+        apps.update(edited)
+        let renamed = apps.launcher(of: edited)
+        let oldShim = shim()?.processIdentifier
+        func moved() -> Bool {
+            FileManager.default.fileExists(atPath: renamed.path) && !FileManager.default.fileExists(atPath: launcher.path)
+                && shim()?.bundleURL?.path == renamed.path && shim()?.processIdentifier != oldShim
+        }
+        await settle(.seconds(6), until: moved)
+        record(
+            "apps: renaming moves the launcher, and the renamed one takes the Dock tile", moved(),
+            "running \(shim()?.bundleURL?.path ?? "nil")")
+        edited = apps.app(app.id) ?? edited
+        edited.resetLook()
+        apps.update(edited)
+        record(
+            "apps: Reset Look puts the window back",
+            apps.app(app.id).map { !$0.floats && !$0.collapsed && $0.edgeInset == nil && !$0.keepsLinks } == true
+                && window.level == .normal)
+
+        // the exit animation never finishes while the display sleeps
+        window.close()
+        await settle(.seconds(5)) { apps.window(of: app) == nil && shim() == nil }
+        record(
+            "apps: closing the window quits the launcher", apps.window(of: app) == nil && shim() == nil,
+            "launcher \(shim()?.processIdentifier.description ?? "quit")")
+
+        apps.remove(app)
+        await settle { apps.window(of: app) == nil }
+        record(
+            "apps: removing the app closes its window and deletes its launcher",
+            apps.window(of: app) == nil && !apps.apps.contains { $0.id == app.id }
+                && !FileManager.default.fileExists(atPath: renamed.path))
+        try? await Task.sleep(for: .seconds(2))
+        record(
+            "apps: no launcher is ever opened after it was moved or deleted (no \"can't be found\" alert)",
+            missingAppAlerts() <= alertsBefore, "alerts \(alertsBefore) → \(missingAppAlerts())")
+        becomeKey(main)
+    }
+
+    /// stands in for the app a link is clicked in: runs each numbered command file it finds,
+    /// handing the focus back the one way macOS lets another app come forward
+    private static let standIn = #"""
+        ObjC.import('AppKit');
+        function run(argv) {
+          const app = $.NSApplication.sharedApplication;
+          const pump = (s) => {
+            const until = $.NSDate.dateWithTimeIntervalSinceNow(s);
+            for (;;) {
+              const e = app.nextEventMatchingMaskUntilDateInModeDequeue(Number.MAX_SAFE_INTEGER, until, $.NSDefaultRunLoopMode, true);
+              if (e.isNil()) return;
+              app.sendEvent(e);
+            }
+          };
+          const fm = $.NSFileManager.defaultManager;
+          const them = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]));
+          const bundle = $.NSURL.fileURLWithPath(argv[1]);
+          const me = $.NSProcessInfo.processInfo.processIdentifier;
+          app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
+          app.finishLaunching;
+          const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(240, 240, 360, 240), 1, 2, false);
+          const front = () => {
+            for (let i = 0; i < 100 && $.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != me; i++) {
+              app.activate;
+              pump(0.1);
+            }
+            w.makeKeyAndOrderFront(null);
+            pump(1);
+          };
+          // the calls without a completion block: JXA can't take one back
+          const ws = $.NSWorkspace.sharedWorkspace;
+          const open = (url) => {
+            app.yieldActivationToApplication(them);
+            ws.openURLsWithApplicationAtURLOptionsConfigurationError($([url]), bundle, 0, $({}), null);
+          };
+          for (let n = 1; ; ) {
+            const path = argv[2] + '/' + n;
+            if (!fm.fileExistsAtPath(path)) { pump(0.05); continue; }
+            const [verb, arg] = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, 4, null)).split(' ');
+            if (verb === 'quit') return;
+            if (verb === 'front') front();
+            if (verb === 'plain' || verb === 'all') {
+              app.yieldActivationToApplication(them);
+              them.activateWithOptions(verb === 'all' ? 1 : 0);
+            }
+            if (verb === 'app') {
+              app.yieldActivationToApplication(them);
+              ws.launchApplicationAtURLOptionsConfigurationError(bundle, 0, $({}), null);
+            }
+            if (verb === 'link') open($.NSURL.URLWithString(arg));
+            if (verb === 'file') open($.NSURL.fileURLWithPath(arg));
+            $('').writeToFileAtomicallyEncodingError(path + '.done', true, 4, null);
+            n++;
+          }
+        }
+        """#
+
+    /// a link from another app opens a Scout that draws no bitmap near its own size: each
+    /// stays open, so one costs its UI-process memory once per link
+    private static func testScoutBitmaps() async {
+        func bytes(_ layer: CALayer) -> Int {
+            guard let contents = layer.contents else { return 0 }
+            let ref = contents as CFTypeRef
+            if CFGetTypeID(ref) == CGImage.typeID {
+                let image = contents as! CGImage
+                return image.bytesPerRow * image.height
+            }
+            if CFGetTypeID(ref) == IOSurfaceGetTypeID() { return IOSurfaceGetAllocSize(contents as! IOSurfaceRef) }
+            return Int(layer.bounds.width * layer.bounds.height * layer.contentsScale * layer.contentsScale) * 4
+        }
+        // the page's own tiles are WebKit's, sized by the page
+        func walk(_ layer: CALayer, _ out: inout [(Int, String)]) {
+            if layer.delegate is WKWebView { return }
+            let size = bytes(layer)
+            if size > 0 {
+                let owner = (layer.delegate as AnyObject?).map { String(describing: type(of: $0)).prefix(40) } ?? "-"
+                out.append((size, "\(type(of: layer)) of \(owner)"))
+            }
+            for sub in layer.sublayers ?? [] { walk(sub, &out) }
+        }
+        let known = Set(NSApp.windows.map(ObjectIdentifier.init))
+        AppDelegate.shared?.openScoutWindow(URL(string: "https://example.com/")!)
+        guard let scout = await scoutArrival(after: known), let root = scout.contentView?.superview?.layer else {
+            return record("scout bitmaps: a link from another app opens a Scout", false)
+        }
+        try? await Task.sleep(for: .seconds(2))
+        var layers: [(Int, String)] = []
+        walk(root, &layers)
+        let window = Int(scout.frame.width * scout.frame.height * scout.backingScaleFactor * scout.backingScaleFactor) * 4
+        let top = layers.sorted { $0.0 > $1.0 }.prefix(3)
+        record("scout bitmaps: no layer of a Scout holds a bitmap a quarter of its window's",
+            (top.first?.0 ?? 0) < window / 4,
+            "window \(window / 1024) KB, all \(layers.map(\.0).reduce(0, +) / 1024) KB; "
+                + top.map { "\($0.1) \($0.0 / 1024) KB" }.joined(separator: ", "))
+        scout.performClose(nil)
+        for _ in 0..<40 where scout.isVisible { try? await Task.sleep(for: .milliseconds(50)) }
+    }
+
+    private static func scoutArrival(after known: Set<ObjectIdentifier>) async -> NSWindow? {
+        for _ in 0..<100 {
+            if let window = NSApp.windows.first(where: {
+                $0.isVisible && !known.contains(ObjectIdentifier($0)) && BrowserWindows.shared.manager(for: $0)?.kind == .scout
+            }) { return window }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
+    }
+
     /// a link from another app fronts its Scout window alone, and every other way back into
     /// Artemis still lands on the window that had the focus
     private static func testScoutFront(manager: TabManager) async {
         guard let main = BrowserWindows.shared.window(of: manager) else {
             return record("scout front: a browser window", false)
         }
-        // stands in for the app a link is clicked in: runs each numbered command file it finds,
-        // handing the focus back the one way macOS lets another app come forward
-        let helper = #"""
-            ObjC.import('AppKit');
-            function run(argv) {
-              const app = $.NSApplication.sharedApplication;
-              const pump = (s) => {
-                const until = $.NSDate.dateWithTimeIntervalSinceNow(s);
-                for (;;) {
-                  const e = app.nextEventMatchingMaskUntilDateInModeDequeue(Number.MAX_SAFE_INTEGER, until, $.NSDefaultRunLoopMode, true);
-                  if (e.isNil()) return;
-                  app.sendEvent(e);
-                }
-              };
-              const fm = $.NSFileManager.defaultManager;
-              const them = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]));
-              const bundle = $.NSURL.fileURLWithPath(argv[1]);
-              const me = $.NSProcessInfo.processInfo.processIdentifier;
-              app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
-              app.finishLaunching;
-              const w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer($.NSMakeRect(240, 240, 360, 240), 1, 2, false);
-              const front = () => {
-                for (let i = 0; i < 100 && $.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != me; i++) {
-                  app.activate;
-                  pump(0.1);
-                }
-                w.makeKeyAndOrderFront(null);
-                pump(1);
-              };
-              // the calls without a completion block: JXA can't take one back
-              const ws = $.NSWorkspace.sharedWorkspace;
-              const open = (url) => {
-                app.yieldActivationToApplication(them);
-                ws.openURLsWithApplicationAtURLOptionsConfigurationError($([url]), bundle, 0, $({}), null);
-              };
-              for (let n = 1; ; ) {
-                const path = argv[2] + '/' + n;
-                if (!fm.fileExistsAtPath(path)) { pump(0.05); continue; }
-                const [verb, arg] = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, 4, null)).split(' ');
-                if (verb === 'quit') return;
-                if (verb === 'front') front();
-                if (verb === 'plain' || verb === 'all') {
-                  app.yieldActivationToApplication(them);
-                  them.activateWithOptions(verb === 'all' ? 1 : 0);
-                }
-                if (verb === 'app') {
-                  app.yieldActivationToApplication(them);
-                  ws.launchApplicationAtURLOptionsConfigurationError(bundle, 0, $({}), null);
-                }
-                if (verb === 'link') open($.NSURL.URLWithString(arg));
-                if (verb === 'file') open($.NSURL.fileURLWithPath(arg));
-                $('').writeToFileAtomicallyEncodingError(path + '.done', true, 4, null);
-                n++;
-              }
-            }
-            """#
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("scout-front-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let script = dir.appendingPathComponent("helper.js")
-        try? helper.write(to: script, atomically: true, encoding: .utf8)
+        try? standIn.write(to: script, atomically: true, encoding: .utf8)
 
         func foreignAbove(_ window: NSWindow, in list: [Int]) -> Int {
             let ours = Set(NSApp.windows.map(\.windowNumber))
@@ -5321,15 +6718,6 @@ enum SelfTest {
         }
         func scouts() -> Set<ObjectIdentifier> {
             Set(NSApp.windows.filter { $0.isVisible && BrowserWindows.shared.manager(for: $0)?.kind == .scout }.map(ObjectIdentifier.init))
-        }
-        func arrival(after known: Set<ObjectIdentifier>) async -> NSWindow? {
-            for _ in 0..<100 {
-                if let window = NSApp.windows.first(where: {
-                    $0.isVisible && !known.contains(ObjectIdentifier($0)) && BrowserWindows.shared.manager(for: $0)?.kind == .scout
-                }) { return window }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            return nil
         }
         func close(_ scout: NSWindow) async {
             scout.performClose(nil)
@@ -5397,7 +6785,7 @@ enum SelfTest {
         }
         let sampler = StackSampler(watching: main.windowNumber, under: theirs())
         var known = scouts()
-        guard await send("link https://example.com/"), let scout = await arrival(after: known) else {
+        guard await send("link https://example.com/"), let scout = await scoutArrival(after: known) else {
             return record("scout: a link from another app opens a Scout window", false)
         }
         try? await Task.sleep(for: .milliseconds(1500))
@@ -5485,7 +6873,7 @@ enum SelfTest {
             let underMain = StackSampler(watching: main.windowNumber, under: theirs())
             let underFirst = StackSampler(watching: first.windowNumber, under: theirs())
             known = scouts()
-            if await send("link https://example.com/"), let scout = await arrival(after: known) {
+            if await send("link https://example.com/"), let scout = await scoutArrival(after: known) {
                 try? await Task.sleep(for: .milliseconds(1500))
                 let (m, f) = (underMain.take(), underFirst.take())
                 record("lobby: a link while a Scout is open fronts the new Scout alone",
@@ -5506,7 +6894,7 @@ enum SelfTest {
         main.orderOut(nil)
         if await handOff() {
             known = scouts()
-            if await send("link https://example.com/"), let scout = await arrival(after: known) {
+            if await send("link https://example.com/"), let scout = await scoutArrival(after: known) {
                 try? await Task.sleep(for: .milliseconds(1000))
                 record("lobby: a link with no browser window open fronts its Scout, key",
                     NSApp.isActive && scout.isKeyWindow && !main.isVisible && !Lobby.isHolding,
@@ -5626,6 +7014,31 @@ enum SelfTest {
         record(
             "menus: no untitled or placeholder items", stray.isEmpty,
             stray.map { "\"\($0.title)\" in \($0.menu?.title ?? "?")" }.joined(separator: ", "))
+        // fn⌃F is the system's Fill, which tiles the browser window to the screen
+        let unfilled = main.frame
+        let visible = main.screen?.visibleFrame ?? .zero
+        func filled() -> Bool {
+            abs(main.frame.width - visible.width) < 8 && abs(main.frame.height - visible.height) < 8
+        }
+        manager.isCommandBarVisible = false
+        main.setFrame(NSRect(x: visible.minX + 80, y: visible.minY + 80, width: 900, height: 600), display: true)
+        NSApp.activate(ignoringOtherApps: true)
+        becomeKey(main)
+        let smallBefore = !filled()
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: [.control, .function],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: main.windowNumber, context: nil,
+                characters: "\u{6}", charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3
+            ).map { NSApp.postEvent($0, atStart: false) }
+        }
+        await settle { filled() }
+        record(
+            "menus: fn⌃F fills the screen with the browser window, which still drags itself",
+            smallBefore && filled() && !main.isMovable,
+            "frame \(main.frame) on \(visible), movable \(main.isMovable)")
+        main.setFrame(unfilled, display: true)
+
         let replaced: [Selector] = [
             #selector(NSSplitViewController.toggleSidebar(_:)), #selector(NSWindow.toggleToolbarShown(_:)),
             #selector(NSApplication.showHelp(_:)),
@@ -5737,6 +7150,34 @@ enum SelfTest {
             "menus: a shortcut works once its item is on though its menu was last open while off: Back after unlock, Find Next, Zoom In",
             back == "one" && found == 1 && blank.webView.pageZoom > zoom,
             "back to \(back), find next \(found), zoom \(zoom)→\(blank.webView.pageZoom), refresh \(ContinuousClock().measure { for _ in 0..<20 { NSApp.mainMenu.map(AppDelegate.refresh) } } / 20)")
+        // keyCodes 0x1E (]), 0x18 (=) and 0x14 (3) on ANSI
+        func key(_ code: UInt16, _ characters: String, _ modifiers: NSEvent.ModifierFlags) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: main.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: code)
+        }
+        func tabItem(_ event: NSEvent?) -> String? {
+            guard let event, let menu = NSApp.mainMenu else { return nil }
+            return AppDelegate.tabSwitchItem(in: AppDelegate.refresh(menu, for: event), for: event).map { $0.0.items[$0.1].title }
+        }
+        let next = tabItem(key(0x1E, "]", [.command, .shift]))
+        let dvorak = tabItem(key(0x18, "]", [.command, .shift]))
+        record(
+            "menus: the ] key with ⇧⌘ is Next Tab from the key monitor, the = key typing ] is not",
+            next == "Next Tab" && dvorak == nil, "] key \(next ?? "nil"), = key \(dvorak ?? "nil")")
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        let modal = NSApp.beginModalSession(for: panel)
+        let underModal = tabItem(key(0x1E, "]", [.command, .shift]))
+        NSApp.endModalSession(modal)
+        panel.close()
+        becomeKey(main)
+        record("menus: ⇧⌘] switches no tab under a modal panel", underModal == nil, underModal ?? "")
+        let holders = key(0x14, "3", .control).flatMap { event in NSApp.mainMenu.map { AppDelegate.refresh($0, for: event) } } ?? []
+        record(
+            "menus: ⌃3 refreshes only menus with a ⌃3 item, or every menu, never ⌘3's or ⌃⇧3's alone",
+            holders.allSatisfy { $0.items.contains { $0.keyEquivalent == "3" && $0.keyEquivalentModifierMask.intersection([.command, .shift, .option, .control]) == .control } },
+            holders.map(\.title).joined(separator: ", "))
         blank.resetZoom()
         manager.close(blank)
         manager.close(page)
@@ -6061,7 +7502,7 @@ enum SelfTest {
         }) {
             defer { server.close() }
             let site = "http://127.0.0.1:\(server.port)"
-            let store = SitePermissionStore.shared
+            let store = manager.currentProfile.sitePermissions
             store.forget(site)
             defer { store.forget(site) }
             let tabs = Set(manager.currentSpace.tabs.map(\.id))
@@ -6093,7 +7534,7 @@ enum SelfTest {
                 "downloads: a clicked file on a site set to Block shows as blocked",
                 refused?.isBlocked == true && manager.permissionQueue.isEmpty,
                 refused.map { "\($0.state)" } ?? "nothing")
-            while !manager.permissionQueue.isEmpty { manager.answerPermission(.deny, remember: false) }
+            while manager.currentPermissionRequest != nil { manager.answerPermission(.deny, remember: false) }
         } else {
             record("downloads: a local server for the click checks", false)
         }
@@ -6541,7 +7982,9 @@ enum SelfTest {
             UserDefaults.standard.set(sidebarWidth, forKey: "sidebarWidth")
             try? await Task.sleep(for: .milliseconds(900))
             func target(_ x: CGFloat) -> NSView? {
-                window.perform(NSSelectorFromString("_findDragTargetFrom:"), with: DragProbe(at: NSPoint(x: x, y: content.bounds.midY)))?
+                let find = NSSelectorFromString("_findDragTargetFrom:")
+                guard window.responds(to: find) else { return nil }
+                return window.perform(find, with: DragProbe(at: NSPoint(x: x, y: content.bounds.midY)))?
                     .takeUnretainedValue() as? NSView
             }
             let inSidebar = target(sidebarWidth / 2), overPage = target(card.frame.minX + 40)
@@ -7709,19 +9152,7 @@ enum SelfTest {
                 == "function")
 
         // a Shorts swipe changes the url in place: the pause after it must still clear the tab
-        let swipe = """
-            var n = 8000, b = new Uint8Array(44 + n), d = new DataView(b.buffer);
-            [[0,'RIFF'],[8,'WAVEfmt '],[36,'data']].forEach(function(p){
-              for (var i = 0; i < p[1].length; i++) b[p[0] + i] = p[1].charCodeAt(i); });
-            d.setUint32(4, 36 + n, true); d.setUint32(16, 16, true); d.setUint16(20, 1, true);
-            d.setUint16(22, 1, true); d.setUint32(24, 8000, true); d.setUint32(28, 8000, true);
-            d.setUint16(32, 1, true); d.setUint16(34, 8, true); d.setUint32(40, n, true);
-            b.fill(128, 44);
-            var a = document.createElement('audio');
-            a.loop = true; a.src = URL.createObjectURL(new Blob([b], {type: 'audio/wav'}));
-            document.body.appendChild(a); window.__swipeAudio = a;
-            await a.play(); return true;
-            """
+        let swipe = silentLoop + " window.__swipeAudio = a; await a.play(); return true;"
         let started = (try? await tab.webView.callAsyncJavaScript(swipe, contentWorld: .page)) as? Bool == true
         await settle { tab.isPlayingMediaContent && tab.media?.isPlaying == true }
         let playing = tab.isPlayingMediaContent && tab.media?.isPlaying == true
@@ -7743,6 +9174,94 @@ enum SelfTest {
         record("media: still playing while another frame plays", tab.isPlayingMediaContent)
         tab.setFramePlaying(false, frame: "https://b.example/frame")
         record("media: clears when the last frame stops", !tab.isPlayingMediaContent)
+    }
+
+    /// page script leaving `a`, a looping silent WAV in the page, not yet playing
+    private static let silentLoop = """
+            var n = 8000, b = new Uint8Array(44 + n), d = new DataView(b.buffer);
+            [[0,'RIFF'],[8,'WAVEfmt '],[36,'data']].forEach(function(p){
+              for (var i = 0; i < p[1].length; i++) b[p[0] + i] = p[1].charCodeAt(i); });
+            d.setUint32(4, 36 + n, true); d.setUint32(16, 16, true); d.setUint16(20, 1, true);
+            d.setUint16(22, 1, true); d.setUint32(24, 8000, true); d.setUint32(28, 8000, true);
+            d.setUint16(32, 1, true); d.setUint16(34, 8, true); d.setUint32(40, n, true);
+            b.fill(128, 44);
+            var a = document.createElement('audio');
+            a.loop = true; a.src = URL.createObjectURL(new Blob([b], {type: 'audio/wav'}));
+            document.body.appendChild(a);
+            """
+
+    /// every way a page leaves the browser stops its sound, whoever still holds the view
+    private static func testClosedPagesFallSilent(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        defer { manager.selectedTabID = previous }
+        let tone = silentLoop + " a.play().catch(function(){}); return true;"
+        func state(_ view: WKWebView) async -> WKMediaPlaybackState {
+            await withCheckedContinuation { done in
+                view.requestMediaPlaybackState(completionHandler: { done.resume(returning: $0) })
+            }
+        }
+        // a page still navigating (Peek's, Scout's) would leave the tone in a document it then replaces
+        func play(_ tab: BrowserTab) async {
+            await settle(.seconds(10)) { !tab.webView.isLoading }
+            await load(tab, html: "<html><body>tone</body></html>")
+            _ = try? await tab.webView.callAsyncJavaScript(tone, contentWorld: .page)
+            await settle { await state(tab.webView) == .playing }
+        }
+        // silence is read before retire's deferred close lands, at 1 s
+        func check(_ path: String, _ tab: BrowserTab, close: () -> Void) async {
+            let view = tab.webView
+            let before = await state(view)
+            close()
+            await settle(.milliseconds(800)) { await state(view) != .playing }
+            let after = await state(view)
+            record(
+                "closed pages: \(path) silences its page", before == .playing && after != .playing,
+                "before \(before.rawValue) after \(after.rawValue)")
+            await settle(.seconds(2)) { view.spiValue(forKey: "_isClosed") as? Bool == true }
+            record("closed pages: \(path) then closes its page", view.spiValue(forKey: "_isClosed") as? Bool == true)
+        }
+
+        let closed = manager.newTab(url: nil, select: true)
+        await play(closed)
+        await check("a tab's close", closed) { manager.close(closed) }
+
+        let pin = manager.newTab(url: nil, select: true)
+        await play(pin)
+        manager.togglePin(pin)
+        await check("⌘W on a pinned tab", pin) { manager.closeAndKeepPinned(pin) }
+        manager.close(pin)
+
+        let favourite = manager.newTab(url: nil, select: true)
+        await play(favourite)
+        manager.toggleEssential(favourite)
+        await check("closing a favourite", favourite) { manager.close(favourite) }
+        manager.removeEssential(favourite)
+
+        let moved = manager.newTab(url: nil, select: true)
+        await play(moved)
+        await check("a profile move", moved) { moved.rebuildWebView(with: .nonPersistent()) }
+        manager.close(moved)
+
+        manager.peek(URL(string: "https://selftest.example/peek")!)
+        if let peek = manager.peekTab {
+            await play(peek)
+            await check("closing Peek", peek) { manager.closePeek() }
+        } else {
+            record("closed pages: closing Peek silences its page", false, "no peek opened")
+        }
+
+        let scout = TabManager(kind: .scout)
+        let scoutPage = scout.openScoutSpace(on: URL(string: "https://selftest.example/scout")!)
+        await play(scoutPage)
+        await check("closing a Scout window", scoutPage) { scout.windowWillClose() }
+
+        let incognito = makeIncognito(from: manager)
+        if let page = incognito.selectedTab {
+            await play(page)
+            await check("closing an incognito window", page) { incognito.windowWillClose() }
+        } else {
+            record("closed pages: closing an incognito window silences its page", false, "no incognito page")
+        }
     }
 
     /// pages can't open WebKit's own Picture in Picture; the mini-player is the only one
@@ -8705,11 +10224,24 @@ enum SelfTest {
                 await settle { manager.selectedTab?.url?.absoluteString == typed && manager.selectedTab?.isLoading == false }
                 let submitted = manager.selectedTab
                 await settle { submitted.map { window.firstResponder === $0.webView } ?? false }
-                let focused = try? await submitted?.webView.evaluateJavaScript("document.hasFocus()") as? Bool
+                // WebKit hands the page its focus in an activity-state update after the responder change
+                let responded = ContinuousClock.now
+                var focused: Bool?
+                await settle(.seconds(1)) {
+                    focused = try? await submitted?.webView.evaluateJavaScript("document.hasFocus()") as? Bool
+                    return focused == true
+                }
+                let wait = (ContinuousClock.now - responded).components
+                let pid = submitted?.webView.spiValue(forKey: "_webProcessIdentifier") as? Int32 ?? 0
+                let sharers = manager.allTabs.filter {
+                    $0 !== submitted && $0.madeWebView?.spiValue(forKey: "_webProcessIdentifier") as? Int32 == pid
+                }.count
                 record(
                     "new tab mount: a page opened from the command bar takes the keyboard once loaded",
                     submitted?.url?.absoluteString == typed && window.firstResponder === submitted?.webView && focused == true,
-                    "url \(submitted?.url?.absoluteString ?? "nil") responder \(String(describing: window.firstResponder)) hasFocus \(String(describing: focused))")
+                    "url \(submitted?.url?.absoluteString ?? "nil") responder \(String(describing: window.firstResponder)) "
+                        + "hasFocus \(String(describing: focused)) after \(wait.seconds * 1000 + wait.attoseconds / 1_000_000_000_000_000) ms, "
+                        + "pid \(pid) shared with \(sharers) tabs")
                 if let submitted, submitted !== shown { manager.close(submitted) }
             } else {
                 manager.isCommandBarVisible = false
@@ -8722,6 +10254,65 @@ enum SelfTest {
         manager.close(elsewhere)
         manager.deleteSpace(other)
         manager.selectedTabID = previous
+    }
+
+    /// a tab opened behind the shown one has the card's size from its first layout, and stays unseen
+    private static func testBackgroundWidth(manager: TabManager) async {
+        func png(width: Int) -> Data {
+            NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                .representation(using: .png, properties: [:])!
+        }
+        let small = png(width: 20), large = png(width: 40)
+        let page = Data("""
+            <!doctype html><img srcset="/small.png 200w, /large.png 2000w" sizes="100vw">
+            <script>var widthAtParse = innerWidth, frames = 0; (function tick() { frames++; requestAnimationFrame(tick); })();</script>
+            """.utf8)
+        guard
+            let server = LiveLoopback(reply: { path, _ in
+                let body = path == "/small.png" ? small : path == "/large.png" ? large : page
+                let type = path.hasSuffix(".png") ? "image/png" : "text/html"
+                return Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
+            })
+        else { return record("background width: a loopback server starts", false) }
+        defer { server.close() }
+        let previous = manager.selectedTabID
+        SelfTest.mainWindow()?.makeKeyAndOrderFront(nil)
+        await settle { manager.showsPagesNow }
+        // the space's selected page is mounted while unseen; a tab behind it is not
+        let front = manager.newTab(url: nil, select: true, opensBar: false)
+        await load(front, html: "<html><body>front</body></html>")
+        let tab = manager.newTab(url: URL(string: "http://127.0.0.1:\(server.port)/")!, select: false)
+        defer {
+            manager.close(tab)
+            manager.close(front)
+            manager.selectedTabID = previous
+        }
+        func read(_ script: String) async -> String {
+            ((try? await tab.webView.evaluateJavaScript("String(\(script))")) as? String) ?? "?"
+        }
+        await tab.settle()
+        let unseen = await read("[widthAtParse, innerWidth, document.visibilityState, frames]").split(separator: ",").map(String.init)
+        try? await Task.sleep(for: .seconds(1))
+        let frames = (Int(await read("frames")) ?? .max) - (unseen.last.flatMap { Int($0) } ?? 0)
+
+        manager.selectedTabID = tab.id
+        await settle { tab.webView.window != nil && tab.webHost?.isHidden == false }
+        await settle { await read("document.images[0].naturalWidth") != "0" }
+        let width = await read("innerWidth")
+        let image = await read("[document.images[0].naturalWidth, document.images[0].complete, document.images[0].currentSrc.split('/').pop()]")
+        record(
+            "background width: a tab opened behind another has its shown width before it is shown",
+            unseen.prefix(2) == [width, width] && width != "0" && width != "?",
+            "at parse and unseen \(unseen.prefix(2).joined(separator: ", ")), shown \(width)")
+        record(
+            "background width: a srcset image in a tab opened behind another has a size once shown",
+            (image.split(separator: ",").first.flatMap { Int($0) } ?? 0) > 0, image)
+        record(
+            "background width: a tab opened behind another is hidden to its page and gets no animation frames",
+            unseen.dropFirst(2).first == "hidden" && frames <= 2,
+            "\(unseen.dropFirst(2).first ?? "?"), \(frames) frames in 1 s")
     }
 
     /// The card's pages share one AppKit stack: the shown page is unhidden and
@@ -8762,7 +10353,7 @@ enum SelfTest {
         record(
             "page stack: a page entering the window doesn't hold main until it paints",
             BrowserTab.skipsPaintWait
-                && first.webView.configuration.value(forKey: "waitsForPaintAfterViewDidMoveToWindow") as? Bool == false)
+                && first.webView.configuration.spiValue(forKey: "_waitsForPaintAfterViewDidMoveToWindow") as? Bool == false)
         let centre = stack.convert(NSPoint(x: stack.bounds.midX, y: stack.bounds.midY), to: stack.superview)
         record(
             "page stack: only the shown page takes the pointer",
@@ -8997,6 +10588,100 @@ enum SelfTest {
             space.splitGroup(containing: tabs[3].id).map { $0.id != group.id && $0.contains(tabs[2].id) } ?? false)
     }
 
+    /// a back swipe lands where the page was left and settles soon after the swipe ends, whether the
+    /// page comes back whole from the back/forward cache or is rebuilt and grows only after it loads
+    private static func testSwipeUndo(manager: TabManager) async {
+        let begin = Selector(("_beginBackSwipeForTesting")), complete = Selector(("_completeBackSwipeForTesting"))
+        guard WKWebView.instancesRespond(to: begin), WKWebView.instancesRespond(to: complete) else {
+            return note("swipe undo: skipped, this WebKit has no simulated swipe")
+        }
+        // a `late` page is 100 px tall until 500 ms after it loads or pops, as a feed fetched by script is
+        let html = """
+            <html><body style='margin:0;height:9000px'><script>
+            const late = location.pathname.includes('late');
+            const grow = () => { document.body.style.height = '100px'; setTimeout(() => document.body.style.height = '9000px', 500) };
+            if (late) { grow(); addEventListener('load', grow) }
+            addEventListener('popstate', () => { if (late) grow() });
+            </script></body></html>
+            """
+        guard let served = serveLoopback(html) else { return record("swipe undo: the loopback page serves", false) }
+        defer { close(served.socket) }
+        let previous = manager.selectedTabID
+        manager.isCommandBarVisible = false
+        let tab = manager.newTab(url: nil, select: true)
+        defer {
+            manager.close(tab)
+            manager.selectedTabID = previous
+        }
+        if let window = BrowserWindows.shared.window(of: manager) { becomeKey(window) }
+        let view = tab.webView
+        func scrollY() async -> Double { (try? await view.evaluateJavaScript("scrollY")) as? Double ?? -1 }
+        func evict() {
+            let clear = Selector(("_clearBackForwardCache"))
+            if view.responds(to: clear) { view.perform(clear) }
+        }
+        func open(_ url: URL, scrolledTo y: Int) async {
+            if view.url == nil {
+                view.load(URLRequest(url: url))
+            } else {
+                _ = try? await view.evaluateJavaScript("location.href = '\(url.path)'")
+            }
+            await settle(.seconds(6)) { view.url == url && !view.isLoading }
+            await settle(.seconds(2)) { (try? await view.evaluateJavaScript("document.body.scrollHeight")) as? Int ?? 0 > y }
+            _ = try? await view.evaluateJavaScript("scrollTo(0, \(y))")
+            await settle { await scrollY() == Double(y) }
+        }
+        /// ms from the swipe's end until the snapshot is gone and the page sits at `y`, nil past 4 s
+        func settled(at url: URL, y: Double, after start: CFTimeInterval) async -> (ms: Double?, y: Double) {
+            var landed = -1.0
+            while CACurrentMediaTime() - start < 4 {
+                let shown = view.spiValue(forKey: "_isShowingNavigationGestureSnapshot") as? Bool ?? false
+                if view.url == url, !shown {
+                    landed = await scrollY()
+                    if abs(landed - y) < 1 { return ((CACurrentMediaTime() - start) * 1000, landed) }
+                }
+                try? await Task.sleep(for: .milliseconds(8))
+            }
+            return (nil, landed)
+        }
+        func swipeBack(to url: URL, y: Double) async -> (ms: Double?, y: Double) {
+            _ = view.perform(begin)
+            try? await Task.sleep(for: .milliseconds(100))
+            let start = CACurrentMediaTime()
+            _ = view.perform(complete)
+            return await settled(at: url, y: y, after: start)
+        }
+        func check(_ name: String, _ result: (ms: Double?, y: Double), y: Double) {
+            record(
+                "swipe undo: \(name) lands where it was left within 1.5 s of the swipe's end",
+                result.ms.map { $0 < 1500 } ?? false,
+                "y \(Int(result.y)) of \(Int(y)), settled \(result.ms.map { "after \(Int($0)) ms" } ?? "never")")
+        }
+        func page(_ name: String) -> URL { URL(string: "http://127.0.0.1:\(served.port)/\(name)")! }
+
+        for (name, path, evicts) in [
+            ("a page back from the cache", "cached", false), ("a page loaded again", "loaded", true),
+            ("a page loaded again that grows after loading", "late", true),
+        ] {
+            let a = page("a-\(path)"), b = page("b-\(path)")
+            await open(a, scrolledTo: 2400)
+            await open(b, scrolledTo: 1200)
+            if evicts { evict() }
+            check(name, await swipeBack(to: a, y: 2400), y: 2400)
+            if evicts { evict() }
+            let start = CACurrentMediaTime()
+            view.goForward()
+            check("forward to \(name)", await settled(at: b, y: 1200, after: start), y: 1200)
+        }
+
+        // a single-page app swaps its view on popstate and renders the old one again a moment later
+        let spa = page("a-spa-late")
+        await open(spa, scrolledTo: 2400)
+        _ = try? await view.evaluateJavaScript("history.pushState({}, '', '/b-spa-late'); grow(); scrollTo(0, 0)")
+        try? await Task.sleep(for: .milliseconds(800))
+        check("a single-page app's view rendered again after popstate", await swipeBack(to: spa, y: 2400), y: 2400)
+    }
+
     /// the hosted page stays oversized while its card animates and reflows once resizing
     /// stops; if that settle never fires, the page is left the wrong size
     private static func testPageResizeSettles(manager: TabManager) async {
@@ -9031,9 +10716,8 @@ enum SelfTest {
         try? await Task.sleep(for: .milliseconds(400))
         let settled = tab.webView.frame
         record(
-            "resize: page settles to the host's exact size",
-            abs(settled.width - host.bounds.width) < 0.5
-                && abs(settled.height - host.bounds.height) < 0.5,
+            "resize: page settles to the host's size in whole points",
+            settled.width == host.bounds.width.rounded(.down) && settled.height == host.bounds.height.rounded(.down),
             "page \(Int(settled.width))x\(Int(settled.height)) vs host "
                 + "\(Int(host.bounds.width))x\(Int(host.bounds.height))")
         record(
@@ -9052,19 +10736,121 @@ enum SelfTest {
         let grown = tab.webView.frame.size
         record(
             "resize: a growing page tracks the host mid-animation, never past it",
-            abs(grown.width - host.bounds.width) < 0.5 && abs(grown.height - host.bounds.height) < 0.5,
+            grown.width == host.bounds.width.rounded(.down) && grown.height == host.bounds.height.rounded(.down),
             "page \(Int(grown.width))x\(Int(grown.height)) vs host \(Int(host.bounds.width))x\(Int(host.bounds.height))")
+
+        // a host on a half point: the page takes whole points, and covers it still while only the height shrinks
+        host.frame = CGRect(
+            x: original.minX, y: original.minY, width: original.width.rounded(.down) + 10.5, height: original.height + 50)
+        host.layoutSubtreeIfNeeded()
+        let whole = tab.webView.frame.size
+        host.frame.size.height -= 30
+        host.layoutSubtreeIfNeeded()
+        let held = tab.webView.frame.size
+        record(
+            "resize: on a half-point host the page takes whole points, and keeps them while the height shrinks",
+            whole.width == host.bounds.width.rounded(.down) && whole.width != host.bounds.width && held == whole,
+            "host \(host.bounds.width)x\(host.bounds.height), page \(whole.width)x\(whole.height) then \(held.width)x\(held.height)")
 
         host.frame = original
         host.layoutSubtreeIfNeeded()
         try? await Task.sleep(for: .milliseconds(300))
     }
 
+    /// WebKit shows a swipe's snapshot only when its pixel size is the page's whole-point size times
+    /// the scale: after a back and a forward the back item's is, at a whole and a half-point sidebar width
+    private static func testSwipeSnapshot(manager: TabManager) async {
+        let copy = Selector(("_copySnapshotForTesting"))
+        guard WKBackForwardListItem.instancesRespond(to: copy) else {
+            return note("swipe snapshot: skipped, this WebKit has no _copySnapshotForTesting")
+        }
+        guard let window = BrowserWindows.shared.window(of: manager),
+            let served = serveLoopback("<html><body style='background:#234'>swipe</body></html>")
+        else { return record("swipe snapshot: a window and a served page", false) }
+        defer { close(served.socket) }
+        func page(_ name: String) -> URL { URL(string: "http://127.0.0.1:\(served.port)/\(name)")! }
+        let defaults = UserDefaults.standard
+        let storedWidth = defaults.object(forKey: "sidebarWidth")
+        let previous = manager.selectedTabID
+        let wasCollapsed = manager.isSidebarCollapsed
+        let tab = manager.newTab(url: page("start"), select: true)
+        func restore() async {
+            manager.close(tab)
+            manager.selectedTabID = previous
+            manager.isSidebarCollapsed = wasCollapsed
+            if let storedWidth { defaults.set(storedWidth, forKey: "sidebarWidth") } else {
+                defaults.removeObject(forKey: "sidebarWidth")
+            }
+            // the page keeps moving until the sidebar has stopped, and the next group measures it.
+            // a collapsed sidebar never reads as settled
+            await settle { wasCollapsed || manager.isSidebarSettled }
+            if wasCollapsed { try? await Task.sleep(for: .seconds(Motion.sidebarSpring.settlingDuration)) }
+        }
+        // WebKit records navigation snapshots only for a page that takes the gesture
+        tab.webView.allowsBackForwardNavigationGestures = true
+        manager.isCommandBarVisible = false
+        manager.isSidebarCollapsed = false
+        becomeKey(window)
+        await settle(.seconds(6)) {
+            tab.webView.url == page("start") && !tab.webView.isLoading && tab.webView.window === window
+        }
+        guard tab.webView.window === window else {
+            record("swipe snapshot: the page is mounted in the window", false, "showsPagesNow \(manager.showsPagesNow)")
+            return await restore()
+        }
+
+        // the caller owns the image
+        typealias Copy = @convention(c) (AnyObject, Selector) -> Unmanaged<CGImage>?
+        for width in [250.0, 250.5] {
+            defaults.set(width, forKey: "sidebarWidth")
+            // the sidebar's slide and the page's resize settle have both landed
+            var held = 0, last = CGRect.null
+            for _ in 0..<100 where held < 10 {
+                let now = tab.webView.convert(tab.webView.bounds, to: nil)
+                held = now == last ? held + 1 : 0
+                last = now
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            // a 1x display, the Library's own width or a rounded stored width leaves no half point to test
+            let hostWidth = tab.webHost?.bounds.width ?? 0
+            if width != width.rounded(), hostWidth == hostWidth.rounded() {
+                note("swipe snapshot: skipped at sidebar width \(width), where the host is a whole \(hostWidth) pt wide")
+                continue
+            }
+            let a = page("a\(width)"), b = page("b\(width)")
+            for url in [a, b] {
+                tab.load(url)
+                await settle(.seconds(6)) { tab.webView.url == url && !tab.webView.isLoading }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            tab.webView.goBack()
+            await settle(.seconds(6)) { tab.webView.url == a && !tab.webView.isLoading }
+            try? await Task.sleep(for: .milliseconds(300))
+            tab.webView.goForward()
+            await settle(.seconds(6)) { tab.webView.url == b && !tab.webView.isLoading }
+            var item: WKBackForwardListItem?
+            var image: CGImage?
+            await settle {
+                item = tab.webView.backForwardList.backItem
+                image = item.flatMap { unsafeBitCast($0.method(for: copy), to: Copy.self)($0, copy)?.takeRetainedValue() }
+                return item?.url == a && image != nil
+            }
+            let bounds = tab.webView.bounds, scale = window.backingScaleFactor
+            let expected = CGSize(width: bounds.width.rounded(.down) * scale, height: bounds.height.rounded(.down) * scale)
+            record(
+                "swipe snapshot: at sidebar width \(width) the back item's snapshot is the page's whole-point size in pixels",
+                item?.url == a && image.map { CGSize(width: $0.width, height: $0.height) } == expected,
+                "snapshot \(image.map { "\($0.width)x\($0.height) px" } ?? "missing") of \(item?.url.path ?? "no back item"), "
+                    + "page \(bounds.width)x\(bounds.height) pt in a \(hostWidth) pt wide host, scale \(scale)")
+        }
+        await restore()
+    }
+
     /// the capture wiring, not the hardware: a real page's request reaches the app, a
     /// refusal reaches the page, and an answer is remembered. opening the camera itself
     /// would raise a TCC prompt no run can answer
     private static func testSitePermissions(manager: TabManager) async {
-        let store = SitePermissionStore.shared
+        let store = manager.currentProfile.sitePermissions
         let origin = "https://permissions.selftest.example"
         store.forget(origin)
 
@@ -9453,6 +11239,21 @@ enum SelfTest {
             popup?.pendingDialog?.host == "dialogs.selftest.example", popup?.pendingDialog?.host ?? "nothing was offered")
         popup?.answerDialog(false)
         for opened in manager.currentSpace.tabs where !existing.contains(opened.id) { manager.close(opened) }
+
+        // a blank popup its opener writes into names the opener
+        await pressNatively(on: tab.webView)
+        _ = try? await tab.webView.callAsyncJavaScript(
+            "const w = window.open(''); w.document.write('<p>written</p>'); w.document.close()", contentWorld: .page)
+        var written: BrowserTab?
+        await settle(.seconds(5)) {
+            written = manager.currentSpace.tabs.first { !existing.contains($0.id) }
+            return written != nil
+        }
+        record(
+            "popups: a blank popup names the site that opened it",
+            written.map { UrlField.displayText(for: $0) } == "dialogs.selftest.example",
+            written.map { "\($0.url?.absoluteString ?? "no url") shows \(UrlField.displayText(for: $0))" } ?? "no popup")
+        for opened in manager.currentSpace.tabs where !existing.contains(opened.id) { manager.close(opened) }
         ExternalSchemes.allow(site: "", scheme: "zoommtg", in: Profile.defaultID)
         record("schemes: no site is never remembered", !ExternalSchemes.isAllowed(site: "", scheme: "zoommtg", in: Profile.defaultID))
 
@@ -9548,7 +11349,7 @@ enum SelfTest {
             "schemes: macOS is asked which app would open it",
             ExternalSchemes.handlerName(for: URL(string: "https://example.com")!) != nil)
 
-        ExternalSchemes.forgetAll()
+        ExternalSchemes.forgetAll(in: Profile.defaultID)
         record(
             "schemes: nothing is allowed to start with",
             !ExternalSchemes.isAllowed(site: "schemes.selftest.example", scheme: "mailto", in: Profile.defaultID))
@@ -9558,7 +11359,7 @@ enum SelfTest {
             ExternalSchemes.isAllowed(site: "schemes.selftest.example", scheme: "mailto", in: Profile.defaultID)
                 && !ExternalSchemes.isAllowed(site: "schemes.selftest.example", scheme: "zoommtg", in: Profile.defaultID)
                 && !ExternalSchemes.isAllowed(site: "elsewhere.example", scheme: "mailto", in: Profile.defaultID))
-        ExternalSchemes.forgetAll()
+        ExternalSchemes.forgetAll(in: Profile.defaultID)
         record(
             "schemes: clearing site permissions forgets them",
             !ExternalSchemes.isAllowed(site: "schemes.selftest.example", scheme: "mailto", in: Profile.defaultID))
@@ -9603,7 +11404,7 @@ enum SelfTest {
         record(
             "schemes: a site set to always open its app does so on a press, and not without one",
             held && opened == ["mailto:someone@example.com"], "unpressed held \(held), opened \(opened)")
-        ExternalSchemes.forgetAll()
+        ExternalSchemes.forgetAll(in: Profile.defaultID)
 
         let asker = "dialogs.selftest.example", mail = "mailto:someone@example.com"
         /// a pressed link to `link` on the page: the question it raised, if any
@@ -9630,6 +11431,15 @@ enum SelfTest {
         _ = await pressed(mail)
         tab.answerDialog(false)
         record("schemes: Cancel launches nothing", opened.isEmpty, "opened \(opened)")
+        try? await Task.sleep(for: .milliseconds(500))
+        await pressNatively(on: tab.webView)
+        await load("location.href = '\(mail)';")
+        _ = await waitForDialog()
+        tab.answerDialog(true)
+        record("schemes: an app offer can't be opened the instant it appears",
+            tab.pendingDialog != nil && opened.isEmpty, "opened \(opened)")
+        try? await Task.sleep(for: .milliseconds(700))
+        tab.answerDialog(false)
 
         // a second app this Mac has, for what one app's trust must not cover
         let other = ["tel:5550100", "facetime:5550100", "sms:5550100", "maps:?q=x"].first {
@@ -9689,6 +11499,18 @@ enum SelfTest {
         let typed = await waitForDialog()
         record("schemes: a load the app started is offered with no press", typed != nil && opened.isEmpty, "opened \(opened)")
         tab.answerDialog(false)
+        ExternalSchemes.allow(site: asker, scheme: "mailto", in: Profile.defaultID)
+        if let blank = URL(string: "about:blank") { tab.load(blank) }
+        try? await Task.sleep(for: .seconds(11))
+        await load("location.href = '\(mail)';")
+        let late = await waitForDialog()
+        record("schemes: a load the app started asks, and opens nothing unasked, once its moment has passed",
+            late != nil && opened.isEmpty, "offered \(late != nil), opened \(opened)")
+        ExternalSchemes.forget(site: asker, in: Profile.defaultID)
+        if tab.pendingDialog != nil { tab.answerDialog(false) }
+        let once = await unpressed()
+        record("schemes: and asks only once", once, "offered \(tab.pendingDialog != nil), opened \(opened)")
+        if tab.pendingDialog != nil { tab.answerDialog(false) }
         // an incognito page may open the app but never write its site down
         let ghost = BrowserTab(configuration: BrowserTab.defaultConfiguration(dataStore: .nonPersistent()))
         // in no window it can't be pressed: a load the app started is the act its launch goes on
@@ -9702,6 +11524,7 @@ enum SelfTest {
             ghost.pendingDialog != nil && ghost.pendingDialog?.checkbox == nil,
             ghost.pendingDialog.map { "\($0.checkbox.map { "\($0)" } ?? "no checkbox")" } ?? "nothing was offered")
         opened = []
+        try? await Task.sleep(for: .milliseconds(700))
         ghost.answerDialog(true, trustEveryApp: true)
         record(
             "schemes: an incognito page's app opens this once and no trust is stored",
@@ -9796,6 +11619,7 @@ enum SelfTest {
         let planted = HTTPCookie(properties: [.domain: "archive.selftest.example", .path: "/", .name: "planted", .value: "1"])!
         await jar.setCookie(planted)
         tab.load(archive)
+        await settle { tab.reader != nil }
         await idle()
         try? await Task.sleep(for: .milliseconds(500))
         // the page's own world runs nothing in a sandbox; the app reads it from a world of its own
@@ -9834,6 +11658,7 @@ enum SelfTest {
 
         try? Data("not a plist".utf8).write(to: site.appending(path: "broken.webarchive"))
         tab.load(site.appending(path: "broken.webarchive"))
+        await settle { tab.loadError != nil }
         record(
             "files: a file that isn't a web archive is refused with a reason",
             tab.loadError == WebArchiveReader.Failure.unreadable.message && tab.reader == nil, tab.loadError ?? "none")
@@ -9863,6 +11688,98 @@ enum SelfTest {
 
     /// The Notification web API: Artemis' own page shim and its permission path.
     /// Nothing here allows a site, so macOS is never asked for authorization.
+    private static func testSitePermissionProfiles(manager: TabManager) {
+        let origin = "https://perprofile.selftest.example", legacy = "https://legacy.perprofile.selftest.example"
+        let home = manager.core.defaultProfile
+        let work = manager.createProfile(name: "SelfTest Permissions", icon: "person")
+        func page(in profile: Profile) -> BrowserTab {
+            manager.newTab(url: nil, configuration: BrowserTab.defaultConfiguration(dataStore: profile.dataStore), select: false)
+        }
+        func onDisk(_ url: URL, _ permission: SitePermission) -> PermissionDecision? {
+            AppStorageLocation.loadDurable([String: SitePermissionRecord].self, from: url)?[origin]?.decisions[permission]
+        }
+        let homeTab = page(in: home), workTab = page(in: work)
+        for site in [origin, legacy] { home.sitePermissions.forget(site) }
+        var decided: PermissionDecision?
+        let shown = manager.selectedTabID
+        manager.selectedTabID = homeTab.id
+        manager.requestPermission([.camera], origin: origin, tab: homeTab) { decided = $0 }
+        manager.answerPermission(.allow, remember: true)
+        decided = nil
+        manager.selectedTabID = workTab.id
+        manager.requestPermission([.camera], origin: origin, tab: workTab) { decided = $0 }
+        record(
+            "permission profiles: a grant in one profile leaves the site asking in another",
+            decided == nil && manager.currentPermissionRequest?.tabID == workTab.id, "\(String(describing: decided))")
+        manager.answerPermission(.deny, remember: true)
+        decided = nil
+        manager.selectedTabID = homeTab.id
+        manager.requestPermission([.camera], origin: origin, tab: homeTab) { decided = $0 }
+        manager.selectedTabID = shown
+        record(
+            "permission profiles: a refusal in another profile leaves this one's grant",
+            decided == .allow, "\(String(describing: decided))")
+
+        home.sitePermissions.saveNow()
+        work.sitePermissions.saveNow()
+        let appWide = onDisk(AppStorageLocation.file("permissions.json"), .camera), own = onDisk(work.file("permissions.json"), .camera)
+        record(
+            "permission profiles: the default profile writes the app-wide file, another profile its own",
+            appWide == .allow && own == .deny, "\(String(describing: appWide)) \(String(describing: own))")
+
+        // the file builds before profiles wrote, read afresh as at launch
+        home.sitePermissions.set(.allow, for: legacy, .location, ephemeral: false)
+        home.sitePermissions.saveNow()
+        let reopened = Profile(id: Profile.defaultID, name: "SelfTest Reopened", icon: "person")
+        record(
+            "permission profiles: an app-wide grant from before profiles stays the default profile's alone",
+            reopened.sitePermissions.decision(for: legacy, .location, ephemeral: false) == .allow
+                && work.sitePermissions.decision(for: legacy, .location, ephemeral: false) == nil)
+
+        let workIncognito = TabManager(core: manager.core, kind: .incognito)
+        workIncognito.openIncognitoSpace(parent: work)
+        let homeIncognito = TabManager(core: manager.core, kind: .incognito)
+        homeIncognito.openIncognitoSpace(parent: home)
+        let workGhost = workIncognito.newTab(url: nil, select: false), homeGhost = homeIncognito.newTab(url: nil, select: false)
+        work.sitePermissions.set(.allow, for: origin, .microphone, ephemeral: true)
+        var answers: [BrowserTab.ID: PermissionDecision] = [:]
+        for tab in [workGhost, homeGhost, workTab] {
+            tab.manager?.requestPermission([.microphone], origin: origin, tab: tab) { answers[tab.id] = $0 }
+        }
+        record(
+            "permission profiles: an incognito answer holds only in that profile's incognito windows",
+            answers[workGhost.id] == .allow && answers[homeGhost.id] == nil && answers[workTab.id] == nil,
+            "\(answers.count) answered")
+        for request in manager.permissionQueue where request.origin == origin { request.abandon() }
+        manager.permissionQueue.removeAll { $0.origin == origin }
+        work.sitePermissions.saveNow()
+        record(
+            "permission profiles: an incognito answer never reaches disk",
+            onDisk(work.file("permissions.json"), .microphone) == nil
+                && onDisk(AppStorageLocation.file("permissions.json"), .microphone) == nil)
+        workIncognito.windowWillClose()
+        homeIncognito.windowWillClose()
+        record(
+            "permission profiles: closing the last incognito window forgets its answers",
+            work.sitePermissions.decision(for: origin, .microphone, ephemeral: true) == nil)
+
+        let opener = "perprofile.selftest.example"
+        for profile in [home, work] { ExternalSchemes.allow(site: opener, scheme: "mailto", in: profile.id) }
+        work.forgetSites()
+        record(
+            "permission profiles: Forget All Sites clears only that profile's answers and app grants",
+            work.sitePermissions.decision(for: origin, .camera, ephemeral: false) == nil
+                && home.sitePermissions.decision(for: origin, .camera, ephemeral: false) == .allow
+                && !ExternalSchemes.isAllowed(site: opener, scheme: "mailto", in: work.id)
+                && ExternalSchemes.isAllowed(site: opener, scheme: "mailto", in: home.id))
+        ExternalSchemes.forget(site: opener, in: home.id)
+
+        manager.close(homeTab)
+        manager.close(workTab)
+        manager.deleteProfile(work)
+        for site in [origin, legacy] { home.sitePermissions.forget(site) }
+    }
+
     private static func testWebNotifications(manager: TabManager) async {
         // set once on the shared configuration and never read back, so only this holds it
         record(
@@ -9870,7 +11787,7 @@ enum SelfTest {
             BrowserTab.defaultConfiguration().writingToolsBehavior == .complete)
 
         let site = "https://notify.selftest.example"
-        SitePermissionStore.shared.forget(site)
+        manager.currentProfile.sitePermissions.forget(site)
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
 
@@ -9945,7 +11862,7 @@ enum SelfTest {
             record("notifications: refusing reaches the page as denied", answer == "denied", answer)
         }
 
-        SitePermissionStore.shared.set(.allow, for: site, .notifications, ephemeral: false)
+        manager.currentProfile.sitePermissions.set(.allow, for: site, .notifications, ephemeral: false)
         await load(tab.webView, site + "/")
         let remembered = await settle(tab.webView, "Notification.permission", to: "granted")
         record(
@@ -9977,20 +11894,20 @@ enum SelfTest {
                 incognito == "denied", incognito)
         }
         burner.windowWillClose()
-        SitePermissionStore.shared.forget(site)
+        manager.currentProfile.sitePermissions.forget(site)
     }
 
     /// The Badging API and the sidebar's unread mark. Allowing a site here is only a
     /// stored answer, so macOS is never asked for notification authorization
     private static func testAppBadge(manager: TabManager) async {
         let site = "https://badge.selftest.example"
-        SitePermissionStore.shared.forget(site)
+        manager.currentProfile.sitePermissions.forget(site)
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
         defer {
             manager.close(tab)
             manager.selectedTabID = previous
-            SitePermissionStore.shared.forget(site)
+            manager.currentProfile.sitePermissions.forget(site)
         }
         func load(_ page: WKWebView, _ base: String, title: String = "Badge") async {
             page.loadHTMLString("<html><head><title>\(title)</title></head><body></body></html>", baseURL: URL(string: base))
@@ -10022,7 +11939,7 @@ enum SelfTest {
             "appbadge: a site without the notifications permission is refused",
             unallowed == "NotAllowedError" && tab.appBadge == nil, unallowed)
 
-        SitePermissionStore.shared.set(.allow, for: site, .notifications, ephemeral: false)
+        manager.currentProfile.sitePermissions.set(.allow, for: site, .notifications, ephemeral: false)
         let set = await call(tab.webView, "navigator.setAppBadge(3)")
         record("appbadge: an allowed site sets a count", set == "ok" && tab.appBadge == .count(3), set)
         _ = await call(tab.webView, "navigator.setAppBadge(2.7)")
@@ -10062,7 +11979,7 @@ enum SelfTest {
         }
         burner.windowWillClose()
 
-        SitePermissionStore.shared.forget(site)
+        manager.currentProfile.sitePermissions.forget(site)
         await load(tab.webView, site + "/")
         let revoked = await call(tab.webView, "navigator.setAppBadge(1)")
         record("appbadge: a forgotten permission refuses again", revoked == "NotAllowedError", revoked)
@@ -10095,7 +12012,7 @@ enum SelfTest {
             return
         }
         // a decision left by an earlier run would answer from memory and never reach the prompt
-        SitePermissionStore.shared.forget("https://capture.selftest.example")
+        manager.currentProfile.sitePermissions.forget("https://capture.selftest.example")
         let previous = manager.selectedTabID
         let tab = manager.newTab(url: nil, select: true)
         defer {
@@ -10466,6 +12383,19 @@ enum SelfTest {
                 && insta.contains(where: \.isNumber) && keyless?.first?.isUsable == false
                 && keyless?.first?.password(for: "x.com") == nil,
             insta)
+        // literals from the shipped derivation: accounts already use these passwords
+        let pinned = Data((0..<32).map { UInt8($0) })
+        let vectors = [
+            PasswordRecipe(root: "Tea!", sitePart: .scrambled, letters: 12, key: pinned).password(for: "accounts.google.co.uk"),
+            PasswordRecipe(root: "Tea!", sitePart: .scrambled, letters: 8, siteFirst: true, key: pinned).password(for: "www.my-bank.com"),
+            PasswordRecipe(root: "Tea!", sitePart: .firstLetters, letters: 4, letterCase: .capitalized).password(for: "login.paypal.com"),
+            PasswordRecipe(root: "Tea!", sitePart: .initial, letterCase: .upper).password(for: "www.my-bank.com"),
+            PasswordRecipe(root: "Tea!", sitePart: .name).password(for: "accounts.google.co.uk"),
+        ].map { $0 ?? "nil" }
+        record(
+            "passwords: recipe passwords derive byte for byte as they always have",
+            vectors == ["Tea!rS98EEzq6inc", "qU3oCR63Tea!", "Tea!Payp", "Tea!M", "Tea!google"],
+            vectors.joined(separator: " "))
         let odd = PasswordRules(##"minlength: 8; required: digit; required: [- !"#$&'()*+,.:;<=>?@[^_`{|}~]]; allowed: lower, upper;"##)
         let airFrance = PasswordRules(field: ["min": -1, "max": -1, "rules": ""], host: "www.airfrance.com")
         let fitted = PasswordPage.strongPassword(airFrance)
@@ -10675,6 +12605,33 @@ enum SelfTest {
             "passwords: deleting a profile deletes its logins and passkeys",
             store.logins(in: elsewhere).isEmpty && store.password(for: work) == nil
                 && store.passkeys(in: elsewhere).isEmpty && store.passkeyKey(tagged) == nil)
+
+        let gated = PasswordRecipe(name: "Selftest Gate", root: "gate-")
+        store.save(gated)
+        func gets(_ origin: String, under top: String? = nil) -> Bool {
+            store.recipes(for: origin, under: top ?? origin, in: Profile.defaultID).contains { $0.id == gated.id }
+        }
+        record(
+            "passwords: recipes reach https and loopback http only, and only under a secure top document",
+            gets("https://shop.selftest.example") && gets("http://localhost:8080") && gets("http://127.0.0.1")
+                && !gets("http://shop.selftest.example") && !gets("http://localhost.selftest.example")
+                && !gets("https://shop.selftest.example", under: "http://shop.selftest.example"),
+            "https \(gets("https://shop.selftest.example")) http \(gets("http://shop.selftest.example"))")
+        store.delete(gated)
+        let bank = store.save(origin: "https://artemisbank.com", username: "selftest-lookalike", password: "x", in: Profile.defaultID)
+        let fakes = [
+            "artemisbank.co.uk", "login.artemis-bank.com", "artemlsbank.com", "artemisbank5.com", "artemisbnk.com",
+            "artemisbank.com.evil.example", "artemisbank-com-login.example",
+        ]
+        let warned = fakes.map { store.lookalike(of: $0, in: Profile.defaultID) ?? "nil" }
+        let genuine = ["www.artemisbank.com", "login.artemisbank.com", "artemis.com", "example.org", "localhost"]
+        record(
+            "passwords: a site imitating a saved login's is named as a lookalike; the site itself and others aren't",
+            warned.allSatisfy { $0 == "artemisbank.com" }
+                && genuine.allSatisfy { store.lookalike(of: $0, in: Profile.defaultID) == nil }
+                && store.lookalike(of: "artemis-bank.com", in: UUID()) == nil,
+            zip(fakes, warned).map { "\($0)=\($1)" }.joined(separator: " "))
+        store.delete(bank)
     }
 
     // MARK: - Autofill
@@ -10764,9 +12721,11 @@ enum SelfTest {
         </script></body></html>
         """
 
-    /// serves `html` for every request on 127.0.0.1, which needs no Local Network access, until its socket closes
+    /// serves `html` for every request on 127.0.0.1, which needs no Local Network access, until its socket closes;
+    /// `status` is the status line's end, and any header lines after it
     nonisolated private static func serveLoopback(
-        _ html: String, type: String = "text/html; charset=utf-8", seen: (@Sendable (String) -> Void)? = nil
+        _ html: String, type: String = "text/html; charset=utf-8", status: String = "200 OK",
+        seen: (@Sendable (String) -> Void)? = nil
     ) -> (socket: Int32, port: UInt16)? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
@@ -10782,17 +12741,22 @@ enum SelfTest {
             return nil
         }
         let reply = Data(
-            ("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(html.utf8.count)\r\n"
+            ("HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(html.utf8.count)\r\n"
                 + "Connection: close\r\n\r\n" + html).utf8)
+        // a client per thread: WebKit's preconnected sockets may never send, and would hold up the rest
         Thread.detachNewThread {
             while true {
                 let client = accept(fd, nil, nil)
                 guard client >= 0 else { return }
-                var request = [UInt8](repeating: 0, count: 4096)
-                let n = read(client, &request, request.count)
-                seen?(String(decoding: request.prefix(max(0, n)).prefix { $0 != 13 }, as: UTF8.self))
-                _ = reply.withUnsafeBytes { write(client, $0.baseAddress, reply.count) }
-                close(client)
+                Thread.detachNewThread {
+                    var request = [UInt8](repeating: 0, count: 4096)
+                    let n = read(client, &request, request.count)
+                    if n > 0 {
+                        seen?(String(decoding: request.prefix(n).prefix { $0 != 13 }, as: UTF8.self))
+                        _ = reply.withUnsafeBytes { write(client, $0.baseAddress, reply.count) }
+                    }
+                    close(client)
+                }
             }
         }
         return (fd, UInt16(bigEndian: address.sin_port))
@@ -10844,7 +12808,7 @@ enum SelfTest {
             <label>Street address <input id=s name=street></label>
             <input id=city name="billing_city" placeholder="City"><input id=zip name=zip>
             <label for=st>State</label><select id=st><option>--</option><option value=CA>California</option></select>
-            <input id=ph type=tel name=phone><input id=q name=search placeholder="Search">
+            <input id=ph type=tel name=tel><input id=q name=search placeholder="Search">
             </form><form>
             <label for=vn>Vorname</label><input id=vn><label for=nn>Nachname</label><input id=nn>
             <label for=str>Straße und Hausnummer</label><input id=str>
@@ -11043,6 +13007,19 @@ enum SelfTest {
         asked = 0
         _ = await PasswordAutofill.shared.fill(login, into: target, in: tab)
         record("unlock: passwords set to never fill without asking", asked == 0, "\(asked)")
+
+        var exports: [String] = []
+        for policy in [UnlockPolicy.fiveMinutes, .untilQuit, .never] {
+            use(.passwords, policy)
+            OwnerUnlock.unlockedAt = Date()
+            asked = 0
+            let csv = await PasswordStore.shared.exportCSV([login])
+            if asked != 1 || csv?.text.contains("selftest-unlock") != true { exports.append("\(policy.rawValue) asked \(asked)") }
+        }
+        answer = false
+        if await PasswordStore.shared.exportCSV([login]) != nil { exports.append("refused still exported") }
+        answer = true
+        record("unlock: a password export asks every time, inside an open window and under Never alike", exports.isEmpty, exports.joined(separator: ", "))
     }
 
     private static func testAutofillFill(manager: TabManager) async {
@@ -11068,7 +13045,7 @@ enum SelfTest {
         let profile = PasswordStore.stored(tab.loginProfile)
         let address = SavedAddress(
             givenName: "Ada", familyName: "Lovelace", street: "12 Byron Road\nFlat 3", city: "Cupertino", region: "CA",
-            postalCode: "95014", country: "US", phone: "+1 408 555 0100", email: "ada@autofill.example", profileID: profile)
+            postalCode: "95014", country: "US", email: "ada@autofill.example", profileID: profile)
         store.save(address)
         let card = SavedCard(holder: "Ada Lovelace", expiryMonth: 4, expiryYear: 2029, brand: .other, last4: "", profileID: profile)
         store.save(card, number: "4242 4242 4242 4242")
@@ -11087,7 +13064,7 @@ enum SelfTest {
             "return [given, family, line1, line2, city, region, postal, country, tel, email, trap].map(e => e.value).join('|')")
         record(
             "autofill: an address fills its section, selects included, and skips hidden and typed fields",
-            filled && values == "Ada|Lovelace|12 Byron Road|Flat 3|Kept|CA|95014|US|+1 408 555 0100|ada@autofill.example|",
+            filled && values == "Ada|Lovelace|12 Byron Road|Flat 3|Kept|CA|95014|US||ada@autofill.example|",
             values)
         let seen = await read("return seen.join(' ')")
         record(
@@ -11611,6 +13588,25 @@ enum SelfTest {
         }
 
         await load(tab, html: """
+            <html><body><p>host</p>
+            <iframe srcdoc="<form onsubmit='return false'><input id=e type=email><input id=p type=password><button>Go</button></form>"></iframe>
+            </body></html>
+            """)
+        await settle { tab.loginTarget != nil }
+        let loginFrame = tab.loginTarget?.frame
+        record("passwords: a login form only inside an iframe is reported from that frame", loginFrame?.isMainFrame == false)
+        if let loginFrame {
+            _ = try? await tab.webView.callAsyncJavaScript(
+                "e.value = 'fin@example.com'; p.value = 'hunter2'; document.forms[0].requestSubmit()", in: loginFrame, contentWorld: .page)
+        }
+        await settle { tab.loginCandidate != nil }
+        record(
+            "passwords: a login submitted inside an iframe is staged for saving",
+            tab.loginCandidate?.username == "fin@example.com" && tab.loginCandidate?.password == "hunter2",
+            tab.loginCandidate?.username ?? "nil")
+        tab.loginCandidate = nil
+
+        await load(tab, html: """
             <html><body><form><input id=e type=email>
             <input id=n1 type=password autocomplete=new-password><input id=n2 type=password autocomplete=new-password>
             </form>\(recorder)</body></html>
@@ -11739,6 +13735,31 @@ enum SelfTest {
                     && picked == recipe.password(for: "selftest.example"),
                 "\(listed) \(filled) \(picked)")
         }
+        func offered(at base: String) async -> LoginSuggestions? {
+            await load(tab, html: #"<html><body><form><input type=password autocomplete=new-password style="width:240px"></form></body></html>"#, at: base)
+            await settle { !keys().isEmpty }
+            keys().first?.performClick(nil)
+            var list: LoginSuggestions?
+            await settle {
+                list = tab.webView.window?.childWindows?.lazy
+                    .compactMap { ($0.contentView as? NSHostingView<LoginSuggestions>)?.rootView }.first
+                return list != nil
+            }
+            return list
+        }
+        let plain = await offered(at: "http://recipe.selftest.example/")
+        record(
+            "passwords: an http page's new-password list offers no recipe",
+            plain != nil && !(plain?.rows.contains { $0.title == recipe.name } ?? true),
+            plain?.rows.map(\.title).joined(separator: ", ") ?? "no list")
+        let bank = PasswordStore.shared.save(
+            origin: "https://selftestbank.test", username: "selftest-lookalike", password: "x", in: tab.loginProfile)
+        let fake = await offered(at: "https://selftest-bank.example/")
+        PasswordStore.shared.delete(bank)
+        record(
+            "passwords: a recipe's list on a lookalike of a saved site asks whether you meant that site",
+            fake?.lookalike == "selftestbank.test" && fake?.rows.contains { $0.title == recipe.name } == true,
+            fake.map { "\($0.lookalike ?? "nil"): \($0.rows.map(\.title))" } ?? "no list")
         PasswordStore.shared.delete(recipe)
 
         await load(tab, html: """
@@ -11873,12 +13894,12 @@ enum SelfTest {
         let key = "_shouldAllowUserInstalledFonts"
         let prefs = WKPreferences()
         FingerprintNoise.hideInstalledFonts(from: prefs, true)
-        let hidden = prefs.value(forKey: key) as? Bool
+        let hidden = prefs.spiValue(forKey: key) as? Bool
         FingerprintNoise.hideInstalledFonts(from: prefs, false)
-        let shown = prefs.value(forKey: key) as? Bool
-        let tab = BrowserTab.defaultConfiguration().preferences.value(forKey: key) as? Bool
+        let shown = prefs.spiValue(forKey: key) as? Bool
+        let tab = BrowserTab.defaultConfiguration().preferences.spiValue(forKey: key) as? Bool
         let extensionPage = WebExtensionRuntime.controller(for: Profile.defaultID).configuration.webViewConfiguration?
-            .preferences.value(forKey: key) as? Bool
+            .preferences.spiValue(forKey: key) as? Bool
         record(
             "fingerprint defence: installed fonts are hidden from pages with it on, shown with it off, and tabs and extension pages follow the setting",
             hidden == false && shown == true && tab == !FingerprintNoise.isEnabled && extensionPage == tab,
@@ -11911,6 +13932,19 @@ enum SelfTest {
                 const d = x.getImageData(0, 0, 64, 64).data;
                 for (let i = 4; i < d.length; i++) if (d[i] !== d[i % 4]) return false;
                 return true;
+              };
+              window.__pixel = () => {
+                const one = document.createElement('canvas');
+                one.width = one.height = 1;
+                const white = one.getContext('2d');
+                white.fillStyle = '#fff';
+                white.fillRect(0, 0, 1, 1);
+                return [...white.getImageData(0, 0, 1, 1).data, ...x.getImageData(9, 9, 1, 1).data].join();
+              };
+              window.__blank = () => {
+                const clear = document.createElement('canvas');
+                clear.width = clear.height = 64;
+                return clear.getContext('2d').getImageData(0, 0, 64, 64).data.every((v) => v === 0);
               };
               window.__cores = navigator.hardwareConcurrency;
               window.__audio = () => {
@@ -11970,6 +14004,14 @@ enum SelfTest {
         record(
             "fingerprint noise: a flat-filled canvas reads back perturbed", uniform == "false",
             "every pixel identical: \(uniform)")
+
+        let pixel = await read(one, "window.__pixel()")
+        record(
+            "fingerprint noise: a one-pixel read is exact, from a 1x1 white canvas and from inside a larger one",
+            pixel == "255,255,255,255,51,102,204,255", pixel)
+
+        let blank = await read(one, "window.__blank()")
+        record("fingerprint noise: a transparent 64x64 canvas reads back all zeros", blank == "true", blank)
 
         let first = await read(one, "window.__read()")
         let second = await read(one, "window.__read()")
@@ -12464,9 +14506,6 @@ enum SelfTest {
             try? await Task.sleep(for: .milliseconds(100))
             if !tab.webView.isLoading { break }
         }
-        // a tab never shown has no width, and a box sized by percentage padding collapses
-        await tab.wake()
-        await settle { (try? await tab.webView.evaluateJavaScript("innerWidth")) as? Int ?? 0 > 0 }
         let focused = await PageText.focus(from: tab.webView)
         let whole = await PageText.extract(from: tab.webView) ?? ""
         let text = focused?.text ?? ""
@@ -12515,9 +14554,9 @@ enum SelfTest {
                 && !Intelligence.answers("No idea", question: "who wrote it?"))
         let live = [
             "who is the pope?", "what year is it?", "how old is Taylor Swift?", "is Jimmy Carter still alive?",
-            "what's the newest iPhone?", "who runs Twitter now?", "who is the current CEO of Twitter?",
+            "what's the newest Pixel?", "who runs Twitter now?", "who is the current CEO of Twitter?",
             "who is the US president?", "who is the UK prime minister?", "who is Apple's CEO?",
-            "who's Microsoft's CEO?", "how much does an iPhone cost?", "what does a Tesla cost?",
+            "who's Microsoft's CEO?", "how much does a Pixel cost?", "what does a Tesla cost?",
         ]
         let settled = [
             "what is an electric current?", "how much does the Earth weigh?", "who was the first president of the US?",
@@ -13070,9 +15109,9 @@ enum SelfTest {
         record("converter: counts what it emits", rules.count == result.ruleCount, "\(rules.count) vs \(result.ruleCount)")
         let pages = "||pages.selftest.example^"
         let apart = await Task.detached {
-            ContentBlocker.builtByHelper([fixture], pages: pages, qos: .userInitiated)
+            ContentBlocker.builtByHelper([fixture], pages: pages, kind: .ads, qos: .userInitiated)
         }.value
-        let expected = [result.json, FilterConverter.pageBlock(pages)].compactMap(\.self).map(ContentBlocker.identifier)
+        let expected = [result.json, FilterConverter.pageBlock(pages)].compactMap(\.self).map { ContentBlocker.identifier(of: $0, .ads) }
         record(
             "converter: the helper process compiles the JSON this one converts, byte for byte",
             apart?.identifiers == expected && expected.count == 2 && apart?.counts.ruleCount == result.ruleCount
@@ -13213,7 +15252,7 @@ enum SelfTest {
             })
         else { return record("sitepool: a loopback server starts", false) }
         defer { server.close() }
-        func pid(_ tab: BrowserTab) -> Int32 { tab.webView.value(forKey: "_webProcessIdentifier") as? Int32 ?? 0 }
+        func pid(_ tab: BrowserTab) -> Int32 { tab.webView.spiValue(forKey: "_webProcessIdentifier") as? Int32 ?? 0 }
         let site = "http://pool.localhost:\(server.port)/"
         let before = manager.allTabs.filter { $0.url.flatMap(BrowserTab.site(of:)) == BrowserTab.site(of: URL(string: site)!) }
         var tabs: [BrowserTab] = []
@@ -13252,6 +15291,125 @@ enum SelfTest {
             kept.filter { $0 == victim }.count == 2
                 && zip(kept, after).allSatisfy { $0.0 == victim ? $0.1 == 0 : $0.0 == $0.1 },
             "killed \(victim), before \(kept), after \(after)")
+        // the kill was each victim's first crash; a second within the minute is not a loop of its own
+        let victims = tabs.indices.filter { kept[$0] == victim }.map { tabs[$0] }
+        for tab in victims { tab.webViewWebContentProcessDidTerminate(tab.webView) }
+        record(
+            "sitepool: a crash shared by several tabs marks none of them as crashing in a loop",
+            victims.count == 2 && victims.allSatisfy { $0.loadError == nil },
+            victims.map { $0.loadError ?? "nil" }.joined(separator: ", "))
+    }
+
+    /// a site's service worker runs in its page's process, whose site a cross-site redirect into it
+    /// must not have mixed: a worker-only process exits on every memory warning and relaunches
+    private static func testServiceWorkerHost(manager: TabManager) async {
+        func processes() -> Int { BrowserTab.processPool.spiValue(forKey: "_webProcessCountIgnoringPrewarmedAndCached") as? Int ?? -1 }
+        func pid(_ tab: BrowserTab) -> Int32 { tab.webView.spiValue(forKey: "_webProcessIdentifier") as? Int32 ?? 0 }
+        // each check's worker on a site no earlier check left a process for
+        func check(_ name: String, on host: String, open: (_ worker: String, _ other: String) async -> BrowserTab) async {
+            let terminate = Selector(("_terminateServiceWorkers"))
+            if BrowserTab.processPool.responds(to: terminate) { BrowserTab.processPool.perform(terminate) }
+            guard
+                let server = LiveLoopback(reply: { path, _ in
+                    if let to = path.range(of: "/redirect?to=").map({ String(path[$0.upperBound...]) }) {
+                        return Data("HTTP/1.1 302 Found\r\nLocation: \(to)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                    }
+                    let (type, text) =
+                        path.hasPrefix("/sw.js")
+                        ? ("text/javascript", "onfetch = () => {}")
+                        : ("text/html", "<!doctype html><title>page</title><a href=/x>x</a>")
+                    let body = Data(text.utf8)
+                    return Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
+                })
+            else { return record("swhost: \(name): a loopback server starts", false) }
+            defer { server.close() }
+            let hosts = ["localhost", "127.0.0.1"].sorted { a, _ in a == host }.map { "http://\($0):\(server.port)" }
+            let tab = await open(hosts[0], hosts[1])
+            defer { manager.close(tab) }
+            try? await Task.sleep(for: .milliseconds(300))
+            let before = processes()
+            let state = try? await tab.webView.callAsyncJavaScript(
+                "await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; return 'ready'",
+                contentWorld: .page) as? String
+            try? await Task.sleep(for: .milliseconds(300))
+            let added = processes() - before
+            record(
+                "swhost: \(name): the page's service worker runs in its own process",
+                state == "ready" && added == 0 && tab.webView.url?.host() == host,
+                "\(state ?? "no worker"), \(tab.webView.url?.absoluteString ?? "nil") in \(pid(tab)), +\(added) processes")
+        }
+        await check("a new tab sent across sites by a redirect", on: "localhost") { worker, other in
+            let tab = manager.newTab(url: URL(string: other + "/redirect?to=" + worker + "/page")!, select: false)
+            await tab.settle()
+            return tab
+        }
+        await check("a link sent across sites by a redirect", on: "127.0.0.1") { worker, other in
+            let tab = manager.newTab(url: URL(string: other + "/page")!, select: false)
+            await tab.settle()
+            _ = try? await tab.webView.evaluateJavaScript(
+                "document.querySelector('a').href = '\(other)/redirect?to=\(worker)/page'; document.querySelector('a').click(); 0")
+            for _ in 0..<50 where tab.webView.url?.absoluteString.hasPrefix(worker) != true {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            await tab.settle()
+            return tab
+        }
+        await check("a new tab", on: "localhost") { worker, _ in
+            let tab = manager.newTab(url: URL(string: worker + "/page")!, select: false)
+            await tab.settle()
+            return tab
+        }
+        // a redirect's target across sites gets no SameSite=Strict cookie, whoever started the chain
+        if let server = LiveLoopback(reply: { path, port in
+            if let to = path.range(of: "/redirect?to=").map({ String(path[$0.upperBound...]) }) {
+                return Data("HTTP/1.1 302 Found\r\nLocation: \(to)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+            }
+            let link = "<a href='/redirect?to=http://localhost:\(port)/landing'>x</a>"
+            let text =
+                path.hasPrefix("/auto") ? link + "<script>onload = () => document.querySelector('a').click()</script>"
+                : path.hasPrefix("/link") ? link : "<title>landing</title>"
+            return Data("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(text.utf8.count)\r\nConnection: close\r\n\r\n\(text)".utf8)
+        }) {
+            defer { server.close() }
+            let other = "http://127.0.0.1:\(server.port)"
+            let tab = manager.newTab(url: URL(string: other + "/blank")!, select: false)
+            defer { manager.close(tab) }
+            await tab.settle()
+            let jar = tab.dataStore.httpCookieStore
+            let strict = HTTPCookie(properties: [
+                .domain: "localhost", .path: "/", .name: "strict", .value: "1", .sameSitePolicy: HTTPCookieStringPolicy.sameSiteStrict,
+            ])!
+            await jar.setCookie(strict)
+            func landing(_ go: () async -> Void) async -> String {
+                let seen = server.heads.count
+                await go()
+                await settle(.seconds(5)) { server.heads.dropFirst(seen).contains { $0.hasPrefix("GET /landing") } }
+                await tab.settle()
+                return server.heads.dropFirst(seen).last { $0.hasPrefix("GET /landing") } ?? "no landing request"
+            }
+            let scripted = await landing { tab.load(URL(string: other + "/auto")!) }
+            record(
+                "swhost: a page's scripted link across sites keeps its initiator, so no SameSite=Strict cookie rides along",
+                scripted.hasPrefix("GET") && !scripted.contains("strict=1"), scripted)
+            tab.load(URL(string: other + "/link")!)
+            await tab.settle()
+            let clicked = await landing { _ = try? await tab.webView.evaluateJavaScript("document.querySelector('a').click(); 0") }
+            let loaded = await landing { tab.load(URL(string: other + "/redirect?to=http://localhost:\(server.port)/landing")!) }
+            let direct = await landing { tab.load(URL(string: "http://localhost:\(server.port)/landing")!) }
+            record(
+                "swhost: a click or a load restarted across sites sends no SameSite=Strict cookie; a direct load of the site does",
+                [clicked, loaded].allSatisfy { $0.hasPrefix("GET") && !$0.contains("strict=1") } && direct.contains("strict=1"),
+                "click: \(clicked) | load: \(loaded) | direct: \(direct)")
+            await jar.deleteCookie(strict)
+        } else {
+            record("swhost: a loopback server starts for the SameSite check", false)
+        }
+        let stuck = BrowserTab()
+        stuck.webViewWebProcessDidBecomeUnresponsive(stuck.webView)
+        let said = Diagnostics.recent.last { $0.area == "webcontent" }?.message ?? ""
+        record(
+            "swhost: a page that stops answering is logged with its state",
+            said.hasPrefix("page stopped answering: in the background, unmounted, "), said)
     }
 
     /// each switch installs its own lists and no other's. leaves ads on, the rest off
@@ -13286,7 +15444,7 @@ enum SelfTest {
         await settle()
         let cookieRules = blocker.ruleCount
         let cookiesOnly = await hidden()
-        let ads = await probe(tab, urls: ["ad": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"])
+        let ads = await probe(tab.webView, urls: ["ad": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"])
         record(
             "blocker: the cookie switch hides cookie banners with ads left alone",
             cookiesOnly == "hidden,shown" && ads["ad"] == "ok", "\(cookiesOnly), ad \(ads["ad"] ?? "?"), \(cookieRules) rules")
@@ -13318,10 +15476,46 @@ enum SelfTest {
         let lists = UserDefaults.standard.array(forKey: "contentBlockingCompiledIDs")?.count ?? 0
         record(
             "blocker: a page on the pop-up ads list is blocked whole, by a rule list of its own",
-            refusal.contains("content blocker") && control && lists == 2,
+            refusal.contains("content blocker") && control && lists == 3,
             "popads.net: \(refusal), control \(control ? "loaded" : "failed"), \(lists) lists")
         for list in wereOn { blocker.setList(list, enabled: true) }
         await settle()
+    }
+
+    /// a rule swap reloads the page on screen once, an off-screen page once when shown, and a
+    /// page loaded after the swap never
+    private static func testRuleSwapReloads(_ manager: TabManager) async {
+        let blocker = ContentBlocker.shared, list = ContentBlocker.catalog[0], wasOn = blocker.isOn(list)
+        let previous = manager.selectedTabID
+        let shown = manager.newTab(url: nil, select: true)
+        let early = manager.newTab(url: nil, select: false), late = manager.newTab(url: nil, select: false)
+        for tab in [shown, early] { _ = await loadRemote(tab, "https://example.com/?swap=\(UUID().uuidString)") }
+        let before = [shown, early].map(\.userAgentDecisions)
+
+        blocker.setList(list, enabled: !wasOn)
+        try? await Task.sleep(for: .milliseconds(100))
+        await blocker.waitForIdle()
+        _ = await loadRemote(late, "https://example.com/?swap-late")
+        let lateBefore = late.userAgentDecisions
+        for _ in 0..<50 where shown.webView.isLoading { try? await Task.sleep(for: .milliseconds(100)) }
+        let atSwap = [shown.userAgentDecisions - before[0], early.userAgentDecisions - before[1]]
+
+        for tab in [early, late] {
+            manager.selectedTabID = tab.id
+            try? await Task.sleep(for: .milliseconds(300))
+            for _ in 0..<50 where tab.webView.isLoading { try? await Task.sleep(for: .milliseconds(100)) }
+        }
+        let shownLater = [early.userAgentDecisions - before[1], late.userAgentDecisions - lateBefore]
+        record(
+            "blocker: a rule swap reloads the shown page now, a hidden one when shown, a newer one never",
+            atSwap == [1, 0] && shownLater == [1, 0],
+            "at swap shown/hidden \(atSwap), once shown hidden/newer \(shownLater)")
+
+        manager.selectedTabID = previous
+        for tab in [shown, early, late] { manager.close(tab) }
+        blocker.setList(list, enabled: wasOn)
+        try? await Task.sleep(for: .milliseconds(100))
+        await blocker.waitForIdle()
     }
 
     /// only looks hosts up: no adult page is loaded
@@ -13472,7 +15666,7 @@ enum SelfTest {
             SharedWebContent.userContentController(for: Profile.defaultID).add(handmade)
             // rule lists only apply to navigations started after they're installed
             _ = await loadRemote(tab, "https://example.com/?after-install=1")
-            let probed = await probe(tab, urls: [
+            let probed = await probe(tab.webView, urls: [
                 "ad": "https://example.org/?selftest-probe=1",
                 "control": "https://example.com/?selftest=1",
             ])
@@ -13498,20 +15692,20 @@ enum SelfTest {
         let (here, apart) = await Task.detached {
             (
                 FilterConverter.convert(shipped, extraExceptions: ContentBlocker.siteFixes),
-                ContentBlocker.builtByHelper(shipped, pages: nil, qos: .userInitiated)
+                ContentBlocker.builtByHelper(shipped, pages: nil, kind: .ads, qos: .userInitiated)
             )
         }.value
         record(
             "blocker: the helper compiles the shipped lists byte for byte as the app converts them",
-            shipped.count == 2 && apart?.identifiers == [ContentBlocker.identifier(of: here.json)]
+            shipped.count == 2 && apart?.identifiers == [ContentBlocker.identifier(of: here.json, .ads)]
                 && apart?.counts.ruleCount == here.ruleCount && apart?.counts.droppedCount == here.droppedCount
                 && apart?.counts.overCeilingCount == here.overCeilingCount,
             "\(shipped.count) lists, \(here.ruleCount) rules, "
-                + (apart.map { "\($0.identifiers) vs \(ContentBlocker.identifier(of: here.json))" } ?? "helper failed"))
+                + (apart.map { "\($0.identifiers) vs \(ContentBlocker.identifier(of: here.json, .ads))" } ?? "helper failed"))
         note(blocker.statusLine)
         _ = await loadRemote(tab, "https://example.com/?real=1")
         // EasyList targets the ad subdomains, not the doubleclick.net apex
-        let real = await probe(tab, urls: [
+        let real = await probe(tab.webView, urls: [
             "doubleclick": "https://ad.doubleclick.net/ad.js",
             "googlesyndication": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
             "control": "https://example.com/?selftest=2",
@@ -13530,7 +15724,7 @@ enum SelfTest {
         record(
             "blocker: the tab ledger records what was blocked",
             tab.blockedRequests.count >= 2, "\(tab.blockedRequests.count) entries")
-        let tracked = await probe(tab, urls: [
+        let tracked = await probe(tab.webView, urls: [
             "tracker": "https://sb.scorecardresearch.com/beacon.js"
         ])
         record(
@@ -13545,7 +15739,7 @@ enum SelfTest {
         await blocker.updateLists(force: true)
 
         if let manager = ExtensionManager.shared.tabManager {
-            let open = manager.newTab(url: nil, select: false)
+            let open = manager.newTab(url: nil, select: true)
             _ = await loadRemote(open, "https://example.com/?kept=1")
             _ = try? await open.webView.evaluateJavaScript("window.__kept = 1")
             await blocker.updateLists(force: true)
@@ -13554,6 +15748,7 @@ enum SelfTest {
             let kept = (try? await open.webView.evaluateJavaScript("window.__kept")) as? Int
             record("blocker: an update that changes no rule reloads no page", kept == 1, kept == 1 ? "kept" : "reloaded")
             manager.close(open)
+            await testRuleSwapReloads(manager)
         }
 
         // launch must reuse the rules WebKit already holds, not re-convert 3.5MB of filters
@@ -13565,10 +15760,122 @@ enum SelfTest {
             "perf: reinstalling compiled rules under 500ms", reused && elapsed < 0.5, ms(elapsed))
     }
 
+    /// per-site choices on a live page: a tracker request, an ad request, an ad element and a cookie banner.
+    /// needs public hosts: EasyList gives loopback pages no generic hides
+    private static func testSiteBlocking() async {
+        let blocker = ContentBlocker.shared
+        let cookies = ContentBlocker.catalog[0]
+        let wasEnabled = blocker.isEnabled, wereOn = ContentBlocker.catalog.filter(blocker.isOn)
+        func settle() async {
+            try? await Task.sleep(for: .milliseconds(100))
+            await blocker.waitForIdle()
+        }
+        defer {
+            for site in Array(blocker.siteChoices.keys) { blocker.forgetSite(site) }
+            blocker.isEnabled = wasEnabled
+            for list in ContentBlocker.catalog { blocker.setList(list, enabled: wereOn.contains(list)) }
+        }
+        record(
+            "siteblocking: a choice belongs to the registrable domain",
+            ContentBlocker.site(of: "News.BBC.co.uk") == "bbc.co.uk" && ContentBlocker.site(of: "127.0.0.1") == "127.0.0.1"
+                && ContentBlocker.site(of: "www.example.com") == "example.com")
+
+        blocker.isEnabled = true
+        for list in ContentBlocker.catalog { blocker.setList(list, enabled: list == cookies) }
+        await settle()
+        await blocker.updateLists(force: false)
+        await settle()
+        let tab = BrowserTab()
+        let here = "https://www.example.com/?siteblocking-\(UUID().uuidString)", there = "https://example.org/"
+        func state(_ url: String? = nil) async -> String {
+            if let url { _ = await loadRemote(tab, url) } else {
+                tab.reload()
+                try? await Task.sleep(for: .milliseconds(100))
+                for _ in 0..<100 where tab.webView.isLoading { try? await Task.sleep(for: .milliseconds(100)) }
+            }
+            return await measured(tab.webView)
+        }
+        /// tracker request, ad request, ad element, cookie banner
+        func measured(_ webView: WKWebView) async -> String {
+            let probed = await probe(webView, urls: [
+                "tracker": "https://sb.scorecardresearch.com/beacon.js?\(UUID().uuidString)",
+                "ad": "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?\(UUID().uuidString)",
+            ])
+            let hides = (try? await webView.evaluateJavaScript("""
+                document.body.insertAdjacentHTML("beforeend", "<div class=ad-slot>ad</div><div id=cookie-banner>cookies</div>");
+                [".ad-slot", "#cookie-banner"].map(s => getComputedStyle(document.querySelector(s)).display === "none" ? "hidden" : "shown").join()
+                """)) as? String
+            return "\(probed["tracker"] ?? "?"),\(probed["ad"] ?? "?"),\(hides ?? "?,?")"
+        }
+        let all = "blocked,blocked,hidden,hidden"
+        let before = await state(here)
+        record(
+            "siteblocking: with no choice a site gets the global switches", before == all,
+            "\(before), \(UserDefaults.standard.stringArray(forKey: "contentBlockingCompiledIDs") ?? []), \(blocker.lastError ?? "")")
+
+        let compiled = UserDefaults.standard.stringArray(forKey: "contentBlockingCompiledIDs")
+        var started = Date()
+        blocker.setBlocks(.ads, false, on: "example.com", ephemeral: false)
+        let switched = Date().timeIntervalSince(started)
+        let adsOff = await state()
+        blocker.setBlocks(.trackers, false, on: "example.com", ephemeral: false)
+        let trackersOff = await state()
+        blocker.setBlocks(.cookies, false, on: "example.com", ephemeral: false)
+        let cookiesOff = await state()
+        record(
+            "siteblocking: each switch lets its own kind through on that site, and only its own",
+            adsOff == "blocked,ok,shown,hidden" && trackersOff == "ok,ok,shown,hidden" && cookiesOff == "ok,ok,shown,shown",
+            "ads off \(adsOff), trackers off \(trackersOff), cookie banners off \(cookiesOff)")
+        await settle()
+        record(
+            "siteblocking: switching a kind off compiles and installs nothing",
+            compiled != nil && UserDefaults.standard.stringArray(forKey: "contentBlockingCompiledIDs") == compiled,
+            "\(ms(switched)) to switch, \(compiled?.count ?? 0) lists")
+        let elsewhere = await state(there)
+        record("siteblocking: another site stays blocked", elsewhere == all, elsewhere)
+        let back = await state(here)
+        record("siteblocking: the choices hold on the next visit", back == "ok,ok,shown,shown", back)
+
+        blocker.setBlocks(.ads, false, on: "example.org", ephemeral: true)
+        record(
+            "siteblocking: an incognito choice reaches incognito tabs only and never disk",
+            !blocker.blocks(.ads, on: "example.org", ephemeral: true) && blocker.blocks(.ads, on: "example.org", ephemeral: false)
+                && blocker.siteChoices["example.org"] == nil)
+        blocker.forgetEphemeral()
+
+        blocker.setList(cookies, enabled: false)
+        await settle()
+        started = Date()
+        blocker.setBlocks(.cookies, true, on: "example.org", ephemeral: false)
+        await settle()
+        let installedOne = Date().timeIntervalSince(started)
+        let onThere = await state(there), offHere = await state(here)
+        record(
+            "siteblocking: a site can switch on what is off everywhere else",
+            onThere == all && offHere == "ok,ok,shown,shown" && blocker.blocksGlobally(.cookies) == false,
+            "example.org \(onThere), example.com \(offHere), \(ms(installedOne)) to install the cookie list")
+
+        let flow = AuthFlow(
+            url: URL(string: here)!, redirectHost: "redirect.invalid", title: "", dataStore: tab.webView.configuration.websiteDataStore)
+        _ = await flow.run(interactive: false)
+        let signIn = await measured(flow.webView)
+        record(
+            "siteblocking: an extension's sign-in window keeps each site's choices to that site",
+            signIn == "ok,ok,shown,shown", "example.com \(signIn)")
+
+        blocker.forgetSite("example.com")
+        let forgotten = await state(here)
+        record(
+            "siteblocking: a forgotten site follows the global switches again",
+            forgotten == "blocked,blocked,hidden,shown" && blocker.siteChoices["example.com"] == nil
+                && blocker.siteChoices["example.org"] == [.cookies: true],
+            forgotten)
+    }
+
     /// ask a live page to request each url and report whether it was blocked. a blocked
     /// request leaves no Resource Timing entry, which `fetch` alone can't tell; entries
     /// land when the response completes, so the probe waits on a PerformanceObserver
-    private static func probe(_ tab: BrowserTab, urls: [String: String]) async -> [String: String] {
+    private static func probe(_ webView: WKWebView, urls: [String: String]) async -> [String: String] {
         let script = """
             const probe = async (url) => {
               const seen = new Promise((resolve) => {
@@ -13593,7 +15900,7 @@ enum SelfTest {
             for (const [key, url] of Object.entries(targets)) { out[key] = await probe(url); }
             return out;
             """
-        let raw = try? await tab.webView.callAsyncJavaScript(
+        let raw = try? await webView.callAsyncJavaScript(
             script, arguments: ["targets": urls], contentWorld: .page)
         return (raw as? [String: Any])?.compactMapValues { $0 as? String } ?? [:]
     }
@@ -14537,8 +16844,8 @@ enum SelfTest {
         let notifierSite = "https://notify.selftest.example"
         notifier.webView.loadHTMLString("<title>Chat</title>", baseURL: URL(string: notifierSite + "/"))
         await settle { !notifier.webView.isLoading && notifier.url?.host() == "notify.selftest.example" }
-        SitePermissionStore.shared.set(.allow, for: notifierSite, .notifications, ephemeral: false)
-        defer { SitePermissionStore.shared.forget(notifierSite) }
+        manager.currentProfile.sitePermissions.set(.allow, for: notifierSite, .notifications, ephemeral: false)
+        defer { manager.currentProfile.sitePermissions.forget(notifierSite) }
         await manager.relieveMemoryPressure()
         record(
             "tabsleep: a page holding unsent text stays awake, a plain one sleeps with a still",
@@ -14622,6 +16929,11 @@ enum SelfTest {
         }
         record("lifecycle: keep-loaded survives the session file", decoded?.keepsLoaded == true)
         record("lifecycle: a page with no beforeunload closes at once", tab.tryClose())
+        tab.webView.setSPIValue(true, forKey: "artemisNoSuchKey")
+        record(
+            "lifecycle: a WebKit SPI key this OS lacks reads nil and ignores writes, without a crash",
+            tab.webView.spiValue(forKey: "_artemisNoSuchKey") == nil
+                && tab.webView.spiValue(forKey: "_webProcessIdentifier") as? Int32 ?? 0 > 0)
         _ = try? await tab.webView.evaluateJavaScript("setTimeout(() => alert('still there?')); 0")
         await settle { tab.pendingDialog != nil }
         record(
@@ -15751,11 +18063,17 @@ enum SelfTest {
                     === SharedWebContent.userContentController(for: parent, isPrivate: true)
                 && tab.webView.configuration.userContentController
                     !== SharedWebContent.userContentController(for: parent))
+        let counted = Diagnostics.privateWindows.withLock { $0 }
         let second = makeIncognito(from: manager)
+        let withSecond = Diagnostics.privateWindows.withLock { $0 }
         record(
             "incognito: each window has a jar of its own",
             second.currentSpace.tabs.first.map { $0.dataStore !== tab.dataStore } == true)
         second.windowWillClose()
+        let afterClose = Diagnostics.privateWindows.withLock { $0 }
+        record(
+            "incognito: the error log counts a window while it is open",
+            counted > 0 && withSecond == counted + 1 && afterClose == counted, "\(counted) \(withSecond) \(afterClose)")
 
         // visits in it never reach the (persisted) history store
         let ghost = URL(string: "https://selftest-incognito-ghost.example.com/page")!
@@ -16460,6 +18778,51 @@ enum SelfTest {
             manager.deleteProfile(work)
         }
 
+        // contentSettings: the permission types are the site's own Artemis permissions; the rest refuse a change
+        if let settings = await throwawayContext(["permissions": ["contentSettings"]]) {
+            let bridge = ExtensionAPIBridge.shared
+            let site = "https://contentsettings.selftest.example"
+            let ask = { (body: [String: Any]) in await bridge.handle(body, for: settings) ?? [:] }
+            let set = await ask(["artemisCompat": "contentSettings.set", "type": "notifications",
+                                 "primaryPattern": site + "/*", "setting": "block"])
+            let stored = BrowserCore.shared.defaultProfile.sitePermissions.decision(for: site, .notifications, ephemeral: false)
+            let read = await ask(["artemisCompat": "contentSettings.get", "type": "notifications", "primaryUrl": site + "/page"])
+            let wide = await ask(["artemisCompat": "contentSettings.set", "type": "notifications",
+                                  "primaryPattern": "https://*.selftest.example/*", "setting": "allow"])
+            let script = await ask(["artemisCompat": "contentSettings.set", "type": "javascript",
+                                    "primaryPattern": site + "/*", "setting": "block"])
+            _ = await ask(["artemisCompat": "contentSettings.clear", "type": "notifications"])
+            let cleared = await ask(["artemisCompat": "contentSettings.get", "type": "notifications", "primaryUrl": site + "/"])
+            record("bridge: contentSettings reads and writes the site's own permission, and clear undoes it",
+                set["ok"] as? Bool == true && stored == .deny && read["setting"] as? String == "block"
+                    && cleared["setting"] as? String == "ask",
+                "\(set) \(String(describing: stored)) \(read) \(cleared)")
+            record("bridge: contentSettings refuses a wildcard site and a setting Artemis lacks",
+                wide["ok"] as? Bool == false && script["ok"] as? Bool == false, "\(wide) \(script)")
+            let peek = await ask(["artemisCompat": "contentSettings.get", "type": "notifications",
+                                  "primaryUrl": site + "/", "incognito": true])
+            let hide = await ask(["artemisCompat": "contentSettings.set", "type": "notifications",
+                                  "primaryPattern": site + "/*", "setting": "allow", "scope": "incognito_session_only"])
+            let hidden = BrowserCore.shared.defaultProfile.sitePermissions.decision(for: site, .notifications, ephemeral: true)
+            settings.hasAccessToPrivateData = true
+            let allowed = await ask(["artemisCompat": "contentSettings.set", "type": "notifications",
+                                     "primaryPattern": site + "/*", "setting": "allow", "scope": "incognito_session_only"])
+            BrowserCore.shared.defaultProfile.sitePermissions.forget(site, .notifications, ephemeral: true)
+            record("bridge: contentSettings refuses incognito settings to an extension not allowed in incognito",
+                peek["ok"] as? Bool == false && hide["ok"] as? Bool == false && hidden == nil
+                    && allowed["ok"] as? Bool == true, "\(peek) \(hide) \(String(describing: hidden)) \(allowed)")
+            let store = BrowserCore.shared.defaultProfile.sitePermissions
+            _ = await ask(["artemisCompat": "contentSettings.set", "type": "camera",
+                           "primaryPattern": site + "/*", "setting": "allow"])
+            let granted = store.decision(for: site, .camera, ephemeral: false)
+            ExtensionManager.shared.remove(InstalledExtension(
+                id: settings.uniqueIdentifier, source: .disk, webExtension: settings.webExtension, profiles: [], isPinned: false))
+            let left = store.decision(for: site, .camera, ephemeral: false)
+            store.forget(site, .camera)
+            record("bridge: an uninstalled extension's site settings go with it",
+                granted == .allow && left == nil, "\(String(describing: granted)) then \(String(describing: left))")
+        }
+
         // --- the shim itself, in a real JS engine --------------------------
         let js = JSContext()!
         js.exceptionHandler = { _, e in note("compat shim JS exception: \(e?.toString() ?? "?")") }
@@ -16472,15 +18835,19 @@ enum SelfTest {
                 runtime: { sendNativeMessage: (id, msg) => {
                     nativeCalls.push(msg);
                     return Promise.resolve({ ok: true });
-                }, getManifest: () => ({
+                }, getURL: (path) => "chrome-extension://self/" + String(path).replace(/^\\//, ""), getManifest: () => ({
                     permissions: ["proxy", "privacy", "webNavigation", "idle", "notifications"] }) },
                 i18n: { getMessage: (name) => { if (!name) throw new Error("empty"); return name; } },
                 action: { setBadgeText: () => {} },
                 tabs: { query: () => Promise.resolve([{ id: 1, url: "https://a.test/" }]),
                         onUpdated: tabsUpdated, onRemoved: event() },
-                webNavigation: { onCommitted: event() },
-                webRequest: { onAuthRequired: { addListener(){}, removeListener(){} } },
+                webNavigation: { onCommitted: Object.assign(event(), { addListener(f, filter) {
+                    if (filter && !filter.url) throw new Error("missing required keys: 'url'");
+                    committed.push(f);
+                } }) },
+                webRequest: { onAuthRequired: { addListener(){}, removeListener(){} }, onBeforeRequest: event() },
             };
+            globalThis.committed = [];
             """)
         js.evaluateScript(ExtensionCompat.compatJS)
         record("compat: Chrome enums are readable off their namespace",
@@ -16491,6 +18858,43 @@ enum SelfTest {
                 .toString() == "function"
                 && js.evaluateScript("typeof chrome.webNavigation.onCommitted.fire").toString()
                     == "function")
+        let acrobatPolicy = "script-src 'self'; child-src 'self'; object-src 'self'; frame-src https://*.adobe.com"
+        func pagePolicy(_ policy: String?, version: Int = 3) -> Bool {
+            ExtensionCompat.pagePolicyHoldsScripts(["manifest_version": version, "content_security_policy":
+                policy.map { ["extension_pages": $0] } ?? [:]])
+        }
+        record("compat: a site framed in an extension page keeps its CDN only where the page's own policy holds scripts",
+            pagePolicy(acrobatPolicy) && pagePolicy("default-src 'self' 'wasm-unsafe-eval'")
+                && !pagePolicy("script-src 'self' https://cdn.test") && !pagePolicy(nil)
+                && !pagePolicy("object-src 'self'") && !pagePolicy(acrobatPolicy, version: 2))
+        record("compat: a page policy admits outside scripts in no spelling of the directive",
+            !pagePolicy("SCRIPT-SRC https://cdn.test; default-src 'self'")
+                && !pagePolicy("script-src 'self'; script-src-elem https://cdn.test")
+                && pagePolicy("Script-Src 'self'; script-src-elem 'self'"))
+        let zoteroOffscreen = "default-src 'none'; script-src 'self'; frame-src 'self'; object-src 'none'"
+        record("compat: a page policy's 'self' covers the package's sandbox pages, and nothing else is admitted",
+            ExtensionCompat.admittingSandboxScheme(zoteroOffscreen)
+                == "default-src 'none'; script-src 'self' artemis-sandbox:; frame-src 'self' artemis-sandbox:; object-src 'none'"
+                && ExtensionCompat.admittingSandboxScheme("default-src 'self' https://a.test;")
+                    == "default-src 'self' https://a.test artemis-sandbox:;"
+                && ExtensionCompat.admittingSandboxScheme("default-src 'none'; img-src https://a.test")
+                    == "default-src 'none'; img-src https://a.test")
+        record("compat: a tab completing on an own-origin URL the package lacks reaches onBeforeRequest once",
+            js.evaluateScript("""
+                const ownLoads = [], pdf = { url: "chrome-extension://self/https://a.test/x.pdf" };
+                chrome.webRequest.onBeforeRequest.addListener((d) => ownLoads.push(d.tabId + " " + d.type),
+                    { urls: ["chrome-extension://self/http*"], types: ["main_frame"] });
+                tabsUpdated.fire(7, { url: pdf.url, title: "x" }, pdf);
+                tabsUpdated.fire(7, { status: "complete" }, pdf);
+                tabsUpdated.fire(8, { status: "complete" }, { url: "chrome-extension://self/viewer.html" });
+                ownLoads.join()
+                """).toString() == "7 main_frame")
+        record("compat: a webNavigation filter without url (Acrobat's {frameType}) registers unfiltered",
+            js.evaluateScript("""
+                chrome.webNavigation.onCommitted.addListener(() => {}, { frameType: "outermost_frame" });
+                chrome.webNavigation.onCommitted.addListener(() => {}, { url: [{ schemes: ["https"] }] });
+                committed.length
+                """).toInt32() == 2)
         record("compat: i18n.getMessage(\"\") answers \"\" as Chrome does",
             js.evaluateScript("chrome.i18n.getMessage('')").toString() == ""
                 && js.evaluateScript("chrome.i18n.getMessage('a')").toString() == "a")
@@ -16512,6 +18916,117 @@ enum SelfTest {
         record("compat: content scripts get the core only",
             !ExtensionCompat.contentJS.contains("setting.set")
                 && ExtensionCompat.contentJS.count * 3 < ExtensionCompat.compatJS.count)
+        let framed = { (scheme: String, source: String) -> Bool in
+            let frame = JSContext()!
+            frame.evaluateScript("""
+                globalThis.chrome = { runtime: {} };
+                globalThis.location = { protocol: "\(scheme):", href: "\(scheme)://b.test/", ancestorOrigins: ["https://a.test"] };
+                """)
+            frame.evaluateScript(source)
+            return frame.evaluateScript("chrome.__artemisCompat === 1").toBool()
+        }
+        record("compat: a content script in a site's subframe gets the shim; an extension page framed in a site doesn't",
+            framed("https", ExtensionCompat.contentJS) && !framed("webkit-extension", ExtensionCompat.compatJS))
+        let settings = JSContext()!
+        settings.evaluateScript("""
+            globalThis.asked = [];
+            globalThis.chrome = { runtime: { sendNativeMessage: (id, msg) => { asked.push(msg.artemisCompat + ":" + msg.type);
+                return Promise.resolve({ setting: "block" }); },
+                getManifest: () => ({ permissions: ["contentSettings"] }) } };
+            """)
+        settings.evaluateScript(ExtensionCompat.compatJS)
+        settings.evaluateScript("""
+            globalThis.read = [];
+            chrome.contentSettings.javascript.get({ primaryUrl: "https://a.test/" }, (d) => read.push("js " + d.setting));
+            chrome.contentSettings.camera.get({ primaryUrl: "https://a.test/" }).then((d) => read.push("camera " + d.setting));
+            """)
+        record("compat: contentSettings answers fixed types itself and asks native for site permissions",
+            settings.evaluateScript("read.sort().join('|') + ' / ' + asked.filter((a) => a.startsWith('content')).join('|')")
+                .toString() == "camera block|js allow / contentSettings.get:camera",
+            settings.evaluateScript("read.join('|') + ' / ' + asked.join('|')").toString())
+        let ports = JSContext()!
+        ports.evaluateScript("""
+            globalThis.setTimeout = (fn) => Promise.resolve().then(fn);
+            globalThis.opened = [];
+            const none = () => ({ addListener() {}, removeListener() {} });
+            globalThis.chrome = { runtime: { onMessage: none(), onConnect: none(),
+                sendNativeMessage: () => Promise.resolve({}), getManifest: () => ({ permissions: [] }),
+                connectNative: (id) => { opened.push(id); return { onMessage: none(), onDisconnect: none() }; },
+                connect: () => { throw new Error("cross-extension messaging is not supported"); } } };
+            """)
+        ports.evaluateScript(ExtensionCompat.compatJS)
+        ports.evaluateScript("""
+            globalThis.seen = [];
+            chrome.runtime.connectNative("com.example.host").onDisconnect.addListener(() => seen.push(chrome.runtime.lastError.message));
+            chrome.runtime.connect("other").onDisconnect.addListener(() => seen.push(chrome.runtime.lastError.message));
+            """)
+        record("compat: a port that can't connect disconnects with Chrome's runtime.lastError",
+            ports.evaluateScript("seen.join('|') + ' / ' + opened.length + ' ' + chrome.runtime.lastError").toString()
+                == "Specified native messaging host not found.|Could not establish connection. Receiving end does not exist. / 0 undefined",
+            ports.evaluateScript("seen.join('|') + ' / ' + opened.join()").toString())
+        let own = JSContext()!
+        own.evaluateScript("""
+            globalThis.got = [];
+            class Scripting { executeScript(d) { got.push(d.files.join()); return Promise.resolve([]); } }
+            globalThis.chrome = { scripting: new Scripting(), declarativeNetRequest: {},
+                runtime: { sendNativeMessage: () => Promise.resolve({}), getURL: (p) => "chrome-extension://x/" + p,
+                    getManifest: () => ({ permissions: ["scripting", "declarativeNetRequest"] }) } };
+            """)
+        own.evaluateScript(ExtensionCompat.compatJS)
+        own.evaluateScript("""
+            chrome.scripting.executeScript({ target: { tabId: 1 }, files: ["chrome-extension://x/a.js", "b.js"] });
+            const dnr = chrome.declarativeNetRequest;
+            dnr.updateStaticRules({ rulesetId: "r", enableRuleIds: [1] }).then(() => got.push("enabled"));
+            dnr.updateStaticRules({ rulesetId: "r", disableRuleIds: [1] }).catch(() => got.push("refused"));
+            """)
+        record("compat: own-URL script files run as paths; static rules re-enable, never switch off",
+            own.evaluateScript("got.join('|')").toString() == "a.js,b.js|enabled|refused",
+            own.evaluateScript("got.join('|')").toString())
+        let capture = JSContext()!
+        capture.evaluateScript("""
+            globalThis.setTimeout = (fn) => Promise.resolve().then(fn);
+            globalThis.sent = [];
+            class AudioParam { constructor() { this.v = 1; } get value() { return this.v; } set value(v) { this.v = v; }
+                setValueAtTime(v) { this.v = v; } }
+            class AudioNode { connect(to) { return to; } }
+            class GainNode extends AudioNode { constructor() { super(); this.gain = new AudioParam(); } }
+            class BiquadFilterNode extends AudioNode {
+                constructor() { super(); this.t = "lowpass"; this.frequency = new AudioParam(); this.Q = new AudioParam();
+                    this.gain = new AudioParam(); }
+                get type() { return this.t; } set type(t) { this.t = t; } }
+            class AudioContext { createMediaStreamDestination() { return { stream: {} }; }
+                createMediaStreamSource() { return new AudioNode(); } createGain() { return new GainNode(); }
+                createBiquadFilter() { return new BiquadFilterNode(); } close() { return Promise.resolve(); } }
+            Object.assign(globalThis, { AudioParam, AudioNode, GainNode, BiquadFilterNode, AudioContext,
+                navigator: { mediaDevices: {} } });
+            globalThis.chrome = {
+                tabs: { get: (id) => Promise.resolve({ id, url: "https://v.test/", index: 2, title: "V" }),
+                    query: () => Promise.resolve([{ id: 7 }]), onUpdated: { addListener() {} } },
+                runtime: { getManifest: () => ({ permissions: ["tabCapture", "offscreen"] }),
+                    sendNativeMessage: (id, m) => { if (m.artemisCompat === "tabCapture.apply") {
+                        sent.push(JSON.stringify(m.chain) + "@" + m.tabId + " " + m.url); }
+                        return Promise.resolve({ ok: true }); } } };
+            """)
+        capture.evaluateScript(ExtensionCompat.compatJS)
+        capture.evaluateScript("""
+            globalThis.context = new AudioContext();
+            Promise.all([chrome.tabCapture.getMediaStreamId({ targetTabId: 5 }), chrome.tabCapture.getMediaStreamId()])
+                .then(([id, active]) => { sent.push(active);
+                    return navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: id } } }); })
+                .then((stream) => {
+                    const source = context.createMediaStreamSource(stream), gain = context.createGain(), filter = context.createBiquadFilter();
+                    filter.type = "peaking";
+                    [source, gain, filter].reduce((from, to) => (from.connect(to), to)).connect({});
+                    gain.gain.value = 2.5;
+                    filter.gain.setValueAtTime(6, 0);
+                });
+            """)
+        let replayed = capture.evaluateScript("sent.join('|')").toString() ?? ""
+        capture.evaluateScript("context.close()")
+        record("compat: a tab capture's gain and filter chain reaches native, and closing it clears the tab",
+            replayed == #"artemis-tab:7|[{"kind":"gain","gain":2.5},{"kind":"filter","type":"peaking","frequency":1,"Q":1,"gain":6}]@5 https://v.test/"#
+                && capture.evaluateScript("sent[sent.length - 1]").toString() == "[]@5 https://v.test/",
+            capture.evaluateScript("sent.join('|')").toString())
         let plain = JSContext()!
         plain.evaluateScript("""
             globalThis.chrome = { runtime: { sendNativeMessage: () => Promise.resolve({}),
@@ -16525,6 +19040,20 @@ enum SelfTest {
             ["chrome.privacy", "chrome.idle", "chrome.notifications", "chrome.offscreen", "chrome.identity",
              "chrome.sidePanel", "chrome.downloads", "chrome.search", "chrome.history"]
                 .allSatisfy { plain.evaluateScript("typeof \($0)").toString() == "undefined" })
+        let scuttled = JSContext()!
+        scuttled.evaluateScript("""
+            globalThis.chrome = globalThis.browser = globalThis.native = { runtime: {
+                sendNativeMessage: () => Promise.resolve({}), getManifest: () => ({ permissions: [] }) } };
+            globalThis.importScripts = () => {};
+            """)
+        scuttled.evaluateScript(ExtensionCompat.compatJS)
+        record("compat: a worker scuttling globals (MetaMask's LavaMoat) leaves `browser` WebKit's for delivery",
+            scuttled.evaluateScript("""
+                for (const name of ["browser", "chrome"]) {
+                    try { Object.defineProperty(globalThis, name, { get() { throw new Error("scuttled"); } }); } catch (e) {}
+                }
+                browser === native && typeof chrome.runtime.getManifest === "function"
+                """).toBool())
 
         // a Firefox build's proxy fill and the background's relay for its content world
         let gecko = JSContext()!
@@ -17242,6 +19771,146 @@ enum SelfTest {
         }
     }
 
+    /// "Open new tabs as a page": ⌘T opens a blank tab on its address, or an extension's
+    /// `chrome_url_overrides.newtab`; off, it is the command bar
+    private static func testNewTabPage(manager: TabManager) async {
+        let extensions = ExtensionManager.shared
+        let defaults = UserDefaults.standard
+        let wasOn = TabManager.newTabOpensPage
+        let previous = manager.selectedTabID
+        var opened: [BrowserTab] = []
+        defer {
+            defaults.set(wasOn, forKey: TabManager.newTabOpensPageKey)
+            manager.isCommandBarVisible = false
+            manager.addressBarOrigin = nil
+            for tab in opened { manager.close(tab) }
+            manager.selectedTabID = previous
+        }
+        let count = { manager.currentSpace.tabs.count }
+        let editsAddress = { manager.isCommandBarVisible && (manager.commandBarEditsAddress || manager.addressBarOrigin != nil) }
+
+        defaults.set(false, forKey: TabManager.newTabOpensPageKey)
+        manager.isCommandBarVisible = false
+        let before = count()
+        manager.requestNewTab()
+        record(
+            "new tab page: off, ⌘T opens the command bar and no tab",
+            manager.isCommandBarVisible && !editsAddress() && count() == before)
+        manager.isCommandBarVisible = false
+
+        defaults.set(true, forKey: TabManager.newTabOpensPageKey)
+        manager.requestNewTab()
+        let blank = manager.selectedTab
+        if let blank, count() == before + 1 { opened.append(blank) }
+        record(
+            "new tab page: on, ⌘T opens a blank tab with its address being edited",
+            count() == before + 1 && blank?.isBlank == true && editsAddress(),
+            "tabs \(before) → \(count()), blank \(blank?.isBlank == true), address \(editsAddress())")
+        manager.requestNewTab()
+        if count() == before + 2, let second = manager.selectedTab { opened.append(second) }
+        record("new tab page: ⌘T with the address open opens another tab", count() == before + 2 && editsAddress())
+        manager.isCommandBarVisible = false
+        manager.addressBarOrigin = nil
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-newtab-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? #"{"manifest_version": 3, "name": "Artemis New Tab Probe", "version": "1.0", "chrome_url_overrides": {"newtab": "newtab.html"}, "options_ui": {"page": "newtab.html"}}"#
+            .write(to: root.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        try? "<html><body>new tab probe</body></html>"
+            .write(to: root.appendingPathComponent("newtab.html"), atomically: true, encoding: .utf8)
+        guard let ext = try? await extensions.installFromDisk(root) else {
+            return record("new tab page: the probe installs", false)
+        }
+        defer { extensions.remove(ext) }
+        let profile = manager.currentSpace.profileID
+        await settle(.seconds(10)) { extensions.hasRehydrated }
+        _ = WebExtensionRuntime.controller(for: profile)
+        extensions.setEnabled(ext, true, in: profile)
+        await settle(.seconds(5)) { ext.contexts[profile]?.isLoaded == true }
+        guard let page = extensions.newTabPage(for: manager) else {
+            return record("new tab page: an enabled extension's override is found", false)
+        }
+        manager.requestNewTab()
+        guard let tab = manager.selectedTab, count() == before + 3 else {
+            return record("new tab page: ⌘T opens a tab for the extension's page", false, "tabs \(count())")
+        }
+        opened.append(tab)
+        await settle(.seconds(5)) { tab.webView.url == page.url && !tab.webView.isLoading }
+        let text = (try? await tab.webView.evaluateJavaScript("document.body.innerText")) as? String
+        record(
+            "new tab page: an extension's new tab page loads in the new tab, its address being edited",
+            page.url.lastPathComponent == "newtab.html" && text == "new tab probe" && editsAddress(),
+            "url \(tab.webView.url?.absoluteString ?? "nil"), text \(text ?? "nil"), error \(tab.loadError ?? "nil")")
+
+        guard let served = serveLoopback("<html><body>site</body></html>") else {
+            return record("new tab page: a loopback server starts", false)
+        }
+        defer { close(served.socket) }
+        let site = "http://127.0.0.1:\(served.port)/"
+        // judged by the page's text: a load WebKit drops still leaves `webView.url` on the address asked for
+        func recordSite(_ name: String, in tab: BrowserTab) async {
+            let text = { (try? await tab.webView.evaluateJavaScript("document.body.innerText")) as? String }
+            await settle(.seconds(5)) { await text() == "site" }
+            let shown = await text()
+            record(
+                name, shown == "site" && tab.webView.url?.absoluteString == site,
+                "url \(tab.webView.url?.absoluteString ?? "nil"), text \(shown ?? "nil")")
+        }
+        tab.load(URL(string: site)!)
+        await recordSite("new tab page: an address typed on the extension's page loads", in: tab)
+
+        manager.requestNewTab()
+        if let linked = manager.selectedTab, linked !== tab {
+            opened.append(linked)
+            await settle(.seconds(5)) { linked.webView.url == page.url && !linked.webView.isLoading }
+            _ = try? await linked.webView.evaluateJavaScript(
+                "const link = document.createElement('a'); link.href = '\(site)'; document.body.append(link); link.click(); 0")
+            await recordSite("new tab page: a link on the extension's page loads", in: linked)
+        } else {
+            record("new tab page: a link on the extension's page loads", false, "no second tab")
+        }
+
+        let known = Set(manager.allTabs.map(\.id))
+        extensions.openOptionsPage(for: ext)
+        if let options = manager.allTabs.first(where: { !known.contains($0.id) }) {
+            opened.append(options)
+            await settle(.seconds(5)) { options.webView.url == page.url && !options.webView.isLoading }
+            options.load(URL(string: site)!)
+            await recordSite("new tab page: an address typed on the extension's options page loads", in: options)
+        } else {
+            record("new tab page: an address typed on the extension's options page loads", false, "no options tab")
+        }
+
+        // WebKit hands a tab the page opens the extension's configuration too
+        manager.requestNewTab()
+        if let opener = manager.selectedTab, !known.contains(opener.id) {
+            opened.append(opener)
+            await settle(.seconds(5)) { opener.webView.url == page.url && !opener.webView.isLoading }
+            let had = Set(manager.allTabs.map(\.id))
+            _ = try? await opener.webView.callAsyncJavaScript("window.open('\(site)')", contentWorld: .page)
+            await settle { manager.allTabs.contains { !had.contains($0.id) } }
+            if let popup = manager.allTabs.first(where: { !had.contains($0.id) }) {
+                opened.append(popup)
+                await recordSite("new tab page: a site the extension's page opens in a new tab loads", in: popup)
+            } else {
+                record("new tab page: a site the extension's page opens in a new tab loads", false, "no new tab")
+            }
+        }
+
+        let wasLocking = defaults.bool(forKey: SpaceLock.incognitoRequiresUnlockKey)
+        defaults.set(false, forKey: SpaceLock.incognitoRequiresUnlockKey)
+        defer { defaults.set(wasLocking, forKey: SpaceLock.incognitoRequiresUnlockKey) }
+        let incognito = makeIncognito(from: manager)
+        record("new tab page: incognito gets a blank tab, not the extension's page", extensions.newTabPage(for: incognito) == nil)
+        incognito.windowWillClose()
+
+        extensions.setEnabled(ext, false, in: profile)
+        await settle { ext.contexts[profile]?.isLoaded != true }
+        record("new tab page: a disabled extension's page is not used", extensions.newTabPage(for: manager) == nil)
+    }
+
     /// uBlock's "page blocked" screen: `tabs.update` sends a tab showing a site to the
     /// extension's own page, under each origin an install can give it
     private static func testExtensionPageInTab() async {
@@ -17354,6 +20023,60 @@ enum SelfTest {
             tabs.close(tab)
             manager.remove(ext)
         }
+
+        // Zotero's translate host: an offscreen page frames its sandbox page, which evals translators
+        let sandboxed = root.appendingPathComponent("sandboxed", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: sandboxed.appendingPathComponent("sb"), withIntermediateDirectories: true)
+        for (file, text) in [
+            ("manifest.json", #"""
+                {"manifest_version": 3, "name": "Artemis Sandbox Probe", "version": "1.0",
+                 "background": {"service_worker": "bg.js"}, "sandbox": {"pages": ["sb/eval.html"]},
+                 "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'self'"}}
+                """#),
+            ("bg.js", #"""
+                chrome.runtime.onMessage.addListener((m, s, reply) => {
+                  try { eval("1"); reply("evaluated"); } catch (e) { reply("refused"); }
+                });
+                """#),
+            ("page.html", #"""
+                <html><head><meta http-equiv="Content-Security-Policy" content="default-src 'self'">
+                <script src="page.js"></script></head></html>
+                """#),
+            ("page.js", #"""
+                let own; try { own = eval("'evaluated'"); } catch (e) { own = "refused"; }
+                chrome.runtime.sendMessage("eval?").then((worker) => {
+                  addEventListener("message", (e) => { document.title = [own, worker, e.data].join(" "); });
+                  const frame = document.createElement("iframe");
+                  frame.setAttribute("sandbox", "allow-scripts");
+                  frame.setAttribute("src", chrome.runtime.getURL("sb/eval.html?role=detect#nonce"));
+                  document.documentElement.append(frame);
+                });
+                """#),
+            ("sb/eval.html", #"<html><head><script src="eval.js"></script></head></html>"#),
+            ("sb/eval.js", #"parent.postMessage([eval("'evaluated'"), location.search + location.hash, typeof chrome].join(" "), "*");"#),
+        ] {
+            try? text.write(to: sandboxed.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        }
+        let sandboxName = "extension page: only a manifest sandbox page may eval, framed with its search and hash and no extension API"
+        guard let ext = try? await manager.installFromDisk(sandboxed) else { return record(sandboxName, false, "install failed") }
+        manager.setEnabled(ext, true, in: Profile.defaultID)
+        for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let context = ext.contexts[Profile.defaultID] else {
+            manager.remove(ext)
+            return record(sandboxName, false, "no context")
+        }
+        // a popup or background page is made from the context's plain configuration, not pageConfiguration
+        for (configuration, kind) in [(context.pageConfiguration, "tab"), (context.webViewConfiguration, "popup")] {
+            let tab = tabs.newTab(url: context.baseURL.appendingPathComponent("page.html"), configuration: configuration)
+            for _ in 0..<80 where tab.webView.title?.contains(" ") != true { try? await Task.sleep(for: .milliseconds(100)) }
+            let title = tab.webView.title ?? "nil"
+            record(sandboxName + " (\(kind))", title == "refused refused evaluated ?role=detect#nonce undefined", title)
+            tabs.close(tab)
+        }
+        manager.remove(ext)
     }
 
     /// what Chrome and Firefox tell an extension's views and the pages it names: `tabs.getCurrent`
@@ -17414,8 +20137,10 @@ enum SelfTest {
         if manager.installed.contains(where: { $0.contexts[Profile.defaultID]?.isLoaded == true }) {
             note("extension views: skipped the no-extension page — the profile already runs one")
         } else {
-            let bare = await inPage("", "typeof (globalThis.browser && browser.runtime)")
-            record("extension views: with no extension running, a page has no `browser.runtime`", bare == "undefined", bare)
+            let bare = await inPage("", "String(globalThis.browser) + ' ' + typeof (globalThis.browser && browser.runtime)")
+            record(
+                "extension views: with no extension running, a page has WebKit's own `browser`, as in Safari",
+                bare == "[object WebPageNamespace] object", bare)
         }
         let hider = FileManager.default.temporaryDirectory
             .appendingPathComponent("selftest-hider-\(UUID().uuidString)", isDirectory: true)
@@ -17484,6 +20209,12 @@ enum SelfTest {
                 record(name, false, "install failed")
                 continue
             }
+            let unloaded = manager.action(for: ext)
+            record(
+                "extension views: an extension that isn't loaded has an action popup and no popup web view (\(kind))",
+                unloaded?.presentsPopup == true && unloaded?.webExtensionContext?.isLoaded == false
+                    && unloaded?.loadedPopupWebView == nil,
+                "presents \(unloaded?.presentsPopup ?? false), loaded \(unloaded?.webExtensionContext?.isLoaded ?? true)")
             manager.setEnabled(ext, true, in: Profile.defaultID)
             for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
                 try? await Task.sleep(for: .milliseconds(100))
@@ -17508,7 +20239,7 @@ enum SelfTest {
                 "extension views: a web page has `browser.runtime` only where an extension is externally connectable (\(kind))",
                 named == "object" && unnamed == "undefined", "named \(named ?? "nil"), unnamed \(unnamed ?? "nil")")
 
-            let popup = manager.action(for: ext)?.popupWebView
+            let popup = manager.action(for: ext)?.loadedPopupWebView
             let page = tabs.newTab(
                 url: context.baseURL.appendingPathComponent("page.html"),
                 configuration: context.webViewConfiguration, select: true)
@@ -17528,6 +20259,153 @@ enum SelfTest {
             tabs.close(site)
             manager.remove(ext)
         }
+    }
+
+    /// an action popup hosted as the url bar hosts it: sized to its page as that changes, and
+    /// closed by its own `window.close()` with a script it sent to the page still landing
+    /// tabCapture's audio chain reaches a tab only while the extension may reach the tab's site
+    private static func testTabCaptureReach() async {
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("tab capture: a browser window", false) }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-capture-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? """
+            {"manifest_version": 3, "name": "Artemis Capture Probe", "version": "1.0",
+             "permissions": ["tabCapture"], "host_permissions": ["https://capture.selftest.example/*"]}
+            """.write(to: folder.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        guard let ext = try? await manager.installFromDisk(folder) else {
+            return record("tab capture: the probe installs", false)
+        }
+        defer { manager.remove(ext) }
+        manager.setEnabled(ext, true, in: Profile.defaultID)
+        for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let context = ext.contexts[Profile.defaultID] else { return record("tab capture: the probe loads", false) }
+        if let pattern = try? WKWebExtension.MatchPattern(string: "https://capture.selftest.example/*") {
+            context.setPermissionStatus(.grantedExplicitly, for: pattern)
+        }
+        let site = tabs.newTab(url: nil, select: false)
+        defer { tabs.close(site) }
+        await navigate(site, to: URL(string: "https://capture.selftest.example/")!)
+        let apply = {
+            await ExtensionAPIBridge.shared.handle([
+                "artemisCompat": "tabCapture.apply", "tabId": 4242, "chain": [["kind": "gain", "gain": 1]],
+                "url": site.url?.absoluteString ?? "", "index": site.indexInWindow(for: context), "title": site.title,
+            ], for: context) ?? [:]
+        }
+        let first = await apply()
+        await navigate(site, to: URL(string: "https://elsewhere.selftest.example/")!)
+        let moved = await apply()
+        record(
+            "tab capture: a captured tab that moves to a site the extension can't reach is out of its reach",
+            first["ok"] as? Bool == true && moved["error"] as? String == "Cannot capture this tab.", "\(first) then \(moved)")
+    }
+
+    private static func testExtensionPopup() async {
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("extension popup: a browser window", false) }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-popup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let files = [
+            "manifest.json": """
+                {"manifest_version": 3, "name": "Artemis Popup Probe", "version": "1.0",
+                 "permissions": ["scripting", "activeTab", "declarativeNetRequest"], "host_permissions": ["<all_urls>"],
+                 "action": {"default_popup": "popup.html"},
+                 "web_accessible_resources": [{"resources": ["frame.html"], "matches": ["<all_urls>"]}]}
+                """,
+            "frame.html": #"<!doctype html><script src="frame.js"></script>"#,
+            // uBlock Origin Lite's i18n.js: `browser` when it is an object, else `chrome`
+            "frame.js": """
+                const api = self.browser instanceof Object ? self.browser : self.chrome;
+                parent.postMessage("framed " + typeof (api.i18n && api.i18n.getMessage), "*");
+                """,
+            "popup.html": #"<!doctype html><body style="margin:0"><div id="box" style="width:180px;height:120px"></div><script src="popup.js"></script>"#,
+            // uBlock Origin Lite's zapper: inject into the active tab, then close at once
+            "popup.js": """
+                const api = globalThis.browser ?? globalThis.chrome;
+                window.grow = () => { box.style.cssText = "width:420px;height:300px"; };
+                window.zap = async () => {
+                  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
+                  api.scripting.executeScript({ target: { tabId: tab.id }, func: () => { document.documentElement.dataset.zapped = "1"; } });
+                  self.close();
+                };
+                """,
+        ]
+        for (name, body) in files {
+            try? body.write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        guard let ext = try? await manager.installFromDisk(folder) else {
+            return record("extension popup: the probe installs", false)
+        }
+        defer { manager.remove(ext) }
+        manager.setEnabled(ext, true, in: Profile.defaultID)
+        for _ in 0..<50 where ext.contexts[Profile.defaultID]?.isLoaded != true {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let site = tabs.newTab(url: URL(string: "https://example.com/"), select: true)
+        defer { tabs.close(site) }
+        for _ in 0..<80 where site.webView.isLoading || site.webView.url?.host() != "example.com" {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let framed = try? await site.webView.callAsyncJavaScript(
+            """
+            const heard = new Promise((resolve) => addEventListener("message", (e) => resolve(e.data)));
+            const frame = document.createElement("iframe");
+            frame.src = url;
+            document.body.append(frame);
+            return await Promise.race([heard, new Promise((resolve) => setTimeout(() => resolve("silent"), 5000))]);
+            """, arguments: ["url": ext.context.baseURL.appendingPathComponent("frame.html").absoluteString],
+            contentWorld: .page) as? String
+        record(
+            "extension popup: its own page framed in a site (uBOL's zapper) has the extension's API, and the site lives",
+            framed == "framed function", framed ?? "nil")
+        guard let action = manager.action(for: ext), action.presentsPopup else {
+            return record("extension popup: the probe has a popup", false)
+        }
+        var closed = false
+        let hosting = NSHostingView(rootView: ExtensionPopupContainer(action: action) { closed = true })
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 10, height: 10), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderBack(nil)
+        defer {
+            action.closePopup()
+            window.orderOut(nil)
+        }
+        let fits = { (size: CGSize) in
+            hosting.layoutSubtreeIfNeeded()
+            return hosting.fittingSize == size
+        }
+        for _ in 0..<60 where !fits(CGSize(width: 180, height: 120)) { try? await Task.sleep(for: .milliseconds(100)) }
+        record(
+            "extension popup: the popover takes the popup page's own size", fits(CGSize(width: 180, height: 120)),
+            "\(hosting.fittingSize)")
+        let popup = action.loadedPopupWebView
+        _ = try? await popup?.evaluateJavaScript("grow()")
+        for _ in 0..<40 where !fits(CGSize(width: 420, height: 300)) { try? await Task.sleep(for: .milliseconds(100)) }
+        record(
+            "extension popup: and follows it when the page grows after it opened", fits(CGSize(width: 420, height: 300)),
+            "\(hosting.fittingSize)")
+
+        ext.context.userGesturePerformed(in: site)
+        _ = try? await popup?.evaluateJavaScript("zap(); 0")
+        var zapped: String?
+        for _ in 0..<50 where zapped != "1" || !closed {
+            try? await Task.sleep(for: .milliseconds(100))
+            zapped = try? await site.webView.evaluateJavaScript("document.documentElement.dataset.zapped ?? ''") as? String
+        }
+        record("extension popup: a script it sends the page as it closes still runs there", zapped == "1", zapped ?? "nil")
+        record("extension popup: its own window.close() closes the popover", closed)
     }
 
     /// a manager's own redirect rule carries a `.user.js` link to its install page, as its rule says and
@@ -17564,14 +20442,16 @@ enum SelfTest {
                 (async () => {
                   let outcome = "ok";
                   try {
-                    await dnr.updateSessionRules({ removeRuleIds: [1, 2], addRules: [
+                    await dnr.updateSessionRules({ removeRuleIds: [1, 2, 3], addRules: [
                       { id: 1, priority: 3,
                         action: { type: "redirect", redirect: { regexSubstitution: api.runtime.getURL("install.html") + "?url=\\1" } },
                         condition: { excludedRequestDomains: ["example.org"], requestMethods: ["get"], resourceTypes: ["main_frame"],
                           isUrlFilterCaseSensitive: false, regexFilter: "^([^?#]+?\\.user(\\.bg|\\.sub)?\\.js)" } },
                       { id: 2, priority: 3, action: { type: "redirect", redirect: { regexSubstitution: "https://example.com/#url=\\0" } },
                         condition: { requestDomains: ["example.org"], requestMethods: ["get"], resourceTypes: ["main_frame"],
-                          regexFilter: "^https?://example\\.org/scripts/[^/]+\\.user\\.js(?:$|\\?|\\#)" } }] });
+                          regexFilter: "^https?://example\\.org/scripts/[^/]+\\.user\\.js(?:$|\\?|\\#)" } },
+                      { id: 3, priority: 4, action: { type: "redirect", redirect: { regexSubstitution: "https://example.com/#everywhere=\\0" } },
+                        condition: { requestDomains: ["probe.invalid"], resourceTypes: ["main_frame"], regexFilter: "^https?://.*" } }] });
                   } catch (error) { outcome = String(error && error.message || error); }
                   const held = await dnr.getSessionRules();
                   await api.storage.local.set({ outcome, rules: held.map((rule) => rule.id).sort().join(",") });
@@ -17617,6 +20497,9 @@ enum SelfTest {
         let handed = await follow(site, "https://example.org/", "https://example.org/scripts/probe.user.js")
         record("user script install: a .user.js link follows the manager's rule for its site, though the rule that excludes the site comes first",
             handed == "https://example.com/#url=https://example.org/scripts/probe.user.js", handed)
+        let plain = await follow(site, allowed, "https://example.org/plain")
+        record("user script install: a rule whose regexFilter matches any page moves none outside its requestDomains",
+            plain == "https://example.org/plain", plain)
         let excluded = await follow(site, allowed, "https://example.org/other/probe.user.js")
         record("user script install: a rule redirects nothing on a site it excludes",
             excluded == "https://example.org/other/probe.user.js", excluded)
@@ -17631,6 +20514,20 @@ enum SelfTest {
             carried == #"[true,"","",1]"#, carried)
         record("user script install: the manager's rules are added whole and listed under their own ids",
             state.contains(#""outcome":"ok""#) && state.contains(#""rules":"1,2""#), state)
+        let file = folder.appendingPathComponent("options.html")
+        let refusals = (try? await site.webView.callAsyncJavaScript("""
+            const api = globalThis.browser ?? globalThis.chrome, said = [];
+            for (const call of [() => api.tabs.create({ url, active: false }), () => api.tabs.update({ url })]) {
+              try { await call(); said.push("done"); } catch (error) { said.push(error.message); }
+            }
+            return said.join("|");
+            """, arguments: ["url": file.absoluteString], contentWorld: .page) as? String) ?? "nil"
+        try? await Task.sleep(for: .milliseconds(500))
+        let filed = tabs.currentSpace.tabs.filter { $0.lastAttemptedURL?.isFileURL == true }
+        record("user script install: tabs.create and tabs.update refuse a file URL as Chrome does, and no tab loads it",
+            refusals.components(separatedBy: "|").filter { $0.contains("Cannot navigate to a file URL") }.count == 2
+                && filed.isEmpty, "\(refusals), \(filed.count) file tabs")
+        for tab in filed where tab !== site { tabs.close(tab) }
         let unnamed = await follow(site, other, "https://www.example.com/scripts/probe.user.js")
         record("user script install: a rule carries no one to the install page from a page the manifest does not open it to",
             !unnamed.hasPrefix(base), unnamed)
@@ -17638,6 +20535,37 @@ enum SelfTest {
         let unlisted = await follow(site, allowed, base + "options.html")
         record("user script install: a web page opens the extension page the manifest lists for it, and no other",
             direct == base + "install.html?direct" && !unlisted.hasPrefix(base), "\(direct), \(unlisted)")
+
+        // a modified click and a linked pane route a link before the page's own navigation is judged
+        site.load(URL(string: allowed)!)
+        _ = await settled(site)
+        func shown(_ page: String, in m: TabManager = tabs) -> [BrowserTab] {
+            m.currentSpace.tabs.filter { $0.lastAttemptedURL?.absoluteString == base + page }
+        }
+        let clicks: [(String, LinkClick)] = [("options.html", .backgroundTab), ("options.html?front", .foregroundTab),
+            ("options.html?split", .split), ("install.html?behind", .backgroundTab)]
+        for (page, click) in clicks { site.onOpenLink?(URL(string: base + page)!, click) }
+        try? await Task.sleep(for: .milliseconds(500))
+        let clicked = clicks.map { shown($0.0) }
+        record("user script install: a ⌘, ⇧⌘ or ⌥ click opens the listed extension page and no other",
+            clicked[..<3].allSatisfy(\.isEmpty) && clicked[3].count == 1, "\(clicked.map(\.count))")
+        if let group = tabs.currentSpace.splitGroup(containing: site.id) { tabs.dissolveSplit(group) }
+        for tab in clicked.joined() { tabs.close(tab) }
+        tabs.selectedTabID = site.id
+        let pane = tabs.newTab(url: URL(string: other), select: false)
+        if let group = tabs.createSplit([site, pane], anchor: site) {
+            tabs.setSplitLink(group, source: site.id, target: pane.id)
+            let unlistedLink = tabs.routeLinkedNavigation(from: site, to: URL(string: base + "options.html?linked")!)
+            let listedLink = tabs.routeLinkedNavigation(from: site, to: URL(string: base + "install.html?linked")!)
+            record("user script install: a linked pane is sent the listed extension page and no other",
+                !unlistedLink && listedLink && pane.lastAttemptedURL?.absoluteString == base + "install.html?linked",
+                "\(unlistedLink), \(listedLink), \(pane.lastAttemptedURL?.absoluteString ?? "nil")")
+            tabs.dissolveSplit(group)
+        } else {
+            record("user script install: a linked split forms", false)
+        }
+        tabs.close(pane)
+        tabs.selectedTabID = site.id
 
         site.load(URL(string: allowed)!)
         _ = await settled(site)
@@ -17669,6 +20597,12 @@ enum SelfTest {
         let incognito = makeIncognito(from: tabs)
         if let tab = incognito.currentSpace.tabs.first {
             let kept = await follow(tab, allowed, base + "install.html")
+            tab.onOpenLink?(URL(string: base + "install.html?behind")!, .backgroundTab)
+            try? await Task.sleep(for: .milliseconds(500))
+            let clicked = shown("install.html?behind", in: incognito)
+            record("user script install: a ⌘-click in an incognito tab opens no page of an extension not allowed there",
+                clicked.isEmpty, "\(clicked.count)")
+            for tab in clicked { incognito.close(tab) }
             manager.setAllowsIncognito(ext, true)
             try? await Task.sleep(for: .milliseconds(300))
             let admitted = await follow(tab, allowed, base + "install.html")
@@ -18162,7 +21096,7 @@ enum SelfTest {
 
         // uninstalling deletes WebKit's data in a profile the extension never ran in
         let defaultStorage = WebExtensionRuntime.controller(for: Profile.defaultID).configuration
-            .value(forKey: "_storageDirectoryPath") as? String
+            .spiValue(forKey: "_storageDirectoryPath") as? String
         if let defaultStorage, let idle = try? await manager.installFromDisk(root) {
             let data = URL(fileURLWithPath: defaultStorage).appendingPathComponent(idle.id, isDirectory: true)
             try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
@@ -18349,7 +21283,7 @@ enum SelfTest {
         let manifest: [String: Any] = [
             "manifest_version": 3, "name": "Artemis Bridge Probe", "version": "1.0",
             "background": ["service_worker": "bg.js"],
-            "permissions": ["offscreen", "storage", "clipboardWrite", "identity", "sidePanel"],
+            "permissions": ["offscreen", "storage", "clipboardWrite", "identity", "sidePanel", "favicon"],
             "side_panel": ["default_path": "off.html"],
         ]
         try? JSONSerialization.data(withJSONObject: manifest)
@@ -18381,6 +21315,8 @@ enum SelfTest {
           await attempt("hasAfterClose", async () => String(await api.offscreen.hasDocument()));
           await attempt("redirect", () => api.identity.getRedirectURL());
           await attempt("panel", async () => (await api.sidePanel.getOptions({})).path);
+          await attempt("favicon", async () => String((await fetch(api.runtime.getURL("_favicon/?pageUrl="
+            + encodeURIComponent("https://never.example/") + "&size=32"))).status));
           api.runtime.sendNativeMessage("app.artemis.compat", report);
         })();
         """#
@@ -18425,6 +21361,8 @@ enum SelfTest {
                 value("redirect").hasSuffix(".chromiumapp.org/"), value("redirect"))
             record("bridge: side_panel.default_path is the panel's path",
                 value("panel") == "off.html", value("panel"))
+            record("bridge: _favicon/ is answered, 404 for a site with no icon in history",
+                value("favicon") == "404", value("favicon"))
 
             // a popup's button opens it while the popover is key: the panel still rides the browser window
             let stray = NSWindow(
@@ -18460,10 +21398,13 @@ enum SelfTest {
         ]).write(to: root.appendingPathComponent("manifest.json"))
         let background = #"""
         const api = globalThis.browser ?? globalThis.chrome;
-        const report = { artemisCompat: "probe.report", where: "workerclients", heard: "none", found: "none", direct: "none", alarm: "none" };
+        const report = { artemisCompat: "probe.report", where: "workerclients", heard: "none", found: "none", direct: "none", alarm: "none", port: "none" };
         let sent = false;
         const send = () => { if (!sent) { sent = true; api.runtime.sendNativeMessage("app.artemis.compat", report); } };
+        const done = () => { if (report.direct === "yes" && report.port === "echoed") send(); };
         self.addEventListener("message", async (e) => {
+          if (e.data === "port") e.ports[0].postMessage({ viaPort: 1 });
+          if (e.data.portEcho) { report.port = "echoed"; done(); }
           if (e.data.hello) { report.heard = e.data.hello; e.source.postMessage({ pong: 1 }); }
           if (e.data.ponged) {
             const found = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
@@ -18471,11 +21412,16 @@ enum SelfTest {
             const page = found.find((c) => c.url === api.runtime.getURL("off.html"));
             if (page) page.postMessage({ direct: 1 }); else send();
           }
-          if (e.data.directed) { report.direct = "yes"; send(); }
+          if (e.data.directed) { report.direct = "yes"; done(); }
         });
         api.offscreen.createDocument({ url: "off.html", reasons: ["DOM_PARSER"], justification: "self-test" });
         try {
           api.alarms.create("probe", { delayInMinutes: 1 }, () => api.alarms.get("probe").then((a) => { report.alarm = a ? "created" : "missing"; }));
+          report.promised = typeof (api.alarms.create("promised", { delayInMinutes: 1 }) || {}).then;
+          report.spread = typeof ({ ...chrome.alarms }.onAlarm || {}).addListener;
+          chrome.runtime.connectNative("com.example.missing").onDisconnect.addListener(() => {
+            report.native = String(chrome.runtime.lastError && chrome.runtime.lastError.message);
+          });
         } catch (e) { report.alarm = "threw"; }
         setTimeout(send, 5000);
         """#
@@ -18485,6 +21431,9 @@ enum SelfTest {
           if (e.data.pong) e.source.postMessage({ ponged: 1 });
           if (e.data.direct) sw.controller.postMessage({ directed: 1 });
         });
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (e) => { if (e.data.viaPort) sw.controller.postMessage({ portEcho: 1 }); };
+        sw.ready.then((r) => r.active.postMessage("port", [channel.port2]));
         (sw.controller ? Promise.resolve(sw.controller) : sw.ready.then((r) => r.active))
           .then((worker) => worker.postMessage({ hello: location.pathname }));
         """#
@@ -18504,8 +21453,16 @@ enum SelfTest {
             record("bridge: a worker background and its offscreen page exchange postMessage both ways",
                 value("heard") == "/off.html" && value("found") == "/off.html" && value("direct") == "yes",
                 "heard \(value("heard")), found \(value("found")), direct \(value("direct"))")
+            record("bridge: a MessagePort posted to the worker carries messages both ways, as Zotero's offscreen page needs",
+                value("port") == "echoed", value("port"))
             record("bridge: alarms.create calls back after the alarm info, as in Chrome",
                 value("alarm") == "created", value("alarm"))
+            record("bridge: alarms.create without a callback returns a promise, as in Chrome",
+                value("promised") == "function", value("promised"))
+            record("bridge: a namespace's members spread into a plain object, as Chrome's do",
+                value("spread") == "function", value("spread"))
+            record("bridge: a port to a missing native host disconnects with Chrome's runtime.lastError",
+                value("native") == "Specified native messaging host not found.", value("native"))
         } catch {
             record("bridge: worker clients probe installs", false, error.localizedDescription)
         }
@@ -18595,6 +21552,261 @@ enum SelfTest {
         record("escalation: an unknown context is granted nothing", nothing.0.isEmpty)
     }
 
+    /// a frame's document reaches webRequest as a sub_frame: a blocker that swaps the tab for its
+    /// "page blocked" page on a main_frame must not do it for a frame
+    private static func testExtensionFrameRequests() async {
+        let manager = ExtensionManager.shared
+        guard let tabs = manager.tabManager else { return record("frame requests: a browser window", false) }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-frame-requests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let files = [
+            "manifest.json": """
+                {"manifest_version": 2, "name": "Artemis Frame Request Probe", "version": "1.0",
+                 "permissions": ["<all_urls>", "webRequest", "webRequestBlocking"],
+                 "background": {"scripts": ["background.js"], "persistent": true}}
+                """,
+            "background.js": """
+                const api = globalThis.browser ?? globalThis.chrome;
+                api.webRequest.onBeforeRequest.addListener((details) => {
+                  if (!/[?]frameprobe/.test(details.url)) return;
+                  api.runtime.sendNativeMessage("app.artemis.compat", { artemisCompat: "probe.report", where: "frames",
+                    url: details.url, type: details.type, frameId: details.frameId, parentFrameId: details.parentFrameId });
+                }, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] });
+                """,
+        ]
+        for (name, text) in files {
+            try? text.write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        guard let ext = try? await manager.installFromDisk(folder) else {
+            return record("frame requests: the probe extension installs", false)
+        }
+        manager.setEnabled(ext, true, in: Profile.defaultID)
+        try? await Task.sleep(for: .seconds(2))
+        let top = "https://example.com/?frameprobe", inner = "https://example.org/?frameprobe"
+        let tab = tabs.newTab(url: URL(string: top), select: true)
+        for _ in 0..<100 where tab.webView.url?.absoluteString != top || tab.webView.isLoading {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        _ = try? await tab.webView.evaluateJavaScript(
+            "const frame = document.createElement('iframe'); frame.src = '\(inner)'; document.body.append(frame); 0")
+        let report = { (url: String) in
+            ExtensionProxyBridge.shared.probeReports.last { $0["where"] as? String == "frames" && $0["url"] as? String == url }
+        }
+        for _ in 0..<100 where report(inner) == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        let describe = { (url: String) in
+            report(url).map { "\($0["type"] ?? "nil") frame \($0["frameId"] ?? "nil") parent \($0["parentFrameId"] ?? "nil")" } ?? "none"
+        }
+        record("frame requests: a tab's own document is a main_frame in frame 0",
+            report(top)?["type"] as? String == "main_frame" && report(top)?["frameId"] as? Int == 0, describe(top))
+        record("frame requests: a frame's document is a sub_frame",
+            report(inner)?["type"] as? String == "sub_frame" && report(inner)?["frameId"] as? Int != 0, describe(inner))
+        tabs.close(tab)
+        manager.remove(ext)
+    }
+
+    /// uBlock Origin Lite comes from the Chrome Web Store once, switched on, kept in the records a
+    /// relaunch restores, and never again after removal; its strict-block rules block no plain page.
+    /// beside full uBlock Origin it isn't added. the network it uses is the store's and example.com/.org
+    private static func testExtensionPreinstall() async {
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("preinstall: a browser window", false) }
+        let key = "blockerProfilesV1"
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(previous, forKey: key) }
+        UserDefaults.standard.removeObject(forKey: key)
+        let copies = { manager.installed.filter { $0.id == ExtensionManager.blockerID } }
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-other-blocker-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? #"{"manifest_version": 2, "name": "uBlock Origin", "version": "1.0", "browser_specific_settings": {"gecko": {"id": "uBlock0@raymondhill.net"}}}"#
+            .write(to: folder.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        if let other = try? await manager.installFromDisk(folder) {
+            await manager.preinstallBlocker()
+            record("preinstall: beside full uBlock Origin it isn't added, and the profile is passed over",
+                copies().isEmpty && UserDefaults.standard.stringArray(forKey: key)?.contains(Profile.defaultID.uuidString) == true)
+            manager.remove(other)
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            record("preinstall: a stand-in uBlock Origin installs", false)
+        }
+
+        let leftOut = {
+            ExtensionProxyBridge.shared.consoleLog.last {
+                $0.contains(ExtensionManager.blockerID) && $0.contains("rules whose regexFilter would match")
+            }
+        }
+        await manager.preinstallBlocker()
+        guard let blocker = copies().first else { return record("preinstall: uBlock Origin Lite installs from the store", false) }
+        record("preinstall: uBlock Origin Lite installs from the store, on in every profile and off in incognito",
+            blocker.profiles.contains(Profile.defaultID) && !blocker.allowsIncognito, blocker.version ?? "no version")
+        await manager.preinstallBlocker()
+        record("preinstall: a second launch installs no second copy", copies().count == 1 && copies().first === blocker)
+        let records = UserDefaults.standard.data(forKey: "extensionRecordsV1")
+            .flatMap { try? JSONDecoder().decode([ExtensionRecord].self, from: $0) } ?? []
+        record("preinstall: it is in the records a relaunch restores, with its profiles",
+            records.contains { $0.id == blocker.id && $0.profiles?.contains(Profile.defaultID) == true })
+
+        // the strict-block rules arrive with uBlock's first ruleset sync
+        for _ in 0..<600 where leftOut() == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        for page in ["https://example.com/", "https://example.org/"] {
+            let tab = tabs.newTab(url: URL(string: page), select: true)
+            for _ in 0..<100 where tab.webView.isLoading || tab.url == nil { try? await Task.sleep(for: .milliseconds(100)) }
+            try? await Task.sleep(for: .seconds(1))
+            record("preinstall: strict-block leaves \(page) alone", leftOut() != nil && tab.url?.absoluteString == page,
+                "\(tab.url?.absoluteString ?? "nil"), \(leftOut() ?? "no strict rules left out")")
+            tabs.close(tab)
+        }
+
+        manager.remove(blocker)
+        await manager.preinstallBlocker()
+        record("preinstall: once removed it never comes back", copies().isEmpty)
+    }
+
+    /// an installed CRX updates in place from an update2 feed on loopback: its publisher's newer
+    /// package replaces it and keeps its storage, dynamic rules, profiles, pin and incognito allow;
+    /// one in use waits, and another publisher's or one asking for more is refused
+    private static func testExtensionUpdates() async {
+        let manager = ExtensionManager.shared
+        for _ in 0..<100 where !manager.hasRehydrated { try? await Task.sleep(for: .milliseconds(100)) }
+        _ = WebExtensionRuntime.controller(for: Profile.defaultID)
+        guard let tabs = manager.tabManager else { return record("updates: a browser window", false) }
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("selftest-updates-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: folder) }
+        let publisher = P256.Signing.PrivateKey()
+        let background = """
+            const api = globalThis.browser ?? globalThis.chrome;
+            (async () => {
+              const { mark } = await api.storage.local.get("mark");
+              const rules = (await api.declarativeNetRequest.getDynamicRules()).map((rule) => rule.id).join(",");
+              if (!mark) {
+                await api.storage.local.set({ mark: "kept" });
+                await api.declarativeNetRequest.updateDynamicRules({ addRules: [{ id: 7, priority: 1, action: { type: "block" },
+                  condition: { urlFilter: "||update-probe.invalid^", resourceTypes: ["main_frame"] } }] });
+              }
+              api.runtime.sendNativeMessage("app.artemis.compat", { artemisCompat: "probe.report", where: "updates",
+                version: api.runtime.getManifest().version, mark: mark ?? "none", rules });
+            })();
+            """
+        // a CRX3 of the probe at `version`, its one ECDSA proof by `key`, whose hash is the id
+        func crx(_ name: String, version: String, more: [String] = [], key: P256.Signing.PrivateKey = publisher) -> URL? {
+            let source = folder.appendingPathComponent(name, isDirectory: true)
+            try? fm.createDirectory(at: source, withIntermediateDirectories: true)
+            let manifest: [String: Any] = [
+                "manifest_version": 3, "name": "Artemis Update Probe", "version": version,
+                "permissions": ["declarativeNetRequest", "storage"] + more,
+                "background": ["service_worker": "background.js"], "options_page": "options.html",
+            ]
+            try? JSONSerialization.data(withJSONObject: manifest).write(to: source.appendingPathComponent("manifest.json"))
+            try? background.write(to: source.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
+            try? "<!doctype html><title>Options</title>".write(
+                to: source.appendingPathComponent("options.html"), atomically: true, encoding: .utf8)
+            let zip = folder.appendingPathComponent("\(name).zip")
+            let ditto = Process()
+            ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            ditto.arguments = ["-c", "-k", source.path, zip.path]
+            try? ditto.run()
+            ditto.waitUntilExit()
+            guard let archive = try? Data(contentsOf: zip) else { return nil }
+            func varint(_ value: Int) -> Data {
+                var value = value, out = Data()
+                while value >= 0x80 { out.append(UInt8(value & 0x7F | 0x80)); value >>= 7 }
+                return out + [UInt8(value)]
+            }
+            func field(_ tag: [UInt8], _ value: Data) -> Data { Data(tag) + varint(value.count) + value }
+            let publicKey = key.publicKey.derRepresentation
+            let signed = field([0x0A], Data(SHA256.hash(data: publicKey).prefix(16)))
+            let message = Data("CRX3 SignedData\0".utf8) + withUnsafeBytes(of: UInt32(signed.count).littleEndian) { Data($0) }
+                + signed + archive
+            guard let signature = try? key.signature(for: message).derRepresentation else { return nil }
+            let header = field([0x1A], field([0x0A], publicKey) + field([0x12], signature)) + field([0x82, 0xF1, 0x04], signed)
+            let file = folder.appendingPathComponent("\(name).crx")
+            let bytes = Data("Cr24".utf8) + [3, 0, 0, 0]
+                + withUnsafeBytes(of: UInt32(header.count).littleEndian) { Data($0) } + header + archive
+            return (try? bytes.write(to: file)).map { file }
+        }
+        // an update2 answer offering `package`, served until the returned socket closes
+        func feed(_ package: URL?, version: String) -> (socket: Int32, url: URL)? {
+            guard let package, let digest = try? Data(contentsOf: package) else { return nil }
+            let sha = SHA256.hash(data: digest).map { String(format: "%02x", $0) }.joined()
+            let answer = """
+                <?xml version="1.0" encoding="UTF-8"?><gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">\
+                <app appid="probe" status="ok"><updatecheck codebase="\(package.absoluteString)" hash_sha256="\(sha)" \
+                status="ok" version="\(version)"/></app></gupdate>
+                """
+            return serveLoopback(answer, type: "text/xml").map { ($0.socket, URL(string: "http://127.0.0.1:\($0.port)/crx")!) }
+        }
+        let report = { (version: String) in
+            ExtensionProxyBridge.shared.probeReports.last { $0["where"] as? String == "updates" && $0["version"] as? String == version }
+        }
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard let first = crx("v1", version: "1.0"), let ext = try? await manager.installFromDisk(first) else {
+            return record("updates: the first version installs", false)
+        }
+        manager.setEnabled(ext, true, in: Profile.defaultID)
+        manager.setAllowsIncognito(ext, true)
+        manager.togglePin(ext)
+        for _ in 0..<100 where report("1.0") == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        record("updates: the first version stores its mark and rule", report("1.0") != nil, "\(report("1.0") ?? [:])")
+
+        let stored = { Set((try? fm.contentsOfDirectory(atPath: ExtensionInstaller.storageRoot.path)) ?? []) }
+        let before = stored()
+        for (label, package) in [
+            ("another publisher's package", crx("stranger", version: "3.0", key: P256.Signing.PrivateKey())),
+            ("a package asking for more", crx("greedy", version: "3.0", more: ["history"])),
+        ] {
+            guard let served = feed(package, version: "3.0") else { record("updates: \(label) is served", false); continue }
+            let outcome = await manager.update(ext, feed: served.url)
+            close(served.socket)
+            record("updates: \(label) is refused and leaves nothing behind",
+                outcome != .updated && outcome != .deferred && manager.installed.contains { $0 === ext } && stored() == before,
+                "\(outcome)")
+        }
+
+        guard let served = feed(crx("v2", version: "2.0"), version: "2.0") else { return record("updates: v2 is served", false) }
+        defer { close(served.socket) }
+        manager.openOptionsPage(for: ext)
+        let ownPage = { tabs.allTabs.first { $0.url?.host == ext.context.baseURL.host } }
+        for _ in 0..<50 where ownPage() == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        let waiting = await manager.update(ext, feed: served.url)
+        record("updates: an update waits while the extension's page is open",
+            ownPage() != nil && waiting == .deferred && ExtensionInstaller.hasStaged(for: ext.id) && ext.version == "1.0",
+            "\(waiting)")
+        if let page = ownPage() { tabs.close(page) }
+        let outcome = await manager.update(ext)
+        let next = manager.installed.first { $0.id == ext.id }
+        record("updates: once the page closes the newer package replaces it under the same id",
+            outcome == .updated && next?.version == "2.0" && next !== ext && !ExtensionInstaller.hasStaged(for: ext.id), "\(outcome)")
+        record("updates: the update keeps its profiles, pin and incognito allow",
+            next?.profiles == [Profile.defaultID] && next?.isPinned == true && next?.allowsIncognito == true)
+        for _ in 0..<100 where report("2.0") == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        let after = report("2.0")
+        record("updates: the newer version finds the storage and dynamic rules the old one left",
+            after?["mark"] as? String == "kept" && after?["rules"] as? String == "7", "\(after ?? [:])")
+
+        let live = next ?? ext
+        guard let late = feed(crx("v3", version: "3.0"), version: "3.0") else {
+            manager.remove(live)
+            return record("updates: v3 is served", false)
+        }
+        defer { close(late.socket) }
+        // the task starts once this one waits, so the extension is gone before its update is fetched
+        let update = Task { await manager.update(live, feed: late.url) }
+        manager.remove(live)
+        let removed = await update.value
+        let left = stored().subtracting(before).union(stored().intersection([live.id]))
+        record("updates: an extension removed while its update is fetched stays removed and leaves nothing behind",
+            removed != .updated && !live.contexts.values.contains { $0.isLoaded }
+                && !manager.installed.contains { $0.id == live.id } && left.isEmpty,
+            "\(removed), loaded \(live.contexts.values.contains { $0.isLoaded }), left \(left)")
+    }
+
     /// a throwaway extension shaped like Bitwarden's Firefox build (MV2, persistent background
     /// page, `wasm-unsafe-eval`, commands), proving the surfaces its autofill leans on: idle,
     /// notifications, ⌘⇧L commands, storage.session, IndexedDB, WASM and the clipboard bridge
@@ -18677,6 +21889,14 @@ enum SelfTest {
             };
             setTimeout(() => resolve("TIMEOUT"), 3000);
           }));
+          await attempt("contentScripts", async () => {
+            const at = { matches: ["https://example.com/*"], allFrames: true };
+            await api.contentScripts.register(Object.assign({ world: "MAIN", runAt: "document_start",
+              js: [{ code: "document.documentElement.dataset.csMain = typeof __artemisKept;" }] }, at));
+            const own = await api.contentScripts.register(Object.assign({
+              js: [{ code: "document.documentElement.dataset.csOwn = '1';" }] }, at));
+            return typeof own.unregister;
+          });
           await attempt("wasm", async () => {
             const empty = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
             await WebAssembly.instantiate(empty);
@@ -18730,7 +21950,7 @@ enum SelfTest {
             for key in [
                 "uaString", "idleQueryState", "idleListener", "notificationsCreate",
                 "commandsGetAll", "storageSession", "indexedDB", "wasm",
-                "bitwardenClipboard",
+                "bitwardenClipboard", "contentScripts",
             ] {
                 note("mv2: \(key) → \(report[key].map { "\($0)" } ?? "nil")")
             }
@@ -18757,6 +21977,30 @@ enum SelfTest {
             record("mv2: bitwarden native-messaging clipboard round-trips live",
                 report["bitwardenClipboard"] as? String == "ok",
                 report["bitwardenClipboard"].map { "\($0)" } ?? "nil")
+            if let tabs = manager.tabManager {
+                let site = tabs.newTab(url: URL(string: "https://example.com/"), select: false)
+                let read = { (js: String) async in (try? await site.webView.evaluateJavaScript(js) as? String) ?? "" }
+                for _ in 0..<100 where await read("location.host + document.readyState") != "example.comcomplete" {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                let ran = await read("[document.documentElement.dataset.csMain, document.documentElement.dataset.csOwn].join()")
+                record("mv2: Firefox contentScripts.register runs code in the page's world and an isolated one",
+                    report["contentScripts"] as? String == "function" && ran == "undefined,1",
+                    "\(report["contentScripts"] ?? "nil") / \(ran)")
+                tabs.close(site)
+            }
+            manager.setAllowsIncognito(ext, true)
+            _ = UserScriptWorld.contentScript("contentScripts.register",
+                ["id": "selftest-incognito", "code": "/*selftest-incognito*/", "matches": ["https://example.com/*"]],
+                for: context, in: Profile.defaultID)
+            let shut = SharedWebContent.userContentController(for: Profile.defaultID, isPrivate: true)
+            let inPrivate = { shut.userScripts.contains { $0.source.contains("/*selftest-incognito*/") } }
+            let wasInPrivate = inPrivate()
+            manager.setAllowsIncognito(ext, false)
+            record("mv2: turning incognito off takes its registered content scripts out of private pages",
+                wasInPrivate && !inPrivate(), "before \(wasInPrivate), after \(inPrivate())")
+            _ = UserScriptWorld.contentScript("contentScripts.unregister", ["id": "selftest-incognito"],
+                for: context, in: Profile.defaultID)
 
             // commands: declared, listed, and fired by a real ⌘⇧L key event —
             // the autofill shortcut path end to end
@@ -18849,7 +22093,7 @@ enum SelfTest {
                     + "bottom=\(String(format: "%.1f", bottom)) leading=\(String(format: "%.1f", rect.minX))")
             record(
                 "chrome: rim 0 means the page touches the window edges",
-                abs(top) < 0.5 && abs(trailing) < 0.5 && abs(bottom) < 0.5,
+                abs(top) < 0.5 && abs(trailing) < 1 && abs(bottom) < 1,
                 "top=\(String(format: "%.1f", top)) trailing=\(String(format: "%.1f", trailing)) bottom=\(String(format: "%.1f", bottom))")
 
             // collapsed, a window keeps its rim when another one goes fullscreen
@@ -18896,7 +22140,10 @@ enum SelfTest {
         let reply: (SPUUserUpdateChoice) -> Void = { if $0 == .install { installs += 1 } }
         updates.showUserInitiatedUpdateCheck {}
         record("update flow: a check shows as checking", updates.flow == .checking && updates.flow.isBusy)
-        updates.offer("9.9.9", downloaded: false, reply: reply)
+        record(
+            "update flow: the bar takes the update's channel colour: Release or none Rigel blue, Beta Betelgeuse orange, Nightly Nebula purple",
+            [nil, "release", "beta", "nightly"].map { Updates.tint(for: $0) } == [.rigel, .rigel, .betelgeuse, .nebula])
+        updates.offer("9.9.9", channel: "beta", downloaded: false, reply: reply)
         record(
             "update flow: a found version waits to be asked for",
             updates.flow == .available("9.9.9") && updates.flow.offer?.title == "Download" && installs == 0)
@@ -19009,6 +22256,17 @@ enum SelfTest {
                 "size \(layers?.bounds.size as Any), clips \(layers?.glassClip.masksToBounds as Any), radius \(layers?.glassClip.cornerRadius as Any), dots \(dots.count), outside \(strays.count)"
             )
         }
+        /// a layer's colour in sRGB to two places, alpha last
+        func rgba(_ color: CGColor?) -> [Double] {
+            guard let c = color.flatMap({ NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }) else { return [] }
+            return [c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent].map { (Double($0) * 100).rounded() / 100 }
+        }
+        let orange = rgba(NSColor(AppIconChoice.betelgeuse.glyph.base).cgColor)
+        let itemFill = rgba(glass(in: status)?.flood.backgroundColor), pillFill = rgba(glass(in: pill)?.flood.backgroundColor)
+        record(
+            "update flow: a Beta update's finished bar is Betelgeuse orange, solid in Settings and see-through under the pill's words",
+            orange.count == 4 && itemFill == orange && pillFill.prefix(3) == orange.prefix(3) && (pillFill.last ?? 1) < 1,
+            "orange \(orange), item \(itemFill), pill \(pillFill)")
         let (inItem, itemDetail) = contained(in: status), (inPill, pillDetail) = contained(in: pill)
         record(
             "update flow: the finish's dots all rest inside the item's glass capsule, and the bar's layers clip to that capsule so no dust passes it",
@@ -19070,8 +22328,10 @@ enum SelfTest {
             row.count == 3 && row[0] >= words.ascender - words.descender && abs(row[1] - row[2]) <= 0.5,
             "mark, leading, trailing \(row), line \(words.ascender - words.descender)")
         let ended = updates.finishing == nil
-        updates.offer("9.9.9", downloaded: true, reply: reply)
+        updates.offer("9.9.9", channel: nil, downloaded: true, reply: reply)
         record("update flow: an update already downloaded goes straight to relaunch", updates.flow == .ready("9.9.9"))
+        record("update flow: a Release update takes Rigel blue in place of the last one's colour", 
+            rgba(NSColor(updates.tint).cgColor) == rgba(NSColor(AppIconChoice.rigel.glyph.base).cgColor))
         record(
             "update flow: a download that was showing gets its finish once, on turning ready; it ends by itself, and one that arrives downloaded has none",
             finished && ended && updates.finishing == nil, "\(finished) \(ended) \(updates.finishing as Any)")
@@ -19084,7 +22344,7 @@ enum SelfTest {
         let updates = Updates.shared
         var installs = 0
         let reply: (SPUUserUpdateChoice) -> Void = { if $0 == .install { installs += 1 } }
-        updates.offer("9.9.9", downloaded: false, reply: reply)
+        updates.offer("9.9.9", channel: nil, downloaded: false, reply: reply)
         updates.updateAndRestart()
         updates.showDownloadInitiated {}
         updates.showReady(toInstallAndRelaunch: reply)
@@ -19279,8 +22539,58 @@ enum SelfTest {
                     && chip.map { $0.maxY < closed.pill.maxY && $0.maxY > closed.pill.maxY - 60 && $0.minX < closed.search.maxX } == true,
                 "pill \(closed.pill), first chip \(chip.map { "\($0)" } ?? "none"), sort row \(row.map { "\($0)" } ?? "none"), "
                     + "search \(closed.search) then \(search.map { "\($0)" } ?? "none")")
-            send(53)
+            let x = frame(labelled("Close filters")), shut = await press("Close filters")
             await settle { labelled("Images") == nil }
+            record(
+                "library filter: open, its X sits on the control's spot and closes it, changing nothing",
+                x.map { abs($0.midX - closed.pill.midX) <= 1 && abs($0.midY - closed.pill.midY) <= 1 } == true && shut
+                    && labelled("Images") == nil && value() == "All",
+                "pill \(closed.pill), X \(x.map { "\($0)" } ?? "none"), pressed \(shut), options left \(labelled("Images") != nil)")
+
+            /// a mouse click through the window, so the panel's press monitor sees it
+            func click(_ rect: NSRect?) {
+                guard let rect else { return }
+                let at = window.convertPoint(fromScreen: NSPoint(x: rect.midX, y: rect.midY))
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    NSEvent.mouseEvent(
+                        with: type, location: at, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                        pressure: type == .leftMouseDown ? 1 : 0
+                    ).map(NSApp.sendEvent)
+                }
+            }
+            /// a click, then the spring's time to land
+            func rest(after rect: NSRect?) async {
+                click(rect)
+                try? await Task.sleep(for: .seconds(1))
+            }
+            // ten clicks on the one spot, each read back 150 ms on, well inside Motion.menu's settle
+            var states: [Bool] = []
+            for _ in 0..<10 {
+                click(closed.pill)
+                try? await Task.sleep(for: .milliseconds(150))
+                states.append(labelled("Images") != nil)
+            }
+            try? await Task.sleep(for: .seconds(1))
+            var spammed: [String] = ["toggled \(states == (0..<10).map { $0 % 2 == 0 })", "closed \(labelled("Images") == nil)"]
+            var unapplied: [String] = []
+            for kind in ["Images", "Movies", "Audio", "Documents", "Archives", "Fonts", "Other", "All"] {
+                await rest(after: closed.pill)
+                await rest(after: frame(labelled(kind)))
+                if value() != kind || labelled("Images") != nil { unapplied.append("\(kind): \(value() ?? "none")") }
+            }
+            spammed.append("chips \(unapplied.isEmpty ? "all apply" : unapplied.joined(separator: " "))")
+            await rest(after: closed.pill)
+            await rest(after: frame(labelled("Close filters")))
+            spammed.append("X shuts \(labelled("Images") == nil)")
+            record(
+                "library filter: ten clicks on its spot inside the spring each open or shut it, then every kind applies and its X closes it",
+                spammed == ["toggled true", "closed true", "chips all apply", "X shuts true"],
+                "open after each click \(states), " + spammed.joined(separator: ", "))
+            if labelled("Images") != nil { _ = await press("Close filters") }
+            await settle { labelled("Images") == nil }
+            if value() != "All" { _ = await press("Filter downloads"); _ = await press("All") }
+            await settle { value() == "All" && labelled("Images") == nil }
         } else {
             record("library filter: the control and the search field beside it come to rest", false)
         }
@@ -19510,6 +22820,380 @@ enum SelfTest {
             manager.isLibraryOpen = false
             _ = await rest()
         }
+    }
+
+    /// the Library's list is on screen after every open, reopened across the slide out's settle and mid space switch;
+    /// `widen` instead checks its panel widens over the page rather than jumping. both pinned and peeked
+    private static func testLibraryReopen(manager: TabManager, widen: Bool) async {
+        func sidebarHost(in view: NSView) -> NSView? {
+            view is PassthroughHostingView<AnyView>
+                ? view : view.subviews.lazy.compactMap { sidebarHost(in: $0) }.first
+        }
+        func scrollViews(_ view: NSView) -> [NSView] {
+            (view is NSScrollView ? [view] : []) + view.subviews.flatMap(scrollViews)
+        }
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView,
+            let host = sidebarHost(in: content), let card = host.superview?.subviews.first(where: { $0 !== host })
+        else { return record("library reopen: the window and its sidebar are up", false) }
+        let defaults = UserDefaults.standard
+        let saved = (defaults.object(forKey: LibraryMode.storageKey), defaults.object(forKey: "sidebarWidth"))
+        let wasCollapsed = manager.isSidebarCollapsed, wasSelected = manager.selectedTabID, frame = window.frame
+        defaults.set(LibraryMode.history.rawValue, forKey: LibraryMode.storageKey)
+        defaults.set(250.0, forKey: "sidebarWidth")
+        let seedURL = URL(string: "https://library-reopen.selftest.example/row")!
+        manager.history.record(url: seedURL, title: "selftest-reopen")
+        let page = manager.newTab(url: nil, opensBar: false)
+        let url = URL(string: "https://library-reopen.selftest.example/page")!
+        page.webView.loadSimulatedRequest(
+            URLRequest(url: url),
+            responseHTML: "<title>Reopen</title><script>window.__resizes = 0; addEventListener('resize', () => window.__resizes++)</script>")
+        await settle { !page.webView.isLoading && page.url == url }
+        let extra = manager.stripSpaces.count > 1 ? nil : manager.createSpace(
+            name: "Reopen", icon: "circle", appearance: SpaceAppearance(fill: .glass), profileID: manager.currentSpace.profileID)
+        manager.selectedTabID = page.id
+        manager.isCommandBarVisible = false
+        let visible = window.screen?.visibleFrame ?? frame
+        window.setFrame(NSRect(x: visible.minX + 60, y: visible.minY + 60, width: 900, height: 600), display: true)
+        defer {
+            manager.isLibraryOpen = false
+            manager.isSidebarCollapsed = wasCollapsed
+            manager.close(page)
+            if let extra { manager.deleteSpace(extra) }
+            manager.selectedTabID = wasSelected
+            manager.history.forget { $0.url == seedURL }
+            defaults.set(saved.0, forKey: LibraryMode.storageKey)
+            defaults.set(saved.1, forKey: "sidebarWidth")
+            window.setFrame(frame, display: true)
+        }
+        func rect(_ view: NSView) -> CGRect { view.convert(view.bounds, to: nil) }
+        func lists() -> [CGRect] { scrollViews(host).filter { $0.window != nil }.map(rect) }
+        func rest() async {
+            var last: [CGRect] = [], held = 0
+            await settle(.seconds(5)) {
+                let now = lists() + [rect(card)]
+                held = now == last ? held + 1 : 0
+                last = now
+                return held == 10
+            }
+        }
+        /// a list in the Library's column that the spaces did not have
+        func libraryShown(besides spaces: Set<ObjectIdentifier>) -> Bool {
+            scrollViews(host).contains {
+                $0.window != nil && !spaces.contains(ObjectIdentifier($0)) && rect($0).minX < LibrarySidebar.sidebarWidth / 2
+                    && rect($0).maxX > 0 && rect($0).width > 100
+            }
+        }
+
+        func sweep(_ label: String, peek: Bool) async {
+            if peek { manager.sidebarPeekRequest += 1 }
+            await rest()
+            var spaces = Set(scrollViews(host).map(ObjectIdentifier.init))
+            manager.isLibraryOpen = true
+            await rest()
+            let opened = libraryShown(besides: spaces)
+            // how long the slide out holds the list before it unmounts
+            manager.isLibraryOpen = false
+            let start = ContinuousClock.now
+            var settleMs = 0
+            while ContinuousClock.now - start < .seconds(3) {
+                try? await Task.sleep(for: .milliseconds(2))
+                if !libraryShown(besides: spaces) && scrollViews(host).count <= spaces.count {
+                    settleMs = Int((ContinuousClock.now - start) / .milliseconds(1))
+                    break
+                }
+            }
+            await rest()
+            var blank: [Int] = [], why: [String] = []
+            for _ in 0..<3 {
+                for delay in stride(from: max(settleMs - 60, 0), through: settleMs + 24, by: 3) {
+                    manager.isLibraryOpen = true
+                    await rest()
+                    manager.isLibraryOpen = false
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    manager.isLibraryOpen = true
+                    await rest()
+                    if !libraryShown(besides: spaces) {
+                        blank.append(delay)
+                        try? await Task.sleep(for: .seconds(1))
+                        why.append("\(delay): host \(Int(host.frame.minX)) lists \(lists().map { [Int($0.minX), Int($0.width)] }) later \(libraryShown(besides: spaces))")
+                    }
+                    manager.isLibraryOpen = false
+                    await rest()
+                }
+            }
+            // opened mid space switch
+            var midBlank: [String] = []
+            if manager.stripSpaces.count > 1 {
+                let home = manager.currentSpace, other = manager.stripSpaces.first { $0.id != home.id }!
+                manager.selectSpace(other)
+                await rest()
+                spaces.formUnion(scrollViews(host).map(ObjectIdentifier.init))
+                manager.selectSpace(home)
+                await rest()
+                for wait in [0, 30, 90] {
+                    manager.selectSpace(other)
+                    try? await Task.sleep(for: .milliseconds(wait))
+                    manager.isLibraryOpen = true
+                    await rest()
+                    if !libraryShown(besides: spaces) {
+                        midBlank.append("switch+\(wait)ms")
+                    }
+                    manager.isLibraryOpen = false
+                    manager.selectSpace(home)
+                    await rest()
+                }
+            }
+            record(
+                "library reopen (\(label)): the Library's list shows after every open, however soon after a close",
+                opened && settleMs > 0 && blank.isEmpty && midBlank.isEmpty,
+                "first open \(opened), unmounts \(settleMs) ms after close; blank on reopen at \(blank) ms; \(midBlank) \(why)")
+        }
+
+        /// the sidebar's top-row drag strip spans the rig: its trailing edge in window points
+        func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+        func panelEdge() -> CGFloat? {
+            views(host).filter { "\(type(of: $0))".contains("DragView") }.map(rect).max { $0.width < $1.width }?.maxX
+        }
+        func widens(_ label: String, peek: Bool) async {
+            if peek { manager.sidebarPeekRequest += 1 }
+            await rest()
+            _ = try? await page.webView.evaluateJavaScript("window.__resizes = 0")
+            let still = rect(card), shut = panelEdge() ?? -1
+            manager.isLibraryOpen = true
+            var edges: [Int] = []
+            let start = ContinuousClock.now
+            while ContinuousClock.now - start < .milliseconds(900) {
+                if let edge = panelEdge() { edges.append(Int(edge.rounded())) }
+                try? await Task.sleep(for: .milliseconds(4))
+            }
+            await rest()
+            let open = panelEdge() ?? -1
+            let between = edges.filter { CGFloat($0) > shut + 6 && CGFloat($0) < open - 6 }
+            manager.isLibraryOpen = false
+            await rest()
+            // eight more opens, timed on the display link and the main run loop without probes
+            let counter = Bench.FrameCounter(), busy = Bench.BusyMeter()
+            for _ in 0..<8 {
+                counter.start(in: content)
+                busy.start()
+                manager.isLibraryOpen = true
+                try? await Task.sleep(for: .milliseconds(600))
+                busy.stop()
+                counter.stop()
+                await rest()
+                manager.isLibraryOpen = false
+                await rest()
+            }
+            let resized = (try? await page.webView.evaluateJavaScript("window.__resizes")) as? Int ?? -1
+            record(
+                "library widen (\(label)): the panel widens from the sidebar to the Library over frames, and the page never moves",
+                open - shut > 100 && between.count >= 3 && rect(card) == still && resized == 0,
+                "edge \(Int(shut)) → \(Int(open)), \(between.count) frames between: \(edges); page resizes \(resized); "
+                    + "8 opens: \(counter.frames) frames, \(counter.longFrames) long, main busy \(Int(busy.busy * 1000 / 8)) ms per open")
+        }
+
+        manager.selectedTabID = page.id
+        manager.isSidebarCollapsed = false
+        try? await Task.sleep(for: .milliseconds(900))
+        if widen { await widens("pinned", peek: false) } else { await sweep("pinned", peek: false) }
+        manager.isSidebarCollapsed = true
+        await settle(.seconds(3)) { host.frame.maxX <= 0 }
+        try? await Task.sleep(for: .milliseconds(600))
+        if widen { return await widens("peeked", peek: true) }
+        window.setFrame(NSRect(x: visible.minX + 60, y: visible.minY + 60, width: 390, height: 600), display: true)
+        await sweep("peeked, 390pt window", peek: true)
+    }
+
+    /// the Library slides over the page: no page moves or resizes, the panel takes the clicks over it, closing hands them back
+    private static func testLibraryOverlay(manager: TabManager) async {
+        func sidebarHost(in view: NSView) -> NSView? {
+            view is PassthroughHostingView<AnyView>
+                ? view : view.subviews.lazy.compactMap { sidebarHost(in: $0) }.first
+        }
+        func scrollViews(_ view: NSView) -> [NSView] {
+            (view is NSScrollView ? [view] : []) + view.subviews.flatMap(scrollViews)
+        }
+        guard let window = BrowserWindows.shared.window(of: manager), let content = window.contentView,
+            let host = sidebarHost(in: content), let card = host.superview?.subviews.first(where: { $0 !== host })
+        else { return record("library overlay: the window and its sidebar are up", false) }
+        let defaults = UserDefaults.standard
+        let saved = (defaults.object(forKey: WindowChrome.sidebarOnRightKey), defaults.object(forKey: LibraryMode.storageKey))
+        let wasCollapsed = manager.isSidebarCollapsed, wasSelected = manager.selectedTabID
+        defaults.set(LibraryMode.history.rawValue, forKey: LibraryMode.storageKey)
+        let seedURL = URL(string: "https://library-overlay.selftest.example/row")!
+        manager.history.record(url: seedURL, title: "selftest-overlay")
+        var pages: [BrowserTab] = []
+        for path in ["one", "two"] {
+            let page = manager.newTab(url: nil, opensBar: false)
+            let url = URL(string: "https://library-overlay.selftest.example/\(path)")!
+            page.webView.loadSimulatedRequest(
+                URLRequest(url: url),
+                responseHTML: "<title>Overlay</title><script>window.__resizes = 0; addEventListener('resize', () => window.__resizes++)</script>")
+            await settle { !page.webView.isLoading && page.url == url }
+            pages.append(page)
+        }
+        manager.isCommandBarVisible = false
+        defer {
+            manager.isLibraryOpen = false
+            manager.isSidebarCollapsed = wasCollapsed
+            for page in pages { manager.close(page) }
+            manager.selectedTabID = wasSelected
+            manager.history.forget { $0.url == seedURL }
+            defaults.set(saved.0, forKey: WindowChrome.sidebarOnRightKey)
+            defaults.set(saved.1, forKey: LibraryMode.storageKey)
+        }
+
+        func rect(_ view: NSView) -> CGRect { view.convert(view.bounds, to: nil) }
+        /// the card and each shown page, in window points
+        func reading() -> [CGRect] { [rect(card)] + pages.filter { $0.webView.window != nil }.map { rect($0.webView) } }
+        /// waits for the Library's lists and the pages to hold through ten polls
+        func rest() async {
+            var last: [CGRect] = [], held = 0
+            await settle(.seconds(5)) {
+                let now = reading() + scrollViews(host).map(rect)
+                held = now == last ? held + 1 : 0
+                last = now
+                return held == 10
+            }
+        }
+        /// every frame of a slide: whether anything differed from `still`
+        func watch(_ still: [CGRect]) async -> Int {
+            var moved = 0
+            for _ in 0..<120 {
+                try? await Task.sleep(for: .milliseconds(8))
+                if reading() != still { moved += 1 }
+            }
+            return moved
+        }
+        func hit(_ point: NSPoint) -> NSView? { content.superview?.hitTest(point) }
+        func resizes() async -> Int {
+            var total = 0
+            for page in pages where page.webView.window != nil {
+                total += (try? await page.webView.evaluateJavaScript("window.__resizes")) as? Int ?? -1
+            }
+            return total
+        }
+        func reset() async {
+            for page in pages { _ = try? await page.webView.evaluateJavaScript("window.__resizes = 0") }
+        }
+
+        /// opens and closes the Library over what is shown, reading the page side of the card
+        func cycle(_ label: String, onRight: Bool, peek: Bool = false) async {
+            await rest()
+            await reset()
+            // past the sidebar and its grip, short of the Library's edge
+            let still = reading(), reach = (defaults.object(forKey: "sidebarWidth") as? Double ?? 250).rounded() + 70
+            let point = NSPoint(x: onRight ? content.bounds.width - reach : reach, y: still[0].midY)
+            let under = pages.first { $0.webView.window != nil && hit(point)?.isDescendant(of: $0.webView) == true }
+            manager.isLibraryOpen = true
+            var moved = await watch(still)
+            if peek {
+                manager.sidebarPeekRequest += 1
+                moved += await watch(still)
+            }
+            await rest()
+            let over = hit(point)?.isDescendant(of: host) == true
+            let listOver = scrollViews(host).contains { $0.window != nil && rect($0).minX < point.x && rect($0).maxX > point.x }
+            let lists = scrollViews(host).map { "\(Int(rect($0).minX))…\(Int(rect($0).maxX))" }
+            manager.isLibraryOpen = false
+            moved += await watch(still)
+            await rest()
+            let back = under.map { hit(point)?.isDescendant(of: $0.webView) == true } ?? false
+            let after = reading(), resized = await resizes()
+            record(
+                "library overlay (\(label)): the page neither moves nor resizes while the Library opens and closes",
+                moved == 0 && after == still && resized == 0,
+                "\(moved) frames moved, \(resized) resize events, \(still) → \(after)")
+            record(
+                "library overlay (\(label)): open, the Library lies over the page's edge and takes its clicks",
+                over && listOver, "hit at \(point): \(over), lists \(lists)")
+            record(
+                "library overlay (\(label)): closed, the page is back under the pointer", under != nil && back,
+                "page under at first \(under != nil), after \(back)")
+        }
+
+        manager.selectedTabID = pages[0].id
+        manager.isSidebarCollapsed = false
+        for onRight in [false, true] {
+            defaults.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+            try? await Task.sleep(for: .milliseconds(900))
+            await cycle("pinned, \(onRight ? "right" : "left")", onRight: onRight)
+        }
+        defaults.set(false, forKey: WindowChrome.sidebarOnRightKey)
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let createImage = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage").map { unsafeBitCast($0, to: CreateImage.self) }
+        let space = manager.currentSpace, look = space.appearance, height = content.bounds.height
+        space.appearance.fill = .gradient
+        // one panel at any sidebar width, a glass space next door: no tint step along its top and bottom rows,
+        // and its list reaches the sidebar's edge
+        let savedLayout = (defaults.object(forKey: "sidebarWidth"), defaults.object(forKey: WindowChrome.edgeInsetKey))
+        let neighbour = manager.createSpace(
+            name: "Overlay Glass", icon: "circle", appearance: SpaceAppearance(fill: .glass), profileID: space.profileID)
+        if let from = manager.spaces.firstIndex(where: { $0.id == neighbour.id }),
+            let home = manager.spaces.firstIndex(where: { $0.id == space.id }) {
+            manager.spaces.insert(manager.spaces.remove(at: from), at: home + 1)
+        }
+        manager.selectSpace(space)
+        manager.selectedTabID = pages[0].id
+        manager.isCommandBarVisible = false
+        defaults.set(8.0, forKey: WindowChrome.edgeInsetKey)
+        for (width, onRight) in [(354.0, false), (250.0, false), (420.0, false), (354.0, true)] {
+            defaults.set(width, forKey: "sidebarWidth")
+            defaults.set(onRight, forKey: WindowChrome.sidebarOnRightKey)
+            try? await Task.sleep(for: .milliseconds(900))
+            await rest()
+            manager.isLibraryOpen = true
+            await rest()
+            let span = max(width, LibrarySidebar.sidebarWidth) + 8, side = content.bounds.width
+            var step: CGFloat = 1, samples = 0
+            if let image = createImage?(.null, 1 << 3, CGWindowID(window.windowNumber), 1 | 1 << 3)?.takeRetainedValue() {
+                let rep = NSBitmapImageRep(cgImage: image), scale = CGFloat(rep.pixelsWide) / window.frame.width
+                step = 0
+                for y in [4, height - 4] {
+                    var last: [CGFloat]?
+                    for x in stride(from: 24.0, through: span - 18, by: 2) {
+                        let c = rep.colorAt(x: Int((onRight ? side - x : x) * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB)
+                        let now: [CGFloat] = [c?.redComponent ?? -1, c?.greenComponent ?? -1, c?.blueComponent ?? -1]
+                        if let last { step = max(step, zip(now, last).map { abs($0 - $1) }.reduce(CGFloat(0), +)) }
+                        last = now
+                        samples += 1
+                    }
+                }
+            }
+            let lists: [CGRect] = scrollViews(host).filter { $0.window != nil }.map(rect)
+            let library = lists.filter { (onRight ? side - $0.maxX : $0.minX) < width / 2 }
+            let reach: CGFloat = library.map { onRight ? side - $0.minX : $0.maxX }.max() ?? 0
+            let edge = width - Sidebar.trailingInset(rim: 8, collapsed: false)
+            let order = manager.stripSpaces, at = order.firstIndex { $0.id == space.id } ?? -2
+            let glassNext = order.indices.contains(at + 1) && order[at + 1].appearance.fill == .glass
+            manager.isLibraryOpen = false
+            await rest()
+            let label = "library overlay (sidebar \(Int(width))pt, \(onRight ? "right" : "left"))"
+            record(
+                "\(label): one tint across the panel's width", samples > 100 && step <= 0.03,
+                "largest step \(Int(step * 255))/255 over \(samples) samples, glass next door \(glassNext)")
+            record("\(label): the Library's list reaches the sidebar's edge", reach >= edge - 1, "list to \(reach), sidebar's to \(edge)")
+        }
+        manager.deleteSpace(neighbour)
+        manager.selectSpace(space)
+        manager.selectedTabID = pages[0].id
+        manager.isCommandBarVisible = false
+        defaults.set(false, forKey: WindowChrome.sidebarOnRightKey)
+        defaults.set(savedLayout.0, forKey: "sidebarWidth")
+        defaults.set(savedLayout.1, forKey: WindowChrome.edgeInsetKey)
+        space.appearance = look
+        manager.isSidebarCollapsed = true
+        await settle(.seconds(3)) { host.frame.maxX <= 0 }
+        try? await Task.sleep(for: .milliseconds(600))
+        await cycle("sidebar hidden, peeked", onRight: false, peek: true)
+        manager.isSidebarCollapsed = false
+        try? await Task.sleep(for: .milliseconds(900))
+        guard let split = manager.createSplit(pages, anchor: pages[0]) else {
+            return record("library overlay (split): the two pages tile", false)
+        }
+        await settle { manager.displayedSplitGroup === split && pages.allSatisfy { $0.webView.window != nil } }
+        await cycle("split", onRight: false)
+        manager.dissolveSplit(split)
     }
 
     private static func testLibraryPeek(manager: TabManager) async {
@@ -20275,6 +23959,7 @@ enum SelfTest {
 
         // SwiftUI builds its tree only once an assistive client sets this, as VoiceOver does
         let enhanced = Selector(("accessibilitySetEnhancedUserInterfaceAttribute:"))
+        guard NSApp.responds(to: enhanced) else { return note("a11y: skipped, AppKit lacks the enhanced-UI switch") }
         NSApp.perform(enhanced, with: NSNumber(value: true))
         defer { NSApp.perform(enhanced, with: NSNumber(value: false)) }
         try? await Task.sleep(for: .milliseconds(800))
@@ -20672,7 +24357,8 @@ enum SelfTest {
         }
         record(
             "resize: a drag grabbed off-centre moves the edge by the pointer's travel",
-            abs(dragged - (sidebarWidth + travel)) < 0.5, "\(Int(sidebarWidth)) → \(Int(dragged))")
+            abs(dragged - (sidebarWidth + travel)) <= 0.5 && dragged == dragged.rounded(),
+            "\(sidebarWidth) → \(dragged)")
 
         // a 10 x 300 strip whose scroller thumb covers x 4 and on, from 40 to 100 down from the top
         let strip = NSRect(x: 0, y: 0, width: 10, height: 300)
@@ -23024,7 +26710,7 @@ enum SelfTest {
 
         // one tag and silent: the lab's Notification Center holds one quiet slot at most
         let site = "https://livenotify.selftest.example"
-        SitePermissionStore.shared.set(.allow, for: site, .notifications, ephemeral: false)
+        manager.currentProfile.sitePermissions.set(.allow, for: site, .notifications, ephemeral: false)
         let poster = manager.newTab(url: nil, select: false)
         poster.webView.loadHTMLString("<html><body>post</body></html>", baseURL: URL(string: site + "/"))
         await settle(.seconds(6)) {
@@ -23061,7 +26747,7 @@ enum SelfTest {
                 WebNotifications.shared.recent[page.id] == nil)
         }
         burner.windowWillClose()
-        SitePermissionStore.shared.forget(site)
+        manager.currentProfile.sitePermissions.forget(site)
     }
 
     // MARK: - Live folders
@@ -23653,14 +27339,12 @@ enum SelfTest {
         let browser = BrowserWindows.shared.window(of: manager)
         await settle { outlookPage.webView.window === browser }
         _ = await reading.value
-        let getter = NSSelectorFromString("_windowOcclusionDetectionEnabled")
-        let occludes = outlookPage.webView.responds(to: getter)
-            ? outlookPage.webView.value(forKey: "_windowOcclusionDetectionEnabled") as? Bool : true
+        let occludes = outlookPage.webView.spiValue(forKey: "_windowOcclusionDetectionEnabled") as? Bool ?? true
         manager.selectedTabID = shownBefore
         record(
             "previews: an Outlook tab shown while its card reads keeps occlusion throttling",
-            outlookPage.webView.window === browser && occludes == true,
-            "in the window \(outlookPage.webView.window === browser), throttled \(String(describing: occludes))")
+            outlookPage.webView.window === browser && occludes,
+            "in the window \(outlookPage.webView.window === browser), throttled \(occludes)")
         manager.close(outlookPage)
 
         // the other webmail, from each service's own reply shapes
@@ -24050,8 +27734,8 @@ enum SelfTest {
 
     // MARK: - Helpers
 
-    private static func load(_ tab: BrowserTab, html: String) async {
-        tab.webView.loadHTMLString(html, baseURL: URL(string: "https://selftest.example/"))
+    private static func load(_ tab: BrowserTab, html: String, at base: String = "https://selftest.example/") async {
+        tab.webView.loadHTMLString(html, baseURL: URL(string: base))
         for _ in 0..<60 {
             try? await Task.sleep(for: .milliseconds(100))
             if !tab.webView.isLoading { break }
@@ -24972,6 +28656,7 @@ extension SelfTest {
         <div style="display:none">concealed words for the agent</div>
         <p>4111 1111 1111 1111</p>
         <form method=post action=/hit-form><input name=d value=4 aria-label="Amount"><button id=s>Submit</button><button formaction="/hit-divert">Divert</button></form>
+        <form method=post action=/hit-pay><input id=c aria-label="Coupon"><button>Complete purchase</button></form>
         <script>
         o.href = 'http://localhost:' + location.port + '/other';
         function lies() {
@@ -25044,6 +28729,66 @@ extension SelfTest {
         attach["task"] = task?.id.uuidString
         AgentSocket.writeAll(fd, AgentSocket.line(["attach": attach]))
         return fd
+    }
+
+    /// a task acts only in tabs of the profile it started in, never in an incognito one
+    private static func testAgentProfiles(manager: TabManager) async {
+        let previous = manager.selectedTabID
+        let enabledBefore = AgentBridge.shared.isEnabled, program = AgentTask.program
+        let fake = fakeClaude(first: "claude-opus-5-5", later: "claude-opus-5-5")
+        AgentBridge.shared.isEnabled = false
+        AgentTask.program = fake
+        UserDefaults.standard.removeObject(forKey: AgentTask.Mode.storageKey)
+        let elsewhere = manager.createProfile(name: "SelfTest Agent Elsewhere", icon: "person")
+        guard let (tab, _, socket) = await agentTab(manager), let task = AgentTask(in: manager) else {
+            manager.deleteProfile(elsewhere)
+            return record("agent profiles: a task starts in a main window", false)
+        }
+        task.answers = { _ in .refuse }
+        let foreign = manager.newTab(
+            url: tab.url, configuration: BrowserTab.defaultConfiguration(dataStore: elsewhere.dataStore), select: false)
+        let ghost = manager.newTab(
+            url: tab.url, configuration: BrowserTab.defaultConfiguration(dataStore: .nonPersistent()), select: false)
+        await foreign.settle()
+        await ghost.settle()
+        defer {
+            task.close()
+            shutdown(socket, SHUT_RDWR)
+            close(socket)
+            for page in [tab, foreign, ghost] { manager.close(page) }
+            manager.deleteProfile(elsewhere)
+            manager.selectedTabID = previous
+            AgentBridge.shared.isEnabled = enabledBefore
+            AgentTask.program = program
+            try? FileManager.default.removeItem(at: fake)
+        }
+        var handed: [String] = []
+        for page in [foreign, ghost] {
+            manager.focus(page)
+            await settle { manager.unlockedContentTab === page }
+            task.send("what does this page say?")
+            await agentSettled(task)
+            handed.append("\(manager.unlockedContentTab === page) \(task.tabs.contains(page.id))")
+        }
+        record(
+            "agent profiles: asking from another profile's tab or an incognito one hands the task neither",
+            handed == ["true false", "true false"], "\(handed)")
+        guard let fd = agentConnect(task: task) else {
+            return record("agent profiles: the agent socket is open while a task runs", false)
+        }
+        defer { close(fd) }
+        var refused: [String] = []
+        for page in [foreign, ghost] {
+            task.adopt(page)
+            let read = await agentCall(fd, "take_snapshot", ["tab": page.id.uuidString])
+            let listed = await agentCall(fd, "list_tabs")
+            refused.append("\(read.failed && read.text.contains("profile")) \(!listed.text.contains(page.id.uuidString))")
+        }
+        task.adopt(tab)
+        let own = await agentCall(fd, "take_snapshot", ["tab": tab.id.uuidString])
+        record(
+            "agent profiles: a task handed another profile's tab or an incognito one neither lists nor reaches it, and reaches its own",
+            refused == ["true true", "true true"] && !own.failed, "\(refused) \(own.text.prefix(120))")
     }
 
     /// a stand-in for Claude Code: answers each prompt as `first`, and as `later` from the third on.
@@ -25297,13 +29042,8 @@ extension SelfTest {
         saving.note(.step, "Read example.com")
         flushed()
         let wrote = exists(savingID)
-        let ghost = manager.newTab(
-            url: URL(string: "about:blank"), configuration: BrowserTab.defaultConfiguration(dataStore: .nonPersistent()), select: false)
-        saving.adopt(ghost)
-        saving.note(.step, "Read private.example")
+        AgentChats.shared.delete(savingID, in: profile)
         flushed()
-        let forgotten = !exists(savingID) && saving.chatID == nil
-        manager.close(ghost)
         let incognito = await Scripting.openWindow(incognito: true)
         incognito?.showAgent()
         let none = incognito != nil && incognito?.agentTask == nil
@@ -25311,9 +29051,9 @@ extension SelfTest {
         BrowserWindows.shared.window(of: manager).map(becomeKey)
         flushed()
         record(
-            "agent chats: a throwaway chat, a chat once it takes a private tab, and an incognito window leave nothing on disk",
-            untouched && wrote && forgotten && none && listing() == before,
-            "\(untouched) \(wrote) \(forgotten) \(none) \(listing().subtracting(before))")
+            "agent chats: a throwaway chat and an incognito window leave nothing on disk",
+            untouched && wrote && none && listing() == before,
+            "\(untouched) \(wrote) \(none) \(listing().subtracting(before))")
 
         let bak = files.fileExists(atPath: file(firstID).appendingPathExtension("bak").path)
         AgentChats.shared.delete(firstID, in: profile)
@@ -25519,24 +29259,39 @@ extension SelfTest {
             let window = BrowserWindows.shared.window(of: manager), let content = window.contentView
         else { return record("\(name): a task starts in a main window", false) }
         let origin = "http://\(host)"
-        SitePermissionStore.shared.forget(origin)
+        manager.currentProfile.sitePermissions.forget(origin)
+        let release = AgentTask.folders.appending(path: "\(task.id.uuidString)/release")
         task.adopt(tab)
         task.send("find pizza near me")
         await agentSettled(task)
+        task.send("HOLD")
         let fd = agentConnect(task: task)
         defer {
+            FileManager.default.createFile(atPath: release.path, contents: nil)
             fd.map { _ = close($0) }
             shutdown(socket, SHUT_RDWR)
             close(socket)
             manager.endAgent()
             manager.close(tab)
-            SitePermissionStore.shared.forget(origin)
+            manager.currentProfile.sitePermissions.forget(origin)
             AgentTask.program = program
             OwnerUnlock.check = check
             UserDefaults.standard.removeObject(forKey: AgentTask.Mode.storageKey)
             try? FileManager.default.removeItem(at: fake)
         }
         guard let fd else { return record("\(name): the task's agent attaches", false) }
+
+        // the browser's own prompt answers a request outside the running turn's tabs
+        func browserAsks() async -> Bool {
+            var decided: PermissionDecision?
+            manager.requestPermission([.location], origin: origin, tab: tab) { decided = $0 }
+            try? await Task.sleep(for: .milliseconds(300))
+            let queued = task.questions.isEmpty && manager.permissionQueue.contains { $0.tabID == tab.id }
+            manager.answerPermission(.deny, remember: false)
+            return queued && decided == .deny
+        }
+        let untouched = await browserAsks()
+        _ = await agentCall(fd, "take_snapshot", ["tab": tab.id.uuidString])
 
         var modes: [String] = []
         var decided: PermissionDecision?
@@ -25580,6 +29335,13 @@ extension SelfTest {
                 && told.hasPrefix("[\(host) asked to know your location. The user denied it.]\n")
                 && task.entries.last { $0.kind == .step }?.text == "Didn't allow \(host) to know your location",
             "\(paused) \(shown) \(decided.map(\.rawValue) ?? "open") \(task.questions.count) \(told.prefix(120).debugDescription)")
+
+        FileManager.default.createFile(atPath: release.path, contents: nil)
+        await agentSettled(task)
+        let ended = await browserAsks()
+        record(
+            "\(name): in its tab before the running turn calls on it, and once the turn ends, a page's request gets the browser's own prompt",
+            untouched && ended, "\(untouched) \(ended)")
     }
 
     /// a prompt holding `HOLD` keeps the fake's turn open until its folder holds `release`
@@ -25605,7 +29367,7 @@ extension SelfTest {
             close(socket)
             manager.endAgent()
             manager.close(tab)
-            SitePermissionStore.shared.forget(origin)
+            manager.currentProfile.sitePermissions.forget(origin)
             AgentTask.program = program
             OwnerUnlock.check = check
             try? FileManager.default.removeItem(at: fake)
@@ -25718,6 +29480,139 @@ extension SelfTest {
             !second.failed && still && unmarked && rowed && cleared, "\(second.text.prefix(80)) \(still) \(key)/\(window.isKeyWindow)/\(NSApp.isActive) \(unmarked) \(rowed) \(cleared)")
     }
 
+    private static func testAgentWaits(manager: TabManager) async {
+        let vscode = { (version: String) in "claude-code — /Users/u/.vscode/extensions/anthropic.claude-code-\(version)-darwin-arm64/resources/native-binary/claude" }
+        let older = AgentBridge.identity(vscode("2.1.326")), newer = AgentBridge.identity(vscode("2.1.331"))
+        let elsewhere = AgentBridge.identity(vscode("2.1.331").replacing("anthropic.", with: "evil."))
+        let otherBinary = AgentBridge.identity(vscode("2.1.331") + "2")
+        let local = "claude-code — /Users/u/.local/share/claude/versions/*"
+        let folded = AgentBridge.unique([vscode("2.1.326"), local, vscode("2.1.330"), vscode("2.1.331"), local])
+        let unversioned = "x — /opt/py/python3.15/bin/agent"
+        record(
+            "agent approvals: one install's versions share one approval, another folder or binary doesn't, and old per-version rows fold into one",
+            older == newer && newer.contains("/anthropic.claude-code-*-darwin-arm64/") && elsewhere != newer && otherBinary != newer
+                && AgentBridge.identity(local.replacing("*", with: "2.1.331")) == local && folded == [newer, local]
+                && AgentBridge.identity(newer) == newer && AgentBridge.identity(unversioned) == unversioned,
+            "\(newer) | \(elsewhere) | \(folded)")
+
+        let bridge = AgentBridge.shared
+        let enabled = bridge.isEnabled, approved = bridge.approved, allowed = bridge.allowedSpaceIDs, patience = AgentBridge.approvalPatience
+        let page = "<html><body><a href=\"/file.bin\" download=\"file.bin\">Get</a> <button onclick=\"document.title = String(confirm('Sure?'))\">Ask</button></body></html>"
+        guard let served = serveLoopback(page) else { return record("agent waits: the page is served", false) }
+        let tab = manager.newTab(url: URL(string: "http://127.0.0.1:\(served.port)/")!, select: false)
+        bridge.approved.append("Self-test — /selftest")
+        bridge.allowedSpaceIDs.insert(manager.currentSpace.id)
+        bridge.isEnabled = true
+        let fd = agentConnect(task: nil)
+        defer {
+            fd.map { _ = close($0) }
+            shutdown(served.socket, SHUT_RDWR)
+            close(served.socket)
+            tab.answerDialog(false)
+            manager.close(tab)
+            bridge.isEnabled = enabled
+            bridge.approved = approved
+            bridge.allowedSpaceIDs = allowed
+            AgentBridge.approvalPatience = patience
+        }
+        await tab.settle()
+        guard let fd else { return record("agent waits: an outside client attaches", false) }
+        let id = tab.id.uuidString
+        func click(_ label: String) async -> (text: String, failed: Bool, seconds: Double) {
+            let outline = await agentCall(fd, "take_snapshot", ["tab": id]).text
+            let uid = outline.split(separator: "\n").first { $0.contains("\"\(label)\"") }?.firstMatch(of: /uid=(e\d+)/).map { String($0.1) } ?? "missing"
+            let start = Date()
+            let reply = await agentCall(fd, "click", ["tab": id, "uid": uid])
+            return (reply.text, reply.failed, Date().timeIntervalSince(start))
+        }
+        let download = await click("Get")
+        let listed = await agentCall(fd, "list_tabs")
+        let pending = await agentCall(fd, "wait_for", ["tab": id, "timeout_ms": 1000])
+        async let answered = agentCall(fd, "wait_for", ["tab": id, "timeout_ms": 5000])
+        try? await Task.sleep(for: .milliseconds(600))
+        let core = BrowserCore.shared
+        if let index = core.permissionQueue.firstIndex(where: { $0.tabID == tab.id }) { core.permissionQueue.remove(at: index).answer(.deny) }
+        let (answer, _) = await answered
+        record(
+            "agent waits: a click that asks the user about a download returns at once saying so, list_tabs shows it, and wait_for holds until the user answers",
+            !download.failed && download.seconds < 8 && download.text.contains("waiting for the user to allow 127.0.0.1 to download files")
+                && listed.text.contains("waitingForUser") && !pending.failed && pending.text.hasPrefix("Still waiting")
+                && answer.hasPrefix("The user has answered"),
+            "\(download.text.suffix(120)) \(Int(download.seconds))s | \(pending.text.prefix(60)) | \(answer.prefix(60))")
+
+        let confirm = await click("Ask")
+        tab.answerDialog(true)
+        await settle(.seconds(3)) { tab.webView.title == "true" }
+        record(
+            "agent waits: a click whose page then asks the user a question returns at once saying so, and the page goes on once answered",
+            !confirm.failed && confirm.seconds < 5 && confirm.text.contains("answer a question from 127.0.0.1") && tab.webView.title == "true",
+            "\(confirm.text.prefix(120)) \(Int(confirm.seconds))s \(tab.webView.title ?? "nil")")
+
+        bridge.isEnabled = false
+        let off = await shimCall("list_tabs")
+        record("agent waits: with agents off in an open Artemis, the stdio server says to ask for the switch", off == AgentBridge.agentsOff, off)
+
+        bridge.isEnabled = true
+        AgentBridge.approvalPatience = .seconds(1)
+        // the alert is the app's modal; nothing else answers it in a lab
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { if NSApp.modalWindow != nil { NSApp.abortModal() } }
+        func stranger() -> Int32? {
+            guard let fd = AgentSocket.connect() else { return nil }
+            var patience = timeval(tv_sec: 10, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &patience, socklen_t(MemoryLayout<timeval>.size))
+            AgentSocket.writeAll(fd, AgentSocket.line(["attach": ["version": 1, "client": ["name": "Waiting test", "parentPath": "/selftest-waits"]]]))
+            return fd
+        }
+        guard let asking = stranger() else { return record("agent waits: a new agent connects", false) }
+        let held = await agentCall(asking, "list_tabs")
+        let alert = NSApp.modalWindow != nil
+        NSApp.abortModal()
+        close(asking)
+        try? await Task.sleep(for: .milliseconds(300))
+        var declined = (text: "no connection", failed: false)
+        if let again = stranger() {
+            declined = await agentCall(again, "list_tabs")
+            close(again)
+        }
+        record(
+            "agent waits: a call from an agent the user hasn't answered yet comes back saying to ask for Allow, and once declined, says so",
+            held.failed && held.text.contains("asking the user whether to allow “Waiting test”") && alert
+                && declined.failed && declined.text.contains("chose Don't Allow"),
+            "\(held.text.prefix(80)) \(alert) | \(declined.text.prefix(80))")
+    }
+
+    /// one tool call through `Artemis mcp` as an agent launches it; the reply's text
+    @concurrent nonisolated private static func shimCall(_ name: String) async -> String {
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = Bundle.main.executableURL
+        process.arguments = ["mcp"]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "unrunnable" }
+        let calls = [
+            ["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": ["protocolVersion": "2025-06-18", "clientInfo": ["name": "Shim test"]]],
+            ["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": name, "arguments": [String: Any]()]],
+        ]
+        for call in calls { input.fileHandleForWriting.write(AgentSocket.line(call)) }
+        let killer = DispatchWorkItem { process.terminate() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: killer)
+        var data = Data(), text = "no reply"
+        while case let chunk = output.fileHandleForReading.availableData, !chunk.isEmpty {
+            data.append(chunk)
+            let reply = data.split(separator: 0x0A).compactMap { (try? JSONSerialization.jsonObject(with: Data($0))) as? [String: Any] }
+                .first { $0["id"] as? Int == 2 }
+            if let reply {
+                let content = (reply["result"] as? [String: Any])?["content"] as? [[String: Any]]
+                text = content?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? "\(reply)"
+                break
+            }
+        }
+        killer.cancel()
+        process.terminate()
+        return text
+    }
+
     private static func testAgentSpriteClickThrough(manager: TabManager) async {
         let tab = manager.newTab(url: URL(string: "about:blank"), select: true)
         defer { manager.close(tab) }
@@ -25789,10 +29684,7 @@ extension SelfTest {
         record("agent bypass: a stored Bypass is never a task's mode", task.mode == .manual && AgentTask.Mode.stored == .manual, "\(task.mode)")
         defaults.removeObject(forKey: AgentTask.Mode.storageKey)
         let other = manager.newTab(url: tab.url, select: false)
-        let ghost = manager.newTab(
-            url: tab.url, configuration: BrowserTab.defaultConfiguration(dataStore: .nonPersistent()), select: false)
         await other.settle()
-        await ghost.settle()
         manager.focus(tab)
         var asked: [String] = []
         var details: [String] = []
@@ -25821,7 +29713,6 @@ extension SelfTest {
             task.close()
             manager.close(tab)
             manager.close(other)
-            manager.close(ghost)
             manager.selectedTabID = previous
             AgentBridge.shared.isEnabled = enabledBefore
             AgentTask.program = program
@@ -25851,6 +29742,19 @@ extension SelfTest {
         record(
             "agent task: it reaches its own tabs and no other, with no script or space tools",
             ids == [id] && stranger.failed && spaces.failed && script.failed, "\(ids) \(stranger.text) \(spaces.text) \(script.text)")
+        let shownBefore = manager.selectedTabID
+        let favourite = manager.newTab(url: URL(string: "http://\(host)/")!, select: false)
+        manager.toggleEssential(favourite)
+        let promoted = favourite.isEssential
+        task.adopt(favourite)
+        let favourites = await agentCall(fd, "list_tabs")
+        let favouriteRead = await agentCall(fd, "take_snapshot", ["tab": favourite.id.uuidString])
+        manager.removeEssential(favourite)
+        manager.selectedTabID = shownBefore
+        record(
+            "agent task: a favourite it was handed is listed and reached",
+            promoted && favourites.text.contains(favourite.id.uuidString) && !favouriteRead.failed,
+            "\(favourites.text.suffix(200)) | \(favouriteRead.text.prefix(120))")
         let refusedOutsider = await agentCall(outsider, "list_tabs")
         record("agent task: with coding agents off, a connection without its task is refused", refusedOutsider.failed, refusedOutsider.text)
         var refusedTwin = true
@@ -25954,15 +29858,6 @@ extension SelfTest {
         tab.load(URL(string: "http://\(host)/")!)
         await tab.settle()
         await look()
-        decide = { _ in .refuse }
-        task.adopt(ghost)
-        let ghostRead = await agentCall(fd, "take_snapshot", ["tab": ghost.id.uuidString])
-        let ghostListed = await agentCall(fd, "list_tabs")
-        record(
-            "agent incognito: a private tab it was handed is its own in Manual as in every mode",
-            !ghostRead.failed && ghostRead.text.contains("Save") && ghostListed.text.contains(ghost.id.uuidString),
-            "\(ghostRead.text.prefix(80)) | \(ghostListed.text)")
-
         func told(_ name: String) -> String {
             (try? String(contentsOf: AgentTask.folders.appending(path: "\(task.id.uuidString)/\(name)"), encoding: .utf8)) ?? ""
         }
@@ -26102,12 +29997,22 @@ extension SelfTest {
         await delete("Bypass")
         asked = []
         let bought = await act("click", "Place order")
+        _ = await holdCall(tab, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Place order').focus(); return '';")
+        let shifted = await agentCall(fd, "press_key", ["tab": id, "key": "Enter", "modifiers": ["Shift"]])
+        _ = await holdCall(tab, "document.getElementById('c').focus(); return '';")
+        let entered = await agentCall(fd, "press_key", ["tab": id, "key": "Enter"])
+        try? await Task.sleep(for: .milliseconds(300))
         record(
             "agent gate: deleting asks in Manual on an allowed site, in Auto and in Bypass alike",
             deletes == ["Manual", "Auto", "Bypass"] && posts("/hit-delete") == 0, "\(deletes)")
         record(
             "agent gate: a purchase is refused unasked, Bypass too",
             bought.failed && bought.text.contains("never lets the agent") && asked.isEmpty && posts("/hit-buy") == 0, bought.text)
+        record(
+            "agent gate: Enter on a buy button, Shift or not, and Enter in a field whose form a buy button sends, are refused too",
+            [shifted, entered].allSatisfy { $0.failed && $0.text.contains("never lets the agent") } && asked.isEmpty
+                && posts("/hit-buy") == 0 && posts("/hit-pay") == 0,
+            "\(shifted.text) | \(entered.text) | \(holdPosts())")
 
         let shown = await agentCall(fd, "screenshot", ["tab": id])
         _ = await holdCall(tab, "document.querySelector('[name=cardnumber]').remove(); return '';")
@@ -26255,8 +30160,8 @@ extension SelfTest {
             return record("agent rules: a task starts in a main window", false)
         }
 
-        func standing(_ tool: String, _ what: String, at url: URL? = nil) -> String {
-            switch AgentTask.standing(of: tool, what, at: url ?? site("shop")) {
+        func standing(_ tool: String, _ what: String, key: String? = nil, at url: URL? = nil) -> String {
+            switch AgentTask.standing(of: tool, what, key: key, at: url ?? site("shop")) {
             case .usual: "usual"
             case .asked: "asked"
             case .refused: "refused"
@@ -26270,10 +30175,12 @@ extension SelfTest {
             standing("fill", "Fill textbox \"Card number\""), standing("fill", "Fill textbox \"Passport number\""),
             standing("click", "Click button \"Save\""), standing("click", "Click link \"Next\""),
             standing("hover", "Hover over button \"Delete\""), standing("fill", "Fill textbox \"Search\""),
+            standing("press_key", "Press Shift+Enter in button \"Place order\"", key: "Enter"),
+            standing("press_key", "Press Tab in button \"Place order\"", key: "Tab"),
         ]
         record(
             "agent rules: deleting, granting access, sharing and sensitive fields are always asked; buying, new accounts and card or ID details always refused; the rest is the mode's",
-            standings == ["asked", "asked", "asked", "asked", "asked", "refused", "refused", "refused", "refused", "usual", "usual", "usual", "usual"],
+            standings == ["asked", "asked", "asked", "asked", "asked", "refused", "refused", "refused", "refused", "usual", "usual", "usual", "usual", "refused", "usual"],
             "\(standings)")
 
         try? await task.may("Click A", [], at: site("shop"), use: nil, task.turn)

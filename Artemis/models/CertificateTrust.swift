@@ -6,34 +6,43 @@ import Foundation
 import Security
 import SecurityInterface
 
-/// the hosts whose refused certificate the user chose to trust. each exception
+/// one profile's hosts whose refused certificate the user chose to trust. each exception
 /// is a `SecTrustCopyExceptions` blob, bound to one certificate: a host that
 /// presents a different one is refused, and asked about, again
 @MainActor
-enum CertificateTrust {
-    private static var exceptions: [String: Data] = load()
-    /// accepted in incognito: never written, and applied to incognito pages only
-    private static var ephemeralExceptions: [String: Data] = [:]
-    private static let file = "certificate-exceptions.json"
+final class CertificateTrust {
+    private var exceptions: [String: Data]
+    /// accepted in this profile's incognito windows: never written, and applied to incognito pages only
+    private var ephemeralExceptions: [String: Data] = [:]
+    private let fileURL: URL
 
     /// hosts that sent Strict-Transport-Security over a trusted connection
     private struct StrictHost: Codable {
         var expires: Date
         var includesSubdomains: Bool
     }
-    private static var strictHosts: [String: StrictHost] = loadStrict()
+    private var strictHosts: [String: StrictHost]
     /// learned in incognito: never written
-    private static var ephemeralStrictHosts: [String: StrictHost] = [:]
-    private static let strictFile = "strict-transport.json"
+    private var ephemeralStrictHosts: [String: StrictHost] = [:]
+    private let strictURL: URL
     private static let maxStrictAge: TimeInterval = 365 * 86_400
 
-    static func hasException(for host: String, ephemeral: Bool = false) -> Bool {
+    init(fileURL: URL, strictURL: URL) {
+        self.fileURL = fileURL
+        self.strictURL = strictURL
+        exceptions = AppStorageLocation.loadDurable([String: Data].self, from: fileURL) ?? [:]
+        let now = Date()
+        strictHosts = (AppStorageLocation.loadDurable([String: StrictHost].self, from: strictURL) ?? [:])
+            .filter { $0.value.expires > now }
+    }
+
+    func hasException(for host: String, ephemeral: Bool = false) -> Bool {
         (ephemeral && ephemeralExceptions[host] != nil) || exceptions[host] != nil
     }
 
     /// apply a stored exception, returning true only when the trust then evaluates; a blob
     /// for another certificate leaves it untouched, and none applies where a secure connection is required
-    static func applyException(to trust: SecTrust, host: String, ephemeral: Bool) -> Bool {
+    func applyException(to trust: SecTrust, host: String, ephemeral: Bool) -> Bool {
         guard let blob = (ephemeral ? ephemeralExceptions[host] : nil) ?? exceptions[host],
             !requiresSecureConnection(host, ephemeral: ephemeral)
         else { return false }
@@ -45,7 +54,7 @@ enum CertificateTrust {
     /// trust the certificate `trust` holds for this host; false when there is no
     /// exception to bind. an `ephemeral` one lasts until incognito closes
     @discardableResult
-    static func addException(for host: String, trust: SecTrust, ephemeral: Bool) -> Bool {
+    func addException(for host: String, trust: SecTrust, ephemeral: Bool) -> Bool {
         guard let blob = SecTrustCopyExceptions(trust) as Data? else { return false }
         if ephemeral {
             ephemeralExceptions[host] = blob
@@ -56,38 +65,54 @@ enum CertificateTrust {
         return true
     }
 
-    static func forget(_ host: String) {
+    func forget(_ host: String) {
         ephemeralExceptions.removeValue(forKey: host)
         exceptions.removeValue(forKey: host)
         save()
     }
 
     /// for Clear Browsing Data
-    static func forgetAll() {
+    func forgetAll() {
         ephemeralExceptions = [:]
         exceptions = [:]
-        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(file))
+        AppStorageLocation.discardUnreadable(of: fileURL)
         save(keepsBackup: false)
         ephemeralStrictHosts = [:]
         strictHosts = [:]
-        AppStorageLocation.discardUnreadable(of: AppStorageLocation.file(strictFile))
+        AppStorageLocation.discardUnreadable(of: strictURL)
         saveStrict(keepsBackup: false)
     }
 
+    static let strictSeededKey = "certificateTrust.strictSeeded"
+
+    /// once: every profile existing when learned hosts became per profile keeps the app-wide list
+    static func seedStrictHosts(into profiles: [Profile]) {
+        guard !UserDefaults.standard.bool(forKey: strictSeededKey) else { return }
+        UserDefaults.standard.set(true, forKey: strictSeededKey)
+        for profile in profiles where !profile.isDefault {
+            profile.certificateTrust.learnStrictHosts(from: AppStorageLocation.file("strict-transport.json"))
+        }
+    }
+
+    /// adds `url`'s unexpired learned hosts; a host this profile already holds keeps its own entry
+    func learnStrictHosts(from url: URL) {
+        let now = Date()
+        let seeded = (AppStorageLocation.loadDurable([String: StrictHost].self, from: url) ?? [:])
+            .filter { $0.value.expires > now }
+        guard !seeded.isEmpty else { return }
+        strictHosts.merge(seeded) { mine, _ in mine }
+        saveStrict()
+    }
+
     /// the last incognito window closed: its exceptions go with it
-    static func forgetEphemeral() {
+    func forgetEphemeral() {
         ephemeralExceptions = [:]
         ephemeralStrictHosts = [:]
     }
 
-    private static func load() -> [String: Data] {
-        AppStorageLocation.loadDurable(
-            [String: Data].self, from: AppStorageLocation.file(file)) ?? [:]
-    }
-
-    private static func save(keepsBackup: Bool = true) {
+    private func save(keepsBackup: Bool = true) {
         guard let data = try? JSONEncoder().encode(exceptions) else { return }
-        AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(file), keepsBackup: keepsBackup)
+        AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
     /// the system certificate sheet for `trust`'s chain, over the key window
@@ -103,7 +128,7 @@ enum CertificateTrust {
 
     /// record a Strict-Transport-Security header (RFC 6797) from a connection no exception opened.
     /// `max-age=0` forgets the host
-    static func noteStrictTransport(_ header: String, host: String, ephemeral: Bool) {
+    func noteStrictTransport(_ header: String, host: String, ephemeral: Bool) {
         let directives = header.split(separator: ";").map {
             $0.trimmingCharacters(in: .whitespaces).lowercased()
         }
@@ -113,7 +138,7 @@ enum CertificateTrust {
                 guard directive.hasPrefix("max-age=") else { return nil }
                 let digits = directive.dropFirst(8).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
                 guard !digits.isEmpty, digits.allSatisfy({ ("0"..."9").contains($0) }) else { return nil }
-                return min(TimeInterval(digits) ?? maxStrictAge, maxStrictAge)
+                return min(TimeInterval(digits) ?? Self.maxStrictAge, Self.maxStrictAge)
             }).first
         else { return }
         let host = host.lowercased()
@@ -140,7 +165,7 @@ enum CertificateTrust {
     }
 
     /// `host` or a parent that covers its subdomains sent Strict-Transport-Security, unexpired
-    private static func isLearnedStrict(_ host: String, ephemeral: Bool) -> Bool {
+    private func isLearnedStrict(_ host: String, ephemeral: Bool) -> Bool {
         let labels = host.lowercased().split(separator: ".")
         let now = Date()
         return labels.indices.contains { start in
@@ -152,19 +177,12 @@ enum CertificateTrust {
         }
     }
 
-    private static func loadStrict() -> [String: StrictHost] {
-        let now = Date()
-        return (AppStorageLocation.loadDurable(
-            [String: StrictHost].self, from: AppStorageLocation.file(strictFile)) ?? [:]
-        ).filter { $0.value.expires > now }
-    }
-
-    private static func saveStrict(keepsBackup: Bool = true) {
+    private func saveStrict(keepsBackup: Bool = true) {
         guard let data = try? JSONEncoder().encode(strictHosts) else { return }
         if keepsBackup {
-            AppStorageLocation.writeDurable(data, to: AppStorageLocation.file(strictFile))
+            AppStorageLocation.writeDurable(data, to: strictURL)
         } else {
-            AppStorageLocation.writeDurableNow(data, to: AppStorageLocation.file(strictFile), keepsBackup: false)
+            AppStorageLocation.writeDurableNow(data, to: strictURL, keepsBackup: false)
         }
     }
 
@@ -177,8 +195,8 @@ enum CertificateTrust {
 
     /// an HSTS site, preloaded or learned: none of its certificate failures may be accepted.
     /// every host is one when the preload check is missing
-    static func requiresSecureConnection(_ host: String, ephemeral: Bool = false) -> Bool {
-        guard let isKnownHSTSHost, let url = URL(string: "https://\(host)/") else { return true }
+    func requiresSecureConnection(_ host: String, ephemeral: Bool = false) -> Bool {
+        guard let isKnownHSTSHost = Self.isKnownHSTSHost, let url = URL(string: "https://\(host)/") else { return true }
         return isKnownHSTSHost(url as CFURL, nil).boolValue || isLearnedStrict(host, ephemeral: ephemeral)
     }
 

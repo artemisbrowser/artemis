@@ -34,6 +34,10 @@ enum Bench {
         countLock.unlock()
     }
 
+    /// ARTEMIS_BENCH_TIMELINE: the strip's and the backdrop's shown positions, in spaces
+    static var stripShown: (@MainActor () -> Double?)?
+    static var backdropShown: (@MainActor () -> Double?)?
+
     private static func drainCounts() -> [String: Int] {
         countLock.lock()
         let snapshot = counts
@@ -75,6 +79,10 @@ enum Bench {
     final class FrameCounter: NSObject {
         private var link: CADisplayLink?
         private var last: CFTimeInterval = 0
+        /// every callback's timestamp, kept only while set
+        var stamps: [CFTimeInterval]?
+        /// with `stamps`: the strip's and the backdrop's shown positions at each callback
+        var shown: [(Double, Double)] = []
         private(set) var frames = 0
         /// intervals longer than ~1.5 refresh periods: a dropped frame
         private(set) var longFrames = 0
@@ -105,8 +113,107 @@ enum Bench {
                 if delta > budget { longFrames += 1 }
             }
             last = now
+            if stamps != nil {
+                stamps?.append(now)
+                shown.append((Bench.stripShown?() ?? .nan, Bench.backdropShown?() ?? .nan))
+            }
             frames += 1
         }
+    }
+
+    /// ARTEMIS_BENCH_TIMELINE: per step, main-thread time awake by offset from the step's start,
+    /// the longest stretch in each band, and the display link's first callback and longest gap
+    private static func timelineReport(
+        _ starts: [CFTimeInterval], _ spans: [(CFTimeInterval, CFTimeInterval)], _ stamps: [CFTimeInterval]
+    ) -> [String] {
+        let bands: [(String, Double, Double)] = [
+            ("0-20", 0, 0.02), ("20-100", 0.02, 0.1), ("100-250", 0.1, 0.25), ("250-500", 0.25, 0.5),
+            ("500-700", 0.5, 0.7), ("700+", 0.7, 9),
+        ]
+        func median(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.sorted()[v.count / 2] }
+        func p90(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.sorted()[v.count * 9 / 10] }
+        var busy = Array(repeating: [Double](), count: bands.count)
+        var longest = busy
+        var firstFrame: [Double] = [], gap300: [Double] = [], gapAll: [Double] = [], missed: [Double] = []
+        // the first and last steps sit beside the loop's own setup and teardown
+        for k in starts.indices.dropFirst().dropLast() {
+            let s = starts[k], e = starts[k + 1]
+            let mine = spans.filter { $0.0 + $0.1 > s && $0.0 < e }
+            for (b, band) in bands.enumerated() {
+                let inBand = mine.filter { max($0.0 - s, 0) >= band.1 && max($0.0 - s, 0) < band.2 }
+                busy[b].append(inBand.reduce(0) { $0 + $1.1 } * 1000)
+                longest[b].append((inBand.map(\.1).max() ?? 0) * 1000)
+            }
+            let frames = stamps.filter { $0 > s && $0 < e }
+            guard let first = frames.first else { continue }
+            firstFrame.append((first - s) * 1000)
+            var prev = first
+            var worst300 = first - s, worst = first - s
+            var late = 0.0
+            for t in frames.dropFirst() {
+                if t - s < 0.3 { worst300 = max(worst300, t - prev) }
+                worst = max(worst, t - prev)
+                late += max(((t - prev) * 120).rounded() - 1, 0)
+                prev = t
+            }
+            gap300.append(worst300 * 1000)
+            gapAll.append(worst * 1000)
+            missed.append(late)
+        }
+        var out = ["timeline over \(max(starts.count - 2, 0)) steps, ms from the step's start (median / p90):"]
+        for (b, band) in bands.enumerated() {
+            out.append(String(
+                format: "  %@ busy %.1f / %.1f  longest %.1f / %.1f", band.0 as NSString,
+                median(busy[b]), p90(busy[b]), median(longest[b]), p90(longest[b])))
+        }
+        out.append(String(
+            format: "  frames: first %.1f / %.1f  worst gap in 0-300 %.1f / %.1f  worst gap %.1f / %.1f  missed %.1f / %.1f  (n %d)",
+            median(firstFrame), p90(firstFrame), median(gap300), p90(gap300), median(gapAll), p90(gapAll),
+            median(missed), p90(missed), firstFrame.count))
+        return out
+    }
+
+    /// per step: the most the strip and the backdrop disagree while either moves, how many
+    /// callbacks saw each move, and the longest the backdrop stood still while the strip moved
+    private static func lockstepReport(
+        _ starts: [CFTimeInterval], _ stamps: [CFTimeInterval], _ shown: [(Double, Double)]
+    ) -> [String] {
+        func median(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.sorted()[v.count / 2] }
+        func p90(_ v: [Double]) -> Double { v.isEmpty ? 0 : v.sorted()[v.count * 9 / 10] }
+        var apart: [Double] = [], stripMoves: [Double] = [], backdropMoves: [Double] = [], still: [Double] = []
+        var stripStart: [Double] = [], backdropStart: [Double] = []
+        for k in starts.indices.dropFirst().dropLast() {
+            let s = starts[k], e = starts[k + 1]
+            let idx = stamps.indices.filter { stamps[$0] > s && stamps[$0] < e && !shown[$0].0.isNaN && !shown[$0].1.isNaN }
+            guard idx.count > 2 else { continue }
+            var worst = 0.0, sm = 0.0, bm = 0.0, stillFor = 0.0, longestStill = 0.0
+            var firstS: Double?, firstB: Double?
+            for (a, b) in zip(idx, idx.dropFirst()) {
+                let ds = abs(shown[b].0 - shown[a].0), db = abs(shown[b].1 - shown[a].1)
+                let moving = ds > 1e-4 || db > 1e-4
+                if moving { worst = max(worst, abs(shown[b].0 - shown[b].1)) }
+                if ds > 1e-4 { sm += 1; firstS = firstS ?? (stamps[b] - s) * 1000 }
+                if db > 1e-4 { bm += 1; firstB = firstB ?? (stamps[b] - s) * 1000 }
+                if ds > 1e-4, db <= 1e-4 { stillFor += stamps[b] - stamps[a] } else { stillFor = 0 }
+                longestStill = max(longestStill, stillFor)
+            }
+            guard sm > 0 || bm > 0 else { continue }
+            apart.append(worst)
+            stripMoves.append(sm)
+            backdropMoves.append(bm)
+            still.append(longestStill * 1000)
+            if let firstS { stripStart.append(firstS) }
+            if let firstB { backdropStart.append(firstB) }
+        }
+        return [
+            String(
+                format: "lockstep (n %d): most apart %.3f / %.3f spaces  strip moved on %.0f / %.0f callbacks, backdrop %.0f / %.0f",
+                apart.count, median(apart), p90(apart), median(stripMoves), p90(stripMoves), median(backdropMoves),
+                p90(backdropMoves)),
+            String(
+                format: "  backdrop still while the strip moved, longest ms %.1f / %.1f  first move ms strip %.1f / %.1f  backdrop %.1f / %.1f",
+                median(still), p90(still), median(stripStart), p90(stripStart), median(backdropStart), p90(backdropStart)),
+        ]
     }
 
     // MARK: - Main-thread busy time
@@ -114,11 +221,13 @@ enum Bench {
     /// how long the main run loop spends awake, summed, and its longest single
     /// stretch awake: the cost of a step including whatever it deferred
     @MainActor
-    private final class BusyMeter {
+    final class BusyMeter {
         private var observer: CFRunLoopObserver?
         private var wokeAt: CFTimeInterval = 0
         private(set) var busy: CFTimeInterval = 0
         private(set) var longest: CFTimeInterval = 0
+        /// each awake stretch as (start, length), kept only while set
+        var spans: [(CFTimeInterval, CFTimeInterval)]?
 
         func start() {
             let activities = CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue
@@ -131,6 +240,7 @@ enum Bench {
                         self.wokeAt = now
                     } else {
                         self.busy += now - self.wokeAt
+                        self.spans?.append((self.wokeAt, now - self.wokeAt))
                         self.longest = max(self.longest, now - self.wokeAt)
                     }
                 }
@@ -485,6 +595,7 @@ enum Bench {
         lines = ["Artemis bench (\(runLabel)) — \(Date())", ""]
         results = []
 
+        await SelfTest.yieldScreen { lines.append($0); flush() }
         takeFront()
         // a launch onto an empty space opens the ⌘T bar; every phase runs without it
         manager.isCommandBarVisible = false
@@ -536,6 +647,7 @@ enum Bench {
 
         // first launch compiles the blocker's rules in the background
         await ContentBlocker.shared.waitForIdle()
+        lines.append(ContentBlocker.shared.statusLine)
         try? await Task.sleep(for: .seconds(1))
 
         // work in a space of our own so the user's session isn't disturbed
@@ -615,6 +727,12 @@ enum Bench {
             }
             var steps = 0
             let meter = BusyMeter()
+            let timeline = ProcessInfo.processInfo.environment["ARTEMIS_BENCH_TIMELINE"] != nil
+            var stepStarts: [CFTimeInterval] = []
+            if timeline {
+                meter.spans = []
+                counter.stamps = []
+            }
             meter.start()
             Coverage.mark("_launch")
             await phase("loop-\(loop)", counter: counter) {
@@ -622,6 +740,7 @@ enum Bench {
                 var i = 0
                 while Date() < deadline {
                     let stepStart = CACurrentMediaTime()
+                    stepStarts.append(stepStart)
                     if let mark {
                         mark.backgroundColor = (i.isMultiple(of: 2) ? NSColor.white : NSColor.black).cgColor
                         CATransaction.flush()
@@ -772,6 +891,10 @@ enum Bench {
                 }
             }
             meter.stop()
+            if timeline {
+                lines.append(contentsOf: timelineReport(stepStarts, meter.spans ?? [], counter.stamps ?? []))
+                lines.append(contentsOf: lockstepReport(stepStarts, counter.stamps ?? [], counter.shown))
+            }
             Coverage.mark("loop-\(loop)")
             lines.append(String(
                 format: "main busy per step ms: %.2f  longest stall ms: %.1f  steps %d",

@@ -59,6 +59,7 @@ nonisolated enum Keychain {
     }()
     static let passwords = "\(owner) Passwords"
     static let passkeys = "\(owner) Passkeys"
+    static let cards = "\(owner) Cards"
     static let index = "index"
     /// the index's copy while `index` itself is deleted and added again
     static let nextIndex = "index.next"
@@ -256,7 +257,7 @@ final class PasswordStore {
 
     /// each login with its password and code setup, read in one job on `queue`; a login whose password
     /// is gone is left out
-    func secrets(of logins: [SavedLogin]) async -> [(login: SavedLogin, password: String, code: String?)] {
+    private func secrets(of logins: [SavedLogin]) async -> [(login: SavedLogin, password: String, code: String?)] {
         await withCheckedContinuation { continuation in
             Self.queue.async {
                 func text(_ account: String) -> String? {
@@ -389,6 +390,41 @@ final class PasswordStore {
     // MARK: - Recipes
 
     func recipes(in profile: UUID) -> [PasswordRecipe] { recipes.filter { owner($0.profile) == profile } }
+
+    /// the usable recipes a frame on `origin` under a top document on `top` is offered; none unless both are secure
+    func recipes(for origin: String, under top: String, in profile: UUID) -> [PasswordRecipe] {
+        guard Self.isSecure(origin), Self.isSecure(top) else { return [] }
+        return recipes(in: profile).filter(\.isUsable)
+    }
+
+    /// the registrable domain of a saved login `host` imitates without being: the same name under another
+    /// suffix or with hyphens, confusable characters, one edit away, or the saved domain inside `host`
+    func lookalike(of host: String, in profile: UUID) -> String? {
+        let host = host.lowercased()
+        guard let domain = Self.registrableDomain(host) else { return nil }
+        let known = Set(logins(in: profile).filter { Self.isSecure($0.origin) }.compactMap { Self.registrableDomain($0.host) })
+        guard !known.contains(domain) else { return nil }
+        let name = Self.skeleton(PasswordRecipe.siteName(domain))
+        let dotted = "." + host.replacingOccurrences(of: "-", with: ".") + "."
+        return known.sorted().first { saved in
+            let other = Self.skeleton(PasswordRecipe.siteName(saved))
+            return name == other || (other.count >= 5 && Self.oneEditApart(name, other)) || dotted.contains("." + saved + ".")
+        }
+    }
+
+    private nonisolated static func skeleton(_ name: String) -> String {
+        [("rn", "m"), ("vv", "w"), ("0", "o"), ("1", "l"), ("i", "l"), ("3", "e"), ("5", "s")]
+            .reduce(name.lowercased()) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
+    }
+
+    private nonisolated static func oneEditApart(_ a: String, _ b: String) -> Bool {
+        let (short, long) = a.count <= b.count ? (Array(a), Array(b)) : (Array(b), Array(a))
+        guard long.count - short.count <= 1, short != long else { return false }
+        guard let i = short.indices.first(where: { short[$0] != long[$0] }) else { return true }
+        return short.count == long.count
+            ? short[(i + 1)...] == long[(i + 1)...]
+            : short[i...] == long[(i + 1)...]
+    }
 
     /// adds, or replaces the recipe with the same id
     func save(_ recipe: PasswordRecipe) {
@@ -670,6 +706,16 @@ final class PasswordStore {
             rows.append(row)
         }
         return rows
+    }
+
+    /// `logins` as CSV once the owner passes a check of its own, whatever window is open or policy chosen;
+    /// nil when refused
+    func exportCSV(_ logins: [SavedLogin]) async -> (text: String, count: Int)? {
+        guard await OwnerUnlock.check("export your saved passwords") else { return nil }
+        let rows = await secrets(of: logins).map {
+            (name: $0.login.host, url: $0.login.origin, username: $0.login.username, password: $0.password, code: $0.code ?? "")
+        }
+        return (Self.csv(rows), rows.count)
     }
 
     /// Chrome's export shape, which every password manager reads, with an `otpauth` column

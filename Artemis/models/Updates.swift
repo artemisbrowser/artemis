@@ -86,9 +86,23 @@ final class Updates: NSObject {
     /// `-previewUpdate ready` at launch: that state with nothing behind it, to see how it looks;
     /// a fraction is a download that far along, `play` one that runs to ready over and over.
     /// Only a launch argument counts, never a value saved in the defaults.
-    static var preview: String? {
-        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["previewUpdate"] as? String
+    static var preview: String? { argument("previewUpdate") }
+    private static func argument(_ key: String) -> String? {
+        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[key] as? String
     }
+
+    /// the appcast channel of the update on offer: nil for Release, else "beta" or "nightly";
+    /// `-previewUpdateChannel beta` poses one
+    private(set) var channel = Updates.argument("previewUpdateChannel")
+    /// the icon whose colour fills the bar for an update from `channel`
+    static func tint(for channel: String?) -> AppIconChoice {
+        switch channel {
+        case "beta": .betelgeuse
+        case "nightly": .nebula
+        default: .rigel
+        }
+    }
+    var tint: Color { Self.tint(for: channel).glyph.base }
 
     private(set) var flow: UpdateFlow =
         switch Updates.preview {
@@ -217,8 +231,9 @@ final class Updates: NSObject {
     }
 
     /// Sparkle's found update in plain values, which the self-test can pose
-    func offer(_ version: String, downloaded: Bool, reply: @escaping (SPUUserUpdateChoice) -> Void) {
+    func offer(_ version: String, channel: String?, downloaded: Bool, reply: @escaping (SPUUserUpdateChoice) -> Void) {
         self.version = version
+        self.channel = channel
         self.reply = reply
         flow = downloaded ? .ready(version) : .available(version)
     }
@@ -262,7 +277,7 @@ extension Updates: @preconcurrency SPUUserDriver {
         with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void
     ) {
         WhatsNew.remember(build: appcastItem.versionString, notes: appcastItem.itemDescription)
-        offer(appcastItem.displayVersionString, downloaded: state.stage != .notDownloaded, reply: reply)
+        offer(appcastItem.displayVersionString, channel: appcastItem.channel, downloaded: state.stage != .notDownloaded, reply: reply)
     }
 
     func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
@@ -350,7 +365,7 @@ struct UpdatePill: View {
                     .background {
                         Group {
                             if let bar = Updates.shared.bar {
-                                UpdateBar(progress: bar.progress, finishing: bar.finishing, gap: 4, ink: ink)
+                                UpdateBar(progress: bar.progress, finishing: bar.finishing, tint: Updates.shared.tint, gap: 4, ink: ink)
                                     .transition(.opacity)
                             }
                         }
@@ -383,7 +398,7 @@ struct UpdateStatus: View {
                     // the tooltip's words become this element's label
                     .accessibilityElement()
                     .padding(Self.gap)
-                    .background { UpdateBar(progress: bar.progress, finishing: bar.finishing) }
+                    .background { UpdateBar(progress: bar.progress, finishing: bar.finishing, tint: Updates.shared.tint) }
                     .tooltip(flow.title ?? "")
             } else {
                 // the mark stands as tall as the bar and the row keeps the bar's gap from the capsule's ends
@@ -443,14 +458,17 @@ struct UpdateRestart: View {
 struct UpdateBar: NSViewRepresentable {
     var progress: Double
     var finishing: Bool
+    /// the fill and the finish's dots
+    var tint: Color
     /// clear room between the bar and the glass round it, on every side
     var gap = UpdateStatus.gap
-    /// the chrome's own ink, drawn faint so words read over it; nil is white on dark glass, the accent on light
+    /// the chrome's ink, for words over the bar: the tint then draws see-through; nil draws it solid
     var ink: Color?
 
     func makeNSView(context: Context) -> Layers { Layers(gap: gap) }
     func updateNSView(_ view: Layers, context: Context) {
         view.given = ink.map { NSColor($0).cgColor }
+        view.tint = NSColor(tint).cgColor
         view.show(progress, finishing: finishing)
     }
 
@@ -464,17 +482,20 @@ struct UpdateBar: NSViewRepresentable {
 
         let capsule = CALayer()
         private let lens = CALayer(), glass = CALayer(), light = CALayer(), front = CALayer()
-        private let flood = CALayer()
+        let flood = CALayer()
         let dust = CAEmitterLayer()
         /// the finish's dots, each where it comes to rest
         let sparks = CALayer()
         /// the glass capsule the item fills: dust and sparks leave the bar but are never drawn past this
         let glassClip = CALayer()
         private var shown: (progress: Double, finishing: Bool)?
-        /// the specks, and the fill unless `given`: white on dark glass, the accent on light
+        /// the specks: `given`, else white on dark glass and the accent on light
         private var ink = CGColor.white
         var given: CGColor? {
             didSet { if given != oldValue { needsDisplay = true } }
+        }
+        var tint = CGColor.white {
+            didSet { if tint != oldValue { needsDisplay = true } }
         }
 
         override var isFlipped: Bool { true }
@@ -572,9 +593,9 @@ struct UpdateBar: NSViewRepresentable {
             capsule.backgroundColor = given?.copy(alpha: 0.08) ?? NSColor.labelColor.withAlphaComponent(0.12).cgColor
             // dark ink means a light backdrop: light and flood thin by one factor, so the bar's ends still match
             let thin: CGFloat = given.flatMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB)?.brightnessComponent }.map { $0 < 0.5 ? 0.4 : 1 } ?? 1
-            light.backgroundColor = given?.copy(alpha: 0.24 * thin) ?? ink
+            light.backgroundColor = given == nil ? tint : tint.copy(alpha: 0.6 * thin)
             // the full light under its flood, drawn as one layer
-            flood.backgroundColor = given?.copy(alpha: 0.42 * thin) ?? ink
+            flood.backgroundColor = given == nil ? tint : tint.copy(alpha: 0.85 * thin)
             dust.setValue(ink.copy(alpha: 0.3), forKeyPath: "emitterCells.mote.color")
         }
 
@@ -638,7 +659,7 @@ struct UpdateBar: NSViewRepresentable {
                     switch dot % 8 {
                     case 0: CGColor(red: 1, green: 0.82, blue: 0.62, alpha: 1)
                     case 1: CGColor(red: 0.76, green: 0.7, blue: 1, alpha: 1)
-                    default: ink
+                    default: tint
                     }
                 let fly = CABasicAnimation(keyPath: "position")
                 fly.fromValue = from

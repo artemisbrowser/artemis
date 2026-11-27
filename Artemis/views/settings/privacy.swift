@@ -10,7 +10,7 @@ struct PrivacySettings: View {
     @AppStorage(SpaceLock.incognitoRequiresUnlockKey) private var incognitoRequiresUnlock = false
 
     private var blocker = ContentBlocker.shared
-    private var permissions = SitePermissionStore.shared
+    private var permissions: SitePermissionStore { tabManager.currentProfile.sitePermissions }
     @AppStorage(FingerprintNoise.enabledKey) private var fingerprintDefence = true
     @AppStorage(Reports.enabledKey) private var sendsErrorReports = false
     @AppStorage(Scripting.allowsJavaScriptKey) private var allowsScriptedJavaScript = false
@@ -144,16 +144,46 @@ struct PrivacySettings: View {
                         }
                         .settingsAnchor(record.id == permissions.sorted.first?.id ? .sitePermissions : nil)
                     }
-                    Button("Forget All Sites", role: .destructive) {
-                        permissions.forgetAll()
-                        ExternalSchemes.forgetAll()
-                    }
+                    Button("Forget All Sites", role: .destructive) { tabManager.currentProfile.forgetSites() }
                     .settingsAnchor(.forgetAllSites)
                 }
             } header: {
                 InfoLabel(
                     "Site Permissions",
-                    info: "A site only gets what you granted to its exact origin. Answers given in incognito are never saved to disk.")
+                    info: "A site only gets what you granted to its exact origin, in this profile. Answers given in incognito are never saved to disk.")
+            }
+
+            Section {
+                if blocker.siteChoices.isEmpty {
+                    Text("No site has its own blocking yet. Change it from a page's site settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .settingsAnchor(.siteBlocking)
+                } else {
+                    ForEach(blocker.siteChoices.keys.sorted(), id: \.self) { site in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(site)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 12)
+                            ForEach(BlockingKind.allCases) { kind in
+                                if let on = blocker.siteChoices[site]?[kind] {
+                                    Label(kind.label, systemImage: kind.icon)
+                                        .labelStyle(.iconOnly)
+                                        .foregroundStyle(on ? .green : .secondary)
+                                        .tooltip("\(kind.label): \(on ? "on" : "off")")
+                                }
+                            }
+                            Button("Forget") { blocker.forgetSite(site) }
+                                .buttonStyle(.link)
+                        }
+                        .settingsAnchor(site == blocker.siteChoices.keys.min() ? .siteBlocking : nil)
+                    }
+                }
+            } header: {
+                InfoLabel(
+                    "Blocking by Site",
+                    info: "Sites where trackers, ads or cookie banners differ from the switches above. Forget a site to follow them again.")
             }
 
             Section("Automation") {

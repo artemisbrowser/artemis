@@ -23,7 +23,12 @@ nonisolated enum Diagnostics {
     private static let file = AppStorageLocation.file("diagnostics.jsonl")
     private static let older = AppStorageLocation.file("diagnostics.1.jsonl")
     private static let ring = OSAllocatedUnfairLock(initialState: [Event]())
-    private static let disk = DispatchQueue(label: "com.artemis.diagnostics", qos: .utility)
+    private static let disk: DispatchQueue = {
+        let queue = DispatchQueue(label: "com.artemis.diagnostics", qos: .utility)
+        queue.setSpecific(key: onDisk, value: true)
+        return queue
+    }()
+    private static let onDisk = DispatchSpecificKey<Bool>()
 
     /// a self-test run records into the ring alone
     static func record(
@@ -46,6 +51,66 @@ nonisolated enum Diagnostics {
     static func append(_ event: Event, to ring: inout [Event], capacity: Int = capacity) {
         ring.append(event)
         if ring.count > capacity { ring.removeFirst(ring.count - capacity) }
+    }
+
+    nonisolated(unsafe) private static var nextPreprocessor: objc_exception_preprocessor = { $0 }
+    /// the stacks logged this launch: a throw that repeats costs its backtrace alone
+    private static let loggedStacks = OSAllocatedUnfairLock(initialState: Set<[UInt]>())
+
+    /// logs each Objective-C exception as it is raised, before AppKit can trap on it; call once
+    static func watchExceptions() {
+        nextPreprocessor = objc_setExceptionPreprocessor { raised in
+            if let exception = raised as? NSException { Diagnostics.record(raised: exception) }
+            return Diagnostics.nextPreprocessor(raised)
+        }
+    }
+
+    static let exceptionArea = "exception"
+    /// incognito windows open now
+    static let privateWindows = OSAllocatedUnfairLock(initialState: 0)
+    /// the reason is cut to this before `redact`'s passes
+    private static let reasonCap = 2000
+
+    /// the caller's 16 innermost return addresses, its own first
+    @inline(never) static func throwSite() -> [UInt] {
+        var frames = [UnsafeMutableRawPointer?](repeating: nil, count: 17)
+        let count = Int(backtrace(&frames, 17))
+        return frames[..<count].dropFirst().map { UInt(bitPattern: $0) }
+    }
+
+    /// runs on the throwing thread and returns with the event on disk. `stack` is return
+    /// addresses, innermost first. `inPrivate` logs the name and stack without the reason
+    static func record(
+        raised exception: NSException, stack: [UInt] = throwSite(),
+        inPrivate: Bool = privateWindows.withLock({ $0 > 0 })
+    ) {
+        guard loggedStacks.withLock({ $0.insert(stack).inserted }) else { return }
+        var reason = inPrivate ? "in a private window" : String((exception.reason ?? "").prefix(reasonCap + 1))
+        // a token cut in two would pass `redact`, so a clipped reason ends on a whole word
+        if reason.count > reasonCap, let gap = reason.lastIndex(where: \.isWhitespace) {
+            reason = String(reason[..<gap])
+        }
+        // the reason's pointers are cut to `0x`, so one exception keeps one signature across launches
+        let head = redact("\(exception.name.rawValue): \(reason)")
+            .replacingOccurrences(of: "0x[0-9a-f]+", with: "0x", options: [.regularExpression, .caseInsensitive])
+            .prefix(240)
+        let text = "\(head) | \(stack.map(imageAndOffset).joined(separator: " "))"
+        let entry = Event(
+            t: .now, level: .warning, area: exceptionArea, message: text,
+            sig: signature(area: exceptionArea, message: text))
+        ring.withLock { append(entry, to: &$0) }
+        if SelfTest.isRequested { return }
+        // an exception raised inside `write` is already on the queue a `sync` would wait for
+        if DispatchQueue.getSpecific(key: onDisk) == true { write(entry) } else { disk.sync { write(entry) } }
+    }
+
+    /// `image+offset`, decimal like a crash payload's frames, for the build's kept dSYM
+    private static func imageAndOffset(_ address: UInt) -> String {
+        var info = Dl_info()
+        guard dladdr(UnsafeRawPointer(bitPattern: address), &info) != 0, let path = info.dli_fname,
+            let base = info.dli_fbase
+        else { return "?" }
+        return "\((String(cString: path) as NSString).lastPathComponent)+\(address &- UInt(bitPattern: base))"
     }
 
     /// this launch's events, oldest first

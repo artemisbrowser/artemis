@@ -89,6 +89,7 @@ struct AddressBar: View {
             .font(.system(size: 13))
             .foregroundStyle(tabManager.blendedInk.opacity(0.9))
             .lineLimit(1)
+            .truncationMode(.head)
             .frame(height: pill.height)
     }
 

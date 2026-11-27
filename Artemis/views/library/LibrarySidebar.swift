@@ -138,11 +138,12 @@ private struct FilterMenu: View {
                 GlassEffectContainer {
                     if isOpen {
                         panel
-                            .background { MenuAnchor(view: area).allowsHitTesting(false) }
+                            .overlay(alignment: .topTrailing) { close }
                             .chromeGlass(in: shape)
                             .glassEffectID("filter", in: glass)
                     } else {
-                        Button { set(open: true) } label: { label.contentShape(.capsule) }
+                        // the outgoing control keeps taking presses while it morphs away, so each toggles
+                        Button { set(open: !isOpen) } label: { label.contentShape(.capsule) }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Filter downloads")
                             .accessibilityValue(filter.summary ?? "All")
@@ -152,6 +153,8 @@ private struct FilterMenu: View {
                     }
                 }
                 .fixedSize()
+                // mounted once: a panel shrinking away would take a shared view out of the window as it unmounts
+                .background { MenuAnchor(view: area).allowsHitTesting(false) }
                 .modifier(ChromeGlassScheme())
             }
             .onDisappear { set(open: false) }
@@ -177,6 +180,12 @@ private struct FilterMenu: View {
             }
             .foregroundStyle(ink.opacity(count == 0 ? 0.7 : 0.95))
             .frame(width: metrics.rowHeight, height: metrics.rowHeight)
+    }
+
+    /// sits exactly where the circle's glyph was, so one spot opens and closes
+    private var close: some View {
+        HoverIconButton("xmark", size: 12, weight: .semibold, boxSize: metrics.rowHeight) { set(open: !isOpen) }
+            .tooltip("Close filters")
     }
 
     /// All, the kind in force, and each kind some file is of
@@ -419,8 +428,9 @@ enum LibraryMode: String, CaseIterable {
 /// grouped by how long ago files arrived
 struct LibrarySidebar: View {
     static let railWidth: CGFloat = 72
-    /// the whole sidebar's width while the Library is open, whatever width the spaces' sidebar is set to
+    /// the whole sidebar's width while the Library is open, unless the spaces' sidebar is wider
     static let sidebarWidth: CGFloat = 380
+    static func width(over sidebarWidth: Double) -> CGFloat { max(Self.sidebarWidth, sidebarWidth) }
 
     @Environment(TabManager.self) private var tabManager
     @Environment(\.chromeInk) private var ink

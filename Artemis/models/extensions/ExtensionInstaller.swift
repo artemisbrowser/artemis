@@ -114,9 +114,31 @@ nonisolated enum ExtensionInstaller {
         }?.appendingPathComponent("Contents/Resources", isDirectory: true)
     }
 
-    /// drop a stored extension's resources from disk
+    /// drop a stored extension's resources from disk, and any update waiting for it
     static func removeStorage(forID id: String) {
-        try? FileManager.default.removeItem(at: storageRoot.appendingPathComponent(id, isDirectory: true))
+        for dir in [storageRoot.appendingPathComponent(id, isDirectory: true), staged(id)] {
+            try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    /// a verified update to stored extension `id` waits here until it replaces it
+    private static func staged(_ id: String) -> URL {
+        storageRoot.appendingPathComponent(id + ".update", isDirectory: true)
+    }
+
+    static func hasStaged(for id: String) -> Bool { FileManager.default.fileExists(atPath: staged(id).path) }
+
+    /// the package stored as `from` becomes `id`'s waiting update, replacing an older one
+    static func stage(_ from: String, for id: String) throws {
+        try? FileManager.default.removeItem(at: staged(id))
+        try FileManager.default.moveItem(at: storageRoot.appendingPathComponent(from, isDirectory: true), to: staged(id))
+    }
+
+    /// `id`'s waiting update replaces its package; false, the package untouched, when none waits or the swap fails
+    @discardableResult
+    static func promoteStaged(for id: String) -> Bool {
+        hasStaged(for: id) && (try? FileManager.default.replaceItemAt(
+            storageRoot.appendingPathComponent(id, isDirectory: true), withItemAt: staged(id))) != nil
     }
 
     // MARK: - Helpers

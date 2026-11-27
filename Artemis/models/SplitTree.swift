@@ -206,7 +206,7 @@ indirect enum SplitNode: Identifiable, Equatable {
     }
 
     /// each child's rect along `axis`, `gap` apart, and the axis length the
-    /// children share once the gaps are taken out
+    /// children share once the gaps are taken out. edges land on whole points
     private static func layout(
         _ children: [Child], along axis: SplitOrientation, in rect: CGRect, gap: CGFloat
     ) -> (rects: [CGRect], available: CGFloat) {
@@ -216,15 +216,16 @@ indirect enum SplitNode: Identifiable, Equatable {
         let available = max(total - gap * CGFloat(max(n - 1, 0)), 1)
         let sum = children.reduce(0) { $0 + $1.ratio }
         var rects: [CGRect] = []
-        var pos = isCols ? rect.minX : rect.minY
+        var edge = isCols ? rect.minX : rect.minY
         for child in children {
             let frac = sum > 0 ? child.ratio / sum : 1.0 / Double(max(n, 1))
-            let len = available * frac
+            let next = edge + available * frac
+            let pos = edge.rounded(), len = next.rounded() - pos
             rects.append(
                 isCols
                     ? CGRect(x: pos, y: rect.minY, width: len, height: rect.height)
                     : CGRect(x: rect.minX, y: pos, width: rect.width, height: len))
-            pos += len + gap
+            edge = next + gap
         }
         return (rects, available)
     }

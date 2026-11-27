@@ -1532,7 +1532,7 @@ struct Sidebar: View {
     }
     /// fixed, so the list doesn't reflow while the sidebar animates to the Library's width
     private var libraryContentWidth: CGFloat {
-        Self.contentWidth(sidebarWidth: LibrarySidebar.sidebarWidth, rim: edgeInset, collapsed: isSidebarCollapsed)
+        Self.contentWidth(sidebarWidth: LibrarySidebar.width(over: width), rim: edgeInset, collapsed: isSidebarCollapsed)
     }
 
     /// the normal sidebar contents — url field, fixed favourites, and the space
@@ -1621,7 +1621,7 @@ struct Sidebar: View {
             let slots = tabManager.stripSpaces.enumerated().filter {
                 !PerfFlags.windowsFilmstripPanels || built.contains($0.offset)
             }
-            ZStack(alignment: .topLeading) {
+            let strip = ZStack(alignment: .topLeading) {
                 ForEach(slots, id: \.element.id) { i, space in
                     let live = space.id == tabManager.selectedSpaceID
                     PanelSlot(space: space, live: live) { panel(space, live: live) }
@@ -1631,15 +1631,22 @@ struct Sidebar: View {
                         .allowsHitTesting(live)
                 }
             }
-            // a glide animates the strip's offset only: the panels it reslots change at once
-            .transaction(value: tabManager.spacePagePosition) { $0.animation = nil }
-            .modifier(PagerOffset(pitch: pitch))
-            .frame(width: w, height: geo.size.height, alignment: .topLeading)
-            .clippedPastSides()
             // parked panels report nothing, so this is the live panel's geometry, and
             // an empty or locked space clears what the last one left
             .onPreferenceChange(SidebarRowFrameKey.self) { measured.rowFrames = $0 }
             .onPreferenceChange(NewTabBoundaryKey.self) { measured.newTabBoundaryY = $0 }
+            Group {
+                if PerfFlags.slidesPagerInLayer {
+                    PagerHost(page: currentIndex, width: w, pitch: pitch, content: strip)
+                        .frame(width: w + 2 * RowHighlight.glassBleed, height: geo.size.height)
+                        .padding(.horizontal, -RowHighlight.glassBleed)
+                } else {
+                    strip
+                        .modifier(PagerOffset(pitch: pitch))
+                        .frame(width: w, height: geo.size.height, alignment: .topLeading)
+                        .clippedPastSides()
+                }
+            }
             .onAppear {
                 panelWidth = w
                 tabManager.spacePagePosition = Double(currentIndex)
@@ -1828,13 +1835,14 @@ struct Sidebar: View {
         withAnimation(Motion.panel, completionCriteria: .removed) {
             isLibrarySlidIn = tabManager.isLibraryOpen
         } completion: {
-            if slide == librarySlides, !isLibrarySlidIn { isLibraryMounted = false }
+            if slide == librarySlides, !tabManager.isLibraryOpen { isLibraryMounted = false }
         }
     }
 
     private var bottomBar: some View {
         VStack(spacing: 8) {
             DownloadPill()
+            StoragePill()
             UpdatePill()
             bottomRow
         }
@@ -1888,7 +1896,7 @@ private struct SpaceHeader: View {
     @State private var isRenaming = false
     @State private var draftName = ""
     @FocusState private var nameFocused: Bool
-    @State private var rowFrame = FrameBox()
+    @State private var row = RowAnchor.Box()
     @State private var clickMonitor: Any?
     @State private var editHover = false
     @State private var chevronHover = false
@@ -1999,14 +2007,7 @@ private struct SpaceHeader: View {
         .onHover { isHovering = $0 }
         // tap the row (not the edit button) to rename inline
         .onTapGesture { if !isRenaming, tabManager.kind == .main { beginRename(space) } }
-        // track the row's window-space frame so a click-away can tell "outside"
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { rowFrame.value = proxy.frame(in: .global) }
-                    .onChange(of: proxy.frame(in: .global)) { _, f in rowFrame.value = f }
-            }
-        )
+        .background(RowAnchor(box: row))
         // while renaming, any mouse-down outside the row commits (like Return),
         // since macOS won't resign the field's focus on a plain background click
         .onChange(of: isRenaming) { _, renaming in
@@ -2025,13 +2026,11 @@ private struct SpaceHeader: View {
     private func startClickMonitor(_ space: Space) {
         stopClickMonitor()
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
-            guard let content = event.window?.contentView else { return event }
-            // NSEvent is bottom-left origin; SwiftUI .global is top-left
-            let point = CGPoint(
-                x: event.locationInWindow.x,
-                y: content.bounds.height - event.locationInWindow.y)
-            if !rowFrame.value.contains(point) {
+            guard let anchor = row.view, anchor.window === event.window,
+                anchor.bounds.contains(anchor.convert(event.locationInWindow, from: nil))
+            else {
                 commitRename(space)
+                return event
             }
             return event  // let the click still do its thing
         }
@@ -2068,7 +2067,7 @@ private struct NewTabRow: View {
     var body: some View {
         let _ = Bench.tick("NewTabRow")
         Button {
-            tabManager.openNewTabBar()
+            tabManager.openNewTab()
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
@@ -2734,7 +2733,7 @@ struct TabRow: View {
     private var showsAudioControl: Bool { tab.isPlayingMediaContent }
 }
 
-/// a pinned tab's or favourite's mark beside its favicon while it is off its home: a slim
+/// a pinned tab's mark beside its favicon while it is off its home: a slim
 /// capsule leaning less than a "/" would, in a disabled nav arrow's grey
 struct OffHomeSlash: View {
     @Environment(\.chromeInk) private var ink
@@ -2893,8 +2892,19 @@ private final class LastPoint {
     var value: CGPoint?
 }
 
-private final class FrameBox {
-    var value: CGRect = .zero
+/// covers the row, so a window point is tested in whichever host the row lives in
+private struct RowAnchor: NSViewRepresentable {
+    final class Box { weak var view: NSView? }
+    final class Passive: NSView { override func hitTest(_: NSPoint) -> NSView? { nil } }
+    let box: Box
+
+    func makeNSView(context: Context) -> NSView {
+        let view = Passive()
+        box.view = view
+        return view
+    }
+
+    func updateNSView(_: NSView, context: Context) {}
 }
 
 private final class SidebarGeometry {
@@ -2951,6 +2961,7 @@ private struct PillMotion: ViewModifier {
     func body(content: Content) -> some View {
         content
             .animation(Motion.pop, value: Updates.shared.flow.showsPill)
+            .animation(Motion.pop, value: StorageNotice.shared.failure)
             .animation(Motion.pop, value: DownloadManager.shared.shelf.map(\.id))
     }
 }
@@ -2964,6 +2975,209 @@ private struct PagerOffset: ViewModifier {
     func body(content: Content) -> some View {
         content.offset(x: -tabManager.spacePagePosition * pitch)
     }
+}
+
+/// the filmstrip in its own hosting view, framed so the selected page sits in the clip:
+/// a glide or swipe moves only the clip's `sublayerTransform`, so nothing in the strip
+/// updates per frame. `contentSpace` is re-declared inside at the sidebar's origin
+private struct PagerHost<Content: View>: View {
+    let page: Int
+    let width: CGFloat
+    let pitch: CGFloat
+    let content: Content
+    @State private var box = PagerHostBox()
+    @Environment(\.layoutDirection) private var direction
+    @Environment(TabManager.self) private var tabManager
+    @Environment(TooltipState.self) private var tooltip: TooltipState?
+    @Environment(SidebarDragState.self) private var drag: SidebarDragState?
+    @Environment(RearrangeDragState.self) private var rearrange: RearrangeDragState?
+
+    var body: some View {
+        let count = tabManager.stripSpaces.count
+        let mirrored = direction == .rightToLeft
+        let shift = PagerHostView.hostingX(page: page, width: width, pitch: pitch, count: count, mirrored: mirrored)
+        // a copied `EnvironmentValues` never compares equal and would re-run every panel
+        let root = content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .environment(\.layoutDirection, direction)
+            .modifier(PagerContentSpace(box: box, shift: shift - RowHighlight.glassBleed))
+            .ignoresSafeArea()
+            .environment(tabManager)
+            .environment(tooltip)
+            .environment(ExtensionManager.shared)
+            .environment(drag)
+            .environment(rearrange)
+        PagerHostRepresentable(box: box, root: AnyView(root), count: count, mirrored: mirrored)
+            .background(PagerSlideDriver(box: box, page: page, pitch: pitch))
+            .onGeometryChange(for: CGPoint.self) {
+                let f = $0.frame(in: .named(SidebarDragState.contentSpace))
+                return CGPoint(x: f.minX + RowHighlight.glassBleed, y: f.minY)
+            } action: { box.origin = $0 }
+    }
+}
+
+@Observable private final class PagerHostBox {
+    @ObservationIgnored weak var view: PagerHostView?
+    /// the clip's inner top-left in the sidebar's `contentSpace`
+    var origin = CGPoint.zero
+}
+
+/// the hosted root sits `shift` from the clip's inner edge; only this modifier reads the origin
+private struct PagerContentSpace: ViewModifier {
+    let box: PagerHostBox
+    let shift: CGFloat
+
+    func body(content: Content) -> some View {
+        let x = box.origin.x + shift
+        let y = box.origin.y
+        content
+            .offset(x: x, y: y)
+            .coordinateSpace(.named(SidebarDragState.contentSpace))
+            .offset(x: -x, y: -y)
+    }
+}
+
+private struct PagerHostRepresentable: NSViewRepresentable {
+    let box: PagerHostBox
+    let root: AnyView
+    let count: Int
+    let mirrored: Bool
+
+    func makeNSView(context: Context) -> PagerHostView {
+        let view = PagerHostView()
+        box.view = view
+        return view
+    }
+
+    func updateNSView(_ view: PagerHostView, context: Context) {
+        view.hosting.rootView = root
+        view.arrange(count: count, mirrored: mirrored)
+        // a nested host left to update itself waits for the window's next event
+        view.hosting.needsLayout = true
+        view.hosting.layoutSubtreeIfNeeded()
+    }
+}
+
+/// the only piece that reads the per-frame position
+private struct PagerSlideDriver: View {
+    @Environment(TabManager.self) private var tabManager
+    let box: PagerHostBox
+    let page: Int
+    let pitch: CGFloat
+
+    var body: some View {
+        PagerSlideRepresentable(box: box, page: page, pitch: pitch, position: tabManager.spacePagePosition)
+            .modifier(PositionTicker(animatableData: tabManager.spacePagePosition))
+    }
+}
+
+private struct PagerSlideRepresentable: NSViewRepresentable {
+    let box: PagerHostBox
+    let page: Int
+    let pitch: CGFloat
+    let position: Double
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        box.view?.slide(to: position, page: page, pitch: pitch, animation: context.transaction.animation)
+    }
+}
+
+private final class PagerHostView: NSView {
+    let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+    private var count = 1
+    private var mirrored = false
+    private var page = 0
+    private var pitch: CGFloat = 0
+    private var shown: Double?
+    private var serial = 0
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        clipsToBounds = true
+        hosting.sizingOptions = []
+        hosting.safeAreaRegions = []
+        addSubview(hosting)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        place()
+    }
+
+    /// the hosting view's x in the clip that puts `page` at the clip's inner edge; it is `count` pitches wide
+    static func hostingX(page: Int, width: CGFloat, pitch: CGFloat, count: Int, mirrored: Bool) -> CGFloat {
+        let bleed = RowHighlight.glassBleed
+        let p = CGFloat(page) * pitch
+        return mirrored ? bleed + width + p - CGFloat(max(count, 1)) * pitch : bleed - p
+    }
+
+    func arrange(count: Int, mirrored: Bool) {
+        guard count != self.count || mirrored != self.mirrored else { return }
+        self.count = count
+        self.mirrored = mirrored
+        place()
+    }
+
+    /// the selected page lands in the clip by frame, so hit-testing at rest needs no transform
+    private func place() {
+        let width = bounds.width - 2 * RowHighlight.glassBleed
+        let x = Self.hostingX(page: page, width: width, pitch: pitch, count: count, mirrored: mirrored)
+        let frame = CGRect(x: x, y: 0, width: CGFloat(max(count, 1)) * pitch, height: bounds.height)
+        if hosting.frame != frame { hosting.frame = frame }
+    }
+
+    /// moves the strip to `position` (in pages) on the transaction's curve; each slide is additive in points,
+    /// so a page change or retarget mid-flight leaves running slides valid
+    func slide(to position: Double, page: Int, pitch: CGFloat, animation: Animation?) {
+        guard let layer, shown != position || self.page != page || self.pitch != pitch else { return }
+        let sign: CGFloat = mirrored ? -1 : 1
+        let gap = shown.map { sign * CGFloat(position - $0) * pitch } ?? 0
+        shown = position
+        self.page = page
+        self.pitch = pitch
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        place()
+        layer.sublayerTransform = CATransform3DMakeTranslation(sign * CGFloat(Double(page) - position) * pitch, 0, 0)
+        if gap != 0 {
+            if let animation {
+                let curve: CABasicAnimation
+                if animation == Motion.carousel {
+                    let spring = CASpringAnimation(
+                        perceptualDuration: Motion.carouselSpring.duration, bounce: Motion.carouselSpring.bounce)
+                    spring.duration = spring.settlingDuration
+                    curve = spring
+                } else {
+                    curve = CABasicAnimation()
+                    curve.duration = UserDefaults.standard.object(forKey: "spaceTransitionDuration") as? Double ?? 0.2
+                    curve.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                }
+                curve.keyPath = "sublayerTransform.translation.x"
+                curve.isAdditive = true
+                curve.fromValue = gap
+                curve.toValue = 0
+                serial += 1
+                layer.add(curve, forKey: "slide\(serial)")
+            } else {
+                for key in layer.animationKeys() ?? [] where key.hasPrefix("slide") { layer.removeAnimation(forKey: key) }
+            }
+        }
+        CATransaction.commit()
+    }
+}
+
+/// keeps a `withAnimation` of the position running its full length, so its completion lands at rest
+private struct PositionTicker: ViewModifier, Animatable {
+    var animatableData: Double
+    func body(content: Content) -> some View { content }
 }
 
 /// a pager slot. a parked panel is skipped when the pager re-runs for a switch

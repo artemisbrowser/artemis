@@ -609,6 +609,7 @@ struct ClearBrowsingDataSettings: View {
                 toggle("Indexed page text", .pageText).settingsAnchor(.clearPageText)
                 toggle("Saved addresses and cards", .autofill).settingsAnchor(.clearAutofill)
                 toggle("Agent chats", .agentChats).settingsAnchor(.clearAgentChats)
+                toggle("Site permissions", .permissions).settingsAnchor(.clearPermissions)
                 if targets.contains(.siteData) {
                     Label("Signs \(profile.name) out of sites.", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -628,7 +629,6 @@ struct ClearBrowsingDataSettings: View {
             Section {
                 toggle("Downloads list", .downloads).settingsAnchor(.clearDownloads)
                 toggle("Per-site zoom levels", .zoom).settingsAnchor(.clearZoom)
-                toggle("Site permissions", .permissions).settingsAnchor(.clearPermissions)
             } header: {
                 InfoLabel(
                     "Every Profile",

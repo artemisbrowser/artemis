@@ -228,13 +228,8 @@ struct PasswordsSettings: View {
         alert.informativeText = "Anyone who can open the file can read every password in it. Delete it once you've imported it elsewhere."
         alert.addButton(withTitle: "Export…")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn,
-            await OwnerUnlock.authenticate(.passwords, "export your saved passwords")
-        else { return }
-        let rows = await store.secrets(of: logins).map {
-            (name: $0.login.host, url: $0.login.origin, username: $0.login.username, password: $0.password, code: $0.code ?? "")
-        }
-        status = store.writePlaintext(PasswordStore.csv(rows), suggesting: "artemis-passwords.csv", count: rows.count)
+        guard alert.runModal() == .alertFirstButtonReturn, let export = await store.exportCSV(logins) else { return }
+        status = store.writePlaintext(export.text, suggesting: "artemis-passwords.csv", count: export.count)
     }
 }
 

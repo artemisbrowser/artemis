@@ -13,10 +13,12 @@ nonisolated struct ArchiveEntry: Codable, Identifiable {
     var spaceName: String
     /// the name you gave the tab, which it takes back when restored
     var name: String?
+    /// true when it was closed by hand; any other aged out, or nobody kept which
+    var isManual: Bool?
 
     init(
         id: UUID = UUID(), url: URL, title: String, archivedAt: Date = Date(), spaceName: String,
-        name: String? = nil
+        name: String? = nil, isManual: Bool? = nil
     ) {
         self.id = id
         self.url = url
@@ -24,6 +26,7 @@ nonisolated struct ArchiveEntry: Codable, Identifiable {
         self.archivedAt = archivedAt
         self.spaceName = spaceName
         self.name = name
+        self.isManual = isManual
     }
 }
 
@@ -37,16 +40,25 @@ final class ArchiveStore {
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     private static let maxEntries = 5000
 
-    init(fileURL: URL) {
+    /// `entries` from `read(_:)` skips the load, so a caller can decode off main
+    init(fileURL: URL, entries: [ArchiveEntry]? = nil) {
         self.fileURL = fileURL
-        entries = AppStorageLocation.loadDurable([ArchiveEntry].self, from: fileURL) ?? []
+        self.entries = entries ?? Self.read(fileURL) ?? []
+    }
+
+    nonisolated static func read(_ url: URL) -> [ArchiveEntry]? {
+        AppStorageLocation.loadDurable([ArchiveEntry].self, from: url)
     }
 
     /// file a freshly-archived tab at the front, under the tab's own id: a tab is filed once
-    func add(id: UUID, url: URL, title: String, spaceName: String, name: String?) {
+    func add(id: UUID, url: URL, title: String, spaceName: String, name: String?, isManual: Bool? = nil) {
+        add(ArchiveEntry(id: id, url: url, title: title, spaceName: spaceName, name: name, isManual: isManual))
+    }
+
+    private func add(_ entry: ArchiveEntry) {
+        let id = entry.id
         entries.removeAll { $0.id == id }
-        entries.insert(
-            ArchiveEntry(id: id, url: url, title: title, spaceName: spaceName, name: name), at: 0)
+        entries.insert(entry, at: 0)
         if entries.count > Self.maxEntries {
             entries.removeLast(entries.count - Self.maxEntries)
         }
@@ -99,11 +111,11 @@ final class ArchiveStore {
         AppStorageLocation.writeDurableNow(data, to: fileURL, keepsBackup: keepsBackup)
     }
 
-    /// drop everything archived since `date` (Clear Browsing Data's time range)
-    func clear(since date: Date) {
-        if date == .distantPast { AppStorageLocation.discardUnreadable(of: fileURL) }
+    /// drop everything archived from `date` up to `end` (Clear Browsing Data's time range)
+    func clear(since date: Date, until end: Date = .distantFuture) {
+        if date == .distantPast, end == .distantFuture { AppStorageLocation.discardUnreadable(of: fileURL) }
         let before = entries.count
-        entries.removeAll { $0.archivedAt >= date }
+        entries.removeAll { $0.archivedAt >= date && $0.archivedAt < end }
         guard entries.count != before else { return }
         saveNow(keepsBackup: false)
     }

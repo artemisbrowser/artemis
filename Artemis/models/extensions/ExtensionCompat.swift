@@ -13,14 +13,15 @@ nonisolated enum ExtensionCompat {
     static let shimmedPermissions: Set<String> = [
         "proxy", "privacy", "idle", "notifications", "offscreen", "identity", "sidePanel",
         "tabGroups", "management", "downloads", "search", "browsingData", "history", "topSites",
-        "sessions", "fontSettings", "system", "tts", "userScripts",
+        "sessions", "fontSettings", "system", "tts", "userScripts", "contentSettings", "favicon", "printerProvider",
+        "pageCapture",
     ]
 
-    /// service-worker globals that keep a background in a real worker; any other background
-    /// becomes a scripts array, which WebKit runs as a document
+    /// service-worker globals, or a stand-in `document` assigned, keep a background in a real
+    /// worker; any other background becomes a scripts array, which WebKit runs as a document
     private static let serviceWorkerOnlyAPIs = [
         "skipWaiting", "clients.claim", "clients.matchAll", "self.registration",
-        "importScripts", "addEventListener(\"fetch\"", "addEventListener('fetch'",
+        "importScripts", "addEventListener(\"fetch\"", "addEventListener('fetch'", ".document={",
     ]
 
     /// the application id the shim passes to `runtime.sendNativeMessage`, so
@@ -42,7 +43,7 @@ nonisolated enum ExtensionCompat {
     /// to whether they exist (an empty file) or not (a failed fetch)
     private static let inertImportsKey = "artemis_inert_imports"
     /// bumped whenever the shim or the patch changes, so stored packages re-patch
-    static let shimVersion = 61
+    static let shimVersion = 63
 
     // MARK: - Entry point
 
@@ -243,6 +244,19 @@ nonisolated enum ExtensionCompat {
         manifest["permissions"] = permissions
         manifest[addedPermissionsKey] = added.sorted()
 
+        // entries Chrome accepts without effect and WebKit reports as errors: an empty policy or
+        // command, and MV2's action names in an MV3 manifest's commands
+        if (manifest["content_security_policy"] as? [String: Any])?.isEmpty == true {
+            manifest.removeValue(forKey: "content_security_policy")
+        }
+        if let commands = manifest["commands"] as? [String: Any] {
+            let mv2Actions: Set = ["_execute_browser_action", "_execute_page_action"]
+            manifest["commands"] = commands.filter { name, entry in
+                (entry as? [String: Any])?.isEmpty == false
+                    && !((manifest["manifest_version"] as? Int) == 3 && mv2Actions.contains(name))
+            }
+        }
+
         // 5. declarativeNetRequest rulesets trimmed to what WebKit will compile:
         // every enabled ruleset becomes ONE content-rule-list, capped at 150,000
         // rules, and the translator emits one rule per `requestDomains` entry
@@ -258,7 +272,7 @@ nonisolated enum ExtensionCompat {
         try? out.write(to: manifestURL, options: .atomic)
 
         // 6. every packaged HTML page loads the shim first
-        patchHTMLFiles(under: packageRoot)
+        patchHTMLFiles(under: packageRoot, sandboxFrames: (manifest["sandbox"] as? [String: Any])?["pages"] != nil)
         markScriptsUTF8(under: packageRoot)
         uncommentLocales(under: packageRoot)
 
@@ -527,23 +541,43 @@ nonisolated enum ExtensionCompat {
         }
     }
 
-    private static func patchHTMLFiles(under root: URL) {
+    private static func patchHTMLFiles(under root: URL, sandboxFrames: Bool) {
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
         let tag = "<script src=\"/__artemis/compat.js\"></script>"
         for case let url as URL in walker where ["html", "htm"].contains(url.pathExtension.lowercased()) {
-            guard var html = try? String(contentsOf: url, encoding: .utf8),
-                !html.contains("/__artemis/compat.js")
-            else { continue }
-            if let range = html.range(of: "<head>") {
-                html.insert(contentsOf: tag, at: range.upperBound)
-            } else if let range = html.range(of: "<script") {
-                html.insert(contentsOf: tag, at: range.lowerBound)
-            } else {
-                continue
+            guard let original = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var html = ""
+            var rest = original[...]
+            for meta in sandboxFrames ? original.matches(of: /<meta\b[^>]*>/.ignoresCase()) : []
+            where meta.output.lowercased().contains("content-security-policy") {
+                guard let content = meta.output.firstMatch(of: /(?i:content)\s*=\s*"([^"]*)"/) else { continue }
+                html += original[rest.startIndex..<content.output.1.startIndex] + admittingSandboxScheme(String(content.output.1))
+                rest = original[content.output.1.endIndex...]
             }
-            try? html.write(to: url, atomically: true, encoding: .utf8)
+            html += rest
+            if !html.contains("/__artemis/compat.js") {
+                if let range = html.range(of: "<head>") {
+                    html.insert(contentsOf: tag, at: range.upperBound)
+                } else if let range = html.range(of: "<script") {
+                    html.insert(contentsOf: tag, at: range.lowerBound)
+                }
+            }
+            if html != original { try? html.write(to: url, atomically: true, encoding: .utf8) }
         }
+    }
+
+    /// 'self' in a package page's policy covers the package's sandbox pages, which load through
+    /// `SandboxPages.scheme` and, framed with a sandbox attribute, match no 'self' of their own
+    static func admittingSandboxScheme(_ policy: String) -> String {
+        let source = SandboxPages.scheme + ":"
+        guard !policy.contains(source) else { return policy }
+        return policy.split(separator: ";", omittingEmptySubsequences: false).map { directive in
+            directive.split(whereSeparator: \.isWhitespace).contains { $0.lowercased() == "'self'" }
+                ? String(directive[..<(directive.lastIndex { !$0.isWhitespace }.map(directive.index(after:)) ?? directive.startIndex)])
+                    + " " + source
+                : String(directive)
+        }.joined(separator: ";")
     }
 
     // MARK: - The shim
@@ -570,7 +604,7 @@ nonisolated enum ExtensionCompat {
 
     /// namespaces Chrome exposes without a permission
     private static let openNamespaces: Set<String> = [
-        "action", "browserAction", "commands", "extension", "i18n", "omnibox", "pageAction",
+        "action", "browserAction", "commands", "extension", "i18n", "management", "omnibox", "pageAction",
         "permissions", "runtime", "tabs", "windows",
     ]
 
@@ -589,6 +623,20 @@ nonisolated enum ExtensionCompat {
         let json = (try? JSONSerialization.data(withJSONObject: reachable, options: [.sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         return shimSource.replacingOccurrences(of: "/*@gaps*/{}", with: json)
+    }
+
+    /// an MV3 manifest whose extension-page policy keeps scripts to the package, as Chrome requires
+    static func pagePolicyHoldsScripts(_ manifest: [String: Any]) -> Bool {
+        guard manifest["manifest_version"] as? Int == 3,
+            let policy = (manifest["content_security_policy"] as? [String: Any])?["extension_pages"] as? String
+        else { return false }
+        // directive names are case-insensitive, and the -elem and -attr ones override script-src
+        let directives = policy.lowercased().split(separator: ";").map { $0.split(whereSeparator: \.isWhitespace) }
+        guard let scripts = directives.first(where: { $0.first == "script-src" })
+            ?? directives.first(where: { $0.first == "default-src" })
+        else { return false }
+        return ([scripts] + directives.filter { $0.first == "script-src-elem" || $0.first == "script-src-attr" })
+            .allSatisfy { $0.dropFirst().allSatisfy { ["'self'", "'none'", "'wasm-unsafe-eval'"].contains($0) } }
     }
 
     /// the content-script variant: the generic fixes only, cut at the markers.

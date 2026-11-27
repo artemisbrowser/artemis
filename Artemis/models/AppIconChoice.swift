@@ -16,6 +16,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     case io
     case moon
     case cosmicLatte
+    case home
 
     var id: String { rawValue }
 
@@ -24,6 +25,9 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     static let bundled = AppIconChoice.rigel
     /// tells the Dock tile plugin to redraw; the object is the bundle path
     static let changedNotification = Notification.Name("dev.findles.Artemis.appIconChanged")
+
+    /// Home stays hidden until a visit to artemisbrowser.app unlocks it
+    var isLocked: Bool { self == .home && !HomeEgg.isUnlocked }
 
     static var current: AppIconChoice {
         let raw = UserDefaults.standard.string(forKey: storageKey)
@@ -43,6 +47,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .io: "Io"
         case .moon: "The Moon"
         case .cosmicLatte: "Cosmic Latte"
+        case .home: "Home"
         }
     }
 
@@ -60,6 +65,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .io: (rgb(0xe2bf55), rgb(0xb8921f))
         case .moon: (rgb(0xaeb1b6), rgb(0x7b8088))
         case .cosmicLatte: (rgb(0xccbea9), rgb(0xa8906c))
+        case .home: (rgb(0xf5a524), rgb(0xf0583a))
         }
     }
 }
