@@ -42,7 +42,7 @@ function egg() {
     <img class="dark" src="/assets/img/home-icon-dark.webp" width="168" height="168" alt="" />
     <div>
       <p class="egg-t" id="egg-t">Browsing Artemis… on Artemis?!</p>
-      <p class="egg-d" id="egg-d">You patriot, you.<br />Here, have an app icon 😉</p>
+      <p class="egg-d" id="egg-d">Now that's loyalty.<br />Here, have an app icon 😉</p>
       <p class="fine">It’s in Settings › Customization.</p>
     </div>
     <button class="egg-x" type="button" aria-label="Close"><svg class="ico" aria-hidden="true"><use href="#i-xmark" /></svg></button>`;
