@@ -30,12 +30,23 @@ function paintToggle() {
   toggle.setAttribute("aria-label", `Switch to ${dark() ? "light" : "dark"} appearance`);
 }
 if (["light", "dark"].includes(params.get("theme"))) root.dataset.theme = params.get("theme");
+// Script tweens hold colours read in the old appearance, so they end at once. The hero's entrance plays only on load.
+function swapped() {
+  root.classList.add("swapped");
+  for (const a of document.getAnimations())
+    if (a.constructor === Animation && a.effect.getKeyframes().some((k) => k.backgroundColor)) a.finish();
+  paintToggle();
+}
 toggle.addEventListener("click", () => {
   root.dataset.theme = dark() ? "light" : "dark";
-  paintToggle();
+  swapped();
 });
-sys.addEventListener("change", paintToggle);
+sys.addEventListener("change", swapped);
 paintToggle();
+// the other appearance's shots load after the page, so a switch never shows an empty frame
+addEventListener("load", () => {
+  for (const img of document.querySelectorAll(":is(.hero-film, .slide) :is(.light, .dark)")) img.loading = "eager";
+});
 
 /* ---------- the nav's Download joins once the hero's has scrolled away above ---------- */
 const nav = document.getElementById("nav");

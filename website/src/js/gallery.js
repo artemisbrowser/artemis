@@ -17,7 +17,7 @@ function glideEase(u) {
 }
 
 // A dot fills over one slide's dwell and the gallery advances when the fill ends, so pausing the fill
-// pauses the gallery. Dots and slide copy follow the scroll position.
+// pauses the gallery. Dots, tabs, caption and slide copy follow the scroll position.
 for (const g of document.querySelectorAll("[data-gallery]")) {
   const track = g.querySelector(".gallery-track");
   const items = [...track.children];
@@ -25,6 +25,9 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   const nav = g.querySelector(".dotnav");
   const dots = g.querySelector(".dots");
   const play = g.querySelector(".playpause");
+  const tablist = g.querySelector(".gallery-tabs");
+  const bar = tablist.querySelector(".gallery-bar");
+  const caps = [...g.querySelectorAll(".gallery-caps p")];
   let cur = -1;
   // play: the fill runs. hold: frozen mid-fill. stop: no fill. end: the last slide's fill is done.
   let mode = mq.reduce.matches ? "stop" : "play";
@@ -59,20 +62,32 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     glide = requestAnimationFrame(step);
   }
 
-  const tabs = items.map((it, i) => {
+  const pick = (i) => {
+    set("stop");
+    to(i);
+  };
+  // the dots are a pointer shortcut; the tabs are the keyboard and screen reader control
+  const pips = items.map((_, i) => {
     const li = document.createElement("li");
-    li.setAttribute("role", "presentation");
     const b = document.createElement("button");
     b.className = "dot";
     b.type = "button";
-    b.setAttribute("role", "tab");
-    b.setAttribute("aria-label", it.querySelector("h2, h3").textContent);
-    b.onclick = () => {
-      set("stop");
-      to(i);
-    };
+    b.tabIndex = -1;
+    b.onclick = () => pick(i);
     li.append(b);
     dots.append(li);
+    return b;
+  });
+  const tabs = items.map((it, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.id = `${g.id}-tab-${i}`;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-controls", caps[i].id);
+    b.textContent = it.querySelector("h2, h3").textContent;
+    b.onclick = () => pick(i);
+    caps[i].setAttribute("aria-labelledby", b.id);
+    bar.before(b);
     return b;
   });
   nav.style.setProperty("--n", items.length);
@@ -81,8 +96,8 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   function dwell(i) {
     fill?.cancel();
     at = i;
-    const from = getComputedStyle(tabs[i], "::after").translate;
-    fill = tabs[i].animate({ translate: [from, "0 0"] }, { duration: 6150, fill: "forwards", pseudoElement: "::after" });
+    const from = getComputedStyle(pips[i], "::after").translate;
+    fill = pips[i].animate({ translate: [from, "0 0"] }, { duration: 6150, fill: "forwards", pseudoElement: "::after" });
     fill.onfinish = () => {
       if (i === items.length - 1) return set("end");
       to(i + 1);
@@ -109,8 +124,13 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
       const k = 1 - Math.abs(d);
       it.style.setProperty("--d", d.toFixed(4));
       it.style.setProperty("--o", (k ** 3).toFixed(4));
-      tabs[i].style.setProperty("--k", k.toFixed(4));
+      pips[i].style.setProperty("--k", k.toFixed(4));
     });
+    // the underline slides between neighbouring tabs as the track does
+    const u = f - j;
+    const [a, b] = [tabs[j], tabs[j + 1]];
+    bar.style.width = `${a.offsetWidth + (b.offsetWidth - a.offsetWidth) * u}px`;
+    bar.style.translate = `${a.offsetLeft + (b.offsetLeft - a.offsetLeft) * u}px 0`;
     const i = Math.min(items.length - 1, Math.round(f));
     if (i === cur) return;
     cur = i;
@@ -118,6 +138,9 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     tabs.forEach((b, j) => {
       b.setAttribute("aria-selected", j === i);
       b.tabIndex = j === i ? 0 : -1;
+      caps[j].classList.toggle("on", j === i);
+      caps[j].setAttribute("aria-hidden", j !== i);
+      items[j].classList.toggle("off", j !== i);
     });
   }
 
@@ -156,7 +179,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     const glass = getComputedStyle(nav, "::before").backgroundColor;
     const solid = { backgroundColor: [glass.replace(/[\d.]+\)$/, "1)"), glass] };
     for (const el of [nav, play]) el.animate(solid, { ...late(400, 1000, "ease"), pseudoElement: "::before" });
-    const dot = tabs[cur];
+    const dot = pips[cur];
     dots.animate({ opacity: [0, 1] }, late(100, 740, "ease-in"));
     dots.animate({ translate: ["28px 0", "0 0"] }, late(300, 850, "ease-out"));
     dot.animate({ width: ["8px", `${dot.offsetWidth}px`] }, late(230, 780, "ease-out"));
@@ -166,13 +189,26 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   }
 
   track.addEventListener("scroll", sync, { passive: true });
+  addEventListener("resize", sync);
   track.addEventListener("pointerdown", () => set("stop"));
-  dots.addEventListener("keydown", (e) => {
-    const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
-    if (!d || !items[cur + d]) return;
-    set("stop");
-    tabs[cur + d].focus();
-    to(cur + d);
+  // a tap on a slide beside the one in view brings it in, and does not open its Learn more
+  track.addEventListener(
+    "click",
+    (e) => {
+      const i = items.indexOf(e.target.closest(".gallery-track > li"));
+      if (i < 0 || i === cur) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pick(i);
+    },
+    true,
+  );
+  tablist.addEventListener("keydown", (e) => {
+    const i = { ArrowLeft: cur - 1, ArrowRight: cur + 1, Home: 0, End: items.length - 1 }[e.key];
+    if (i === undefined || !items[i]) return;
+    e.preventDefault();
+    tabs[i].focus();
+    pick(i);
   });
   play.addEventListener("click", () => {
     if (mode === "play") fill.pause();

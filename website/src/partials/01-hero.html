@@ -19,7 +19,7 @@
       >
     </div>
   </div>
-  <div class="gallery hero-gallery reveal" data-gallery data-autoplay>
+  <div class="gallery hero-gallery reveal" id="highlights" data-gallery data-autoplay>
     <ul class="gallery-track" aria-label="Highlights">
       <li class="slide a-oxygen">
         <div class="slide-copy">
@@ -47,8 +47,14 @@
         <img src="/assets/img/framed/recent.webp" data-srcset="/assets/img/framed/recent-1000.webp 1000w, /assets/img/framed/recent-1500.webp 1500w, /assets/img/framed/recent.webp 2000w" sizes="(max-width: 734px) 83vw, min(55vw, 756px)" width="2000" height="1208" alt="The recent tabs switcher showing four pages" loading="lazy" decoding="async" />
       </li>
     </ul>
+    <div class="gallery-tabs" role="tablist" aria-label="Highlights"><span class="gallery-bar"></span></div>
+    <div class="gallery-caps">
+      <p id="highlights-spaces" role="tabpanel">Each space keeps its own pinned sites, folders and tabs. Swipe with two fingers to move between them.</p>
+      <p id="highlights-themes" role="tabpanel">Give every space a solid colour, a gradient or glass, and an emoji or symbol of its own.</p>
+      <p id="highlights-tabs" role="tabpanel">Hold ⌃⇥ and the tabs you used last fan out as previews. Let go on the one you want.</p>
+    </div>
     <div class="gallery-ctl">
-      <div class="dotnav"><ul class="dots" role="tablist" aria-label="Highlights"></ul></div>
+      <div class="dotnav"><ul class="dots" aria-hidden="true"></ul></div>
       <button class="playpause" type="button" aria-label="Pause the highlights">
         <svg class="ico" aria-hidden="true"><use href="#i-pause" /></svg>
       </button>
