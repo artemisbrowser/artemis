@@ -374,7 +374,8 @@ export async function build(out) {
       return (errors.push(`missing include ${name}`), "");
     });
   // "v1.1.0-2" in the release URL reads as "Version 1.1"
-  const version = cfg.DOWNLOAD_URL?.match(/\/v(\d+(?:\.\d+)*)/)?.[1].replace(/\.0$/, "");
+  const release = cfg.DOWNLOAD_URL?.match(/\/v(\d+(?:\.\d+)*)/)?.[1];
+  const version = release?.replace(/\.0$/, "");
   const bench = (times) => {
     const max = Math.max(...Object.values(times));
     return Object.entries(times)
@@ -450,7 +451,7 @@ export async function build(out) {
 
   // Arc may be named only in the index head and only while its block ships (tools/check.mjs rule 2).
   const arc = cfg.ARC_BLOCK && fs.existsSync(partial("07-arc"));
-  const free = /^free$/i.test(cfg.PRICE ?? "") ? " free," : "";
+  const free = /^free$/i.test(cfg.PRICE ?? "") ? " free" : "";
   const stage = cfg.STAGE ? `, in ${cfg.STAGE.toLowerCase()}` : "";
   // the offer's price: "0" only when the meta says free, otherwise the digits of PRICE or no offer
   const amount = free ? "0" : cfg.PRICE?.replace(/[^\d.]/g, "");
@@ -460,9 +461,9 @@ export async function build(out) {
   const share = `A${free} sidebar browser for your Mac${stage}, with ads and trackers blocked from the first page.`;
   const home = {
     ...PAGES["index.html"],
-    title: `Artemis: a sidebar browser for your Mac${arc ? ". Move in from Arc." : ""}`,
+    title: `Artemis Browser for Mac: a sidebar browser${arc ? ". Move in from Arc." : ""}`,
     description: arc
-      ? `A${free} sidebar browser for macOS 26${stage}. Spaces, pinned tabs, Peek and split view, with ads and trackers blocked. ${moveIn}`
+      ? `Artemis is a${free} sidebar browser for Mac${stage}, with spaces, Peek, split view and ads blocked. ${moveIn}`
       : about,
     og: arc ? `${share} ${moveIn}` : share,
   };
@@ -498,19 +499,32 @@ export async function build(out) {
     errors.push(
       `Discord card is ${Buffer.byteLength(discord)} bytes, over 3000`,
     );
+  const origin = `https://${cfg.DOMAIN}/`;
   const jsonld = {
     "@context": "https://schema.org",
     "@graph": [
       {
+        "@type": "Organization",
+        "@id": `${origin}#org`,
+        name: "Artemis",
+        url: origin,
+        logo: `https://${cfg.DOMAIN}/assets/img/icon-512.png`,
+        sameAs: ["https://github.com/artemisbrowser"],
+      },
+      {
         "@type": "WebSite",
+        "@id": `${origin}#website`,
         name: "Artemis",
         alternateName: ["Artemis Browser", "Artemis for Mac"],
-        url: `https://${cfg.DOMAIN}/`,
+        url: origin,
         inLanguage: "en-GB",
+        publisher: { "@id": `${origin}#org` },
       },
       {
         "@type": "SoftwareApplication",
+        "@id": `${origin}#app`,
         name: "Artemis",
+        alternateName: "Artemis Browser",
         operatingSystem: "macOS 26 or later",
         processorRequirements: "arm64 (M1 or newer)",
         applicationCategory: "BrowserApplication",
@@ -532,8 +546,11 @@ export async function build(out) {
         ],
         license: "https://www.gnu.org/licenses/gpl-3.0.html",
         author: { "@type": "Person", name: "Fin" },
-        url: `https://${cfg.DOMAIN}/`,
+        publisher: { "@id": `${origin}#org` },
+        sameAs: ["https://github.com/artemisbrowser/artemis"],
+        url: origin,
         image: ogImage,
+        ...(release && { softwareVersion: release }),
         ...(cfg.DOWNLOAD_URL && {
           downloadUrl: `https://${cfg.DOMAIN}/download`,
         }),
@@ -559,7 +576,7 @@ export async function build(out) {
         .replace(/\{\{TITLE\}\}/g, escape(page.title))
         .replace(/\{\{DESCRIPTION\}\}/g, escape(page.description ?? about))
         .replace(/\{\{OG_DESCRIPTION\}\}/g, escape(page.og ?? share))
-        .replace(/\{\{OG_TITLE\}\}/g, escape(page.path ? page.title : "Artemis for Mac"))
+        .replace(/\{\{OG_TITLE\}\}/g, escape(page.path ? page.title : "Artemis Browser for Mac"))
         .replace(/\{\{OG_URL\}\}/g, `https://${cfg.DOMAIN}/${page.path ?? ""}`)
         .replace(/\{\{OG_IMAGE\}\}/g, page.ogImage ?? ogImage)
         .replace(/\{\{OG_IMAGE_ALT\}\}/g, escape(page.ogAlt ?? ogAlt))
