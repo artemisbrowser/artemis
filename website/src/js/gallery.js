@@ -54,7 +54,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     // a scroll that is not ours means the reader took over
     const step = (t) => {
       if (Math.abs(track.scrollLeft - last) > 2) return set("stop");
-      const u = Math.min(1, Math.max(0, (t - t0) / 975));
+      const u = Math.min(1, Math.max(0, (t - t0) / (+g.dataset.glide || 975)));
       track.scrollLeft = x0 + (x1 - x0) * glideEase(u);
       last = track.scrollLeft;
       if (u < 1) glide = requestAnimationFrame(step);
