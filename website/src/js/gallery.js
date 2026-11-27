@@ -17,7 +17,8 @@ function glideEase(u) {
 }
 
 // A dot fills over one slide's dwell and the gallery advances when the fill ends, so pausing the fill
-// pauses the gallery. Dots, tabs, caption and slide copy follow the scroll position.
+// pauses the gallery. Dots, tabs, caption and slide copy follow the scroll position. Without a
+// .gallery-ctl there are no dots and no autoplay.
 for (const g of document.querySelectorAll("[data-gallery]")) {
   const track = g.querySelector(".gallery-track");
   const items = [...track.children];
@@ -30,7 +31,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   const caps = [...g.querySelectorAll(".gallery-caps p")];
   let cur = -1;
   // play: the fill runs. hold: frozen mid-fill. stop: no fill. end: the last slide's fill is done.
-  let mode = mq.reduce.matches ? "stop" : "play";
+  let mode = ctl && !mq.reduce.matches ? "play" : "stop";
   let seen = false;
   let glide = 0;
   let fill;
@@ -67,7 +68,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     to(i);
   };
   // the dots are a pointer shortcut; the tabs are the keyboard and screen reader control
-  const pips = items.map((_, i) => {
+  const pips = (ctl ? items : []).map((_, i) => {
     const li = document.createElement("li");
     const b = document.createElement("button");
     b.className = "dot";
@@ -84,14 +85,12 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     b.id = `${g.id}-tab-${i}`;
     b.setAttribute("role", "tab");
     b.setAttribute("aria-controls", caps[i].id);
-    b.textContent = it.querySelector("h2, h3").textContent;
+    b.textContent = it.dataset.tab ?? it.querySelector("h2, h3").textContent;
     b.onclick = () => pick(i);
     caps[i].setAttribute("aria-labelledby", b.id);
     bar.before(b);
     return b;
   });
-  nav.style.setProperty("--n", items.length);
-
   // The fill starts a cap's width off the dot, so a glide to the next slide is over before it shows.
   function dwell(i) {
     fill?.cancel();
@@ -111,6 +110,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
       settle();
       fill?.cancel();
     }
+    if (!ctl) return;
     const [icon, label] = { play: ["#i-pause", "Pause"], end: ["#i-replay", "Replay"] }[m] ?? ["#i-play", "Play"];
     play.querySelector("use").setAttribute("href", icon);
     play.setAttribute("aria-label", `${label} the highlights`);
@@ -124,7 +124,7 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
       const k = 1 - Math.abs(d);
       it.style.setProperty("--d", d.toFixed(4));
       it.style.setProperty("--o", (k ** 3).toFixed(4));
-      pips[i].style.setProperty("--k", k.toFixed(4));
+      pips[i]?.style.setProperty("--k", k.toFixed(4));
     });
     // the underline slides between neighbouring tabs as the track does
     const u = f - j;
@@ -210,6 +210,10 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
     tabs[i].focus();
     pick(i);
   });
+  sync();
+  set(mode);
+  if (!ctl) continue;
+  nav.style.setProperty("--n", items.length);
   play.addEventListener("click", () => {
     if (mode === "play") fill.pause();
     else if (mode === "hold") fill.play();
@@ -230,6 +234,4 @@ for (const g of document.querySelectorAll("[data-gallery]")) {
   ).observe(track);
 
   ctl.classList.add("wait");
-  sync();
-  set(mode);
 }

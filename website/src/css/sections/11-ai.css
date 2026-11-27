@@ -4,20 +4,29 @@
 .ai {
   text-align: center;
 }
+.ai-gallery {
+  margin-top: 64px;
+}
+/* one shot in view at a time; --o fades the one leaving */
+.ai-gallery .gallery-track {
+  --edge: max(var(--gutter), (100% - 1000px) / 2);
+  gap: var(--gutter);
+}
+.ai-gallery .gallery-track > li {
+  flex-basis: 100%;
+}
 .ai-shot {
-  width: min(1200px, 100% - 2 * var(--gutter));
-  margin: 64px auto 0;
+  margin: 0;
+  opacity: var(--o, 1);
 }
 .ai-shot img {
-  width: min(100%, 1000px);
+  width: 100%;
   height: auto;
-  margin-inline: auto;
 }
-.ai-two {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 32px 56px;
-  max-width: 980px;
-  margin-top: 40px;
-  text-align: left;
+.ai-shot figcaption {
+  padding-right: 9%;
+  text-align: right;
+  font-size: 14px;
+  line-height: 1.43;
+  color: var(--ink-3);
 }

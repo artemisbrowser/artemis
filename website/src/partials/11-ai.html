@@ -7,19 +7,25 @@
       <span class="dim">Only when you want to.</span>
     </h2>
   </div>
-  <figure class="ai-shot reveal d1">
-    <img src="/assets/img/framed/intelligence.webp" data-srcset="/assets/img/framed/intelligence-1000.webp 1000w, /assets/img/framed/intelligence-1500.webp 1500w, /assets/img/framed/intelligence.webp 2000w" sizes="min(92vw, 1000px)" width="2000" height="1208" alt="Artemis on a laptop, answering a question about a Wikipedia article from the page alone" loading="lazy" decoding="async" />
-  </figure>
-  <div class="wrap ai-two">
-    <p class="lead reveal">
-      <b>Turn on Ask about this page</b> and Apple’s on-device model reads the
-      page you’re on and answers, with nothing sent anywhere. It’s off until
-      you turn it on, and it needs Apple Intelligence.
-    </p>
-    <p class="lead reveal d1">
-      <b>The side panel’s agent is separate.</b> It uses an AI coding agent
-      already on your Mac, under your own account, so its work goes online.
-      It’s off until you set it up, and asks before each step.
-    </p>
+  <div class="gallery ai-gallery reveal d1" id="ask" data-gallery>
+    <ul class="gallery-track" aria-label="Ask">
+      <li data-tab="Ask about the page">
+        <figure class="ai-shot">
+          <img src="/assets/img/framed/intelligence.webp" data-srcset="/assets/img/framed/intelligence-1000.webp 1000w, /assets/img/framed/intelligence-1500.webp 1500w, /assets/img/framed/intelligence.webp 2000w" sizes="min(92vw, 1000px)" width="2000" height="1208" alt="Artemis on a laptop, answering a question about a Wikipedia article from the page alone" loading="lazy" decoding="async" />
+          <figcaption>Lake Bled on Wikipedia</figcaption>
+        </figure>
+      </li>
+      <li data-tab="Ask the agent">
+        <figure class="ai-shot">
+          <img src="/assets/img/framed/agent.webp" data-srcset="/assets/img/framed/agent-1000.webp 1000w, /assets/img/framed/agent-1500.webp 1500w, /assets/img/framed/agent.webp 2000w" sizes="min(92vw, 1000px)" width="2000" height="1208" alt="Artemis on a laptop, its side panel agent asking before it opens a second Wikipedia article" loading="lazy" decoding="async" />
+          <figcaption>Comparing Lake Bled with Lake Bohinj on Wikipedia</figcaption>
+        </figure>
+      </li>
+    </ul>
+    <div class="gallery-tabs" role="tablist" aria-label="Ask"><span class="gallery-bar"></span></div>
+    <div class="gallery-caps">
+      <p id="ask-page" role="tabpanel">Apple’s on-device model reads the page you’re on and answers from it, with nothing sent anywhere. It’s off until you turn it on, and needs Apple Intelligence.</p>
+      <p id="ask-agent" role="tabpanel">The side panel’s agent uses an AI coding agent already on your Mac, under your own account, so its work goes online. It’s off until you set it up, and asks before each step.</p>
+    </div>
   </div>
 </section>
