@@ -69,6 +69,8 @@ const HEADERS = `/*
   Cross-Origin-Opener-Policy: same-origin
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+/icons/*
+  Cache-Control: public, max-age=31536000, immutable
 /icon.svg
   ! Content-Security-Policy
 https://:worker.:subdomain.workers.dev/*
@@ -234,6 +236,9 @@ export async function build(out) {
       );
   for (const f of walk(path.join(SRC, "static")))
     plan(`/assets/static/${path.basename(f)}`, f, path.basename(f));
+  // app icons are fetched by name and checked against hashes built into the app
+  for (const f of walk(path.join(SRC, "icons")))
+    plan(`/icons/${path.basename(f)}`, f, `icons/${path.basename(f)}`);
   for (const f of walk(path.join(SRC, "video")))
     plan(`/assets/video/${path.basename(f)}`, f);
   for (const f of walk(path.join(ASSETS, "spaces")))
